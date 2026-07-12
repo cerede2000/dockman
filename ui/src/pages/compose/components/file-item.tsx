@@ -39,6 +39,21 @@ export const useFileDnD = (entry: FsEntry) => {
     const handleDragStart = (e: React.DragEvent) => {
         e.dataTransfer.setData("sourcePath", entry.filename);
         e.dataTransfer.effectAllowed = "move";
+
+        // Use a small, controlled drag image rather than the browser's snapshot
+        // of the row. In compact mode the row is very short, which made the
+        // native ghost render as a too-wide / overflowing block.
+        const label = entry.filename.split('/').pop() || entry.filename;
+        const ghost = document.createElement('div');
+        ghost.textContent = label;
+        ghost.style.cssText =
+            'position:fixed;top:-1000px;left:-1000px;padding:4px 10px;' +
+            'background:#2b2b2b;color:#fff;border:1px solid rgba(255,255,255,0.15);' +
+            'border-radius:4px;font:13px sans-serif;white-space:nowrap;pointer-events:none;';
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 12, 12);
+        // Remove once the browser has captured the drag image.
+        setTimeout(() => ghost.remove(), 0);
     };
 
     const handleDragOver = (e: React.DragEvent) => {
