@@ -36,6 +36,11 @@ jobs:
     defaults:
       run:
         working-directory: core
+    env:
+      # Upstream go.mod is not fully tidy against a whole-module `./...` build
+      # (the Docker image only compiles one target). Allow the module graph to
+      # be resolved on the fly so checks don't fail on pre-existing tidiness.
+      GOFLAGS: -mod=mod
     steps:
       - name: Checkout target ref
         uses: actions/checkout@v4

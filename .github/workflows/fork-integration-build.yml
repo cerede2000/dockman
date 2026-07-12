@@ -16,6 +16,12 @@ on:
   push:
     branches:
       - integration
+    paths:
+      - 'core/**'
+      - 'ui/**'
+      - 'pkg/docker/**'
+      - '.dockerignore'
+      - '.github/workflows/fork-integration-build.yml'
   workflow_dispatch:
     inputs:
       ref:
