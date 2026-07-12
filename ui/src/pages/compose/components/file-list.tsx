@@ -96,7 +96,8 @@ export function FileList() {
                      overflow: 'hidden', // Keeps the header and resize handle fixed
                  }}
             >
-                {/* HEADER AREA — slimmer when the actions live on the side rail */}
+                {/* HEADER AREA — slimmer when the actions live on the side rail;
+                    also hosts the transient root-drop overlay */}
                 <Box sx={{
                     display: 'flex',
                     alignItems: 'center',
@@ -104,7 +105,9 @@ export function FileList() {
                     px: 1,
                     minHeight: placement === 'side' ? 32 : 48,
                     flexShrink: 0,
+                    position: 'relative',
                 }}>
+                    <RootDropZone/>
                     <Box sx={{
                         display: 'flex',
                         alignItems: 'center',
@@ -167,10 +170,8 @@ export function FileList() {
 
                 <Divider/>
 
-                {/* List area: a flex column so the transient root-drop banner sits
-                    above the scroll area (pushing it down) instead of overlapping
-                    the first row while dragging. FileListInner owns the actual
-                    scroll container(s). */}
+                {/* List area — FileListInner owns the scroll container(s) and the
+                    drag auto-scroll refs. The root-drop overlay lives in the header. */}
                 <Box sx={{
                     flexGrow: 1,
                     minHeight: 0,
@@ -178,7 +179,6 @@ export function FileList() {
                     flexDirection: 'column',
                     overflow: 'hidden',
                 }}>
-                    <RootDropZone/>
                     <FileListInner/>
                 </Box>
 
