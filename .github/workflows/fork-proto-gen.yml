@@ -20,6 +20,10 @@ on:
         description: "Branch to regenerate stubs on (checked out and pushed back)"
         required: true
         type: string
+      pkg:
+        description: "Proto package dir to commit (e.g. files, dockyaml)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -66,14 +70,15 @@ jobs:
           set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Only commit the dockyaml stubs so any incidental version drift in
-          # unrelated generated files (left unstaged) is discarded, keeping the
-          # contribution branch's diff minimal.
-          git add core/generated/dockyaml ui/src/gen/dockyaml
+          PKG="${{ inputs.pkg }}"
+          # Only commit the requested package's stubs so any incidental version
+          # drift in unrelated generated files (left unstaged) is discarded,
+          # keeping the contribution branch's diff minimal.
+          git add "core/generated/${PKG}" "ui/src/gen/${PKG}"
           if git diff --cached --quiet; then
-            echo "No dockyaml stub changes to commit."
+            echo "No ${PKG} stub changes to commit."
             exit 0
           fi
-          git status --short core/generated/dockyaml ui/src/gen/dockyaml
-          git commit -m "chore(gen): regenerate dockyaml stubs [skip ci]"
+          git status --short "core/generated/${PKG}" "ui/src/gen/${PKG}"
+          git commit -m "chore(gen): regenerate ${PKG} stubs [skip ci]"
           git push origin HEAD:${{ inputs.ref }}
