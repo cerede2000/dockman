@@ -1,0 +1,131 @@
+name: Fork Integration Build
+
+# Builds and pushes Dockman images to GHCR for THIS fork (not upstream).
+#
+#   - push to `integration`  -> image tag `integration`
+#                               = the stacked image containing every merged subject,
+#                                 for end-to-end testing on the homelab.
+#   - manual dispatch (`ref`) -> build any single branch in isolation,
+#                               tag = sanitized branch name (or custom `tag`).
+#
+# This workflow lives ONLY on the `integration` branch, on purpose:
+# contribution branches (fix/*, feat/*) stay clean so their PRs to the
+# upstream repo never carry any of our CI files. Zero-conflict by design.
+
+on:
+  push:
+    branches:
+      - integration
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or ref to build (e.g. fix/auth-context)'
+        required: true
+        default: integration
+        type: string
+      tag:
+        description: 'Optional image tag override (defaults to sanitized ref)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-build-${{ github.event.inputs.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.p.outputs.ref }}
+      tag: ${{ steps.p.outputs.tag }}
+      image: ${{ steps.p.outputs.image }}
+    steps:
+      - id: p
+        run: |
+          REF="${{ github.event.inputs.ref || github.ref_name }}"
+          RAW="${{ github.event.inputs.tag || github.event.inputs.ref || github.ref_name }}"
+          TAG="$(echo "$RAW" | tr '[:upper:]' '[:lower:]' | tr '/' '-' | sed 's/[^a-z0-9._-]/-/g')"
+          IMAGE="$(echo "ghcr.io/${{ github.repository_owner }}/dockman" | tr '[:upper:]' '[:lower:]')"
+          echo "ref=$REF"   >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Building ref='$REF' -> '$IMAGE:$TAG'"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            machine: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            machine: ubuntu-24.04-arm
+            arch: arm64
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.machine }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: pkg/docker/Dockerfile
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          cache-from: |
+            type=gha,scope=${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+            type=registry,ref=${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.tag }}
+            COMMIT_INFO=${{ github.sha }}
+            BRANCH=${{ needs.prepare.outputs.ref }}
+
+  manifest:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          IMAGE="${{ needs.prepare.outputs.image }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          docker buildx imagetools create -t "$IMAGE:$TAG" \
+            "$IMAGE:$TAG-amd64" \
+            "$IMAGE:$TAG-arm64"
+          echo "### Image \`$IMAGE:$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools inspect "$IMAGE:$TAG"
