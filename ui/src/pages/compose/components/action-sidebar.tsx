@@ -29,7 +29,7 @@ const railBtnSx = {
     borderRadius: '4px',
     width: '40px',
     height: '40px',
-    mb: 0.5,
+    mb: 0,
     color: 'rgba(255,255,255,0.7)',
     '&:hover': {backgroundColor: 'rgba(255,255,255,0.15)', color: 'white'},
 } as const;
@@ -87,7 +87,7 @@ const ActionSidebar = () => {
                     zIndex: 10,
                 }}
             >
-                <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', pt: 1, gap: 1}}>
+                <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', pt: 1, gap: 0.5}}>
 
                     {/* File Explorer Toggle */}
                     <Tooltip title="FileBar (Alt+1)" placement="right">
@@ -131,7 +131,7 @@ const ActionSidebar = () => {
                                     borderRadius: '4px',
                                     width: '40px',
                                     height: '40px',
-                                    mb: 0.5,
+                                    mb: 0,
                                     color: 'rgba(255,255,255,0.7)',
                                     backgroundColor: 'rgba(255,255,255,0.05)',
                                     '&:hover': {
@@ -167,7 +167,7 @@ const ActionSidebar = () => {
                                 borderRadius: '4px',
                                 width: '40px',
                                 height: '40px',
-                                mb: 0.5,
+                                mb: 0,
                                 color: 'rgba(255,255,255,0.7)',
                                 // backgroundColor: 'rgba(255,255,255,0.05)',
                                 '&:hover': {
@@ -183,7 +183,7 @@ const ActionSidebar = () => {
                     {/* File explorer actions, when placed on the side rail */}
                     {onSide && (
                         <>
-                            <Divider sx={{width: '60%', borderColor: 'rgba(255,255,255,0.1)', my: 0.5}}/>
+                            <Divider sx={{width: '60%', borderColor: 'rgba(255,255,255,0.1)', my: 0.25}}/>
 
                             <Tooltip title="Reload (Alt+R)" placement="right">
                                 <IconButton onClick={reload} sx={{...railBtnSx, color: 'primary.main'}}>
@@ -220,12 +220,12 @@ const ActionSidebar = () => {
                         </>
                     )}
 
-                    <Divider sx={{width: '60%', borderColor: 'rgba(255,255,255,0.1)', my: 0.5}}/>
+                    <Divider sx={{width: '60%', borderColor: 'rgba(255,255,255,0.1)', my: 0.25}}/>
 
                 </Box>
 
                 {/* Bottom Section: Tools */}
-                <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', pb: 1}}>
+                <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', pb: 1, gap: 0.5}}>
                     <Tooltip
                         title={onSide ? "Toolbar on the side rail — switch to top bar" : "Toolbar on the top bar — switch to side rail"}
                         placement="right">
