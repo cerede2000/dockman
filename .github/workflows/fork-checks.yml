@@ -23,7 +23,7 @@ on:
       test_path:
         description: 'Go package path passed to `go test`'
         required: false
-        default: './...'
+        default: './internal/...'
         type: string
 
 permissions:
@@ -53,13 +53,16 @@ jobs:
           go-version-file: core/go.mod
           cache-dependency-path: core/go.sum
 
+      # Scope to library code: the cmd/* main packages use //go:embed dist and
+      # need the frontend built first, which is out of scope for a Go check.
+      # The Docker image build already validates the full binary compiles.
       - name: Build
-        run: go build ./...
+        run: go build ./internal/... ./pkg/...
 
       - name: Vet
-        run: go vet ./...
+        run: go vet ./internal/... ./pkg/...
 
       - name: Test
         env:
           CGO_ENABLED: "1"
-        run: go test ${{ github.event.inputs.test_path || './...' }}
+        run: go test ${{ github.event.inputs.test_path || './internal/...' }}
