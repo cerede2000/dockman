@@ -1,0 +1,60 @@
+name: Fork Checks
+
+# Go build / vet / test for THIS fork, without touching contribution branches.
+#
+#   - push to `integration`  -> checks the stacked code (all merged subjects)
+#   - manual dispatch (`ref`) -> check any single branch in isolation, e.g. to
+#                                gate a subject before opening its upstream PR.
+#
+# Like the build workflow, this lives ONLY on `integration` so that fix/* and
+# feat/* branches stay pristine for zero-conflict PRs.
+
+on:
+  push:
+    branches:
+      - integration
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or ref to check (e.g. fix/auth-context)'
+        required: true
+        default: integration
+        type: string
+      test_path:
+        description: 'Go package path passed to `go test`'
+        required: false
+        default: './...'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go build / vet / test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        env:
+          CGO_ENABLED: "1"
+        run: go test ${{ github.event.inputs.test_path || './...' }}
