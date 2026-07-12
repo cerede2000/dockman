@@ -16,6 +16,36 @@ export const usePinnedMode = create<{ enabled: boolean; toggle: () => void }>()(
     )
 );
 
+export type ToolbarPlacement = "top" | "side";
+
+// useToolbarPlacement chooses where the file explorer action buttons live:
+// "top" (in the file list header, the classic layout) or "side" (stacked on
+// the left activity rail to reclaim vertical space). Persisted.
+export const useToolbarPlacement = create<{
+    placement: ToolbarPlacement;
+    toggle: () => void;
+}>()(
+    persist(
+        (set) => ({
+            placement: "top",
+            toggle: () => set((state) => ({placement: state.placement === "top" ? "side" : "top"})),
+        }),
+        {name: "dockman-toolbar-placement"}
+    )
+);
+
+// useCompactMode shrinks row/tab heights across the compose view to fit more
+// on screen. Persisted.
+export const useCompactMode = create<{ enabled: boolean; toggle: () => void }>()(
+    persist(
+        (set) => ({
+            enabled: false,
+            toggle: () => set((state) => ({enabled: !state.enabled})),
+        }),
+        {name: "dockman-compact-mode"}
+    )
+);
+
 export const useAliasStore = create<{
     alias: string
     setAlias: (alias: string) => void
