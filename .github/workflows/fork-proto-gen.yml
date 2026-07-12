@@ -6,6 +6,14 @@ name: Fork Proto Gen
 # the diff stays limited to the messages that actually changed.
 
 on:
+  # A push that only touches this file registers the workflow with the Actions
+  # API (so it becomes dispatchable) without doing any work — the job is gated
+  # to workflow_dispatch below.
+  push:
+    branches:
+      - integration
+    paths:
+      - ".github/workflows/fork-proto-gen.yml"
   workflow_dispatch:
     inputs:
       ref:
@@ -18,6 +26,7 @@ permissions:
 
 jobs:
   gen:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
