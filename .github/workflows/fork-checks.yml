@@ -53,16 +53,29 @@ jobs:
           go-version-file: core/go.mod
           cache-dependency-path: core/go.sum
 
-      # Scope to library code: the cmd/* main packages use //go:embed dist and
-      # need the frontend built first, which is out of scope for a Go check.
-      # The Docker image build already validates the full binary compiles.
+      # Scope to library code (./internal, ./pkg). The cmd/* main packages use
+      # //go:embed dist and need the frontend built first, which is out of scope
+      # for a Go check; the Docker image build already validates the full binary.
+      #
+      # Some upstream packages are dead code: not wired into any binary and, in
+      # the case of `notifications`, not even compiling. Exclude them so checks
+      # reflect the code that actually ships. Extend DEAD_PKGS if we ever adopt
+      # one of these as a subject.
+      - name: Resolve package list
+        id: pkgs
+        run: |
+          DEAD_PKGS='/internal/(notifications|lsp)$'
+          PKGS="$(go list -e ./internal/... ./pkg/... | grep -vE "$DEAD_PKGS" | tr '\n' ' ')"
+          echo "list=$PKGS" >> "$GITHUB_OUTPUT"
+          echo "Checking packages:"; echo "$PKGS" | tr ' ' '\n'
+
       - name: Build
-        run: go build ./internal/... ./pkg/...
+        run: go build ${{ steps.pkgs.outputs.list }}
 
       - name: Vet
-        run: go vet ./internal/... ./pkg/...
+        run: go vet ${{ steps.pkgs.outputs.list }}
 
       - name: Test
         env:
           CGO_ENABLED: "1"
-        run: go test ${{ github.event.inputs.test_path || './internal/...' }}
+        run: go test ${{ github.event.inputs.test_path || steps.pkgs.outputs.list }}
