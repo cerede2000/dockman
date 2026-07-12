@@ -14,6 +14,7 @@ const sortFieldToKeyMap: Record<SORT_FIELD, keyof ContainerStats> = {
     [SORT_FIELD.NETWORK_TX]: 'networkTx',
     [SORT_FIELD.DISK_R]: 'blockRead',
     [SORT_FIELD.DISK_W]: 'blockWrite',
+    [SORT_FIELD.STARTED]: 'startedAt',
 };
 
 // Maps a dockman.yml `stats.sort.field` string to a SORT_FIELD. Accepts the
@@ -43,6 +44,9 @@ const configFieldToSortField = (field?: string): SORT_FIELD => {
         case 'disk_w':
         case 'disk write':
             return SORT_FIELD.DISK_W;
+        case 'started':
+        case 'uptime':
+            return SORT_FIELD.STARTED;
         default:
             return SORT_FIELD.MEM;
     }
