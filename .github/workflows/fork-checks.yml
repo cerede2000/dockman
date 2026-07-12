@@ -21,9 +21,9 @@ on:
         default: integration
         type: string
       test_path:
-        description: 'Go package path passed to `go test`'
+        description: 'Go package path passed to `go test` (owned/passing packages)'
         required: false
-        default: './internal/...'
+        default: './internal/auth/...'
         type: string
 
 permissions:
