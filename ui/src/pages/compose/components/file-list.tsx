@@ -167,13 +167,13 @@ export function FileList() {
 
                 <Divider/>
 
-                {/* List area: a relative wrapper so the transient root-drop banner
-                    can overlay the top without scrolling or reflowing the list.
-                    FileListInner owns the actual scroll container(s). */}
+                {/* List area: a flex column so the transient root-drop banner sits
+                    above the scroll area (pushing it down) instead of overlapping
+                    the first row while dragging. FileListInner owns the actual
+                    scroll container(s). */}
                 <Box sx={{
                     flexGrow: 1,
                     minHeight: 0,
-                    position: 'relative',
                     display: 'flex',
                     flexDirection: 'column',
                     overflow: 'hidden',
@@ -277,7 +277,7 @@ const FileListInner = () => {
     // Pinned mode: pinned entries stay fixed at the top, only the rest scrolls.
     if (pinnedMode && hasPinned) {
         return (
-            <Box sx={{display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0}}>
+            <Box sx={{display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0}}>
                 <Box ref={autoScrollPinned} sx={{flexShrink: 0, maxHeight: '45%', ...scrollSx}}>
                     <List>{renderRange(0, pinnedCount)}</List>
                 </Box>
