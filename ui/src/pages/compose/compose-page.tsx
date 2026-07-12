@@ -17,7 +17,7 @@ import FileSearch from "./dialogs/file-search.tsx";
 import FileCreate from "./dialogs/file-create.tsx";
 import FileDelete from "./dialogs/file-delete.tsx";
 import FileRename from "./dialogs/file-rename.tsx";
-import {useAliasStore, useHostStore, useLastOpened} from "./state/files.ts";
+import {useAliasStore, useCompactMode, useHostStore, useLastOpened} from "./state/files.ts";
 import AliasProvider, {useAlias} from "../../context/alias-context.tsx";
 import AliasDialog from "./components/add-alias-dialog.tsx";
 import useResizeBar from "./hooks/resize-hook.ts";
@@ -252,6 +252,8 @@ const FileTabBar = ({track}: { track: number }) => {
     const {closeTab, onTabClick} = useTabs();
 
     const contextKey = `${host}/${alias}`
+    const compact = useCompactMode(state => state.enabled)
+    const tabMinHeight = compact ? 34 : undefined
 
     const contextTabs = useTabsStore(state => state.contextTabs)[contextKey] ?? {0: new Set(), 1: new Set()}
     const tabs = contextTabs[track] ?? new Set()
@@ -301,12 +303,13 @@ const FileTabBar = ({track}: { track: number }) => {
                 onChange={(_event, value) => onTabClick(value as string, track)}
                 variant="scrollable"
                 scrollButtons="auto"
+                sx={{minHeight: tabMinHeight}}
             >
                 {tablist.map((tabFilename) => (
                     <Tab
                         key={tabFilename}
                         value={tabFilename}
-                        sx={{textTransform: 'none', p: 0.5}}
+                        sx={{textTransform: 'none', p: 0.5, minHeight: tabMinHeight}}
                         label={
                             <Box sx={{
                                 display: 'flex',

@@ -24,7 +24,7 @@ import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {useFileCreate} from "../dialogs/file-create.tsx";
 import {useFileDelete} from "../dialogs/file-delete.tsx";
 import {useFileRename} from "../dialogs/file-rename.tsx";
-import {useAliasStore, useHostStore, useOpenFiles} from "../state/files.ts";
+import {useAliasStore, useCompactMode, useHostStore, useOpenFiles} from "../state/files.ts";
 import {useConfig} from "../../../hooks/config.ts";
 import {useComposeFileState} from "../state/status.ts";
 import {getContextKey} from "../../../context/tab-context.tsx";
@@ -118,6 +118,7 @@ const FolderItemDisplay = ({entry, depthIndex}: {
     const toggle = useOpenFiles(state => state.toggle)
     const {listFiles} = useFiles()
     const {dockYaml} = useConfig()
+    const compact = useCompactMode(state => state.enabled)
     const editorUrl = useEditorUrl() // Hook to get editor route helper
 
     const useComposeFolder = (dockYaml?.useComposeFolders ?? false)
@@ -219,7 +220,7 @@ const FolderItemDisplay = ({entry, depthIndex}: {
                 onClick={handleToggle}
 
                 sx={{
-                    py: 1.25,
+                    py: compact ? 0.25 : 1.25,
                     backgroundColor: isDragOver ? 'action.hover' : 'transparent',
                     outline: isDragOver ? '1px dashed primary.main' : 'none',
                     outlineOffset: '-2px',
@@ -306,6 +307,7 @@ const FileItemDisplay = ({entry}: { entry: FsEntry }) => {
     const filename = entry.filename
 
     const {isDragOver, dndProps} = useFileDnD(entry);
+    const compact = useCompactMode(state => state.enabled)
 
     const editorUrl = useEditorUrl()
     const filePath = editorUrl(filename)
@@ -343,6 +345,7 @@ const FileItemDisplay = ({entry}: { entry: FsEntry }) => {
             <ListItemButton
                 {...dndProps}
                 sx={{
+                    py: compact ? 0.25 : undefined,
                     backgroundColor: isDragOver ? 'action.hover' : 'transparent',
                     borderLeft: isDragOver ? '3px solid primary.main' : '3px solid transparent',
                 }}

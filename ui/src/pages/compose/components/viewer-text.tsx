@@ -10,7 +10,7 @@ import {TabDeploy} from "../tab-deploy.tsx";
 import {TabStat} from "../tab-stats.tsx";
 import CenteredMessage from "../../../components/centered-message.tsx";
 import {ErrorOutline} from "@mui/icons-material";
-import {useOpenFiles} from "../state/files.ts";
+import {useCompactMode, useOpenFiles} from "../state/files.ts";
 import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {indicatorMap, type SaveState} from "../hooks/status-hook.tsx";
 
@@ -51,6 +51,8 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
     const [fileError, setFileError] = useState("");
 
     const recursiveOpen = useOpenFiles(state => state.recursiveOpen)
+    const compact = useCompactMode(state => state.enabled)
+    const tabMinHeight = compact ? '34px' : '48px'
     const {alias: activeAlias} = useFileComponents()
 
     useEffect(() => {
@@ -187,7 +189,7 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
                 <Tabs
                     value={currentTab}
                     onChange={(_event, value) => changeTab(value)}
-                    sx={{minHeight: '48px'}}
+                    sx={{minHeight: tabMinHeight}}
                     variant="scrollable"
                     scrollButtons="auto"
                     slotProps={{
@@ -205,7 +207,7 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
                                 value={key}
                                 sx={{
                                     color: (key === 0) ? indicatorMap[saveStatus].color : "text.secondary",
-                                    minHeight: '48px'
+                                    minHeight: tabMinHeight
                                 }}
                                 label={
                                     key === 0 ? (
