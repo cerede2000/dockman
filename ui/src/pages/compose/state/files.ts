@@ -46,6 +46,16 @@ export const useCompactMode = create<{ enabled: boolean; toggle: () => void }>()
     )
 );
 
+// useFileDrag is a transient (non-persisted) flag that is true while a file-tree
+// entry is being dragged. It drives the temporary "drop to root" banner, which
+// is only rendered during a drag so it takes no layout space the rest of the time.
+export const useFileDrag = create<{ dragging: boolean; setDragging: (v: boolean) => void }>(
+    (set) => ({
+        dragging: false,
+        setDragging: (dragging: boolean) => set({dragging}),
+    })
+);
+
 export const useAliasStore = create<{
     alias: string
     setAlias: (alias: string) => void

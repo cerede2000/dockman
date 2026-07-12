@@ -18,6 +18,8 @@ import {useFileSearch} from "../dialogs/file-search.tsx";
 import {useFileCreate} from "../dialogs/file-create.tsx";
 import {useCompactMode, usePinnedMode, useSideBarAction, useToolbarPlacement} from "../state/files.ts";
 import {YamlIcon} from "./file-icon.tsx";
+import {RootDropZone} from "./root-drop-zone.tsx";
+import {useDragAutoScroll} from "../hooks/drag-autoscroll.ts";
 import {useNavigate} from "react-router-dom";
 import {useEditorUrl} from "../../../lib/editor.ts";
 import {formatDockyaml} from "./viewer-dockyml.tsx";
@@ -165,13 +167,18 @@ export function FileList() {
 
                 <Divider/>
 
+                {/* List area: a relative wrapper so the transient root-drop banner
+                    can overlay the top without scrolling or reflowing the list.
+                    FileListInner owns the actual scroll container(s). */}
                 <Box sx={{
                     flexGrow: 1,
                     minHeight: 0,
+                    position: 'relative',
                     display: 'flex',
                     flexDirection: 'column',
                     overflow: 'hidden',
                 }}>
+                    <RootDropZone/>
                     <FileListInner/>
                 </Box>
 
@@ -211,6 +218,12 @@ const FileListInner = () => {
     const {files, isLoading} = useFiles()
     const {host, alias} = useFileComponents()
     const pinnedMode = usePinnedMode(state => state.enabled)
+
+    // Auto-scroll while dragging near a scroll area's edges. Two independent
+    // instances: the main list (single scroll area, or the "rest" pane in pinned
+    // mode) and the fixed pinned pane above it.
+    const autoScrollMain = useDragAutoScroll()
+    const autoScrollPinned = useDragAutoScroll()
 
     const openFiles = useComposeFileState(state => state.openFiles)
     const setStatus = useComposeFileState(state => state.setStatus)
@@ -265,11 +278,11 @@ const FileListInner = () => {
     if (pinnedMode && hasPinned) {
         return (
             <Box sx={{display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0}}>
-                <Box sx={{flexShrink: 0, maxHeight: '45%', ...scrollSx}}>
+                <Box ref={autoScrollPinned} sx={{flexShrink: 0, maxHeight: '45%', ...scrollSx}}>
                     <List>{renderRange(0, pinnedCount)}</List>
                 </Box>
                 <Divider sx={{borderBottomWidth: 2, borderColor: 'divider'}}/>
-                <Box sx={{flexGrow: 1, minHeight: 0, ...scrollSx}}>
+                <Box ref={autoScrollMain} sx={{flexGrow: 1, minHeight: 0, ...scrollSx}}>
                     <List>{renderRange(pinnedCount, files.length)}</List>
                 </Box>
             </Box>
@@ -278,7 +291,7 @@ const FileListInner = () => {
 
     // Default: a single scroll area with a visual separator after the pinned run.
     return (
-        <Box sx={{flexGrow: 1, minHeight: 0, height: '100%', ...scrollSx}}>
+        <Box ref={autoScrollMain} sx={{flexGrow: 1, minHeight: 0, height: '100%', ...scrollSx}}>
             <List>
                 {renderRange(0, pinnedCount)}
                 {hasPinned && hasRest && (
