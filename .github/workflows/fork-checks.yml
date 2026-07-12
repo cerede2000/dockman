@@ -71,18 +71,25 @@ jobs:
           STALE_TESTS='/internal/(host|ssh)$'
           ALL="$(go list -e ./internal/... ./pkg/...)"
           BUILD="$(echo "$ALL" | grep -vE "$DEAD_PKGS" | tr '\n' ' ')"
-          TEST="$(echo "$ALL" | grep -vE "$DEAD_PKGS|$STALE_TESTS" | tr '\n' ' ')"
+          VET="$(echo "$ALL" | grep -vE "$DEAD_PKGS|$STALE_TESTS" | tr '\n' ' ')"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          echo "test=$TEST"   >> "$GITHUB_OUTPUT"
+          echo "vet=$VET"     >> "$GITHUB_OUTPUT"
           echo "Build scope:"; echo "$BUILD" | tr ' ' '\n'
 
+      # `go build` across all shipping packages is the real anti-regression net
+      # for merges into `integration`: it catches any compile break introduced by
+      # a stacked subject, everywhere.
       - name: Build
         run: go build ${{ steps.pkgs.outputs.build }}
 
       - name: Vet
-        run: go vet ${{ steps.pkgs.outputs.test }}
+        run: go vet ${{ steps.pkgs.outputs.vet }}
 
+      # Only run tests we own and that pass in a plain CI runner. Upstream tests
+      # for docker/*, git, host and ssh require a live Docker daemon / SSH host
+      # (or are broken) and are intentionally not run here. This list grows as we
+      # add subjects; a dispatch can override it with `test_path`.
       - name: Test
         env:
           CGO_ENABLED: "1"
-        run: go test ${{ github.event.inputs.test_path || steps.pkgs.outputs.test }}
+        run: go test ${{ github.event.inputs.test_path || './internal/auth/...' }}
