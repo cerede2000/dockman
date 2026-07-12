@@ -1,8 +1,10 @@
 import {useCallback, useEffect, useRef} from 'react'
-import {Box, CircularProgress, Divider, IconButton, List, Toolbar, Tooltip, Typography} from '@mui/material'
+import {Box, CircularProgress, Divider, IconButton, List, Tooltip, Typography} from '@mui/material'
 import {
     Add as AddIcon,
     Cached,
+    DensityMedium as StandardIcon,
+    DensitySmall as CompactIcon,
     PushPin as PushPinIcon,
     PushPinOutlined as PushPinOutlinedIcon,
     Search as SearchIcon
@@ -14,7 +16,7 @@ import {FileItem} from "./file-item.tsx";
 import {useFiles} from "../../../context/file-context.tsx"
 import {useFileSearch} from "../dialogs/file-search.tsx";
 import {useFileCreate} from "../dialogs/file-create.tsx";
-import {usePinnedMode, useSideBarAction} from "../state/files.ts";
+import {useCompactMode, usePinnedMode, useSideBarAction, useToolbarPlacement} from "../state/files.ts";
 import {YamlIcon} from "./file-icon.tsx";
 import {useNavigate} from "react-router-dom";
 import {useEditorUrl} from "../../../lib/editor.ts";
@@ -31,6 +33,9 @@ export function FileList() {
     const isSidebarCollapsed = useSideBarAction(state => state.isSidebarOpen)
     const pinnedMode = usePinnedMode(state => state.enabled)
     const togglePinnedMode = usePinnedMode(state => state.toggle)
+    const placement = useToolbarPlacement(state => state.placement)
+    const compact = useCompactMode(state => state.enabled)
+    const toggleCompact = useCompactMode(state => state.toggle)
 
     const {listFiles} = useFiles()
     const {host, alias} = useFileComponents()
@@ -89,65 +94,74 @@ export function FileList() {
                      overflow: 'hidden', // Keeps the header and resize handle fixed
                  }}
             >
-                {/* HEADER AREA */}
-                <Toolbar variant="dense" sx={{px: 1, gap: 1}}>
-                    <Box
-                        sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            cursor: 'pointer',
-                            minWidth: 0,
-                            gap: 0.5,
-                            opacity: 0.9,
-                            '&:hover': {opacity: 1}
-                        }}
-                    >
-                        <Typography variant="subtitle1" fontWeight="bold" noWrap>
+                {/* HEADER AREA — slimmer when the actions live on the side rail */}
+                <Box sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    px: 1,
+                    minHeight: placement === 'side' ? 32 : 48,
+                    flexShrink: 0,
+                }}>
+                    <Box sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        minWidth: 0,
+                        gap: 0.5,
+                        opacity: 0.9,
+                        '&:hover': {opacity: 1}
+                    }}>
+                        <Typography variant={placement === 'side' ? 'body2' : 'subtitle1'} fontWeight="bold" noWrap>
                             {alias}
                         </Typography>
                     </Box>
 
                     <Box sx={{flexGrow: 1}}/>
 
-                    <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
-                        <Tooltip arrow title={<ShortcutFormatter title="Reload" keyCombo={["ALT", "R"]}/>}>
-                            <IconButton size="small"
-                                        onClick={() => listFiles("", [])}
-                                        color="primary">
-                                <Cached fontSize="small"/>
-                            </IconButton>
-                        </Tooltip>
+                    {placement === 'top' && (
+                        <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
+                            <Tooltip arrow title={<ShortcutFormatter title="Reload" keyCombo={["ALT", "R"]}/>}>
+                                <IconButton size="small" onClick={() => listFiles("", [])} color="primary">
+                                    <Cached fontSize="small"/>
+                                </IconButton>
+                            </Tooltip>
 
-                        <Tooltip arrow title={<ShortcutFormatter title="Search" keyCombo={["ALT", "S"]}/>}>
-                            <IconButton
-                                size="small" onClick={showSearch} color="secondary">
-                                <SearchIcon fontSize="small"/>
-                            </IconButton>
-                        </Tooltip>
+                            <Tooltip arrow title={<ShortcutFormatter title="Search" keyCombo={["ALT", "S"]}/>}>
+                                <IconButton size="small" onClick={showSearch} color="secondary">
+                                    <SearchIcon fontSize="small"/>
+                                </IconButton>
+                            </Tooltip>
 
-                        <Tooltip arrow
-                                 title={pinnedMode ? "Pinned mode on — pinned files stay fixed while scrolling" : "Pinned mode off"}>
-                            <IconButton size="small" onClick={togglePinnedMode}
-                                        color={pinnedMode ? "primary" : "default"}>
-                                {pinnedMode ? <PushPinIcon fontSize="small"/> :
-                                    <PushPinOutlinedIcon fontSize="small"/>}
-                            </IconButton>
-                        </Tooltip>
+                            <Tooltip arrow
+                                     title={pinnedMode ? "Pinned mode on — pinned files stay fixed while scrolling" : "Pinned mode off"}>
+                                <IconButton size="small" onClick={togglePinnedMode}
+                                            color={pinnedMode ? "primary" : "default"}>
+                                    {pinnedMode ? <PushPinIcon fontSize="small"/> :
+                                        <PushPinOutlinedIcon fontSize="small"/>}
+                                </IconButton>
+                            </Tooltip>
 
-                        <Tooltip arrow title={<ShortcutFormatter title="Add" keyCombo={["ALT", "A"]}/>}>
-                            <IconButton size="small" onClick={showFileAdd} color="success">
-                                <AddIcon fontSize="small"/>
-                            </IconButton>
-                        </Tooltip>
+                            <Tooltip arrow title={<ShortcutFormatter title="Add" keyCombo={["ALT", "A"]}/>}>
+                                <IconButton size="small" onClick={showFileAdd} color="success">
+                                    <AddIcon fontSize="small"/>
+                                </IconButton>
+                            </Tooltip>
 
-                        {/* Added an extra icon just to match your snippet's count */}
-                        <Tooltip arrow title={<ShortcutFormatter title="Edit dockman.yaml" keyCombo={["ALT", "E"]}/>}>
-                            <IconButton size="small" onClick={showDockyaml} color="success">
-                                <YamlIcon/>
-                            </IconButton>
-                        </Tooltip>
-                    </Box>
-                </Toolbar>
+                            <Tooltip arrow title={compact ? "Compact mode on" : "Compact mode off"}>
+                                <IconButton size="small" onClick={toggleCompact}
+                                            color={compact ? "primary" : "default"}>
+                                    {compact ? <CompactIcon fontSize="small"/> : <StandardIcon fontSize="small"/>}
+                                </IconButton>
+                            </Tooltip>
+
+                            <Tooltip arrow title={<ShortcutFormatter title="Edit dockman.yaml" keyCombo={["ALT", "E"]}/>}>
+                                <IconButton size="small" onClick={showDockyaml} color="success">
+                                    <YamlIcon/>
+                                </IconButton>
+                            </Tooltip>
+                        </Box>
+                    )}
+                </Box>
 
                 <Divider/>
 
