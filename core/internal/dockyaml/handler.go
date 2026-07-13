@@ -72,6 +72,7 @@ func (d *DockmanYaml) ToProto() *v1.DockmanYaml {
 		ImagePage:                  d.ImagePage.toProto(),
 		ContainerPage:              d.ContainerPage.toProto(),
 		StatsPage:                  d.StatsPage.toProto(),
+		ComposePage:                d.ComposePage.toProto(),
 	}
 }
 
@@ -109,5 +110,11 @@ func (i ImageConfig) toProto() *v1.ImageConfig {
 func (st StatsConfig) toProto() *v1.StatsConfig {
 	return &v1.StatsConfig{
 		Sort: st.Sort.toProto(),
+	}
+}
+
+func (c ComposeConfig) toProto() *v1.ComposeConfig {
+	return &v1.ComposeConfig{
+		DefaultTab: c.DefaultTab,
 	}
 }
