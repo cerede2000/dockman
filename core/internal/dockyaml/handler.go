@@ -73,6 +73,7 @@ func (d *DockmanYaml) ToProto() *v1.DockmanYaml {
 		ContainerPage:              d.ContainerPage.toProto(),
 		StatsPage:                  d.StatsPage.toProto(),
 		ComposePage:                d.ComposePage.toProto(),
+		EditorPage:                 d.EditorPage.toProto(),
 	}
 }
 
@@ -116,5 +117,11 @@ func (st StatsConfig) toProto() *v1.StatsConfig {
 func (c ComposeConfig) toProto() *v1.ComposeConfig {
 	return &v1.ComposeConfig{
 		DefaultTab: c.DefaultTab,
+	}
+}
+
+func (e EditorConfig) toProto() *v1.EditorConfig {
+	return &v1.EditorConfig{
+		ScrollPastEnd: e.ScrollPastEnd,
 	}
 }

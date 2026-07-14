@@ -41,11 +41,18 @@ message DockmanYaml {
   ContainerConfig containerPage = 5;
   StatsConfig statsPage = 10;
   ComposeConfig composePage = 11;
+  EditorConfig editorPage = 12;
 }
 
 message ComposeConfig {
   // tab shown when opening a compose stack: editor (default), deploy or stats
   string defaultTab = 1;
+}
+
+message EditorConfig {
+  // allow scrolling until the last line reaches the top of the view,
+  // for files taller than the viewport (classic Monaco behavior)
+  bool scrollPastEnd = 1;
 }
 
 message VolumesConfig {

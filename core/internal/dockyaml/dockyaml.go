@@ -68,6 +68,9 @@ type DockmanYaml struct {
 	// configure the compose stack view
 	ComposePage ComposeConfig `yaml:"compose"`
 
+	// configure the file editor
+	EditorPage EditorConfig `yaml:"editor"`
+
 	// define a max search limit for files
 	SearchLimit int `yaml:"searchLimit"`
 
@@ -97,6 +100,12 @@ type StatsConfig struct {
 type ComposeConfig struct {
 	// tab shown when opening a compose stack: editor (default), deploy or stats
 	DefaultTab string `yaml:"defaultTab"`
+}
+
+type EditorConfig struct {
+	// allow scrolling until the last line reaches the top of the view,
+	// for files taller than the viewport (classic Monaco behavior)
+	ScrollPastEnd bool `yaml:"scrollPastEnd"`
 }
 
 type Sort struct {
