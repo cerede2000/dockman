@@ -17,6 +17,22 @@ func formatDiskIO(statsJSON container.StatsResponse) (uint64, uint64) {
 	return blkRead, blkWrite
 }
 
+// formatMemory reports the container's working-set memory, the same figure
+// `docker stats` shows: the raw cgroup usage includes the page cache
+// (inactive_file), which the kernel reclaims freely — a media server
+// "using" gigabytes of cache would otherwise dwarf its real footprint.
+// total_inactive_file is the cgroup v1 key, inactive_file the v2 one.
+func formatMemory(statsJSON container.StatsResponse) uint64 {
+	mem := statsJSON.MemoryStats
+	if v, ok := mem.Stats["total_inactive_file"]; ok && v < mem.Usage {
+		return mem.Usage - v
+	}
+	if v, ok := mem.Stats["inactive_file"]; ok && v < mem.Usage {
+		return mem.Usage - v
+	}
+	return mem.Usage
+}
+
 // Collect Network and Disk I/O
 func formatNetwork(statsJSON container.StatsResponse) (uint64, uint64) {
 	var rx, tx uint64

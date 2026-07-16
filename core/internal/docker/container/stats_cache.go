@@ -173,7 +173,7 @@ func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info cont
 	cache.cpu[info.ID] = cur
 	cache.mu.Unlock()
 
-	stat.MemoryUsage = statsJSON.MemoryStats.Usage
+	stat.MemoryUsage = formatMemory(statsJSON)
 	stat.MemoryLimit = statsJSON.MemoryStats.Limit
 	stat.NetworkRx, stat.NetworkTx = formatNetwork(statsJSON)
 	stat.BlockRead, stat.BlockWrite = formatDiskIO(statsJSON)

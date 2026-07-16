@@ -15,6 +15,44 @@ export interface StatHistory {
 
 const HISTORY_CAP = 40;
 
+// Module-level on purpose: history must survive component remounts (a ref
+// resets with its component, losing everything between two polls) and is
+// shared between the host-wide stats page and per-stack stats tabs, which
+// see the same containers.
+const statHistories = new Map<string, StatHistory>();
+let statHistoriesHost: string | null = null;
+
+function recordHistory(host: string, list: ContainerStats[], fullListing: boolean) {
+    if (statHistoriesHost !== host) {
+        statHistories.clear();
+        statHistoriesHost = host;
+    }
+
+    const seen = new Set<string>();
+    for (const c of list) {
+        seen.add(c.id);
+        let h = statHistories.get(c.id);
+        if (!h) {
+            h = {cpu: [], mem: []};
+            statHistories.set(c.id, h);
+        }
+        h.cpu.push(c.cpuUsage);
+        const limit = Number(c.memoryLimit);
+        h.mem.push(limit > 0 ? (Number(c.memoryUsage) / limit) * 100 : 0);
+        if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
+        if (h.mem.length > HISTORY_CAP) h.mem.shift();
+    }
+
+    // drop history of containers that disappeared — but only from a full host
+    // listing: a stack-scoped poll only sees its own containers and must not
+    // evict everyone else's history
+    if (fullListing) {
+        for (const id of [...statHistories.keys()]) {
+            if (!seen.has(id)) statHistories.delete(id);
+        }
+    }
+}
+
 // This map remains very useful for clean, client-side sorting.
 const sortFieldToKeyMap: Record<SORT_FIELD, keyof ContainerStats> = {
     [SORT_FIELD.NAME]: 'name',
@@ -73,8 +111,6 @@ export function useDockerStats(selectedPage?: string) {
 
     const [rawContainers, setRawContainers] = useState<ContainerStats[]>([]);
     const [loading, setLoading] = useState(true);
-    // mutated in place every poll; rows re-render on the poll tick anyway
-    const historyRef = useRef<Map<string, StatHistory>>(new Map());
 
     const [sortField, setSortField] = useState(SORT_FIELD.MEM);
     const [sortOrder, setSortOrder] = useState(ORDER.DSC);
@@ -112,27 +148,7 @@ export function useDockerStats(selectedPage?: string) {
                 showError(err);
             } else {
                 const list = val?.containers || [];
-
-                const hist = historyRef.current;
-                const seen = new Set<string>();
-                for (const c of list) {
-                    seen.add(c.id);
-                    let h = hist.get(c.id);
-                    if (!h) {
-                        h = {cpu: [], mem: []};
-                        hist.set(c.id, h);
-                    }
-                    h.cpu.push(c.cpuUsage);
-                    const limit = Number(c.memoryLimit);
-                    h.mem.push(limit > 0 ? (Number(c.memoryUsage) / limit) * 100 : 0);
-                    if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
-                    if (h.mem.length > HISTORY_CAP) h.mem.shift();
-                }
-                // drop history of containers that disappeared
-                for (const id of [...hist.keys()]) {
-                    if (!seen.has(id)) hist.delete(id);
-                }
-
+                recordHistory(selectedHost, list, !selectedPage);
                 setRawContainers(list);
             }
 
@@ -158,9 +174,8 @@ export function useDockerStats(selectedPage?: string) {
     }, [selectedHost, dockerService, selectedPage, sortField, sortOrder, refreshInterval]);
 
     useEffect(() => {
-        // clear containers on host change
+        // clear containers on host change (history clears itself, keyed by host)
         setRawContainers([])
-        historyRef.current.clear()
         setLoading(true)
         isInitialLoad.current = true;
         // re-apply the configured default for the newly selected host
@@ -206,7 +221,7 @@ export function useDockerStats(selectedPage?: string) {
 
     return {
         containers: rawContainers,
-        history: historyRef.current,
+        history: statHistories,
         loading,
         sortField,
         sortOrder,
