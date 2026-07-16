@@ -35,7 +35,10 @@ let statHistoriesHost: string | null = null;
 // the true lifetime of the refresh loop in the console
 let debugCycle = 0;
 
-// one point per received container stat, Dockhand-style
+// One point per received container stat, Dockhand-style. History is keyed by
+// container NAME, not id: names are unique per host and — unlike ids —
+// survive a compose recreate, so the chart never restarts because the
+// identifier flipped underneath it.
 function recordStat(host: string, stat: ContainerStats) {
     if (statHistoriesHost !== host) {
         console.log(`[stats] history reset (host '${statHistoriesHost}' -> '${host}')`);
@@ -43,10 +46,10 @@ function recordStat(host: string, stat: ContainerStats) {
         statHistoriesHost = host;
     }
 
-    let h = statHistories.get(stat.id);
+    let h = statHistories.get(stat.name);
     if (!h) {
         h = {cpu: [], mem: []};
-        statHistories.set(stat.id, h);
+        statHistories.set(stat.name, h);
     }
     h.cpu.push(Math.max(stat.cpuUsage, 0));
     const limit = Number(stat.memoryLimit);
@@ -54,16 +57,16 @@ function recordStat(host: string, stat: ContainerStats) {
     if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
     if (h.mem.length > HISTORY_CAP) h.mem.shift();
 
-    console.debug(`[stats] ${stat.name} cpu=${stat.cpuUsage.toFixed(2)} pts=${h.cpu.length}`);
+    console.debug(`[stats] ${stat.name} id=${stat.id} cpu=${stat.cpuUsage.toFixed(2)} pts=${h.cpu.length}`);
 }
 
 // drop history of containers that disappeared — only from a full host cycle:
 // a stack-scoped cycle only sees its own containers and must not evict
 // everyone else's history
-function pruneHistory(seen: Set<string>, fullListing: boolean) {
+function pruneHistory(seenNames: Set<string>, fullListing: boolean) {
     if (!fullListing) return;
-    for (const id of [...statHistories.keys()]) {
-        if (!seen.has(id)) statHistories.delete(id);
+    for (const name of [...statHistories.keys()]) {
+        if (!seenNames.has(name)) statHistories.delete(name);
     }
 }
 
@@ -203,6 +206,7 @@ export function useDockerStats(selectedPage?: string) {
                     merged.set(c.id, c);
                 }
                 const seen = new Set<string>();
+                const seenNames = new Set<string>();
 
                 for await (const stat of dockerService.containerStatsStream({
                     host: selectedHost,
@@ -211,6 +215,7 @@ export function useDockerStats(selectedPage?: string) {
                     if (isCancelled) return;
                     merged.set(stat.id, stat);
                     seen.add(stat.id);
+                    seenNames.add(stat.name);
                     recordStat(selectedHost, stat);
                     // progressive paint: each container appears/updates as its
                     // read completes, Dockhand-style
@@ -225,13 +230,13 @@ export function useDockerStats(selectedPage?: string) {
 
                 // cycle complete: drop containers that no longer exist
                 gotStats.current = true;
-                pruneHistory(seen, !selectedPage);
+                pruneHistory(seenNames, !selectedPage);
                 applyRows(sortRows(
                     [...merged.values()].filter(c => seen.has(c.id)),
                     sortRef.current.field, sortRef.current.order,
                 ));
                 setPollInfo(p => ({seq: p.seq + 1, at: Date.now()}));
-                console.log(`[stats] cycle ${cycle} done: ${seen.size} containers in ${Date.now() - cycleStart}ms`);
+                console.log(`[stats] cycle ${cycle} done: ${seen.size} containers in ${Date.now() - cycleStart}ms · map=${statHistories.size} · ids=[${[...seen].join(',')}]`);
             } catch (e) {
                 console.log(`[stats] cycle ${cycle} FAILED after ${Date.now() - cycleStart}ms:`, e);
                 if (!isCancelled) {
