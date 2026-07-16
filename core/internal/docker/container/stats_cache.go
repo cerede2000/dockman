@@ -192,10 +192,12 @@ func (s *Service) inspectDataFor(ctx context.Context, cache *hostStatsCache, inf
 }
 
 func summaryHealth(info container.Summary) string {
-	if info.Health.Status != container.NoHealthcheck {
-		return string(info.Health.Status)
+	// Health is nil when the daemon reports no healthcheck data at all
+	// (depends on daemon/API version) — dereferencing blindly panics
+	if info.Health == nil || info.Health.Status == container.NoHealthcheck {
+		return ""
 	}
-	return ""
+	return string(info.Health.Status)
 }
 
 func summaryIPs(info container.Summary) []string {
