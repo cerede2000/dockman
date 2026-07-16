@@ -3,24 +3,28 @@ import {Box} from "@mui/material";
 interface SparklineProps {
     data: number[];
     color: string;
-    width?: number;
+    /** rendered height in px; the drawing is stretched to the parent width */
     height?: number;
 }
 
+// Fixed drawing space, stretched to the rendered box (Dockhand's inspect
+// modal geometry: viewBox 120x32 with preserveAspectRatio="none"). The
+// vertical resolution is what makes small variations visible: a ±10% swing
+// spans ~6px instead of drowning in a short fixed-height chart.
+const VIEW_W = 120;
+const VIEW_H = 32;
+
 /**
- * Tiny inline SVG area chart for live metric history (CPU %, memory %...).
- *
- * Scaling matches what most container dashboards do: zero-based, ceiling at
- * the window maximum (floored at 1 so idle noise isn't amplified). A
- * container hovering around 3% CPU zigzags across the chart height; one
- * pinned at 99% of its memory limit draws along the top.
+ * Inline SVG area chart for live metric history (CPU %, memory %...),
+ * reproducing Dockhand's chart math: zero-based scale with the ceiling at
+ * the window maximum (floored at 1), line + translucent area fill.
  */
-export function Sparkline({data, color, width = 96, height = 18}: SparklineProps) {
+export function Sparkline({data, color, height = 26}: SparklineProps) {
     // no data yet: keep the footprint with a subtle placeholder
     if (data.length === 0) {
         return (
             <Box sx={{
-                width,
+                width: '100%',
                 height,
                 borderRadius: 0.5,
                 bgcolor: 'rgba(255,255,255,0.06)',
@@ -33,24 +37,31 @@ export function Sparkline({data, color, width = 96, height = 18}: SparklineProps
     const series = data.length === 1 ? [data[0], data[0]] : data;
 
     const max = Math.max(...series, 1);
-    const step = width / (series.length - 1);
+    const step = VIEW_W / (series.length - 1);
     const points = series.map((v, i) => {
         const x = i * step;
-        const y = height - (Math.max(v, 0) / max) * height;
+        const y = VIEW_H - (Math.max(v, 0) / max) * VIEW_H;
         return `${x.toFixed(2)},${y.toFixed(2)}`;
     });
 
     const line = points.join(' ');
-    const area = `0,${height} ${line} ${width},${height}`;
+    const area = `0,${VIEW_H} ${line} ${VIEW_W},${VIEW_H}`;
 
     return (
-        <svg width={width} height={height} style={{display: 'block'}} aria-hidden>
-            <polygon points={area} fill={color} opacity={0.15}/>
+        <svg
+            width="100%"
+            height={height}
+            viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+            preserveAspectRatio="none"
+            style={{display: 'block'}}
+            aria-hidden
+        >
+            <polygon points={area} fill={color} opacity={0.2}/>
             <polyline
                 points={line}
                 fill="none"
                 stroke={color}
-                strokeWidth={1.2}
+                strokeWidth={1.5}
                 strokeLinejoin="round"
                 strokeLinecap="round"
             />
