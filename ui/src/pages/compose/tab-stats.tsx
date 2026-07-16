@@ -9,7 +9,7 @@ interface StackStatsProps {
 }
 
 export function TabStat({selectedPage = ""}: StackStatsProps) {
-    const {containers, history, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
+    const {containers, history, pollInfo, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
 
     return (
         <Box sx={{
@@ -25,6 +25,7 @@ export function TabStat({selectedPage = ""}: StackStatsProps) {
                 <AggregateStats
                     containers={containers}
                     loading={loading}
+                    pollInfo={pollInfo}
                 />
             </Box>
 
