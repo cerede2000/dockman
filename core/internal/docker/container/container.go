@@ -2,14 +2,13 @@ package container
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"strings"
 
-	lu "github.com/RA341/dockman/pkg/listutils"
+	"github.com/docker/compose/v5/pkg/api"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
-	"github.com/rs/zerolog/log"
 )
 
 // LocalClient is the name given to the local docker daemon instance
@@ -155,6 +154,14 @@ func (s *Service) Stats(ctx context.Context, filter client.ContainerListOptions)
 	}
 	containers := contRes.Items
 
+	// this is the host-wide listing: drop cached sampling state for
+	// containers that no longer exist
+	live := make(map[string]struct{}, len(containers))
+	for _, c := range containers {
+		live[c.ID] = struct{}{}
+	}
+	cacheFor(s.Client).prune(live)
+
 	if len(containers) == 0 {
 		return []Stats{}, nil
 	}
@@ -164,14 +171,33 @@ func (s *Service) Stats(ctx context.Context, filter client.ContainerListOptions)
 }
 
 func (s *Service) ContainerGetStatsFromList(ctx context.Context, containers []container.Summary) []Stats {
-	return lu.ParallelLoop(containers, func(r container.Summary) (Stats, bool) {
-		stats, err := s.getAndFormatStats(ctx, r)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Warn().Err(err).Str("container", r.ID[:12]).Msg("could not convert stats, skipping...")
-			return Stats{}, false
+	return s.collectStats(ctx, containers)
+}
+
+// ContainerListByComposeFile returns every container whose compose
+// config-files label references the given absolute compose file path. One
+// host-wide listing matched in memory: a label equality filter can't be used
+// because config_files may hold several comma-separated paths (overrides).
+func (s *Service) ContainerListByComposeFile(ctx context.Context, absPath string) ([]container.Summary, error) {
+	list, err := s.Client.ContainerList(ctx, client.ContainerListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("could not list containers: %w", err)
+	}
+
+	var out []container.Summary
+	for _, ct := range list.Items {
+		cfg := ct.Labels[api.ConfigFilesLabel]
+		if cfg == "" {
+			continue
 		}
-		return stats, true
-	})
+		for _, p := range strings.Split(cfg, ",") {
+			if strings.TrimSpace(p) == absPath {
+				out = append(out, ct)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) Inspect(ctx context.Context, containerId string) (container.InspectResponse, error) {
