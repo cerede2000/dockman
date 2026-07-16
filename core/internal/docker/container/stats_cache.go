@@ -147,11 +147,11 @@ func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info cont
 	prev, hasPrev := cache.cpu[info.ID]
 	cache.mu.Unlock()
 
-	// Without a previous sample (first poll for this container) the daemon is
-	// asked to precollect one: it answers in ~1s but the CPU value is right on
-	// the very first paint. Every later poll is a one-shot read answered
-	// immediately, its CPU delta computed against our cached sample.
-	statsJSON, err := s.readStats(ctx, info.ID, !hasPrev)
+	// Always a one-shot read the daemon answers immediately. The CPU delta
+	// needs two samples, so the first poll of a container reports 0% and the
+	// real value appears on the next tick — the table paints instantly instead
+	// of waiting ~1s per container for the daemon to precollect a sample.
+	statsJSON, err := s.readStats(ctx, info.ID)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -167,8 +167,6 @@ func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info cont
 
 	if hasPrev {
 		stat.CPUUsage = cpuDelta(prev, cur)
-	} else {
-		stat.CPUUsage = formatCPU(statsJSON)
 	}
 
 	cache.mu.Lock()
@@ -183,12 +181,11 @@ func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info cont
 	return stat, nil
 }
 
-func (s *Service) readStats(ctx context.Context, id string, withPreviousSample bool) (container.StatsResponse, error) {
-	resp, err := s.Client.ContainerStats(ctx, id, client.ContainerStatsOptions{
-		// false maps to one-shot=true: a single cached reading the daemon
-		// returns immediately, instead of sampling twice ~1s apart
-		IncludePreviousSample: withPreviousSample,
-	})
+func (s *Service) readStats(ctx context.Context, id string) (container.StatsResponse, error) {
+	// IncludePreviousSample false maps to one-shot=true: a single cached
+	// reading the daemon returns immediately, instead of sampling twice
+	// ~1s apart
+	resp, err := s.Client.ContainerStats(ctx, id, client.ContainerStatsOptions{})
 	if err != nil {
 		return container.StatsResponse{}, fmt.Errorf("failed to get stats for cont %s: %w", id[:12], err)
 	}

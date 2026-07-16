@@ -16,13 +16,17 @@ interface SparklineProps {
  */
 export function Sparkline({data, color, width = 96, height = 22, max}: SparklineProps) {
     // keep the cell footprint stable while history builds up
-    if (data.length < 2) {
+    if (data.length === 0) {
         return <Box sx={{width, height}}/>;
     }
 
-    const ceiling = Math.max(max ?? Math.max(...data), 0.001);
-    const stepX = width / (data.length - 1);
-    const points = data.map((v, i) => {
+    // a single reading still draws (a flat line) so the chart shows up on the
+    // very first poll instead of after two ticks
+    const series = data.length === 1 ? [data[0], data[0]] : data;
+
+    const ceiling = Math.max(max ?? Math.max(...series), 0.001);
+    const stepX = width / (series.length - 1);
+    const points = series.map((v, i) => {
         const clamped = Math.min(Math.max(v, 0), ceiling);
         const x = i * stepX;
         const y = height - 1 - (clamped / ceiling) * (height - 2);
