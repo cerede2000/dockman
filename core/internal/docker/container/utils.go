@@ -27,23 +27,6 @@ func formatNetwork(statsJSON container.StatsResponse) (uint64, uint64) {
 	return rx, tx
 }
 
-func formatCPU(statsJSON container.StatsResponse) float64 {
-	cpuDelta := float64(statsJSON.CPUStats.CPUUsage.TotalUsage - statsJSON.PreCPUStats.CPUUsage.TotalUsage)
-	systemCpuDelta := float64(statsJSON.CPUStats.SystemUsage - statsJSON.PreCPUStats.SystemUsage)
-	numberCPUs := float64(statsJSON.CPUStats.OnlineCPUs)
-	if numberCPUs == 0.0 {
-		numberCPUs = float64(len(statsJSON.CPUStats.CPUUsage.PercpuUsage))
-	}
-
-	var cpuPercent = 0.0
-	// Avoid division by zero
-	if systemCpuDelta > 0.0 && cpuDelta > 0.0 {
-		cpuPercent = (cpuDelta / systemCpuDelta) * numberCPUs * 100.0
-	}
-
-	return cpuPercent
-}
-
 // Stats Stats holds metrics for a single Docker container.
 type Stats struct {
 	ID           string
