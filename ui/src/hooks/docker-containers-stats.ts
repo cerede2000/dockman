@@ -30,9 +30,14 @@ const HISTORY_CAP = 20;
 const statHistories = new Map<string, StatHistory>();
 let statHistoriesHost: string | null = null;
 
+// diagnostic cycle counter, module-level so it survives remounts and shows
+// the true lifetime of the refresh loop in the console
+let debugCycle = 0;
+
 // one point per received container stat, Dockhand-style
 function recordStat(host: string, stat: ContainerStats) {
     if (statHistoriesHost !== host) {
+        console.log(`[stats] history reset (host '${statHistoriesHost}' -> '${host}')`);
         statHistories.clear();
         statHistoriesHost = host;
     }
@@ -47,6 +52,8 @@ function recordStat(host: string, stat: ContainerStats) {
     h.mem.push(limit > 0 ? (Number(stat.memoryUsage) / limit) * 100 : 0);
     if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
     if (h.mem.length > HISTORY_CAP) h.mem.shift();
+
+    console.debug(`[stats] ${stat.name} cpu=${stat.cpuUsage.toFixed(2)} pts=${h.cpu.length}`);
 }
 
 // drop history of containers that disappeared — only from a full host cycle:
@@ -187,6 +194,8 @@ export function useDockerStats(selectedPage?: string) {
         // down the streaming cycle
         const tick = async () => {
             const cycleStart = Date.now();
+            const cycle = ++debugCycle;
+            console.log(`[stats] cycle ${cycle} start (host=${selectedHost || 'default'}${selectedPage ? `, file=${selectedPage}` : ''})`);
             try {
                 const merged = new Map<string, ContainerStats>();
                 for (const c of rowsRef.current) {
@@ -221,7 +230,9 @@ export function useDockerStats(selectedPage?: string) {
                     sortRef.current.field, sortRef.current.order,
                 ));
                 setPollInfo(p => ({seq: p.seq + 1, at: Date.now()}));
+                console.log(`[stats] cycle ${cycle} done: ${seen.size} containers in ${Date.now() - cycleStart}ms`);
             } catch (e) {
+                console.log(`[stats] cycle ${cycle} FAILED after ${Date.now() - cycleStart}ms:`, e);
                 if (!isCancelled) {
                     showError(String(e));
                 }

@@ -11,6 +11,11 @@ interface StackStatsProps {
 export function TabStat({selectedPage = ""}: StackStatsProps) {
     const {containers, history, pollInfo, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
 
+    // diagnostic: history depth of the first row, shown next to the poll
+    // counter so chart accumulation is verifiable at a glance
+    const firstWithHistory = containers.find(c => history.has(c.id));
+    const historyPoints = firstWithHistory ? (history.get(firstWithHistory.id)?.cpu.length ?? 0) : 0;
+
     return (
         <Box sx={{
             p: 1,
@@ -26,6 +31,7 @@ export function TabStat({selectedPage = ""}: StackStatsProps) {
                     containers={containers}
                     loading={loading}
                     pollInfo={pollInfo}
+                    historyPoints={historyPoints}
                 />
             </Box>
 
