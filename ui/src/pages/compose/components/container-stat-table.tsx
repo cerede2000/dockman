@@ -151,7 +151,7 @@ export function ContainerStatTable({
                             <StatRow
                                 key={container.id}
                                 stat={container}
-                                hist={history.get(container.id)}
+                                hist={history.get(container.name)}
                             />
                         ))
                     )}
@@ -214,6 +214,9 @@ function StatRow({stat, hist}: {
             <TableCell>
                 <MetricCell
                     text={pending ? '…' : `${stat.cpuUsage.toFixed(1)}%`}
+                    // diagnostic: live chart depth, next to the value so it is
+                    // always in frame
+                    subText={pending ? '' : `·${hist?.cpu.length ?? 0}`}
                     textColor={pending ? t.textDim : getUsageColor(stat.cpuUsage)}
                     data={pending ? [] : hist?.cpu}
                     lineColor={t.cpuLine}
