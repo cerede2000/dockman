@@ -147,6 +147,24 @@ func (s *Service) ContainerLogs(ctx context.Context, containerID string) (io.Rea
 	return logStream, inspect.Container.Config.Tty, nil
 }
 
+// ContainersListRunning lists running containers and prunes cached sampling
+// state for containers that no longer exist (this is the host-wide listing
+// the stats views poll).
+func (s *Service) ContainersListRunning(ctx context.Context) ([]container.Summary, error) {
+	list, err := s.Client.ContainerList(ctx, client.ContainerListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("could not list containers: %w", err)
+	}
+
+	live := make(map[string]struct{}, len(list.Items))
+	for _, c := range list.Items {
+		live[c.ID] = struct{}{}
+	}
+	cacheFor(s.Client).prune(live)
+
+	return list.Items, nil
+}
+
 func (s *Service) Stats(ctx context.Context, filter client.ContainerListOptions) ([]Stats, error) {
 	contRes, err := s.Client.ContainerList(ctx, filter)
 	if err != nil {

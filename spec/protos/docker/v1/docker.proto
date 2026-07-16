@@ -15,6 +15,11 @@ service DockerService {
 
   rpc ContainerList(ContainerListRequest) returns (ListResponse) {}
   rpc ContainerStats(StatsRequest) returns (StatsResponse) {}
+  // streams each container's stats as soon as its read completes, so the UI
+  // fills in progressively instead of waiting for the slowest container
+  // (fully qualified return type: the sibling ContainerStats rpc otherwise
+  // shadows the message name inside the service scope)
+  rpc ContainerStatsStream(StatsRequest) returns (stream .docker.v1.ContainerStats) {}
   rpc ContainerLogs(ContainerLogsRequest) returns (stream LogsMessage) {}
   rpc ContainerInspect(ContainerLogsRequest) returns (ContainerInspectMessage) {}
 
