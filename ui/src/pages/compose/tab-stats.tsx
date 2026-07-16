@@ -2,13 +2,14 @@ import {Box} from '@mui/material';
 import {useDockerStats} from "../../hooks/docker-containers-stats.ts";
 import {ContainerStatTable} from './components/container-stat-table.tsx';
 import AggregateStats from "./components/container-stat-chart.tsx";
+import {statsTheme} from "./components/stats-theme.ts";
 
 interface StackStatsProps {
     selectedPage?: string;
 }
 
 export function TabStat({selectedPage = ""}: StackStatsProps) {
-    const {containers, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
+    const {containers, history, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
 
     return (
         <Box sx={{
@@ -17,7 +18,8 @@ export function TabStat({selectedPage = ""}: StackStatsProps) {
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
-            boxSizing: 'border-box'
+            boxSizing: 'border-box',
+            bgcolor: statsTheme.page,
         }}>
             <Box sx={{flexShrink: 0}}>
                 <AggregateStats
@@ -30,6 +32,7 @@ export function TabStat({selectedPage = ""}: StackStatsProps) {
                 <ContainerStatTable
                     loading={loading}
                     containers={containers}
+                    history={history}
                     activeSortField={sortField}
                     order={sortOrder}
                     onFieldClick={handleSortChange}

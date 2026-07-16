@@ -5,6 +5,16 @@ import {useSnackbar} from "./snackbar.ts";
 import {useHostStore} from "../pages/compose/state/files.ts";
 import {useConfig} from "./config.ts";
 
+// Rolling per-container metric history driving the sparklines: ~40 points at
+// the 2.5s default poll interval is a little over a minute and a half of
+// live history per container.
+export interface StatHistory {
+    cpu: number[];
+    mem: number[];
+}
+
+const HISTORY_CAP = 40;
+
 // This map remains very useful for clean, client-side sorting.
 const sortFieldToKeyMap: Record<SORT_FIELD, keyof ContainerStats> = {
     [SORT_FIELD.NAME]: 'name',
@@ -60,6 +70,8 @@ export function useDockerStats(selectedPage?: string) {
 
     const [rawContainers, setRawContainers] = useState<ContainerStats[]>([]);
     const [loading, setLoading] = useState(true);
+    // mutated in place every poll; rows re-render on the poll tick anyway
+    const historyRef = useRef<Map<string, StatHistory>>(new Map());
 
     const [sortField, setSortField] = useState(SORT_FIELD.MEM);
     const [sortOrder, setSortOrder] = useState(ORDER.DSC);
@@ -95,7 +107,29 @@ export function useDockerStats(selectedPage?: string) {
             if (err) {
                 showError(err);
             } else {
-                setRawContainers(val?.containers || []);
+                const list = val?.containers || [];
+
+                const hist = historyRef.current;
+                const seen = new Set<string>();
+                for (const c of list) {
+                    seen.add(c.id);
+                    let h = hist.get(c.id);
+                    if (!h) {
+                        h = {cpu: [], mem: []};
+                        hist.set(c.id, h);
+                    }
+                    h.cpu.push(c.cpuUsage);
+                    const limit = Number(c.memoryLimit);
+                    h.mem.push(limit > 0 ? (Number(c.memoryUsage) / limit) * 100 : 0);
+                    if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
+                    if (h.mem.length > HISTORY_CAP) h.mem.shift();
+                }
+                // drop history of containers that disappeared
+                for (const id of [...hist.keys()]) {
+                    if (!seen.has(id)) hist.delete(id);
+                }
+
+                setRawContainers(list);
             }
 
             if (isInitialLoad.current) {
@@ -117,6 +151,7 @@ export function useDockerStats(selectedPage?: string) {
     useEffect(() => {
         // clear containers on host change
         setRawContainers([])
+        historyRef.current.clear()
         setLoading(true)
         isInitialLoad.current = true;
         // re-apply the configured default for the newly selected host
@@ -162,6 +197,7 @@ export function useDockerStats(selectedPage?: string) {
 
     return {
         containers: rawContainers,
+        history: historyRef.current,
         loading,
         sortField,
         sortOrder,
