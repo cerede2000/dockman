@@ -1,9 +1,15 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
+import {create} from "@bufbuild/protobuf";
 import {callRPC, useHostClient} from '../lib/api.ts';
-import {type ContainerStats, DockerService, ORDER, SORT_FIELD} from '../gen/docker/v1/docker_pb.ts';
+import {type ContainerStats, ContainerStatsSchema, DockerService, ORDER, SORT_FIELD} from '../gen/docker/v1/docker_pb.ts';
 import {useSnackbar} from "./snackbar.ts";
 import {useHostStore} from "../pages/compose/state/files.ts";
 import {useConfig} from "./config.ts";
+
+// cpuUsage sentinel marking a row seeded from the container list whose
+// metrics haven't arrived yet (the first stats read takes ~1s of daemon
+// sampling; the list is immediate).
+export const METRICS_PENDING = -1;
 
 // Rolling per-container metric history driving the sparklines: ~40 points at
 // the 2.5s default poll interval is a little over a minute and a half of
@@ -111,6 +117,10 @@ export function useDockerStats(selectedPage?: string) {
 
     const [rawContainers, setRawContainers] = useState<ContainerStats[]>([]);
     const [loading, setLoading] = useState(true);
+    // proof-of-life for the polling loop, shown in the header and bumped on
+    // every successful poll (which also guarantees a redraw per tick)
+    const [pollInfo, setPollInfo] = useState({seq: 0, at: 0});
+    const gotStats = useRef(false);
 
     const [sortField, setSortField] = useState(SORT_FIELD.MEM);
     const [sortOrder, setSortOrder] = useState(ORDER.DSC);
@@ -132,44 +142,49 @@ export function useDockerStats(selectedPage?: string) {
 
     useEffect(() => {
         let isCancelled = false;
-        let warmup: ReturnType<typeof setTimeout> | null = null;
+        let timer: ReturnType<typeof setTimeout> | null = null;
 
-        const fetchData = async () => {
-            const {val, err} = await callRPC(() => dockerService.containerStats({
-                sortBy: sortField,
-                order: sortOrder,
-                host: selectedHost,
-                file: selectedPage ? {filename: selectedPage} : undefined
-            }));
+        const tick = async () => {
+            try {
+                const {val, err} = await callRPC(() => dockerService.containerStats({
+                    sortBy: sortField,
+                    order: sortOrder,
+                    host: selectedHost,
+                    file: selectedPage ? {filename: selectedPage} : undefined
+                }));
 
-            if (isCancelled) return;
+                if (isCancelled) return;
 
-            if (err) {
-                showError(err);
-            } else {
-                const list = val?.containers || [];
-                recordHistory(selectedHost, list, !selectedPage);
-                setRawContainers(list);
-            }
+                if (err) {
+                    showError(err);
+                } else {
+                    const list = val?.containers || [];
+                    recordHistory(selectedHost, list, !selectedPage);
+                    gotStats.current = true;
+                    setRawContainers(list);
+                    setPollInfo(p => ({seq: p.seq + 1, at: Date.now()}));
+                }
 
-            if (isInitialLoad.current) {
-                setLoading(false);
-                isInitialLoad.current = false;
-                // the first poll paints instantly but CPU needs two samples;
-                // refetch quickly once so real values show up in ~1s instead
-                // of waiting a full refresh interval
-                warmup = setTimeout(fetchData, 1200);
+                if (isInitialLoad.current) {
+                    setLoading(false);
+                    isInitialLoad.current = false;
+                }
+            } finally {
+                // self-scheduling chain: the next poll is armed once this one
+                // fully finished — whatever happened above — so a slow response
+                // can't overlap the next one and no failure mode can silently
+                // stop the refresh loop
+                if (!isCancelled) {
+                    timer = setTimeout(tick, refreshInterval);
+                }
             }
         };
 
-        fetchData();
-
-        const intervalId = setInterval(fetchData, refreshInterval);
+        tick();
 
         return () => {
-            clearInterval(intervalId);
-            if (warmup !== null) clearTimeout(warmup);
             isCancelled = true;
+            if (timer !== null) clearTimeout(timer);
         };
     }, [selectedHost, dockerService, selectedPage, sortField, sortOrder, refreshInterval]);
 
@@ -178,9 +193,46 @@ export function useDockerStats(selectedPage?: string) {
         setRawContainers([])
         setLoading(true)
         isInitialLoad.current = true;
+        gotStats.current = false;
         // re-apply the configured default for the newly selected host
         userSorted.current = false;
     }, [selectedHost]);
+
+    // Instant first paint: seed the rows from the (immediate) container list
+    // while the first stats read spends ~1s sampling in the daemon; metrics
+    // cells render as pending until the first poll replaces the rows. Only
+    // for the host-wide view — a stack tab can't be scoped from the list.
+    useEffect(() => {
+        if (selectedPage) return;
+        let cancelled = false;
+
+        const seed = async () => {
+            const {val} = await callRPC(() => dockerService.containerList({}));
+            // never overwrite real stats with placeholders
+            if (cancelled || gotStats.current || !val) return;
+
+            const rows = val.list
+                .filter(c => c.state === 'running')
+                .map(c => create(ContainerStatsSchema, {
+                    id: c.id.substring(0, 12),
+                    name: c.name,
+                    image: c.imageName,
+                    state: c.state,
+                    health: c.health,
+                    ipAddress: c.IPAddress,
+                    cpuUsage: METRICS_PENDING,
+                }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+            setRawContainers(rows);
+            setLoading(false);
+        };
+
+        seed();
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedHost, dockerService, selectedPage]);
 
     // Optimistic Client-Side Sorting
     // This useMemo provides the INSTANT sort feedback to the UI.
@@ -222,6 +274,7 @@ export function useDockerStats(selectedPage?: string) {
     return {
         containers: rawContainers,
         history: statHistories,
+        pollInfo,
         loading,
         sortField,
         sortOrder,

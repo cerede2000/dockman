@@ -168,6 +168,8 @@ function StatRow({stat, hist}: {
     hist?: StatHistory,
 }) {
     const running = stat.state === 'running';
+    // row seeded from the container list, metrics not read yet
+    const pending = stat.cpuUsage < 0;
     const memLimit = Number(stat.memoryLimit);
     const memUsage = Number(stat.memoryUsage);
     const memPercent = memLimit > 0 ? (memUsage / memLimit) * 100 : 0;
@@ -211,32 +213,40 @@ function StatRow({stat, hist}: {
             </TableCell>
             <TableCell>
                 <MetricCell
-                    text={`${stat.cpuUsage.toFixed(1)}%`}
-                    textColor={getUsageColor(stat.cpuUsage)}
-                    data={hist?.cpu}
+                    text={pending ? '…' : `${stat.cpuUsage.toFixed(1)}%`}
+                    textColor={pending ? t.textDim : getUsageColor(stat.cpuUsage)}
+                    data={pending ? [] : hist?.cpu}
                     lineColor={t.cpuLine}
                 />
             </TableCell>
             <TableCell>
                 <MetricCell
-                    text={formatBytes(memUsage)}
-                    subText={memLimit > 0 ? `/ ${formatBytes(memLimit)}` : ''}
-                    textColor={getUsageColor(memPercent)}
-                    data={hist?.mem}
+                    text={pending ? '…' : formatBytes(memUsage)}
+                    subText={!pending && memLimit > 0 ? `/ ${formatBytes(memLimit)}` : ''}
+                    textColor={pending ? t.textDim : getUsageColor(memPercent)}
+                    data={pending ? [] : hist?.mem}
                     lineColor={t.memLine}
                 />
             </TableCell>
             <TableCell>
-                <PairCell
-                    aLabel="↓" aValue={Number(stat.networkRx)} aColor={t.netDown}
-                    bLabel="↑" bValue={Number(stat.networkTx)} bColor={t.netUp}
-                />
+                {pending ? (
+                    <Typography variant="caption" sx={{color: t.textDim}}>…</Typography>
+                ) : (
+                    <PairCell
+                        aLabel="↓" aValue={Number(stat.networkRx)} aColor={t.netDown}
+                        bLabel="↑" bValue={Number(stat.networkTx)} bColor={t.netUp}
+                    />
+                )}
             </TableCell>
             <TableCell>
-                <PairCell
-                    aLabel="r" aValue={Number(stat.blockRead)} aColor={t.diskRead}
-                    bLabel="w" bValue={Number(stat.blockWrite)} bColor={t.diskWrite}
-                />
+                {pending ? (
+                    <Typography variant="caption" sx={{color: t.textDim}}>…</Typography>
+                ) : (
+                    <PairCell
+                        aLabel="r" aValue={Number(stat.blockRead)} aColor={t.diskRead}
+                        bLabel="w" bValue={Number(stat.blockWrite)} bColor={t.diskWrite}
+                    />
+                )}
             </TableCell>
             <TableCell>
                 <IPCell ips={stat.ipAddress}/>

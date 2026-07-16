@@ -15,13 +15,16 @@ import {statsTheme as t} from "./stats-theme.ts";
 interface AggregateStatsProps {
     containers: ContainerStats[];
     loading?: boolean;
+    pollInfo?: { seq: number, at: number };
 }
 
 const HISTORY_CAP = 40;
 
-function AggregateStats({containers}: AggregateStatsProps) {
+function AggregateStats({containers, pollInfo}: AggregateStatsProps) {
     const totals = containers.reduce((acc, curr) => {
-        acc.cpu += curr.cpuUsage;
+        // cpuUsage < 0 marks rows seeded from the container list whose
+        // metrics haven't arrived yet
+        acc.cpu += Math.max(curr.cpuUsage, 0);
         acc.memUsed += Number(curr.memoryUsage);
         acc.memLimit += Number(curr.memoryLimit);
         acc.netRx += Number(curr.networkRx);
@@ -113,6 +116,27 @@ function AggregateStats({containers}: AggregateStatsProps) {
                     subValue={`r ${formatBytes(totals.diskR)}  w ${formatBytes(totals.diskW)}`}
                 />
             </Stack>
+
+            {/* polling proof-of-life: poll counter + last update time */}
+            {pollInfo && pollInfo.seq > 0 && (
+                <Typography variant="caption" sx={{
+                    fontFamily: t.mono,
+                    color: t.textDim,
+                    whiteSpace: 'nowrap',
+                    alignSelf: 'flex-start',
+                    ml: 2,
+                }}>
+                    <Box component="span" sx={{
+                        display: 'inline-block',
+                        width: 7,
+                        height: 7,
+                        borderRadius: '50%',
+                        bgcolor: t.diskRead,
+                        mr: 0.7,
+                    }}/>
+                    #{pollInfo.seq} · {new Date(pollInfo.at).toLocaleTimeString()}
+                </Typography>
+            )}
         </Paper>
     );
 }
