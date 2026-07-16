@@ -341,7 +341,7 @@ function MetricCell({text, subText, textColor, data, lineColor}: {
     lineColor: string;
 }) {
     return (
-        <Box sx={{minWidth: 130}}>
+        <Box sx={{width: 150}}>
             <Typography variant="caption" component="div"
                         sx={{fontFamily: t.mono, whiteSpace: 'nowrap', lineHeight: 1.4, mb: 0.4}}>
                 <Box component="span" sx={{fontWeight: 700, color: textColor}}>{text}</Box>
@@ -351,7 +351,7 @@ function MetricCell({text, subText, textColor, data, lineColor}: {
                     </Box>
                 )}
             </Typography>
-            <Sparkline data={data ?? []} color={lineColor} width={110} height={18}/>
+            <Sparkline data={data ?? []} color={lineColor} height={26}/>
         </Box>
     );
 }

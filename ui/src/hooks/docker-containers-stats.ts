@@ -11,17 +11,18 @@ import {useConfig} from "./config.ts";
 // sampling; the list is immediate).
 export const METRICS_PENDING = -1;
 
-// Refresh cadence between two streaming cycles (matches Dockhand).
-const DEFAULT_REFRESH = 5000;
+// Refresh cadence between two streaming cycles (Dockhand's inspect modal
+// polls every 2s — that chart is the reference rendering).
+const DEFAULT_REFRESH = 2000;
 
-// Rolling per-container metric history driving the sparklines: 20 points at
-// the 5s cadence is ~100s of live history (same window as Dockhand).
+// Rolling per-container metric history driving the sparklines: 30 points,
+// like Dockhand's inspect modal (~1min of live history at this cadence).
 export interface StatHistory {
     cpu: number[];
     mem: number[];
 }
 
-const HISTORY_CAP = 20;
+const HISTORY_CAP = 30;
 
 // Module-level on purpose: history must survive component remounts (a ref
 // resets with its component, losing everything between two polls) and is

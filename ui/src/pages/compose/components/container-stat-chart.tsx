@@ -199,7 +199,9 @@ function ChartItem({icon, label, value, subValue, data, color}: {
                         </Typography>
                     )}
                 </Box>
-                <Sparkline data={data} color={color} width={120} height={34}/>
+                <Box sx={{width: 140}}>
+                    <Sparkline data={data} color={color} height={34}/>
+                </Box>
             </Stack>
         </Box>
     );
