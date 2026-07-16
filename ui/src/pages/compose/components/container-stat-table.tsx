@@ -18,7 +18,7 @@ import {
     Typography
 } from "@mui/material"
 import {Check as CheckIcon, ContentCopy, RestartAlt as RestartIcon} from "@mui/icons-material"
-import {memo, useState, useSyncExternalStore} from "react"
+import {useState, useSyncExternalStore} from "react"
 import {type ContainerStats, DockerService, ORDER, SORT_FIELD} from "../../../gen/docker/v1/docker_pb"
 import {formatBytes, getUsageColor} from "../../../lib/editor.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
@@ -147,17 +147,13 @@ export function ContainerStatTable({
                             </TableCell>
                         </TableRow>
                     ) : (
-                        containers.map((container) => {
-                            const hist = history.get(container.id);
-                            return (
-                                <StatRow
-                                    key={container.id}
-                                    stat={container}
-                                    hist={hist}
-                                    histLen={hist?.cpu.length ?? 0}
-                                />
-                            );
-                        })
+                        containers.map((container) => (
+                            <StatRow
+                                key={container.id}
+                                stat={container}
+                                hist={history.get(container.id)}
+                            />
+                        ))
                     )}
                 </TableBody>
             </Table>
@@ -165,37 +161,11 @@ export function ContainerStatTable({
     )
 }
 
-// statsEqual keeps idle rows from re-rendering on every poll tick: a row only
-// redraws when one of its displayed values actually moved. The history length
-// is part of the comparison so the sparkline keeps growing while the window
-// fills up, even for a container whose values are static.
-function statsEqual(
-    prev: { stat: ContainerStats, histLen: number },
-    next: { stat: ContainerStats, histLen: number },
-): boolean {
-    const a = prev.stat, b = next.stat;
-    return prev.histLen === next.histLen
-        && a.id === b.id
-        && a.name === b.name
-        && a.image === b.image
-        && a.state === b.state
-        && a.health === b.health
-        && a.restartCount === b.restartCount
-        && a.startedAt === b.startedAt
-        && a.cpuUsage === b.cpuUsage
-        && a.memoryUsage === b.memoryUsage
-        && a.memoryLimit === b.memoryLimit
-        && a.networkRx === b.networkRx
-        && a.networkTx === b.networkTx
-        && a.blockRead === b.blockRead
-        && a.blockWrite === b.blockWrite
-        && a.ipAddress.join(',') === b.ipAddress.join(',');
-}
-
-const StatRow = memo(function StatRow({stat, hist}: {
+// Rows redraw on every poll tick — they are text and a ~40-point SVG, cheap
+// at a 2.5s cadence, and skipping renders froze the charts.
+function StatRow({stat, hist}: {
     stat: ContainerStats,
     hist?: StatHistory,
-    histLen: number,
 }) {
     const running = stat.state === 'running';
     const memLimit = Number(stat.memoryLimit);
@@ -276,7 +246,7 @@ const StatRow = memo(function StatRow({stat, hist}: {
             </TableCell>
         </TableRow>
     );
-}, statsEqual);
+}
 
 function NameCell({stat}: { stat: ContainerStats }) {
     const {copiedId, handleCopy} = useCopyButton()
@@ -350,7 +320,9 @@ function HealthCell({health}: { health: string }) {
     );
 }
 
-// MetricCell shows the live value above a small sparkline of its history.
+// MetricCell shows the live value above a small sparkline of its history,
+// scaled like the Dockhand cards (zero-based, window max): a 3% CPU wiggle
+// fills the chart, a container at 99% of its memory limit draws along the top.
 function MetricCell({text, subText, textColor, data, lineColor}: {
     text: string;
     subText?: string;
@@ -361,7 +333,7 @@ function MetricCell({text, subText, textColor, data, lineColor}: {
     return (
         <Box sx={{minWidth: 130}}>
             <Typography variant="caption" component="div"
-                        sx={{fontFamily: t.mono, whiteSpace: 'nowrap', lineHeight: 1.4}}>
+                        sx={{fontFamily: t.mono, whiteSpace: 'nowrap', lineHeight: 1.4, mb: 0.4}}>
                 <Box component="span" sx={{fontWeight: 700, color: textColor}}>{text}</Box>
                 {subText && (
                     <Box component="span" sx={{color: t.textDim, fontSize: '0.65rem'}}>
@@ -369,7 +341,7 @@ function MetricCell({text, subText, textColor, data, lineColor}: {
                     </Box>
                 )}
             </Typography>
-            <Sparkline data={data ?? []} color={lineColor} width={110} height={20}/>
+            <Sparkline data={data ?? []} color={lineColor} width={110} height={18}/>
         </Box>
     );
 }
