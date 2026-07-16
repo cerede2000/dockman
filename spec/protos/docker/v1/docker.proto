@@ -346,6 +346,7 @@ enum SORT_FIELD {
   NETWORK_TX = 4;
   DISK_R = 5;
   DISK_W = 6;
+  STARTED = 7;
 }
 
 enum ORDER {
@@ -407,6 +408,8 @@ message ContainerStats {
   uint64 block_read = 8;
   // Total bytes written to block devices.
   uint64 block_write = 9;
+  // Container start time (RFC3339). Empty if unknown / not running.
+  string started_at = 10;
 }
 
 

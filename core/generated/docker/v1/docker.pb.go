@@ -31,6 +31,7 @@ const (
 	SORT_FIELD_NETWORK_TX SORT_FIELD = 4
 	SORT_FIELD_DISK_R     SORT_FIELD = 5
 	SORT_FIELD_DISK_W     SORT_FIELD = 6
+	SORT_FIELD_STARTED    SORT_FIELD = 7
 )
 
 // Enum value maps for SORT_FIELD.
@@ -43,6 +44,7 @@ var (
 		4: "NETWORK_TX",
 		5: "DISK_R",
 		6: "DISK_W",
+		7: "STARTED",
 	}
 	SORT_FIELD_value = map[string]int32{
 		"NAME":       0,
@@ -52,6 +54,7 @@ var (
 		"NETWORK_TX": 4,
 		"DISK_R":     5,
 		"DISK_W":     6,
+		"STARTED":    7,
 	}
 )
 
@@ -3218,7 +3221,9 @@ type ContainerStats struct {
 	// Total bytes read from block devices.
 	BlockRead uint64 `protobuf:"varint,8,opt,name=block_read,json=blockRead,proto3" json:"block_read,omitempty"`
 	// Total bytes written to block devices.
-	BlockWrite    uint64 `protobuf:"varint,9,opt,name=block_write,json=blockWrite,proto3" json:"block_write,omitempty"`
+	BlockWrite uint64 `protobuf:"varint,9,opt,name=block_write,json=blockWrite,proto3" json:"block_write,omitempty"`
+	// Container start time (RFC3339). Empty if unknown / not running.
+	StartedAt     string `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3314,6 +3319,13 @@ func (x *ContainerStats) GetBlockWrite() uint64 {
 		return x.BlockWrite
 	}
 	return 0
+}
+
+func (x *ContainerStats) GetStartedAt() string {
+	if x != nil {
+		return x.StartedAt
+	}
+	return ""
 }
 
 type Port struct {
@@ -3765,7 +3777,7 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"\tstackName\x18\n" +
 	" \x01(\tR\tstackName\x12(\n" +
 	"\x0fupdateAvailable\x18\v \x01(\tR\x0fupdateAvailable\x12\x1c\n" +
-	"\tIPAddress\x18\f \x03(\tR\tIPAddress\"\x95\x02\n" +
+	"\tIPAddress\x18\f \x03(\tR\tIPAddress\"\xb4\x02\n" +
 	"\x0eContainerStats\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
@@ -3779,7 +3791,10 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"\n" +
 	"block_read\x18\b \x01(\x04R\tblockRead\x12\x1f\n" +
 	"\vblock_write\x18\t \x01(\x04R\n" +
-	"blockWrite\"`\n" +
+	"blockWrite\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\n" +
+	" \x01(\tR\tstartedAt\"`\n" +
 	"\x04Port\x12\x16\n" +
 	"\x06public\x18\x01 \x01(\x05R\x06public\x12\x18\n" +
 	"\aprivate\x18\x02 \x01(\x05R\aprivate\x12\x12\n" +
@@ -3790,7 +3805,7 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"\fcontainerIds\x18\x01 \x03(\tR\fcontainerIds\"U\n" +
 	"\vComposeFile\x12\x1a\n" +
 	"\bfilename\x18\x01 \x01(\tR\bfilename\x12*\n" +
-	"\x10selectedServices\x18\x03 \x03(\tR\x10selectedServices*`\n" +
+	"\x10selectedServices\x18\x03 \x03(\tR\x10selectedServices*m\n" +
 	"\n" +
 	"SORT_FIELD\x12\b\n" +
 	"\x04NAME\x10\x00\x12\a\n" +
@@ -3803,7 +3818,8 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"\n" +
 	"\x06DISK_R\x10\x05\x12\n" +
 	"\n" +
-	"\x06DISK_W\x10\x06*\x19\n" +
+	"\x06DISK_W\x10\x06\x12\v\n" +
+	"\aSTARTED\x10\a*\x19\n" +
 	"\x05ORDER\x12\a\n" +
 	"\x03DSC\x10\x00\x12\a\n" +
 	"\x03ASC\x10\x012\xa2\x12\n" +
