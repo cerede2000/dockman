@@ -16,22 +16,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// statsConcurrency bounds how many daemon calls run at once while collecting
-// stats. Unbounded fan-out opens up to 2N simultaneous connections against the
-// daemon — and a single multiplexed SSH channel for remote hosts — which adds
-// queueing latency instead of removing it once N grows.
-const statsConcurrency = 8
-
-// cpuSample is one cumulative CPU reading. The percentage is derived from the
-// delta between two consecutive polls, exactly like `docker stats` does
-// between its stream ticks — which is what lets every poll after the first be
-// a one-shot request the daemon answers immediately, instead of a two-sample
-// collection it needs ~1s to build.
-type cpuSample struct {
-	total  uint64
-	system uint64
-	online float64
-}
+// statsConcurrency bounds how many stats reads run at once. Each read makes
+// the daemon precollect a sample (~1s), so the bound must comfortably exceed
+// the typical container count for the whole batch to complete in one ~1s
+// wave — while still capping the fan-out against remote/SSH hosts.
+const statsConcurrency = 32
 
 // inspectData caches the inspect-only fields served with stats. An entry is
 // valid while the summary's Status text ("Up 3 minutes", "Exited (0)...") is
@@ -45,12 +34,11 @@ type inspectData struct {
 	restartCount int32
 }
 
-// hostStatsCache carries per-host sampling state between stats requests. It is
+// hostStatsCache carries per-host inspect data between stats requests. It is
 // keyed package-wide by the moby client — one per connected host — because
 // container.Service is rebuilt on every RPC and cannot hold state itself.
 type hostStatsCache struct {
 	mu       sync.Mutex
-	cpu      map[string]cpuSample
 	inspects map[string]inspectData
 }
 
@@ -58,23 +46,17 @@ var hostCaches syncmap.Map[*client.Client, *hostStatsCache]
 
 func cacheFor(cli *client.Client) *hostStatsCache {
 	cache, _ := hostCaches.LoadOrStore(cli, &hostStatsCache{
-		cpu:      make(map[string]cpuSample),
 		inspects: make(map[string]inspectData),
 	})
 	return cache
 }
 
-// prune drops cached state for containers that no longer exist, so the maps
-// don't grow forever as containers are recreated. Call it only with a full
+// prune drops cached state for containers that no longer exist, so the map
+// doesn't grow forever as containers are recreated. Call it only with a full
 // host listing: a filtered subset would evict live neighbors.
 func (c *hostStatsCache) prune(live map[string]struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for id := range c.cpu {
-		if _, ok := live[id]; !ok {
-			delete(c.cpu, id)
-		}
-	}
 	for id := range c.inspects {
 		if _, ok := live[id]; !ok {
 			delete(c.inspects, id)
@@ -143,36 +125,12 @@ func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info cont
 		return stat, nil
 	}
 
-	cache.mu.Lock()
-	prev, hasPrev := cache.cpu[info.ID]
-	cache.mu.Unlock()
-
-	// Always a one-shot read the daemon answers immediately. The CPU delta
-	// needs two samples, so the first poll of a container reports 0% and the
-	// real value appears on the next tick — the table paints instantly instead
-	// of waiting ~1s per container for the daemon to precollect a sample.
 	statsJSON, err := s.readStats(ctx, info.ID)
 	if err != nil {
 		return Stats{}, err
 	}
 
-	cur := cpuSample{
-		total:  statsJSON.CPUStats.CPUUsage.TotalUsage,
-		system: statsJSON.CPUStats.SystemUsage,
-		online: float64(statsJSON.CPUStats.OnlineCPUs),
-	}
-	if cur.online == 0 {
-		cur.online = float64(len(statsJSON.CPUStats.CPUUsage.PercpuUsage))
-	}
-
-	if hasPrev {
-		stat.CPUUsage = cpuDelta(prev, cur)
-	}
-
-	cache.mu.Lock()
-	cache.cpu[info.ID] = cur
-	cache.mu.Unlock()
-
+	stat.CPUUsage = formatCPU(statsJSON)
 	stat.MemoryUsage = formatMemory(statsJSON)
 	stat.MemoryLimit = statsJSON.MemoryStats.Limit
 	stat.NetworkRx, stat.NetworkTx = formatNetwork(statsJSON)
@@ -182,10 +140,14 @@ func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info cont
 }
 
 func (s *Service) readStats(ctx context.Context, id string) (container.StatsResponse, error) {
-	// IncludePreviousSample false maps to one-shot=true: a single cached
-	// reading the daemon returns immediately, instead of sampling twice
-	// ~1s apart
-	resp, err := s.Client.ContainerStats(ctx, id, client.ContainerStatsOptions{})
+	// IncludePreviousSample makes the daemon return a reading that carries its
+	// own precpu sample, so the CPU percentage is computed exactly like
+	// `docker stats` from a single self-contained response. The daemon needs
+	// ~1s to build it, but every container is read concurrently so a poll
+	// costs ~1s wall time regardless of container count.
+	resp, err := s.Client.ContainerStats(ctx, id, client.ContainerStatsOptions{
+		IncludePreviousSample: true,
+	})
 	if err != nil {
 		return container.StatsResponse{}, fmt.Errorf("failed to get stats for cont %s: %w", id[:12], err)
 	}
@@ -227,19 +189,6 @@ func (s *Service) inspectDataFor(ctx context.Context, cache *hostStatsCache, inf
 	cache.inspects[info.ID] = data
 	cache.mu.Unlock()
 	return data, nil
-}
-
-// cpuDelta mirrors `docker stats`: CPU% = (container delta / system delta) ×
-// online CPUs × 100, computed between the two most recent polls. A restart
-// resets the daemon counters and makes deltas negative — report 0 until the
-// next pair of samples.
-func cpuDelta(prev, cur cpuSample) float64 {
-	if cur.total <= prev.total || cur.system <= prev.system {
-		return 0
-	}
-	contDelta := float64(cur.total - prev.total)
-	sysDelta := float64(cur.system - prev.system)
-	return (contDelta / sysDelta) * cur.online * 100.0
 }
 
 func summaryHealth(info container.Summary) string {

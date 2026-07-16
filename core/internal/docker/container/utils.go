@@ -17,6 +17,26 @@ func formatDiskIO(statsJSON container.StatsResponse) (uint64, uint64) {
 	return blkRead, blkWrite
 }
 
+// formatCPU computes the CPU percentage exactly like `docker stats`: the
+// container delta over the system delta between the reading and the previous
+// sample the daemon includes in the response, scaled by online CPUs.
+func formatCPU(statsJSON container.StatsResponse) float64 {
+	cpuDelta := float64(statsJSON.CPUStats.CPUUsage.TotalUsage - statsJSON.PreCPUStats.CPUUsage.TotalUsage)
+	systemCpuDelta := float64(statsJSON.CPUStats.SystemUsage - statsJSON.PreCPUStats.SystemUsage)
+	numberCPUs := float64(statsJSON.CPUStats.OnlineCPUs)
+	if numberCPUs == 0.0 {
+		numberCPUs = float64(len(statsJSON.CPUStats.CPUUsage.PercpuUsage))
+	}
+
+	var cpuPercent = 0.0
+	// Avoid division by zero
+	if systemCpuDelta > 0.0 && cpuDelta > 0.0 {
+		cpuPercent = (cpuDelta / systemCpuDelta) * numberCPUs * 100.0
+	}
+
+	return cpuPercent
+}
+
 // formatMemory reports the container's working-set memory, the same figure
 // `docker stats` shows: the raw cgroup usage includes the page cache
 // (inactive_file), which the kernel reclaims freely — a media server
