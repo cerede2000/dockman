@@ -16,8 +16,8 @@ interface SparklineProps {
  * pinned at 99% of its memory limit draws along the top.
  */
 export function Sparkline({data, color, width = 96, height = 18}: SparklineProps) {
-    // not enough points yet: keep the footprint with a subtle placeholder
-    if (data.length < 2) {
+    // no data yet: keep the footprint with a subtle placeholder
+    if (data.length === 0) {
         return (
             <Box sx={{
                 width,
@@ -28,9 +28,13 @@ export function Sparkline({data, color, width = 96, height = 18}: SparklineProps
         );
     }
 
-    const max = Math.max(...data, 1);
-    const step = width / (data.length - 1);
-    const points = data.map((v, i) => {
+    // a single reading draws a flat line so the chart shows up on the very
+    // first poll instead of after two ticks
+    const series = data.length === 1 ? [data[0], data[0]] : data;
+
+    const max = Math.max(...series, 1);
+    const step = width / (series.length - 1);
+    const points = series.map((v, i) => {
         const x = i * step;
         const y = height - (Math.max(v, 0) / max) * height;
         return `${x.toFixed(2)},${y.toFixed(2)}`;
