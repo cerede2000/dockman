@@ -251,6 +251,44 @@ func (h *Handler) ContainerStats(ctx context.Context, req *connect.Request[v1.St
 	}), nil
 }
 
+// ContainerStatsStream emits each container's stats as soon as its read
+// completes (the daemon needs ~1s per container to build a sample), so the
+// client paints progressively instead of waiting for the slowest container.
+// No server-side sort: order is arrival order, the client sorts.
+func (h *Handler) ContainerStatsStream(ctx context.Context, req *connect.Request[v1.StatsRequest], stream *connect.ServerStream[v1.ContainerStats]) error {
+	file := req.Msg.GetFile()
+	_, dkSrv, err := h.getHost(ctx)
+	if err != nil {
+		return err
+	}
+
+	var containers []container.Summary
+	if file != nil && file.Filename != "" {
+		absPath, err := dkSrv.Compose.ComposeAbsPath(file.Filename)
+		if err != nil {
+			return err
+		}
+		containers, err = dkSrv.Container.ContainerListByComposeFile(ctx, absPath)
+		if err != nil {
+			return err
+		}
+	} else {
+		containers, err = dkSrv.Container.ContainersListRunning(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	var sendErr error
+	dkSrv.Container.StatsStream(ctx, containers, func(st contSrv.Stats) {
+		if sendErr != nil {
+			return
+		}
+		sendErr = stream.Send(ToRPCStat(st))
+	})
+	return sendErr
+}
+
 func (h *Handler) ContainerLogs(ctx context.Context, req *connect.Request[v1.ContainerLogsRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	if req.Msg.GetContainerID() == "" {
 		return fmt.Errorf("container id is required")

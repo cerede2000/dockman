@@ -8,6 +8,7 @@ import (
 	"io"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/RA341/dockman/pkg/fileutil"
 	"github.com/RA341/dockman/pkg/syncmap"
@@ -61,6 +62,51 @@ func (c *hostStatsCache) prune(live map[string]struct{}) {
 		if _, ok := live[id]; !ok {
 			delete(c.inspects, id)
 		}
+	}
+}
+
+// statsReadTimeout caps a single container's stats collection so one wedged
+// container can never stall a whole streaming cycle.
+const statsReadTimeout = 8 * time.Second
+
+// StatsStream reads every container's stats concurrently — one goroutine per
+// container, each with its own timeout — and hands each result to emit as
+// soon as it is ready. emit is called from a single goroutine, so it may
+// write to a network stream without further locking. Failed containers are
+// skipped, not fatal.
+func (s *Service) StatsStream(ctx context.Context, containers []container.Summary, emit func(Stats)) {
+	cache := cacheFor(s.Client)
+
+	ch := make(chan Stats)
+	var wg sync.WaitGroup
+	for _, cont := range containers {
+		wg.Add(1)
+		go func(cont container.Summary) {
+			defer wg.Done()
+
+			cctx, cancel := context.WithTimeout(ctx, statsReadTimeout)
+			defer cancel()
+
+			stat, err := s.statsFor(cctx, cache, cont)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Warn().Err(err).Str("container", cont.ID[:12]).Msg("could not collect stats, skipping...")
+				}
+				return
+			}
+			select {
+			case ch <- stat:
+			case <-ctx.Done():
+			}
+		}(cont)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	for stat := range ch {
+		emit(stat)
 	}
 }
 
