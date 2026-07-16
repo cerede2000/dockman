@@ -95,7 +95,6 @@ function AggregateStats({containers}: AggregateStatsProps) {
                     subValue={`${memPercent.toFixed(1)}% of limits`}
                     data={memHist.current}
                     color={t.memLine}
-                    max={100}
                 />
 
                 {/* Network totals */}
@@ -144,14 +143,13 @@ function StatItem({icon, label, value, subValue}: {
     );
 }
 
-function ChartItem({icon, label, value, subValue, data, color, max}: {
+function ChartItem({icon, label, value, subValue, data, color}: {
     icon: ReactNode,
     label: string,
     value: string,
     subValue?: string,
     data: number[],
     color: string,
-    max?: number,
 }) {
     return (
         <Box sx={{minWidth: 200}}>
@@ -174,7 +172,7 @@ function ChartItem({icon, label, value, subValue, data, color, max}: {
                         </Typography>
                     )}
                 </Box>
-                <Sparkline data={data} color={color} width={120} height={34} max={max}/>
+                <Sparkline data={data} color={color} width={120} height={34}/>
             </Stack>
         </Box>
     );
