@@ -1,4 +1,4 @@
-import {Box, Divider, LinearProgress, Paper, Stack, Typography} from "@mui/material";
+import {Box, Divider, Paper, Stack, Typography} from "@mui/material";
 import {
     Dns as ContainerIcon,
     ImportExport as NetworkIcon,
@@ -8,12 +8,16 @@ import {
 } from "@mui/icons-material";
 import {type ContainerStats} from "../../../gen/docker/v1/docker_pb";
 import {formatBytes, getUsageColor} from "../../../lib/editor.ts";
-import type {ReactNode} from "react";
+import {type ReactNode, useEffect, useRef} from "react";
+import Sparkline from "../../../components/sparkline.tsx";
+import {statsTheme as t} from "./stats-theme.ts";
 
 interface AggregateStatsProps {
     containers: ContainerStats[];
     loading?: boolean;
 }
+
+const HISTORY_CAP = 40;
 
 function AggregateStats({containers}: AggregateStatsProps) {
     const totals = containers.reduce((acc, curr) => {
@@ -24,14 +28,28 @@ function AggregateStats({containers}: AggregateStatsProps) {
         acc.netTx += Number(curr.networkTx);
         acc.diskR += Number(curr.blockRead);
         acc.diskW += Number(curr.blockWrite);
+        if (curr.state === 'running') acc.running++;
         return acc;
     }, {
         cpu: 0, memUsed: 0, memLimit: 0,
-        netRx: 0, netTx: 0, diskR: 0, diskW: 0
+        netRx: 0, netTx: 0, diskR: 0, diskW: 0,
+        running: 0,
     });
 
     const memPercent = totals.memLimit > 0 ? (totals.memUsed / totals.memLimit) * 100 : 0;
-    const activeContainers = containers.length;
+
+    // rolling host-level history for the aggregate charts, appended once per
+    // poll tick (the containers array identity changes on every poll)
+    const cpuHist = useRef<number[]>([]);
+    const memHist = useRef<number[]>([]);
+    useEffect(() => {
+        if (containers.length === 0) return;
+        cpuHist.current.push(totals.cpu);
+        memHist.current.push(memPercent);
+        if (cpuHist.current.length > HISTORY_CAP) cpuHist.current.shift();
+        if (memHist.current.length > HISTORY_CAP) memHist.current.shift();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [containers]);
 
     return (
         <Paper
@@ -40,7 +58,8 @@ function AggregateStats({containers}: AggregateStatsProps) {
                 p: 2,
                 mb: 2,
                 borderRadius: 2,
-                bgcolor: 'background.paper',
+                bgcolor: t.panel,
+                borderColor: t.border,
                 display: 'flex',
                 alignItems: 'center'
             }}
@@ -48,67 +67,51 @@ function AggregateStats({containers}: AggregateStatsProps) {
             <Stack
                 direction="row"
                 spacing={4}
-                divider={<Divider orientation="vertical" flexItem/>}
+                divider={<Divider orientation="vertical" flexItem sx={{borderColor: t.border}}/>}
                 sx={{width: '100%', overflowX: 'auto'}}
             >
-                {/* Container Count */}
+                {/* Container count */}
                 <StatItem
-                    icon={<ContainerIcon color="primary"/>}
+                    icon={<ContainerIcon sx={{color: t.cpuLine}}/>}
                     label="Containers"
-                    value={activeContainers.toString()}
-                    subValue="Active Instances"
+                    value={containers.length.toString()}
+                    subValue={`${totals.running} running`}
                 />
 
-                {/* Total CPU Load */}
-                <StatItem
+                {/* Total CPU with history */}
+                <ChartItem
                     icon={<CpuIcon sx={{color: getUsageColor(totals.cpu / 10)}}/>}
                     label="Total CPU"
                     value={`${totals.cpu.toFixed(1)}%`}
-                    subValue="Cumulative Load"
+                    data={cpuHist.current}
+                    color={t.cpuLine}
                 />
 
-                {/* Memory Aggregation */}
-                <Box sx={{minWidth: 200}}>
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{mb: 0.5}}>
-                        <MemoryIcon sx={{color: getUsageColor(memPercent), fontSize: 20}}/>
-                        <Typography variant="overline" sx={{fontWeight: 700, color: 'text.secondary', lineHeight: 1}}>
-                            Aggregate Memory
-                        </Typography>
-                    </Stack>
-                    <Typography variant="h6" sx={{fontFamily: 'monospace', fontWeight: 800, lineHeight: 1}}>
-                        {formatBytes(totals.memUsed)}
-                    </Typography>
-                    <Box sx={{mt: 1}}>
-                        <LinearProgress
-                            variant="determinate"
-                            value={Math.min(memPercent, 100)}
-                            sx={{
-                                height: 6,
-                                borderRadius: 3,
-                                bgcolor: 'grey.100',
-                                '& .MuiLinearProgress-bar': {bgcolor: getUsageColor(memPercent)}
-                            }}
-                        />
-                        <Typography variant="caption" color="text.secondary" sx={{display: 'block', mt: 0.5}}>
-                            {memPercent.toFixed(1)}% of total limits
-                        </Typography>
-                    </Box>
-                </Box>
+                {/* Aggregate memory with history */}
+                <ChartItem
+                    icon={<MemoryIcon sx={{color: getUsageColor(memPercent)}}/>}
+                    label="Memory"
+                    value={formatBytes(totals.memUsed)}
+                    subValue={`${memPercent.toFixed(1)}% of limits`}
+                    data={memHist.current}
+                    color={t.memLine}
+                    max={100}
+                />
 
-                {/* Network Totals */}
+                {/* Network totals */}
                 <StatItem
-                    icon={<NetworkIcon sx={{color: 'info.main'}}/>}
+                    icon={<NetworkIcon sx={{color: t.netUp}}/>}
                     label="Network I/O"
                     value={formatBytes(totals.netRx + totals.netTx)}
-                    subValue={`↓${formatBytes(totals.netRx)}  ↑${formatBytes(totals.netTx)}`}
+                    subValue={`↓ ${formatBytes(totals.netRx)}  ↑ ${formatBytes(totals.netTx)}`}
                 />
 
-                {/* Disk Totals */}
+                {/* Disk totals */}
                 <StatItem
-                    icon={<StorageIcon sx={{color: 'warning.main'}}/>}
+                    icon={<StorageIcon sx={{color: t.diskWrite}}/>}
                     label="Block I/O"
                     value={formatBytes(totals.diskR + totals.diskW)}
-                    subValue={`R: ${formatBytes(totals.diskR)} W: ${formatBytes(totals.diskW)}`}
+                    subValue={`r ${formatBytes(totals.diskR)}  w ${formatBytes(totals.diskW)}`}
                 />
             </Stack>
         </Paper>
@@ -117,9 +120,6 @@ function AggregateStats({containers}: AggregateStatsProps) {
 
 export default AggregateStats;
 
-/**
- * Reusable sub-component for individual statistics
- */
 function StatItem({icon, label, value, subValue}: {
     icon: ReactNode,
     label: string,
@@ -130,17 +130,52 @@ function StatItem({icon, label, value, subValue}: {
         <Box sx={{minWidth: 140}}>
             <Stack direction="row" spacing={1} alignItems="center" sx={{mb: 0.5}}>
                 {icon}
-                <Typography variant="overline" sx={{fontWeight: 700, color: 'text.secondary', lineHeight: 1}}>
+                <Typography variant="overline" sx={{fontWeight: 700, color: t.textDim, lineHeight: 1}}>
                     {label}
                 </Typography>
             </Stack>
-            <Typography variant="h6" sx={{fontFamily: 'monospace', fontWeight: 800, lineHeight: 1}}>
+            <Typography variant="h6" sx={{fontFamily: t.mono, fontWeight: 800, lineHeight: 1.2, color: t.text}}>
                 {value}
             </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{whiteSpace: 'nowrap'}}>
+            <Typography variant="caption" sx={{whiteSpace: 'nowrap', color: t.textDim, fontFamily: t.mono}}>
                 {subValue}
             </Typography>
         </Box>
     );
 }
 
+function ChartItem({icon, label, value, subValue, data, color, max}: {
+    icon: ReactNode,
+    label: string,
+    value: string,
+    subValue?: string,
+    data: number[],
+    color: string,
+    max?: number,
+}) {
+    return (
+        <Box sx={{minWidth: 200}}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{mb: 0.5}}>
+                {icon}
+                <Typography variant="overline" sx={{fontWeight: 700, color: t.textDim, lineHeight: 1}}>
+                    {label}
+                </Typography>
+            </Stack>
+            <Stack direction="row" spacing={1.5} alignItems="flex-end">
+                <Box>
+                    <Typography variant="h6"
+                                sx={{fontFamily: t.mono, fontWeight: 800, lineHeight: 1.2, color: t.text}}>
+                        {value}
+                    </Typography>
+                    {subValue && (
+                        <Typography variant="caption"
+                                    sx={{whiteSpace: 'nowrap', color: t.textDim, fontFamily: t.mono}}>
+                            {subValue}
+                        </Typography>
+                    )}
+                </Box>
+                <Sparkline data={data} color={color} width={120} height={34} max={max}/>
+            </Stack>
+        </Box>
+    );
+}

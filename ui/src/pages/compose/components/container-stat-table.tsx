@@ -2,8 +2,6 @@ import {
     Box,
     Button,
     CircularProgress,
-    Divider,
-    Fade,
     IconButton,
     Paper,
     Popover,
@@ -19,37 +17,31 @@ import {
     Tooltip,
     Typography
 } from "@mui/material"
-import {
-    Article as ReadIcon,
-    Check as CheckIcon,
-    ContentCopy,
-    Edit as WriteIcon,
-    GetApp as DownloadIcon,
-    Publish as UploadIcon,
-    RestartAlt as RestartIcon,
-    Terminal as TerminalIcon
-} from "@mui/icons-material"
-import {useState, useSyncExternalStore} from "react"
+import {Check as CheckIcon, ContentCopy, RestartAlt as RestartIcon} from "@mui/icons-material"
+import {memo, useState, useSyncExternalStore} from "react"
 import {type ContainerStats, DockerService, ORDER, SORT_FIELD} from "../../../gen/docker/v1/docker_pb"
 import {formatBytes, getUsageColor} from "../../../lib/editor.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
 import {useCopyButton} from "../../../hooks/copy.ts";
 import {callRPC, useHostClient} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
+import {type StatHistory} from "../../../hooks/docker-containers-stats.ts";
+import Sparkline from "../../../components/sparkline.tsx";
+import {healthColors, stateBadges, statsTheme as t} from "./stats-theme.ts";
 
 interface ContainersTableProps {
     activeSortField: SORT_FIELD
     order: ORDER
     onFieldClick: (field: SORT_FIELD, orderBy: ORDER) => void
     containers: ContainerStats[]
+    history: Map<string, StatHistory>
     placeHolders?: number
     loading: boolean
 }
 
 export function ContainerStatTable({
-                                       containers, onFieldClick, activeSortField, order, loading, placeHolders = 5
+                                       containers, history, onFieldClick, activeSortField, order, loading, placeHolders = 5
                                    }: ContainersTableProps) {
-    const {copiedId, handleCopy} = useCopyButton()
     const isEmpty = !loading && containers.length === 0
 
     const handleSortRequest = (field: SORT_FIELD) => {
@@ -58,28 +50,48 @@ export function ContainerStatTable({
         onFieldClick(field, activeSortField !== field ? ORDER.DSC : (isAsc ? ORDER.DSC : ORDER.ASC))
     }
 
+    const headerSx = {
+        py: 1.2,
+        bgcolor: t.header,
+        color: t.textDim,
+        borderBottom: `1px solid ${t.border}`,
+        whiteSpace: 'nowrap' as const,
+        zIndex: 2,
+    }
+
+    const sortLabelSx = {
+        fontWeight: 700,
+        fontSize: '0.72rem',
+        textTransform: 'uppercase' as const,
+        letterSpacing: '0.06em',
+        color: `${t.textDim} !important`,
+        '&.Mui-active': {color: `${t.text} !important`},
+        '& .MuiTableSortLabel-icon': {color: `${t.textDim} !important`},
+    }
+
     const createSortHeader = (field: SORT_FIELD, label: string, align: 'left' | 'center' | 'right' = 'left') => (
-        <TableCell
-            align={align}
-            sx={{
-                py: 1.5,
-                bgcolor: 'background.paper',
-                zIndex: 2
-            }}
-        >
+        <TableCell align={align} sx={headerSx}>
             <TableSortLabel
                 active={activeSortField === field}
                 direction={order === ORDER.ASC ? 'asc' : 'desc'}
                 onClick={() => handleSortRequest(field)}
-                sx={{
-                    fontWeight: 700,
-                    fontSize: '0.75rem',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.05em'
-                }}
+                sx={sortLabelSx}
             >
                 {label}
             </TableSortLabel>
+        </TableCell>
+    )
+
+    const plainHeader = (label: string, align: 'left' | 'center' | 'right' = 'left') => (
+        <TableCell align={align} sx={headerSx}>
+            <Typography component="span" sx={{
+                fontWeight: 700,
+                fontSize: '0.72rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+            }}>
+                {label}
+            </Typography>
         </TableCell>
     )
 
@@ -94,105 +106,53 @@ export function ContainerStatTable({
                 borderRadius: 2,
                 overflow: 'auto',
                 position: 'relative',
+                bgcolor: t.panel,
+                borderColor: t.border,
                 ...scrollbarStyles,
             }}
         >
-            <Table stickyHeader size="small">
+            <Table stickyHeader size="small" sx={{minWidth: 1180}}>
                 <TableHead>
                     <TableRow>
-                        {createSortHeader(SORT_FIELD.NAME, 'Container')}
-                        {createSortHeader(SORT_FIELD.CPU, 'CPU Usage', 'center')}
+                        {createSortHeader(SORT_FIELD.NAME, 'Name')}
+                        {plainHeader('State')}
+                        {plainHeader('Health', 'center')}
+                        {createSortHeader(SORT_FIELD.STARTED, 'Uptime')}
+                        {plainHeader('Restarts', 'center')}
+                        {createSortHeader(SORT_FIELD.CPU, 'CPU')}
                         {createSortHeader(SORT_FIELD.MEM, 'Memory')}
-                        {createSortHeader(SORT_FIELD.STARTED, 'Started')}
-                        <TableCell sx={{
-                            fontWeight: 700,
-                            fontSize: '0.75rem',
-                            bgcolor: 'background.paper',
-                            zIndex: 2
-                        }}>
-                            <Stack direction="row" spacing={2}>
-                                <span>NETWORK (RX/TX)</span>
-                                <span>DISK (W/R)</span>
-                            </Stack>
-                        </TableCell>
-                        <TableCell align="right" sx={{
-                            bgcolor: 'background.paper',
-                            zIndex: 2
-                        }}/>
+                        {createSortHeader(SORT_FIELD.NETWORK_RX, 'Net I/O')}
+                        {createSortHeader(SORT_FIELD.DISK_W, 'Disk I/O')}
+                        {plainHeader('IP')}
+                        <TableCell align="right" sx={headerSx}/>
                     </TableRow>
                 </TableHead>
                 <TableBody>
                     {loading ? (
                         [...Array(placeHolders)].map((_, i) => (
-                            <TableRow key={i}>
-                                <TableCell><Skeleton variant="text" width="80%"/></TableCell>
-                                <TableCell align="center"><Skeleton variant="circular" width={32} height={32}
-                                                                    sx={{mx: 'auto'}}/></TableCell>
-                                <TableCell><Skeleton variant="rounded" height={24}/></TableCell>
-                                <TableCell><Skeleton variant="text" width={60}/></TableCell>
-                                <TableCell><Skeleton variant="rounded" height={24}/></TableCell>
-                                <TableCell align="right"><Skeleton variant="circular" width={24} height={24}
-                                                                   sx={{ml: 'auto'}}/></TableCell>
+                            <TableRow key={i} sx={{'& td': {borderColor: t.border, bgcolor: t.row}}}>
+                                {[...Array(11)].map((_, j) => (
+                                    <TableCell key={j}>
+                                        <Skeleton variant="text" sx={{bgcolor: 'rgba(139,164,199,0.12)'}}/>
+                                    </TableCell>
+                                ))}
                             </TableRow>
                         ))
                     ) : isEmpty ? (
                         <TableRow>
-                            <TableCell colSpan={6} sx={{height: 200, textAlign: 'center'}}>
-                                <Typography variant="body2" color="text.secondary">No statistics available</Typography>
+                            <TableCell colSpan={11} sx={{height: 200, textAlign: 'center', bgcolor: t.row, borderColor: t.border}}>
+                                <Typography variant="body2" sx={{color: t.textDim}}>
+                                    No statistics available
+                                </Typography>
                             </TableCell>
                         </TableRow>
                     ) : (
                         containers.map((container) => (
-                            <Fade in key={container.id}>
-                                <TableRow hover sx={{
-                                    '& td': {
-                                        py: 1.5,
-                                        borderBottom: '1px solid',
-                                        borderColor: 'action.hover'
-                                    }
-                                }}>
-                                    <TableCell>
-                                        <Stack direction="row" spacing={1} alignItems="center">
-                                            <TerminalIcon sx={{fontSize: 18, color: 'text.disabled'}}/>
-                                            <Box sx={{minWidth: 0}}>
-                                                <Typography variant="body2" fontWeight={600}>
-                                                    {container.name}
-                                                </Typography>
-                                                <Stack direction="row" spacing={0.5} alignItems="center">
-                                                    <Typography variant="caption"
-                                                                sx={{fontFamily: 'monospace', color: 'text.disabled'}}>
-                                                        {container.id.substring(0, 12)}
-                                                    </Typography>
-                                                    <IconButton size="small" onClick={() => handleCopy(container.id)}
-                                                                sx={{p: 0.2}}>
-                                                        {copiedId === container.id ?
-                                                            <CheckIcon sx={{fontSize: 12, color: 'success.main'}}/> :
-                                                            <ContentCopy sx={{fontSize: 12}}/>}
-                                                    </IconButton>
-                                                </Stack>
-                                            </Box>
-                                        </Stack>
-                                    </TableCell>
-                                    <TableCell align="center"><CPUStat value={container.cpuUsage}/></TableCell>
-                                    <TableCell>
-                                        <UsageBar usage={Number(container.memoryUsage)}
-                                                  limit={Number(container.memoryLimit)}/>
-                                    </TableCell>
-                                    <TableCell><StartedCell startedAt={container.startedAt}/></TableCell>
-                                    <TableCell>
-                                        <Stack direction="row" spacing={4}
-                                               divider={<Divider orientation="vertical" flexItem/>}>
-                                            <RWData up={Number(container.networkTx)}
-                                                    down={Number(container.networkRx)} type="net"/>
-                                            <RWData up={Number(container.blockRead)}
-                                                    down={Number(container.blockWrite)} type="disk"/>
-                                        </Stack>
-                                    </TableCell>
-                                    <TableCell align="right">
-                                        <RestartButton containerId={container.id} name={container.name}/>
-                                    </TableCell>
-                                </TableRow>
-                            </Fade>
+                            <StatRow
+                                key={container.id}
+                                stat={container}
+                                hist={history.get(container.id)}
+                            />
                         ))
                     )}
                 </TableBody>
@@ -201,69 +161,233 @@ export function ContainerStatTable({
     )
 }
 
-function CPUStat({value}: { value: number }) {
-    const color = getUsageColor(value);
-    const circleSize = 48;
-    return (
-        <Box sx={{position: 'relative', display: 'inline-flex'}}>
-            <CircularProgress variant="determinate" value={100} size={circleSize} thickness={4} sx={{color: 'grey'}}/>
-            <CircularProgress
-                variant="determinate"
-                value={Math.min(value, 100)}
-                size={circleSize}
-                thickness={4}
-                sx={{color, position: 'absolute', left: 0, strokeLinecap: 'round'}}
-            />
-            <Box sx={{inset: 0, position: 'absolute', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
-                <Typography variant="caption" sx={{fontWeight: 700, fontSize: '0.65rem', color}}>
-                    {value.toFixed(0)}%
-                </Typography>
-            </Box>
-        </Box>
-    )
+// statsEqual keeps idle rows from re-rendering on every poll tick: a row only
+// redraws when one of its displayed values actually moved.
+function statsEqual(prev: { stat: ContainerStats }, next: { stat: ContainerStats }): boolean {
+    const a = prev.stat, b = next.stat;
+    return a.id === b.id
+        && a.name === b.name
+        && a.image === b.image
+        && a.state === b.state
+        && a.health === b.health
+        && a.restartCount === b.restartCount
+        && a.startedAt === b.startedAt
+        && a.cpuUsage === b.cpuUsage
+        && a.memoryUsage === b.memoryUsage
+        && a.memoryLimit === b.memoryLimit
+        && a.networkRx === b.networkRx
+        && a.networkTx === b.networkTx
+        && a.blockRead === b.blockRead
+        && a.blockWrite === b.blockWrite
+        && a.ipAddress.join(',') === b.ipAddress.join(',');
 }
 
-export function UsageBar({usage, limit}: { usage: number, limit: number }) {
-    const percent = limit > 0 ? (usage / limit) * 100 : 0
-    const color = getUsageColor(percent)
+const StatRow = memo(function StatRow({stat, hist}: { stat: ContainerStats, hist?: StatHistory }) {
+    const running = stat.state === 'running';
+    const memLimit = Number(stat.memoryLimit);
+    const memUsage = Number(stat.memoryUsage);
+    const memPercent = memLimit > 0 ? (memUsage / memLimit) * 100 : 0;
+
+    const cellSx = {
+        py: 1,
+        borderBottom: `1px solid ${t.border}`,
+        color: t.text,
+    };
 
     return (
-        <Box sx={{width: 160}}>
-            <Stack direction="row" justifyContent="space-between" sx={{mb: 0.5}}>
-                <Typography variant="caption" sx={{fontWeight: 700, color}}>
-                    {percent.toFixed(1)}%
+        <TableRow
+            hover
+            sx={{
+                bgcolor: t.row,
+                '&:hover': {bgcolor: `${t.rowHover} !important`},
+                '& td': cellSx,
+                opacity: running ? 1 : 0.65,
+            }}
+        >
+            <TableCell>
+                <NameCell stat={stat}/>
+            </TableCell>
+            <TableCell>
+                <StateBadge state={stat.state}/>
+            </TableCell>
+            <TableCell align="center">
+                <HealthCell health={stat.health}/>
+            </TableCell>
+            <TableCell>
+                <UptimeCell startedAt={running ? stat.startedAt : ''}/>
+            </TableCell>
+            <TableCell align="center">
+                <Typography variant="caption" sx={{
+                    fontFamily: t.mono,
+                    color: stat.restartCount > 0 ? t.diskWrite : t.textDim,
+                    fontWeight: stat.restartCount > 0 ? 700 : 400,
+                }}>
+                    {stat.restartCount > 0 ? stat.restartCount : '–'}
                 </Typography>
-                <Typography variant="caption" sx={{fontFamily: 'monospace', color: 'text.secondary'}}>
-                    {formatBytes(usage)}
+            </TableCell>
+            <TableCell>
+                <MetricCell
+                    text={`${stat.cpuUsage.toFixed(1)}%`}
+                    textColor={getUsageColor(stat.cpuUsage)}
+                    data={hist?.cpu}
+                    lineColor={t.cpuLine}
+                    max={undefined}
+                />
+            </TableCell>
+            <TableCell>
+                <MetricCell
+                    text={formatBytes(memUsage)}
+                    subText={memLimit > 0 ? `/ ${formatBytes(memLimit)}` : ''}
+                    textColor={getUsageColor(memPercent)}
+                    data={hist?.mem}
+                    lineColor={t.memLine}
+                    max={100}
+                />
+            </TableCell>
+            <TableCell>
+                <PairCell
+                    aLabel="↓" aValue={Number(stat.networkRx)} aColor={t.netDown}
+                    bLabel="↑" bValue={Number(stat.networkTx)} bColor={t.netUp}
+                />
+            </TableCell>
+            <TableCell>
+                <PairCell
+                    aLabel="r" aValue={Number(stat.blockRead)} aColor={t.diskRead}
+                    bLabel="w" bValue={Number(stat.blockWrite)} bColor={t.diskWrite}
+                />
+            </TableCell>
+            <TableCell>
+                <IPCell ips={stat.ipAddress}/>
+            </TableCell>
+            <TableCell align="right">
+                <RestartButton containerId={stat.id} name={stat.name}/>
+            </TableCell>
+        </TableRow>
+    );
+}, statsEqual);
+
+function NameCell({stat}: { stat: ContainerStats }) {
+    const {copiedId, handleCopy} = useCopyButton()
+    return (
+        <Box sx={{minWidth: 0, maxWidth: 260}}>
+            <Typography variant="body2" sx={{fontWeight: 600, color: t.text}} noWrap>
+                {stat.name}
+            </Typography>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+                <Typography variant="caption" sx={{fontFamily: t.mono, color: t.textDim}}>
+                    {stat.id.substring(0, 12)}
                 </Typography>
+                <IconButton size="small" onClick={() => handleCopy(stat.id)} sx={{p: 0.2, color: t.textDim}}>
+                    {copiedId === stat.id ?
+                        <CheckIcon sx={{fontSize: 12, color: t.diskRead}}/> :
+                        <ContentCopy sx={{fontSize: 12}}/>}
+                </IconButton>
+                {stat.image && (
+                    <Tooltip title={stat.image} arrow>
+                        <Typography variant="caption" sx={{color: t.textDim, minWidth: 0}} noWrap>
+                            {stat.image}
+                        </Typography>
+                    </Tooltip>
+                )}
             </Stack>
-            <Box sx={{height: 6, width: '100%', bgcolor: 'grey', borderRadius: 3, overflow: 'hidden'}}>
-                <Box sx={{width: `${percent}%`, height: '100%', bgcolor: color, transition: 'width 0.5s ease'}}/>
-            </Box>
         </Box>
-    )
+    );
 }
 
-const RWData = ({up, down, type}: { up: number; down: number, type: 'net' | 'disk' }) => {
-    const UpIcon = type === 'net' ? UploadIcon : ReadIcon;
-    const DownIcon = type === 'net' ? DownloadIcon : WriteIcon;
-
+function StateBadge({state}: { state: string }) {
+    const badge = stateBadges[state] ?? {bg: 'rgba(71,85,105,0.55)', fg: '#cbd5e1', label: state || 'unknown'};
     return (
-        <Stack spacing={0.5}>
-            <Stack direction="row" spacing={1} alignItems="center">
-                <DownIcon sx={{fontSize: 14, color: 'text.disabled'}}/>
-                <Typography variant="caption" sx={{fontFamily: 'monospace', minWidth: 60}}>
-                    {formatBytes(down)}
-                </Typography>
-            </Stack>
-            <Stack direction="row" spacing={1} alignItems="center">
-                <UpIcon sx={{fontSize: 14, color: 'text.disabled'}}/>
-                <Typography variant="caption" sx={{fontFamily: 'monospace', minWidth: 60}}>
-                    {formatBytes(up)}
-                </Typography>
-            </Stack>
+        <Box component="span" sx={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 0.6,
+            px: 1.1,
+            py: 0.35,
+            borderRadius: 1,
+            bgcolor: badge.bg,
+            color: badge.fg,
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            fontFamily: t.mono,
+            lineHeight: 1,
+            whiteSpace: 'nowrap',
+        }}>
+            {state === 'running' ? '▶' : '■'} {badge.label}
+        </Box>
+    );
+}
+
+function HealthCell({health}: { health: string }) {
+    if (!health) {
+        return <Typography variant="caption" sx={{color: t.textDim}}>–</Typography>;
+    }
+    const color = healthColors[health] ?? t.textDim;
+    return (
+        <Stack direction="row" spacing={0.6} alignItems="center" justifyContent="center">
+            <Box sx={{width: 8, height: 8, borderRadius: '50%', bgcolor: color, flexShrink: 0}}/>
+            <Typography variant="caption" sx={{color, fontFamily: t.mono}}>
+                {health}
+            </Typography>
         </Stack>
-    )
+    );
+}
+
+// MetricCell shows the live value beside a small sparkline of its history.
+function MetricCell({text, subText, textColor, data, lineColor, max}: {
+    text: string;
+    subText?: string;
+    textColor: string;
+    data?: number[];
+    lineColor: string;
+    max?: number;
+}) {
+    return (
+        <Box sx={{minWidth: 120}}>
+            <Stack direction="row" spacing={0.6} alignItems="baseline">
+                <Typography variant="caption" sx={{fontFamily: t.mono, fontWeight: 700, color: textColor}}>
+                    {text}
+                </Typography>
+                {subText && (
+                    <Typography variant="caption" sx={{fontFamily: t.mono, color: t.textDim, fontSize: '0.65rem'}}>
+                        {subText}
+                    </Typography>
+                )}
+            </Stack>
+            <Sparkline data={data ?? []} color={lineColor} width={110} height={20} max={max}/>
+        </Box>
+    );
+}
+
+function PairCell({aLabel, aValue, aColor, bLabel, bValue, bColor}: {
+    aLabel: string; aValue: number; aColor: string;
+    bLabel: string; bValue: number; bColor: string;
+}) {
+    return (
+        <Stack spacing={0.3} sx={{minWidth: 90}}>
+            <Typography variant="caption" sx={{fontFamily: t.mono, whiteSpace: 'nowrap', color: t.text}}>
+                <Box component="span" sx={{color: aColor, fontWeight: 700}}>{aLabel}</Box>
+                {' '}{formatBytes(aValue)}
+            </Typography>
+            <Typography variant="caption" sx={{fontFamily: t.mono, whiteSpace: 'nowrap', color: t.text}}>
+                <Box component="span" sx={{color: bColor, fontWeight: 700}}>{bLabel}</Box>
+                {' '}{formatBytes(bValue)}
+            </Typography>
+        </Stack>
+    );
+}
+
+function IPCell({ips}: { ips: string[] }) {
+    if (!ips || ips.length === 0) {
+        return <Typography variant="caption" sx={{color: t.textDim}}>–</Typography>;
+    }
+    const [first, ...rest] = ips;
+    return (
+        <Tooltip title={ips.join(', ')} arrow disableHoverListener={rest.length === 0}>
+            <Typography variant="caption" sx={{fontFamily: t.mono, color: t.text, whiteSpace: 'nowrap'}}>
+                {first}{rest.length > 0 ? ` +${rest.length}` : ''}
+            </Typography>
+        </Tooltip>
+    );
 }
 
 // formatUptime renders how long ago a container started, from an RFC3339 string:
@@ -312,14 +436,14 @@ function useNow(): number {
     return useSyncExternalStore(subscribeTick, () => tickNow);
 }
 
-function StartedCell({startedAt}: { startedAt: string }) {
+function UptimeCell({startedAt}: { startedAt: string }) {
     const now = useNow();
     const running = Boolean(startedAt) && !startedAt.startsWith('0001');
     const absolute = running ? new Date(startedAt).toLocaleString() : 'not running';
     return (
         <Tooltip title={absolute} arrow>
             <Typography variant="caption"
-                        sx={{fontFamily: 'monospace', color: 'text.secondary', whiteSpace: 'nowrap'}}>
+                        sx={{fontFamily: t.mono, color: t.textDim, whiteSpace: 'nowrap'}}>
                 {formatUptime(startedAt, now)}
             </Typography>
         </Tooltip>
