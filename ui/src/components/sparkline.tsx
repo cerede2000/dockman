@@ -8,35 +8,32 @@ interface SparklineProps {
 }
 
 /**
- * Tiny inline SVG area chart for live metric history (CPU, memory...).
- * Pure geometry — no chart library, cheap enough to render per table row
- * on every poll tick.
+ * Tiny inline SVG area chart for live metric history (CPU %, memory %...).
  *
- * The series is min-max normalized: the window's variance spans the full
- * chart height, so a container hovering around a steady value still shows
- * its movement instead of a line pinned to the top or bottom.
+ * Scaling matches what most container dashboards do: zero-based, ceiling at
+ * the window maximum (floored at 1 so idle noise isn't amplified). A
+ * container hovering around 3% CPU zigzags across the chart height; one
+ * pinned at 99% of its memory limit draws along the top.
  */
-export function Sparkline({data, color, width = 96, height = 22}: SparklineProps) {
-    // keep the cell footprint stable while history builds up
-    if (data.length === 0) {
-        return <Box sx={{width, height}}/>;
+export function Sparkline({data, color, width = 96, height = 18}: SparklineProps) {
+    // not enough points yet: keep the footprint with a subtle placeholder
+    if (data.length < 2) {
+        return (
+            <Box sx={{
+                width,
+                height,
+                borderRadius: 0.5,
+                bgcolor: 'rgba(255,255,255,0.06)',
+            }}/>
+        );
     }
 
-    // a single reading still draws (a flat line) so the chart shows up on the
-    // very first poll instead of after two ticks
-    const series = data.length === 1 ? [data[0], data[0]] : data;
-
-    const min = Math.min(...series);
-    const max = Math.max(...series);
-    const span = max - min;
-
-    const stepX = width / (series.length - 1);
-    const mid = height / 2;
-    const points = series.map((v, i) => {
-        const x = i * stepX;
-        // constant series -> flat mid-line rather than a division by zero
-        const y = span > 0 ? height - 1 - ((v - min) / span) * (height - 2) : mid;
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    const max = Math.max(...data, 1);
+    const step = width / (data.length - 1);
+    const points = data.map((v, i) => {
+        const x = i * step;
+        const y = height - (Math.max(v, 0) / max) * height;
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
     });
 
     const line = points.join(' ');
@@ -44,12 +41,12 @@ export function Sparkline({data, color, width = 96, height = 22}: SparklineProps
 
     return (
         <svg width={width} height={height} style={{display: 'block'}} aria-hidden>
-            <polygon points={area} fill={color} opacity={0.14}/>
+            <polygon points={area} fill={color} opacity={0.15}/>
             <polyline
                 points={line}
                 fill="none"
                 stroke={color}
-                strokeWidth={1.5}
+                strokeWidth={1.2}
                 strokeLinejoin="round"
                 strokeLinecap="round"
             />
