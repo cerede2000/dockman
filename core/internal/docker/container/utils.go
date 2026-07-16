@@ -1,62 +1,8 @@
 package container
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-
-	"github.com/RA341/dockman/pkg/fileutil"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/client"
 )
-
-func (s *Service) getAndFormatStats(ctx context.Context, info container.Summary) (Stats, error) {
-	contId := info.ID[:12]
-	stats, err := s.Client.ContainerStats(ctx, info.ID, client.ContainerStatsOptions{
-		IncludePreviousSample: true,
-	})
-	if err != nil {
-		return Stats{}, fmt.Errorf("failed to get stats for cont %s: %w", contId, err)
-	}
-	defer fileutil.Close(stats.Body)
-
-	body, err := io.ReadAll(stats.Body)
-	if err != nil {
-		return Stats{}, fmt.Errorf("failed to read body for cont %s: %w", contId, err)
-	}
-	var statsJSON container.StatsResponse
-	if err := json.Unmarshal(body, &statsJSON); err != nil {
-		return Stats{}, fmt.Errorf("failed to unmarshal body for cont %s: %w", contId, err)
-	}
-
-	cpuPercent := formatCPU(statsJSON)
-	rx, tx := formatNetwork(statsJSON)
-	blkRead, blkWrite := formatDiskIO(statsJSON)
-
-	// StartedAt is not part of the stats stream; inspect for it. Cheap next to
-	// the ~1s stats sampling, and this runs concurrently per container anyway.
-	// Non-fatal: on error we just leave the start time empty.
-	startedAt := ""
-	if inspect, err := s.Client.ContainerInspect(ctx, info.ID, client.ContainerInspectOptions{}); err == nil {
-		if state := inspect.Container.State; state != nil {
-			startedAt = state.StartedAt
-		}
-	}
-
-	return Stats{
-		ID:          contId,
-		Name:        info.Names[0],
-		CPUUsage:    cpuPercent,
-		MemoryUsage: statsJSON.MemoryStats.Usage,
-		MemoryLimit: statsJSON.MemoryStats.Limit,
-		NetworkRx:   rx,
-		NetworkTx:   tx,
-		BlockRead:   blkRead,
-		BlockWrite:  blkWrite,
-		StartedAt:   startedAt,
-	}, nil
-}
 
 func formatDiskIO(statsJSON container.StatsResponse) (uint64, uint64) {
 	var blkRead, blkWrite uint64
@@ -100,14 +46,19 @@ func formatCPU(statsJSON container.StatsResponse) float64 {
 
 // Stats Stats holds metrics for a single Docker container.
 type Stats struct {
-	ID          string
-	Name        string
-	CPUUsage    float64
-	MemoryUsage uint64 // in bytes
-	MemoryLimit uint64 // in bytes
-	NetworkRx   uint64 // bytes received
-	NetworkTx   uint64 // bytes sent
-	BlockRead   uint64 // bytes read from block devices
-	BlockWrite  uint64 // bytes written to block devices
-	StartedAt   string // container start time, RFC3339 (empty if unknown)
+	ID           string
+	Name         string
+	Image        string   // image reference the container was created from
+	State        string   // running / exited / paused / restarting ...
+	Health       string   // healthy / unhealthy / starting; empty when no healthcheck
+	IPAddress    []string // container network IPs
+	RestartCount int32
+	CPUUsage     float64
+	MemoryUsage  uint64 // in bytes
+	MemoryLimit  uint64 // in bytes
+	NetworkRx    uint64 // bytes received
+	NetworkTx    uint64 // bytes sent
+	BlockRead    uint64 // bytes read from block devices
+	BlockWrite   uint64 // bytes written to block devices
+	StartedAt    string // container start time, RFC3339 (empty if unknown)
 }

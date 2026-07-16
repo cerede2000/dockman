@@ -329,16 +329,21 @@ func (l *LogStreamWriter) Write(p []byte) (n int, err error) {
 
 func ToRPCStat(cont contSrv.Stats) *v1.ContainerStats {
 	return &v1.ContainerStats{
-		Id:          cont.ID,
-		Name:        strings.TrimPrefix(cont.Name, "/"),
-		CpuUsage:    cont.CPUUsage,
-		MemoryUsage: cont.MemoryUsage,
-		MemoryLimit: cont.MemoryLimit,
-		NetworkRx:   cont.NetworkRx,
-		NetworkTx:   cont.NetworkTx,
-		BlockRead:   cont.BlockRead,
-		BlockWrite:  cont.BlockWrite,
-		StartedAt:   cont.StartedAt,
+		Id:           cont.ID,
+		Name:         strings.TrimPrefix(cont.Name, "/"),
+		Image:        cont.Image,
+		State:        cont.State,
+		Health:       cont.Health,
+		IpAddress:    cont.IPAddress,
+		RestartCount: cont.RestartCount,
+		CpuUsage:     cont.CPUUsage,
+		MemoryUsage:  cont.MemoryUsage,
+		MemoryLimit:  cont.MemoryLimit,
+		NetworkRx:    cont.NetworkRx,
+		NetworkTx:    cont.NetworkTx,
+		BlockRead:    cont.BlockRead,
+		BlockWrite:   cont.BlockWrite,
+		StartedAt:    cont.StartedAt,
 	}
 }
 

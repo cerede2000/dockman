@@ -3515,7 +3515,18 @@ type ContainerStats struct {
 	// Total bytes written to block devices.
 	BlockWrite uint64 `protobuf:"varint,9,opt,name=block_write,json=blockWrite,proto3" json:"block_write,omitempty"`
 	// Container start time (RFC3339). Empty if unknown / not running.
-	StartedAt     string `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	StartedAt string `protobuf:"bytes,10,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	// Image reference the container was created from.
+	Image string `protobuf:"bytes,11,opt,name=image,proto3" json:"image,omitempty"`
+	// Container state: running, exited, paused, restarting...
+	State string `protobuf:"bytes,12,opt,name=state,proto3" json:"state,omitempty"`
+	// Health status: healthy / unhealthy / starting. Empty when the container
+	// has no healthcheck.
+	Health string `protobuf:"bytes,13,opt,name=health,proto3" json:"health,omitempty"`
+	// Container network IP addresses.
+	IpAddress []string `protobuf:"bytes,14,rep,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`
+	// How many times the container restarted.
+	RestartCount  int32 `protobuf:"varint,15,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3618,6 +3629,41 @@ func (x *ContainerStats) GetStartedAt() string {
 		return x.StartedAt
 	}
 	return ""
+}
+
+func (x *ContainerStats) GetImage() string {
+	if x != nil {
+		return x.Image
+	}
+	return ""
+}
+
+func (x *ContainerStats) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ContainerStats) GetHealth() string {
+	if x != nil {
+		return x.Health
+	}
+	return ""
+}
+
+func (x *ContainerStats) GetIpAddress() []string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return nil
+}
+
+func (x *ContainerStats) GetRestartCount() int32 {
+	if x != nil {
+		return x.RestartCount
+	}
+	return 0
 }
 
 type Port struct {
@@ -4094,7 +4140,7 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"\tstackName\x18\n" +
 	" \x01(\tR\tstackName\x12(\n" +
 	"\x0fupdateAvailable\x18\v \x01(\tR\x0fupdateAvailable\x12\x1c\n" +
-	"\tIPAddress\x18\f \x03(\tR\tIPAddress\"\xb4\x02\n" +
+	"\tIPAddress\x18\f \x03(\tR\tIPAddress\"\xbc\x03\n" +
 	"\x0eContainerStats\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
@@ -4111,7 +4157,13 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"blockWrite\x12\x1d\n" +
 	"\n" +
 	"started_at\x18\n" +
-	" \x01(\tR\tstartedAt\"`\n" +
+	" \x01(\tR\tstartedAt\x12\x14\n" +
+	"\x05image\x18\v \x01(\tR\x05image\x12\x14\n" +
+	"\x05state\x18\f \x01(\tR\x05state\x12\x16\n" +
+	"\x06health\x18\r \x01(\tR\x06health\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x0e \x03(\tR\tipAddress\x12#\n" +
+	"\rrestart_count\x18\x0f \x01(\x05R\frestartCount\"`\n" +
 	"\x04Port\x12\x16\n" +
 	"\x06public\x18\x01 \x01(\x05R\x06public\x12\x18\n" +
 	"\aprivate\x18\x02 \x01(\x05R\aprivate\x12\x12\n" +

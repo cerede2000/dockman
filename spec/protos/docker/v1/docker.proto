@@ -440,6 +440,17 @@ message ContainerStats {
   uint64 block_write = 9;
   // Container start time (RFC3339). Empty if unknown / not running.
   string started_at = 10;
+  // Image reference the container was created from.
+  string image = 11;
+  // Container state: running, exited, paused, restarting...
+  string state = 12;
+  // Health status: healthy / unhealthy / starting. Empty when the container
+  // has no healthcheck.
+  string health = 13;
+  // Container network IP addresses.
+  repeated string ip_address = 14;
+  // How many times the container restarted.
+  int32 restart_count = 15;
 }
 
 
