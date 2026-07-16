@@ -382,39 +382,6 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // dockerServiceClient implements DockerServiceClient.
 type dockerServiceClient struct {
-<<<<<<< HEAD
-	containerStart    *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerStop     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerRemove   *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerRestart  *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerUpdate   *connect.Client[v1.ContainerRequest, v1.Empty]
-	containerTop      *connect.Client[v1.ContainerTopRequest, v1.ContainerTopResponse]
-	containerList     *connect.Client[v1.ContainerListRequest, v1.ListResponse]
-	containerStats    *connect.Client[v1.StatsRequest, v1.StatsResponse]
-	containerLogs     *connect.Client[v1.ContainerLogsRequest, v1.LogsMessage]
-	containerInspect  *connect.Client[v1.ContainerLogsRequest, v1.ContainerInspectMessage]
-	composeUp         *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeDown       *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeStart      *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeStop       *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeRestart    *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeUpdate     *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeList       *connect.Client[v1.ComposeFile, v1.ListResponse]
-	composeValidate   *connect.Client[v1.ComposeFile, v1.ComposeValidateResponse]
-	composeFileStatus *connect.Client[v1.ComposeFileStatusRequest, v1.ComposeFileStatusResponse]
-	imageList         *connect.Client[v1.ListImagesRequest, v1.ListImagesResponse]
-	imageRemove       *connect.Client[v1.RemoveImageRequest, v1.RemoveImageResponse]
-	imagePruneUnused  *connect.Client[v1.ImagePruneRequest, v1.ImagePruneResponse]
-	imageInspect      *connect.Client[v1.ImageInspectRequest, v1.ImageInspectResponse]
-	volumeList        *connect.Client[v1.ListVolumesRequest, v1.ListVolumesResponse]
-	volumeCreate      *connect.Client[v1.CreateVolumeRequest, v1.CreateVolumeResponse]
-	volumeDelete      *connect.Client[v1.DeleteVolumeRequest, v1.DeleteVolumeResponse]
-	volumeInspect     *connect.Client[v1.VolumeInspectRequest, v1.VolumeInspectResponse]
-	networkList       *connect.Client[v1.ListNetworksRequest, v1.ListNetworksResponse]
-	networkCreate     *connect.Client[v1.CreateNetworkRequest, v1.CreateNetworkResponse]
-	networkDelete     *connect.Client[v1.DeleteNetworkRequest, v1.DeleteNetworkResponse]
-	networkInspect    *connect.Client[v1.NetworkInspectRequest, v1.NetworkInspectResponse]
-=======
 	containerStart       *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerStop        *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerRemove      *connect.Client[v1.ContainerRequest, v1.LogsMessage]
@@ -442,11 +409,11 @@ type dockerServiceClient struct {
 	volumeList           *connect.Client[v1.ListVolumesRequest, v1.ListVolumesResponse]
 	volumeCreate         *connect.Client[v1.CreateVolumeRequest, v1.CreateVolumeResponse]
 	volumeDelete         *connect.Client[v1.DeleteVolumeRequest, v1.DeleteVolumeResponse]
+	volumeInspect        *connect.Client[v1.VolumeInspectRequest, v1.VolumeInspectResponse]
 	networkList          *connect.Client[v1.ListNetworksRequest, v1.ListNetworksResponse]
 	networkCreate        *connect.Client[v1.CreateNetworkRequest, v1.CreateNetworkResponse]
 	networkDelete        *connect.Client[v1.DeleteNetworkRequest, v1.DeleteNetworkResponse]
 	networkInspect       *connect.Client[v1.NetworkInspectRequest, v1.NetworkInspectResponse]
->>>>>>> feat/stats-v2
 }
 
 // ContainerStart calls docker.v1.DockerService.ContainerStart.
