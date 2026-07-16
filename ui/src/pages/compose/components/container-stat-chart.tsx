@@ -16,11 +16,13 @@ interface AggregateStatsProps {
     containers: ContainerStats[];
     loading?: boolean;
     pollInfo?: { seq: number, at: number };
+    // diagnostic: chart history depth of the first row
+    historyPoints?: number;
 }
 
 const HISTORY_CAP = 40;
 
-function AggregateStats({containers, pollInfo}: AggregateStatsProps) {
+function AggregateStats({containers, pollInfo, historyPoints}: AggregateStatsProps) {
     const totals = containers.reduce((acc, curr) => {
         // cpuUsage < 0 marks rows seeded from the container list whose
         // metrics haven't arrived yet
@@ -135,6 +137,7 @@ function AggregateStats({containers, pollInfo}: AggregateStatsProps) {
                         mr: 0.7,
                     }}/>
                     #{pollInfo.seq} · {new Date(pollInfo.at).toLocaleTimeString()}
+                    {historyPoints !== undefined && ` · pts=${historyPoints}`}
                 </Typography>
             )}
         </Paper>
