@@ -7,19 +7,21 @@ import {useHostStore} from "../pages/compose/state/files.ts";
 import {useConfig} from "./config.ts";
 
 // cpuUsage sentinel marking a row seeded from the container list whose
-// metrics haven't arrived yet (the first stats read takes ~1s of daemon
+// metrics haven't arrived yet (each stats read takes ~1s of daemon
 // sampling; the list is immediate).
 export const METRICS_PENDING = -1;
 
-// Rolling per-container metric history driving the sparklines: ~40 points at
-// the 2.5s default poll interval is a little over a minute and a half of
-// live history per container.
+// Refresh cadence between two streaming cycles (matches Dockhand).
+const DEFAULT_REFRESH = 5000;
+
+// Rolling per-container metric history driving the sparklines: 20 points at
+// the 5s cadence is ~100s of live history (same window as Dockhand).
 export interface StatHistory {
     cpu: number[];
     mem: number[];
 }
 
-const HISTORY_CAP = 40;
+const HISTORY_CAP = 20;
 
 // Module-level on purpose: history must survive component remounts (a ref
 // resets with its component, losing everything between two polls) and is
@@ -28,34 +30,32 @@ const HISTORY_CAP = 40;
 const statHistories = new Map<string, StatHistory>();
 let statHistoriesHost: string | null = null;
 
-function recordHistory(host: string, list: ContainerStats[], fullListing: boolean) {
+// one point per received container stat, Dockhand-style
+function recordStat(host: string, stat: ContainerStats) {
     if (statHistoriesHost !== host) {
         statHistories.clear();
         statHistoriesHost = host;
     }
 
-    const seen = new Set<string>();
-    for (const c of list) {
-        seen.add(c.id);
-        let h = statHistories.get(c.id);
-        if (!h) {
-            h = {cpu: [], mem: []};
-            statHistories.set(c.id, h);
-        }
-        h.cpu.push(c.cpuUsage);
-        const limit = Number(c.memoryLimit);
-        h.mem.push(limit > 0 ? (Number(c.memoryUsage) / limit) * 100 : 0);
-        if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
-        if (h.mem.length > HISTORY_CAP) h.mem.shift();
+    let h = statHistories.get(stat.id);
+    if (!h) {
+        h = {cpu: [], mem: []};
+        statHistories.set(stat.id, h);
     }
+    h.cpu.push(Math.max(stat.cpuUsage, 0));
+    const limit = Number(stat.memoryLimit);
+    h.mem.push(limit > 0 ? (Number(stat.memoryUsage) / limit) * 100 : 0);
+    if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
+    if (h.mem.length > HISTORY_CAP) h.mem.shift();
+}
 
-    // drop history of containers that disappeared — but only from a full host
-    // listing: a stack-scoped poll only sees its own containers and must not
-    // evict everyone else's history
-    if (fullListing) {
-        for (const id of [...statHistories.keys()]) {
-            if (!seen.has(id)) statHistories.delete(id);
-        }
+// drop history of containers that disappeared — only from a full host cycle:
+// a stack-scoped cycle only sees its own containers and must not evict
+// everyone else's history
+function pruneHistory(seen: Set<string>, fullListing: boolean) {
+    if (!fullListing) return;
+    for (const id of [...statHistories.keys()]) {
+        if (!seen.has(id)) statHistories.delete(id);
     }
 }
 
@@ -70,6 +70,28 @@ const sortFieldToKeyMap: Record<SORT_FIELD, keyof ContainerStats> = {
     [SORT_FIELD.DISK_W]: 'blockWrite',
     [SORT_FIELD.STARTED]: 'startedAt',
 };
+
+// Sorting happens client-side on every merge (like Dockhand): the stream
+// delivers containers in arrival order.
+function sortRows(rows: ContainerStats[], field: SORT_FIELD, order: ORDER): ContainerStats[] {
+    const key = sortFieldToKeyMap[field];
+    return [...rows].sort((a, b) => {
+        const valA = a[key];
+        const valB = b[key];
+        let comparison = 0;
+
+        if (typeof valA === 'bigint' && typeof valB === 'bigint') {
+            if (valA < valB) comparison = -1;
+            if (valA > valB) comparison = 1;
+        } else if (typeof valA === 'number' && typeof valB === 'number') {
+            comparison = valA - valB;
+        } else {
+            comparison = String(valA).localeCompare(String(valB));
+        }
+
+        return order === ORDER.ASC ? comparison : -comparison;
+    });
+}
 
 // Maps a dockman.yml `stats.sort.field` string to a SORT_FIELD. Accepts the
 // column labels and a few obvious aliases, case-insensitively. Falls back to
@@ -117,19 +139,30 @@ export function useDockerStats(selectedPage?: string) {
 
     const [rawContainers, setRawContainers] = useState<ContainerStats[]>([]);
     const [loading, setLoading] = useState(true);
-    // proof-of-life for the polling loop, shown in the header and bumped on
-    // every successful poll (which also guarantees a redraw per tick)
+    // proof-of-life for the refresh loop, shown in the header and bumped on
+    // every completed cycle
     const [pollInfo, setPollInfo] = useState({seq: 0, at: 0});
     const gotStats = useRef(false);
+    // mirror of rawContainers so the stream can merge into the visible rows
+    // without depending on state identity
+    const rowsRef = useRef<ContainerStats[]>([]);
 
     const [sortField, setSortField] = useState(SORT_FIELD.MEM);
     const [sortOrder, setSortOrder] = useState(ORDER.DSC);
-    const [refreshInterval, setRefreshInterval] = useState(2500);
+    const [refreshInterval, setRefreshInterval] = useState(DEFAULT_REFRESH);
     const isInitialLoad = useRef(true);
-    const resort = useRef(false)
+    const loadingRef = useRef(true);
+    // sort settings exposed to the streaming loop without restarting it
+    const sortRef = useRef({field: sortField, order: sortOrder});
+    sortRef.current = {field: sortField, order: sortOrder};
     // Once the user sorts by hand we stop applying the dockman.yml default so a
     // late-arriving (or per-host) config never clobbers their choice.
     const userSorted = useRef(false)
+
+    const applyRows = useCallback((rows: ContainerStats[]) => {
+        rowsRef.current = rows;
+        setRawContainers(rows);
+    }, []);
 
     // Seed the sort from dockman.yml (stats.sort) until the user sorts manually.
     useEffect(() => {
@@ -140,42 +173,67 @@ export function useDockerStats(selectedPage?: string) {
         setSortOrder(configOrderToOrder(cfg.sortOrder));
     }, [dockYaml]);
 
+    // re-sort the visible rows whenever the sort changes; the stream itself
+    // is sort-agnostic so this never restarts a cycle
+    useEffect(() => {
+        applyRows(sortRows(rowsRef.current, sortField, sortOrder));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sortField, sortOrder]);
+
     useEffect(() => {
         let isCancelled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
-
+        // sort settings are read through a ref so a sort change doesn't tear
+        // down the streaming cycle
         const tick = async () => {
+            const cycleStart = Date.now();
             try {
-                const {val, err} = await callRPC(() => dockerService.containerStats({
-                    sortBy: sortField,
-                    order: sortOrder,
+                const merged = new Map<string, ContainerStats>();
+                for (const c of rowsRef.current) {
+                    merged.set(c.id, c);
+                }
+                const seen = new Set<string>();
+
+                for await (const stat of dockerService.containerStatsStream({
                     host: selectedHost,
-                    file: selectedPage ? {filename: selectedPage} : undefined
-                }));
+                    file: selectedPage ? {filename: selectedPage} : undefined,
+                })) {
+                    if (isCancelled) return;
+                    merged.set(stat.id, stat);
+                    seen.add(stat.id);
+                    recordStat(selectedHost, stat);
+                    // progressive paint: each container appears/updates as its
+                    // read completes, Dockhand-style
+                    applyRows(sortRows([...merged.values()], sortRef.current.field, sortRef.current.order));
+                    if (loadingRef.current) {
+                        setLoading(false);
+                        loadingRef.current = false;
+                    }
+                }
 
                 if (isCancelled) return;
 
-                if (err) {
-                    showError(err);
-                } else {
-                    const list = val?.containers || [];
-                    recordHistory(selectedHost, list, !selectedPage);
-                    gotStats.current = true;
-                    setRawContainers(list);
-                    setPollInfo(p => ({seq: p.seq + 1, at: Date.now()}));
+                // cycle complete: drop containers that no longer exist
+                gotStats.current = true;
+                pruneHistory(seen, !selectedPage);
+                applyRows(sortRows(
+                    [...merged.values()].filter(c => seen.has(c.id)),
+                    sortRef.current.field, sortRef.current.order,
+                ));
+                setPollInfo(p => ({seq: p.seq + 1, at: Date.now()}));
+            } catch (e) {
+                if (!isCancelled) {
+                    showError(String(e));
                 }
-
+            } finally {
                 if (isInitialLoad.current) {
                     setLoading(false);
                     isInitialLoad.current = false;
                 }
-            } finally {
-                // self-scheduling chain: the next poll is armed once this one
-                // fully finished — whatever happened above — so a slow response
-                // can't overlap the next one and no failure mode can silently
-                // stop the refresh loop
                 if (!isCancelled) {
-                    timer = setTimeout(tick, refreshInterval);
+                    // fixed cadence between cycle starts, never overlapping
+                    const elapsed = Date.now() - cycleStart;
+                    timer = setTimeout(tick, Math.max(1000, refreshInterval - elapsed));
                 }
             }
         };
@@ -186,22 +244,25 @@ export function useDockerStats(selectedPage?: string) {
             isCancelled = true;
             if (timer !== null) clearTimeout(timer);
         };
-    }, [selectedHost, dockerService, selectedPage, sortField, sortOrder, refreshInterval]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedHost, dockerService, selectedPage, refreshInterval]);
 
     useEffect(() => {
         // clear containers on host change (history clears itself, keyed by host)
-        setRawContainers([])
+        applyRows([])
         setLoading(true)
+        loadingRef.current = true;
         isInitialLoad.current = true;
         gotStats.current = false;
         // re-apply the configured default for the newly selected host
         userSorted.current = false;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedHost]);
 
     // Instant first paint: seed the rows from the (immediate) container list
-    // while the first stats read spends ~1s sampling in the daemon; metrics
-    // cells render as pending until the first poll replaces the rows. Only
-    // for the host-wide view — a stack tab can't be scoped from the list.
+    // while the first stats reads sample in the daemon; metrics cells render
+    // as pending and fill in as each container's stats arrive. Only for the
+    // host-wide view — a stack tab can't be scoped from the list.
     useEffect(() => {
         if (selectedPage) return;
         let cancelled = false;
@@ -224,8 +285,14 @@ export function useDockerStats(selectedPage?: string) {
                 }))
                 .sort((a, b) => a.name.localeCompare(b.name));
 
-            setRawContainers(rows);
+            // merge under any stats that already trickled in
+            const byId = new Map(rows.map(r => [r.id, r]));
+            for (const existing of rowsRef.current) {
+                byId.set(existing.id, existing);
+            }
+            applyRows([...byId.values()]);
             setLoading(false);
+            loadingRef.current = false;
         };
 
         seed();
@@ -234,41 +301,10 @@ export function useDockerStats(selectedPage?: string) {
         };
     }, [selectedHost, dockerService, selectedPage]);
 
-    // Optimistic Client-Side Sorting
-    // This useMemo provides the INSTANT sort feedback to the UI.
-    // It runs immediately whenever `rawContainers` or the sort state changes.
-    useEffect(() => {
-        if (resort.current) {
-            // sort and let the server handle subsequent sorts until order is changed
-            resort.current = false
-            const key = sortFieldToKeyMap[sortField];
-            const res = [...rawContainers].sort((a, b) => {
-                const valA = a[key];
-                const valB = b[key];
-                let comparison = 0;
-
-                if (typeof valA === 'bigint' && typeof valB === 'bigint') {
-                    if (valA < valB) comparison = -1;
-                    if (valA > valB) comparison = 1;
-                } else if (typeof valA === 'number' && typeof valB === 'number') {
-                    comparison = valA - valB;
-                } else {
-                    comparison = String(valA).localeCompare(String(valB));
-                }
-
-                return sortOrder === ORDER.ASC ? comparison : -comparison;
-            })
-            setRawContainers(res)
-        }
-    }, [rawContainers, sortField, sortOrder]);
-
-
     const handleSortChange = useCallback((newField: SORT_FIELD, newOrderBy: ORDER) => {
         userSorted.current = true
         setSortField(newField)
         setSortOrder(newOrderBy)
-        // immediate resort for ui
-        resort.current = true
     }, []);
 
     return {
