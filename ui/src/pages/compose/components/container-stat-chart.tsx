@@ -6,55 +6,22 @@ import {
     Speed as CpuIcon,
     Storage as StorageIcon
 } from "@mui/icons-material";
-import {type ContainerStats} from "../../../gen/docker/v1/docker_pb";
 import {formatBytes, getUsageColor} from "../../../lib/editor.ts";
-import {type ReactNode, useEffect, useRef} from "react";
+import {type ReactNode} from "react";
+import {type AggregateSnapshot} from "../../../hooks/docker-containers-stats.ts";
 import Sparkline from "../../../components/sparkline.tsx";
 import {statsTheme as t} from "./stats-theme.ts";
 
 interface AggregateStatsProps {
-    containers: ContainerStats[];
-    loading?: boolean;
-    pollInfo?: { seq: number, at: number };
-    // diagnostic: chart history depth of the first row
-    historyPoints?: number;
+    // computed once per completed refresh cycle — null until the first
+    // cycle lands, so the header never renders half-updated totals
+    aggregates: AggregateSnapshot | null;
 }
 
-const HISTORY_CAP = 40;
-
-function AggregateStats({containers, pollInfo, historyPoints}: AggregateStatsProps) {
-    const totals = containers.reduce((acc, curr) => {
-        // cpuUsage < 0 marks rows seeded from the container list whose
-        // metrics haven't arrived yet
-        acc.cpu += Math.max(curr.cpuUsage, 0);
-        acc.memUsed += Number(curr.memoryUsage);
-        acc.memLimit += Number(curr.memoryLimit);
-        acc.netRx += Number(curr.networkRx);
-        acc.netTx += Number(curr.networkTx);
-        acc.diskR += Number(curr.blockRead);
-        acc.diskW += Number(curr.blockWrite);
-        if (curr.state === 'running') acc.running++;
-        return acc;
-    }, {
-        cpu: 0, memUsed: 0, memLimit: 0,
-        netRx: 0, netTx: 0, diskR: 0, diskW: 0,
-        running: 0,
-    });
-
-    const memPercent = totals.memLimit > 0 ? (totals.memUsed / totals.memLimit) * 100 : 0;
-
-    // Rolling host-level history for the aggregate charts, appended once per
-    // poll tick (the containers array identity changes on every poll).
-    // IMMUTABLE appends: the React Compiler memoizes by reference equality,
-    // a mutated array keeps its identity and the chart never redraws.
-    const cpuHist = useRef<number[]>([]);
-    const memHist = useRef<number[]>([]);
-    useEffect(() => {
-        if (containers.length === 0) return;
-        cpuHist.current = [...cpuHist.current.slice(-(HISTORY_CAP - 1)), totals.cpu];
-        memHist.current = [...memHist.current.slice(-(HISTORY_CAP - 1)), memPercent];
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [containers]);
+function AggregateStats({aggregates}: AggregateStatsProps) {
+    const memPercent = aggregates && aggregates.memLimit > 0
+        ? (aggregates.memUsed / aggregates.memLimit) * 100
+        : 0;
 
     return (
         <Paper
@@ -79,26 +46,26 @@ function AggregateStats({containers, pollInfo, historyPoints}: AggregateStatsPro
                 <StatItem
                     icon={<ContainerIcon sx={{color: t.cpuLine}}/>}
                     label="Containers"
-                    value={containers.length.toString()}
-                    subValue={`${totals.running} running`}
+                    value={aggregates ? aggregates.total.toString() : '–'}
+                    subValue={aggregates ? `${aggregates.running} running` : ''}
                 />
 
-                {/* Total CPU with history */}
+                {/* Total CPU with per-cycle history */}
                 <ChartItem
-                    icon={<CpuIcon sx={{color: getUsageColor(totals.cpu / 10)}}/>}
+                    icon={<CpuIcon sx={{color: getUsageColor((aggregates?.cpu ?? 0) / 10)}}/>}
                     label="Total CPU"
-                    value={`${totals.cpu.toFixed(1)}%`}
-                    data={cpuHist.current}
+                    value={aggregates ? `${aggregates.cpu.toFixed(1)}%` : '–'}
+                    data={aggregates?.cpuHistory ?? []}
                     color={t.cpuLine}
                 />
 
-                {/* Aggregate memory with history */}
+                {/* Aggregate memory with per-cycle history */}
                 <ChartItem
                     icon={<MemoryIcon sx={{color: getUsageColor(memPercent)}}/>}
                     label="Memory"
-                    value={formatBytes(totals.memUsed)}
-                    subValue={`${memPercent.toFixed(1)}% of limits`}
-                    data={memHist.current}
+                    value={aggregates ? formatBytes(aggregates.memUsed) : '–'}
+                    subValue={aggregates ? `${memPercent.toFixed(1)}% of limits` : ''}
+                    data={aggregates?.memHistory ?? []}
                     color={t.memLine}
                 />
 
@@ -106,40 +73,18 @@ function AggregateStats({containers, pollInfo, historyPoints}: AggregateStatsPro
                 <StatItem
                     icon={<NetworkIcon sx={{color: t.netUp}}/>}
                     label="Network I/O"
-                    value={formatBytes(totals.netRx + totals.netTx)}
-                    subValue={`↓ ${formatBytes(totals.netRx)}  ↑ ${formatBytes(totals.netTx)}`}
+                    value={aggregates ? formatBytes(aggregates.netRx + aggregates.netTx) : '–'}
+                    subValue={aggregates ? `↓ ${formatBytes(aggregates.netRx)}  ↑ ${formatBytes(aggregates.netTx)}` : ''}
                 />
 
                 {/* Disk totals */}
                 <StatItem
                     icon={<StorageIcon sx={{color: t.diskWrite}}/>}
                     label="Block I/O"
-                    value={formatBytes(totals.diskR + totals.diskW)}
-                    subValue={`r ${formatBytes(totals.diskR)}  w ${formatBytes(totals.diskW)}`}
+                    value={aggregates ? formatBytes(aggregates.diskR + aggregates.diskW) : '–'}
+                    subValue={aggregates ? `r ${formatBytes(aggregates.diskR)}  w ${formatBytes(aggregates.diskW)}` : ''}
                 />
             </Stack>
-
-            {/* polling proof-of-life: poll counter + last update time */}
-            {pollInfo && pollInfo.seq > 0 && (
-                <Typography variant="caption" sx={{
-                    fontFamily: t.mono,
-                    color: t.textDim,
-                    whiteSpace: 'nowrap',
-                    alignSelf: 'flex-start',
-                    ml: 2,
-                }}>
-                    <Box component="span" sx={{
-                        display: 'inline-block',
-                        width: 7,
-                        height: 7,
-                        borderRadius: '50%',
-                        bgcolor: t.diskRead,
-                        mr: 0.7,
-                    }}/>
-                    #{pollInfo.seq} · {new Date(pollInfo.at).toLocaleTimeString()}
-                    {historyPoints !== undefined && ` · pts=${historyPoints}`}
-                </Typography>
-            )}
         </Paper>
     );
 }

@@ -31,9 +31,9 @@ const HISTORY_CAP = 30;
 const statHistories = new Map<string, StatHistory>();
 let statHistoriesHost: string | null = null;
 
-// diagnostic cycle counter, module-level so it survives remounts and shows
-// the true lifetime of the refresh loop in the console
-let debugCycle = 0;
+// Aggregate header history, one point per COMPLETED cycle, keyed per view
+// scope (host page vs each stack tab aggregate different container sets).
+const aggHistories = new Map<string, StatHistory>();
 
 // One point per received container stat, Dockhand-style. History is keyed by
 // container NAME, not id: names are unique per host and — unlike ids —
@@ -41,8 +41,8 @@ let debugCycle = 0;
 // identifier flipped underneath it.
 function recordStat(host: string, stat: ContainerStats) {
     if (statHistoriesHost !== host) {
-        console.log(`[stats] history reset (host '${statHistoriesHost}' -> '${host}')`);
         statHistories.clear();
+        aggHistories.clear();
         statHistoriesHost = host;
     }
 
@@ -60,8 +60,51 @@ function recordStat(host: string, stat: ContainerStats) {
         mem: [...prev.mem.slice(-(HISTORY_CAP - 1)), limit > 0 ? (Number(stat.memoryUsage) / limit) * 100 : 0],
     };
     statHistories.set(stat.name, h);
+}
 
-    console.debug(`[stats] ${stat.name} id=${stat.id} cpu=${stat.cpuUsage.toFixed(2)} pts=${h.cpu.length}`);
+// AggregateSnapshot is the header's data: computed once per completed cycle
+// from the cycle's final rows, so the totals never mix two cycles' values
+// or wobble while results trickle in.
+export interface AggregateSnapshot {
+    total: number;
+    running: number;
+    cpu: number;
+    memUsed: number;
+    memLimit: number;
+    netRx: number;
+    netTx: number;
+    diskR: number;
+    diskW: number;
+    cpuHistory: number[];
+    memHistory: number[];
+}
+
+function computeAggregates(scope: string, rows: ContainerStats[]): AggregateSnapshot {
+    const t = rows.reduce((acc, curr) => {
+        acc.cpu += Math.max(curr.cpuUsage, 0);
+        acc.memUsed += Number(curr.memoryUsage);
+        acc.memLimit += Number(curr.memoryLimit);
+        acc.netRx += Number(curr.networkRx);
+        acc.netTx += Number(curr.networkTx);
+        acc.diskR += Number(curr.blockRead);
+        acc.diskW += Number(curr.blockWrite);
+        if (curr.state === 'running') acc.running++;
+        return acc;
+    }, {cpu: 0, memUsed: 0, memLimit: 0, netRx: 0, netTx: 0, diskR: 0, diskW: 0, running: 0});
+
+    const prev = aggHistories.get(scope) ?? {cpu: [], mem: []};
+    const h: StatHistory = {
+        cpu: [...prev.cpu.slice(-(HISTORY_CAP - 1)), t.cpu],
+        mem: [...prev.mem.slice(-(HISTORY_CAP - 1)), t.memLimit > 0 ? (t.memUsed / t.memLimit) * 100 : 0],
+    };
+    aggHistories.set(scope, h);
+
+    return {
+        total: rows.length,
+        ...t,
+        cpuHistory: h.cpu,
+        memHistory: h.mem,
+    };
 }
 
 // drop history of containers that disappeared — only from a full host cycle:
@@ -154,9 +197,8 @@ export function useDockerStats(selectedPage?: string) {
 
     const [rawContainers, setRawContainers] = useState<ContainerStats[]>([]);
     const [loading, setLoading] = useState(true);
-    // proof-of-life for the refresh loop, shown in the header and bumped on
-    // every completed cycle
-    const [pollInfo, setPollInfo] = useState({seq: 0, at: 0});
+    // header totals, refreshed once per completed cycle
+    const [aggregates, setAggregates] = useState<AggregateSnapshot | null>(null);
     const gotStats = useRef(false);
     // mirror of rawContainers so the stream can merge into the visible rows
     // without depending on state identity
@@ -202,8 +244,6 @@ export function useDockerStats(selectedPage?: string) {
         // down the streaming cycle
         const tick = async () => {
             const cycleStart = Date.now();
-            const cycle = ++debugCycle;
-            console.log(`[stats] cycle ${cycle} start (host=${selectedHost || 'default'}${selectedPage ? `, file=${selectedPage}` : ''})`);
             try {
                 const merged = new Map<string, ContainerStats>();
                 for (const c of rowsRef.current) {
@@ -232,17 +272,19 @@ export function useDockerStats(selectedPage?: string) {
 
                 if (isCancelled) return;
 
-                // cycle complete: drop containers that no longer exist
+                // cycle complete: drop containers that no longer exist, then
+                // refresh the header totals in one go — computing them from
+                // the cycle's final rows keeps them coherent instead of
+                // wobbling through mixed old/new values while results trickle
                 gotStats.current = true;
                 pruneHistory(seenNames, !selectedPage);
-                applyRows(sortRows(
+                const finalRows = sortRows(
                     [...merged.values()].filter(c => seen.has(c.id)),
                     sortRef.current.field, sortRef.current.order,
-                ));
-                setPollInfo(p => ({seq: p.seq + 1, at: Date.now()}));
-                console.log(`[stats] cycle ${cycle} done: ${seen.size} containers in ${Date.now() - cycleStart}ms · map=${statHistories.size} · ids=[${[...seen].join(',')}]`);
+                );
+                applyRows(finalRows);
+                setAggregates(computeAggregates(`${selectedHost}|${selectedPage || '*'}`, finalRows));
             } catch (e) {
-                console.log(`[stats] cycle ${cycle} FAILED after ${Date.now() - cycleStart}ms:`, e);
                 if (!isCancelled) {
                     showError(String(e));
                 }
@@ -331,7 +373,7 @@ export function useDockerStats(selectedPage?: string) {
     return {
         containers: rawContainers,
         history: statHistories,
-        pollInfo,
+        aggregates,
         loading,
         sortField,
         sortOrder,

@@ -9,12 +9,7 @@ interface StackStatsProps {
 }
 
 export function TabStat({selectedPage = ""}: StackStatsProps) {
-    const {containers, history, pollInfo, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
-
-    // diagnostic: history depth of the first row, shown next to the poll
-    // counter so chart accumulation is verifiable at a glance
-    const firstWithHistory = containers.find(c => history.has(c.name));
-    const historyPoints = firstWithHistory ? (history.get(firstWithHistory.name)?.cpu.length ?? 0) : 0;
+    const {containers, history, aggregates, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
 
     return (
         <Box sx={{
@@ -27,12 +22,7 @@ export function TabStat({selectedPage = ""}: StackStatsProps) {
             bgcolor: statsTheme.page,
         }}>
             <Box sx={{flexShrink: 0}}>
-                <AggregateStats
-                    containers={containers}
-                    loading={loading}
-                    pollInfo={pollInfo}
-                    historyPoints={historyPoints}
-                />
+                <AggregateStats aggregates={aggregates}/>
             </Box>
 
             <Box sx={{flexGrow: 1, minHeight: 0}}>
