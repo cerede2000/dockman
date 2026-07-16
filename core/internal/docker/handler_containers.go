@@ -344,7 +344,7 @@ func (h *Handler) ToProto(stack container.Summary, portSlice []*v1.Port, update 
 	ipAddr := extractIPAddr(stack)
 
 	var he string
-	if stack.Health.Status != container.NoHealthcheck {
+	if stack.Health != nil && stack.Health.Status != container.NoHealthcheck {
 		he = string(stack.Health.Status)
 	}
 
