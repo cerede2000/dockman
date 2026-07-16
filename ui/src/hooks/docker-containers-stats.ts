@@ -46,16 +46,20 @@ function recordStat(host: string, stat: ContainerStats) {
         statHistoriesHost = host;
     }
 
-    let h = statHistories.get(stat.name);
-    if (!h) {
-        h = {cpu: [], mem: []};
-        statHistories.set(stat.name, h);
-    }
-    h.cpu.push(Math.max(stat.cpuUsage, 0));
+    // IMMUTABLE append — fresh arrays AND a fresh entry object, exactly like
+    // Dockhand's Svelte code rebuilds its history on every point. The UI is
+    // compiled with the React Compiler, which memoizes render work by
+    // reference equality: pushing into the same array (or mutating the same
+    // entry object) leaves identities unchanged, so charts keep serving the
+    // geometry cached at their first render and never redraw, no matter how
+    // many points accumulate.
+    const prev = statHistories.get(stat.name) ?? {cpu: [], mem: []};
     const limit = Number(stat.memoryLimit);
-    h.mem.push(limit > 0 ? (Number(stat.memoryUsage) / limit) * 100 : 0);
-    if (h.cpu.length > HISTORY_CAP) h.cpu.shift();
-    if (h.mem.length > HISTORY_CAP) h.mem.shift();
+    const h: StatHistory = {
+        cpu: [...prev.cpu.slice(-(HISTORY_CAP - 1)), Math.max(stat.cpuUsage, 0)],
+        mem: [...prev.mem.slice(-(HISTORY_CAP - 1)), limit > 0 ? (Number(stat.memoryUsage) / limit) * 100 : 0],
+    };
+    statHistories.set(stat.name, h);
 
     console.debug(`[stats] ${stat.name} id=${stat.id} cpu=${stat.cpuUsage.toFixed(2)} pts=${h.cpu.length}`);
 }
