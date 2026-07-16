@@ -1,13 +1,14 @@
-// Shared palette for the stats view (deep navy look).
+// Shared palette for the stats view. Kept on the app's original dark tones
+// for now; only the metric line/badge accents are opinionated.
 export const statsTheme = {
-    page: '#0a1626',
-    panel: '#0e1c31',
-    header: '#13233f',
-    row: '#0f1e35',
-    rowHover: '#152742',
-    border: 'rgba(125,160,215,0.14)',
-    text: '#dce7f7',
-    textDim: '#8ba4c7',
+    page: 'transparent',
+    panel: '#1e1e1e',
+    header: '#252525',
+    row: 'transparent',
+    rowHover: 'rgba(255,255,255,0.06)',
+    border: 'rgba(255,255,255,0.12)',
+    text: '#e6e6e6',
+    textDim: '#9aa0a6',
     mono: '"JetBrains Mono", "Roboto Mono", "SFMono-Regular", Consolas, monospace',
 
     cpuLine: '#60a5fa',

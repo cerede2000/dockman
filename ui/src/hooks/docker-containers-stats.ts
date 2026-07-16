@@ -54,6 +54,9 @@ const configFieldToSortField = (field?: string): SORT_FIELD => {
         case 'disk_w':
         case 'disk write':
             return SORT_FIELD.DISK_W;
+        case 'started':
+        case 'uptime':
+            return SORT_FIELD.STARTED;
         default:
             return SORT_FIELD.MEM;
     }
@@ -93,6 +96,7 @@ export function useDockerStats(selectedPage?: string) {
 
     useEffect(() => {
         let isCancelled = false;
+        let warmup: ReturnType<typeof setTimeout> | null = null;
 
         const fetchData = async () => {
             const {val, err} = await callRPC(() => dockerService.containerStats({
@@ -135,6 +139,10 @@ export function useDockerStats(selectedPage?: string) {
             if (isInitialLoad.current) {
                 setLoading(false);
                 isInitialLoad.current = false;
+                // the first poll paints instantly but CPU needs two samples;
+                // refetch quickly once so real values show up in ~1s instead
+                // of waiting a full refresh interval
+                warmup = setTimeout(fetchData, 1200);
             }
         };
 
@@ -144,6 +152,7 @@ export function useDockerStats(selectedPage?: string) {
 
         return () => {
             clearInterval(intervalId);
+            if (warmup !== null) clearTimeout(warmup);
             isCancelled = true;
         };
     }, [selectedHost, dockerService, selectedPage, sortField, sortOrder, refreshInterval]);
