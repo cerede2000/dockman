@@ -312,11 +312,14 @@ func (c *Service) List(ctx context.Context, filename string) ([]container2.Summa
 }
 
 func (c *Service) Stats(ctx context.Context, filename string) ([]container.Stats, error) {
-	lines, err := c.listIds(ctx, filename)
+	// Match the stack's containers by the compose config-files label: one
+	// ContainerList against the daemon instead of spawning a `docker compose
+	// ps` subprocess plus a second listing on every stats poll.
+	absPath, err := c.ComposeAbsPath(filename)
 	if err != nil {
 		return nil, err
 	}
-	ds, err := c.cont.ContainerListByIDs(ctx, lines...)
+	ds, err := c.cont.ContainerListByComposeFile(ctx, absPath)
 	if err != nil {
 		return nil, err
 	}
