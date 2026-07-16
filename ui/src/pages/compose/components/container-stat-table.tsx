@@ -147,13 +147,17 @@ export function ContainerStatTable({
                             </TableCell>
                         </TableRow>
                     ) : (
-                        containers.map((container) => (
-                            <StatRow
-                                key={container.id}
-                                stat={container}
-                                hist={history.get(container.id)}
-                            />
-                        ))
+                        containers.map((container) => {
+                            const hist = history.get(container.id);
+                            return (
+                                <StatRow
+                                    key={container.id}
+                                    stat={container}
+                                    hist={hist}
+                                    histLen={hist?.cpu.length ?? 0}
+                                />
+                            );
+                        })
                     )}
                 </TableBody>
             </Table>
@@ -162,10 +166,16 @@ export function ContainerStatTable({
 }
 
 // statsEqual keeps idle rows from re-rendering on every poll tick: a row only
-// redraws when one of its displayed values actually moved.
-function statsEqual(prev: { stat: ContainerStats }, next: { stat: ContainerStats }): boolean {
+// redraws when one of its displayed values actually moved. The history length
+// is part of the comparison so the sparkline keeps growing while the window
+// fills up, even for a container whose values are static.
+function statsEqual(
+    prev: { stat: ContainerStats, histLen: number },
+    next: { stat: ContainerStats, histLen: number },
+): boolean {
     const a = prev.stat, b = next.stat;
-    return a.id === b.id
+    return prev.histLen === next.histLen
+        && a.id === b.id
         && a.name === b.name
         && a.image === b.image
         && a.state === b.state
@@ -182,7 +192,11 @@ function statsEqual(prev: { stat: ContainerStats }, next: { stat: ContainerStats
         && a.ipAddress.join(',') === b.ipAddress.join(',');
 }
 
-const StatRow = memo(function StatRow({stat, hist}: { stat: ContainerStats, hist?: StatHistory }) {
+const StatRow = memo(function StatRow({stat, hist}: {
+    stat: ContainerStats,
+    hist?: StatHistory,
+    histLen: number,
+}) {
     const running = stat.state === 'running';
     const memLimit = Number(stat.memoryLimit);
     const memUsage = Number(stat.memoryUsage);
@@ -231,7 +245,6 @@ const StatRow = memo(function StatRow({stat, hist}: { stat: ContainerStats, hist
                     textColor={getUsageColor(stat.cpuUsage)}
                     data={hist?.cpu}
                     lineColor={t.cpuLine}
-                    max={undefined}
                 />
             </TableCell>
             <TableCell>
@@ -241,7 +254,6 @@ const StatRow = memo(function StatRow({stat, hist}: { stat: ContainerStats, hist
                     textColor={getUsageColor(memPercent)}
                     data={hist?.mem}
                     lineColor={t.memLine}
-                    max={100}
                 />
             </TableCell>
             <TableCell>
@@ -317,43 +329,47 @@ function StateBadge({state}: { state: string }) {
     );
 }
 
+// health is a colored dot only (like the stack list), with the status text in
+// a tooltip — the column stays narrow
 function HealthCell({health}: { health: string }) {
     if (!health) {
         return <Typography variant="caption" sx={{color: t.textDim}}>–</Typography>;
     }
     const color = healthColors[health] ?? t.textDim;
     return (
-        <Stack direction="row" spacing={0.6} alignItems="center" justifyContent="center">
-            <Box sx={{width: 8, height: 8, borderRadius: '50%', bgcolor: color, flexShrink: 0}}/>
-            <Typography variant="caption" sx={{color, fontFamily: t.mono}}>
-                {health}
-            </Typography>
-        </Stack>
+        <Tooltip title={health} arrow>
+            <Box sx={{
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                bgcolor: color,
+                display: 'inline-block',
+                verticalAlign: 'middle',
+            }}/>
+        </Tooltip>
     );
 }
 
-// MetricCell shows the live value beside a small sparkline of its history.
-function MetricCell({text, subText, textColor, data, lineColor, max}: {
+// MetricCell shows the live value above a small sparkline of its history.
+function MetricCell({text, subText, textColor, data, lineColor}: {
     text: string;
     subText?: string;
     textColor: string;
     data?: number[];
     lineColor: string;
-    max?: number;
 }) {
     return (
-        <Box sx={{minWidth: 120}}>
-            <Stack direction="row" spacing={0.6} alignItems="baseline">
-                <Typography variant="caption" sx={{fontFamily: t.mono, fontWeight: 700, color: textColor}}>
-                    {text}
-                </Typography>
+        <Box sx={{minWidth: 130}}>
+            <Typography variant="caption" component="div"
+                        sx={{fontFamily: t.mono, whiteSpace: 'nowrap', lineHeight: 1.4}}>
+                <Box component="span" sx={{fontWeight: 700, color: textColor}}>{text}</Box>
                 {subText && (
-                    <Typography variant="caption" sx={{fontFamily: t.mono, color: t.textDim, fontSize: '0.65rem'}}>
-                        {subText}
-                    </Typography>
+                    <Box component="span" sx={{color: t.textDim, fontSize: '0.65rem'}}>
+                        {' '}{subText}
+                    </Box>
                 )}
-            </Stack>
-            <Sparkline data={data ?? []} color={lineColor} width={110} height={20} max={max}/>
+            </Typography>
+            <Sparkline data={data ?? []} color={lineColor} width={110} height={20}/>
         </Box>
     );
 }
