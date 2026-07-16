@@ -57,6 +57,9 @@ const (
 	// DockerServiceContainerStatsProcedure is the fully-qualified name of the DockerService's
 	// ContainerStats RPC.
 	DockerServiceContainerStatsProcedure = "/docker.v1.DockerService/ContainerStats"
+	// DockerServiceContainerStatsStreamProcedure is the fully-qualified name of the DockerService's
+	// ContainerStatsStream RPC.
+	DockerServiceContainerStatsStreamProcedure = "/docker.v1.DockerService/ContainerStatsStream"
 	// DockerServiceContainerLogsProcedure is the fully-qualified name of the DockerService's
 	// ContainerLogs RPC.
 	DockerServiceContainerLogsProcedure = "/docker.v1.DockerService/ContainerLogs"
@@ -134,6 +137,11 @@ type DockerServiceClient interface {
 	ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error)
 	ContainerList(context.Context, *connect.Request[v1.ContainerListRequest]) (*connect.Response[v1.ListResponse], error)
 	ContainerStats(context.Context, *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error)
+	// streams each container's stats as soon as its read completes, so the UI
+	// fills in progressively instead of waiting for the slowest container
+	// (fully qualified return type: the sibling ContainerStats rpc otherwise
+	// shadows the message name inside the service scope)
+	ContainerStatsStream(context.Context, *connect.Request[v1.StatsRequest]) (*connect.ServerStreamForClient[v1.ContainerStats], error)
 	ContainerLogs(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error)
 	// compose
@@ -219,6 +227,12 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DockerServiceContainerStatsProcedure,
 			connect.WithSchema(dockerServiceMethods.ByName("ContainerStats")),
+			connect.WithClientOptions(opts...),
+		),
+		containerStatsStream: connect.NewClient[v1.StatsRequest, v1.ContainerStats](
+			httpClient,
+			baseURL+DockerServiceContainerStatsStreamProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("ContainerStatsStream")),
 			connect.WithClientOptions(opts...),
 		),
 		containerLogs: connect.NewClient[v1.ContainerLogsRequest, v1.LogsMessage](
@@ -358,36 +372,37 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // dockerServiceClient implements DockerServiceClient.
 type dockerServiceClient struct {
-	containerStart    *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerStop     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerRemove   *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerRestart  *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerUpdate   *connect.Client[v1.ContainerRequest, v1.Empty]
-	containerTop      *connect.Client[v1.ContainerTopRequest, v1.ContainerTopResponse]
-	containerList     *connect.Client[v1.ContainerListRequest, v1.ListResponse]
-	containerStats    *connect.Client[v1.StatsRequest, v1.StatsResponse]
-	containerLogs     *connect.Client[v1.ContainerLogsRequest, v1.LogsMessage]
-	containerInspect  *connect.Client[v1.ContainerLogsRequest, v1.ContainerInspectMessage]
-	composeUp         *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeDown       *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeStart      *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeStop       *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeRestart    *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeUpdate     *connect.Client[v1.ComposeFile, v1.LogsMessage]
-	composeList       *connect.Client[v1.ComposeFile, v1.ListResponse]
-	composeValidate   *connect.Client[v1.ComposeFile, v1.ComposeValidateResponse]
-	composeFileStatus *connect.Client[v1.ComposeFileStatusRequest, v1.ComposeFileStatusResponse]
-	imageList         *connect.Client[v1.ListImagesRequest, v1.ListImagesResponse]
-	imageRemove       *connect.Client[v1.RemoveImageRequest, v1.RemoveImageResponse]
-	imagePruneUnused  *connect.Client[v1.ImagePruneRequest, v1.ImagePruneResponse]
-	imageInspect      *connect.Client[v1.ImageInspectRequest, v1.ImageInspectResponse]
-	volumeList        *connect.Client[v1.ListVolumesRequest, v1.ListVolumesResponse]
-	volumeCreate      *connect.Client[v1.CreateVolumeRequest, v1.CreateVolumeResponse]
-	volumeDelete      *connect.Client[v1.DeleteVolumeRequest, v1.DeleteVolumeResponse]
-	networkList       *connect.Client[v1.ListNetworksRequest, v1.ListNetworksResponse]
-	networkCreate     *connect.Client[v1.CreateNetworkRequest, v1.CreateNetworkResponse]
-	networkDelete     *connect.Client[v1.DeleteNetworkRequest, v1.DeleteNetworkResponse]
-	networkInspect    *connect.Client[v1.NetworkInspectRequest, v1.NetworkInspectResponse]
+	containerStart       *connect.Client[v1.ContainerRequest, v1.LogsMessage]
+	containerStop        *connect.Client[v1.ContainerRequest, v1.LogsMessage]
+	containerRemove      *connect.Client[v1.ContainerRequest, v1.LogsMessage]
+	containerRestart     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
+	containerUpdate      *connect.Client[v1.ContainerRequest, v1.Empty]
+	containerTop         *connect.Client[v1.ContainerTopRequest, v1.ContainerTopResponse]
+	containerList        *connect.Client[v1.ContainerListRequest, v1.ListResponse]
+	containerStats       *connect.Client[v1.StatsRequest, v1.StatsResponse]
+	containerStatsStream *connect.Client[v1.StatsRequest, v1.ContainerStats]
+	containerLogs        *connect.Client[v1.ContainerLogsRequest, v1.LogsMessage]
+	containerInspect     *connect.Client[v1.ContainerLogsRequest, v1.ContainerInspectMessage]
+	composeUp            *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeDown          *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeStart         *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeStop          *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeRestart       *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeUpdate        *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeList          *connect.Client[v1.ComposeFile, v1.ListResponse]
+	composeValidate      *connect.Client[v1.ComposeFile, v1.ComposeValidateResponse]
+	composeFileStatus    *connect.Client[v1.ComposeFileStatusRequest, v1.ComposeFileStatusResponse]
+	imageList            *connect.Client[v1.ListImagesRequest, v1.ListImagesResponse]
+	imageRemove          *connect.Client[v1.RemoveImageRequest, v1.RemoveImageResponse]
+	imagePruneUnused     *connect.Client[v1.ImagePruneRequest, v1.ImagePruneResponse]
+	imageInspect         *connect.Client[v1.ImageInspectRequest, v1.ImageInspectResponse]
+	volumeList           *connect.Client[v1.ListVolumesRequest, v1.ListVolumesResponse]
+	volumeCreate         *connect.Client[v1.CreateVolumeRequest, v1.CreateVolumeResponse]
+	volumeDelete         *connect.Client[v1.DeleteVolumeRequest, v1.DeleteVolumeResponse]
+	networkList          *connect.Client[v1.ListNetworksRequest, v1.ListNetworksResponse]
+	networkCreate        *connect.Client[v1.CreateNetworkRequest, v1.CreateNetworkResponse]
+	networkDelete        *connect.Client[v1.DeleteNetworkRequest, v1.DeleteNetworkResponse]
+	networkInspect       *connect.Client[v1.NetworkInspectRequest, v1.NetworkInspectResponse]
 }
 
 // ContainerStart calls docker.v1.DockerService.ContainerStart.
@@ -428,6 +443,11 @@ func (c *dockerServiceClient) ContainerList(ctx context.Context, req *connect.Re
 // ContainerStats calls docker.v1.DockerService.ContainerStats.
 func (c *dockerServiceClient) ContainerStats(ctx context.Context, req *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error) {
 	return c.containerStats.CallUnary(ctx, req)
+}
+
+// ContainerStatsStream calls docker.v1.DockerService.ContainerStatsStream.
+func (c *dockerServiceClient) ContainerStatsStream(ctx context.Context, req *connect.Request[v1.StatsRequest]) (*connect.ServerStreamForClient[v1.ContainerStats], error) {
+	return c.containerStatsStream.CallServerStream(ctx, req)
 }
 
 // ContainerLogs calls docker.v1.DockerService.ContainerLogs.
@@ -551,6 +571,11 @@ type DockerServiceHandler interface {
 	ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error)
 	ContainerList(context.Context, *connect.Request[v1.ContainerListRequest]) (*connect.Response[v1.ListResponse], error)
 	ContainerStats(context.Context, *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error)
+	// streams each container's stats as soon as its read completes, so the UI
+	// fills in progressively instead of waiting for the slowest container
+	// (fully qualified return type: the sibling ContainerStats rpc otherwise
+	// shadows the message name inside the service scope)
+	ContainerStatsStream(context.Context, *connect.Request[v1.StatsRequest], *connect.ServerStream[v1.ContainerStats]) error
 	ContainerLogs(context.Context, *connect.Request[v1.ContainerLogsRequest], *connect.ServerStream[v1.LogsMessage]) error
 	ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error)
 	// compose
@@ -632,6 +657,12 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		DockerServiceContainerStatsProcedure,
 		svc.ContainerStats,
 		connect.WithSchema(dockerServiceMethods.ByName("ContainerStats")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dockerServiceContainerStatsStreamHandler := connect.NewServerStreamHandler(
+		DockerServiceContainerStatsStreamProcedure,
+		svc.ContainerStatsStream,
+		connect.WithSchema(dockerServiceMethods.ByName("ContainerStatsStream")),
 		connect.WithHandlerOptions(opts...),
 	)
 	dockerServiceContainerLogsHandler := connect.NewServerStreamHandler(
@@ -784,6 +815,8 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 			dockerServiceContainerListHandler.ServeHTTP(w, r)
 		case DockerServiceContainerStatsProcedure:
 			dockerServiceContainerStatsHandler.ServeHTTP(w, r)
+		case DockerServiceContainerStatsStreamProcedure:
+			dockerServiceContainerStatsStreamHandler.ServeHTTP(w, r)
 		case DockerServiceContainerLogsProcedure:
 			dockerServiceContainerLogsHandler.ServeHTTP(w, r)
 		case DockerServiceContainerInspectProcedure:
@@ -867,6 +900,10 @@ func (UnimplementedDockerServiceHandler) ContainerList(context.Context, *connect
 
 func (UnimplementedDockerServiceHandler) ContainerStats(context.Context, *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerStats is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) ContainerStatsStream(context.Context, *connect.Request[v1.StatsRequest], *connect.ServerStream[v1.ContainerStats]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerStatsStream is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ContainerLogs(context.Context, *connect.Request[v1.ContainerLogsRequest], *connect.ServerStream[v1.LogsMessage]) error {
