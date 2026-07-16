@@ -43,16 +43,16 @@ function AggregateStats({containers, pollInfo, historyPoints}: AggregateStatsPro
 
     const memPercent = totals.memLimit > 0 ? (totals.memUsed / totals.memLimit) * 100 : 0;
 
-    // rolling host-level history for the aggregate charts, appended once per
-    // poll tick (the containers array identity changes on every poll)
+    // Rolling host-level history for the aggregate charts, appended once per
+    // poll tick (the containers array identity changes on every poll).
+    // IMMUTABLE appends: the React Compiler memoizes by reference equality,
+    // a mutated array keeps its identity and the chart never redraws.
     const cpuHist = useRef<number[]>([]);
     const memHist = useRef<number[]>([]);
     useEffect(() => {
         if (containers.length === 0) return;
-        cpuHist.current.push(totals.cpu);
-        memHist.current.push(memPercent);
-        if (cpuHist.current.length > HISTORY_CAP) cpuHist.current.shift();
-        if (memHist.current.length > HISTORY_CAP) memHist.current.shift();
+        cpuHist.current = [...cpuHist.current.slice(-(HISTORY_CAP - 1)), totals.cpu];
+        memHist.current = [...memHist.current.slice(-(HISTORY_CAP - 1)), memPercent];
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [containers]);
 
