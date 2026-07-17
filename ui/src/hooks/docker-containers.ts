@@ -3,15 +3,18 @@ import {callRPC, useHostClient} from '../lib/api.ts'
 import {DockerService, type ListResponse} from '../gen/docker/v1/docker_pb.ts'
 import {useSnackbar} from "./snackbar.ts"
 import {useHostStore} from "../pages/compose/state/files.ts";
+import {useDockerEvents} from "./docker-events.ts";
 
 export function useDockerContainers() {
     const dockerService = useHostClient(DockerService)
     const {showWarning} = useSnackbar()
     const selectedHost = useHostStore(state => state.host)
+    // container lifecycle events drive the refresh; polling is a safety net
+    const eventBump = useDockerEvents()
 
     const [containers, setContainers] = useState<ListResponse | null>(null)
     const [loading, setLoading] = useState(true)
-    const [refreshInterval, setRefreshInterval] = useState(2000)
+    const [refreshInterval, setRefreshInterval] = useState(30000)
 
     const fetchContainers = useCallback(async () => {
         const {val, err} = await callRPC(() => dockerService.containerList({}))
@@ -39,7 +42,7 @@ export function useDockerContainers() {
         fetchContainers().then()
         const intervalId = setInterval(fetchContainers, refreshInterval)
         return () => clearInterval(intervalId)
-    }, [fetchContainers, refreshInterval])
+    }, [fetchContainers, refreshInterval, eventBump])
 
     return {containers, loading, refreshContainers, fetchContainers, refreshInterval, setRefreshInterval}
 }
