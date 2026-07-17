@@ -285,6 +285,80 @@ func (h *Handler) ContainerLogs(ctx context.Context, req *connect.Request[v1.Con
 	return nil
 }
 
+// logsKeepAliveInterval paces empty LogLine frames so proxies do not cut the
+// stream during quiet periods
+const logsKeepAliveInterval = 30 * time.Second
+
+func (h *Handler) ContainerLogsStream(ctx context.Context, req *connect.Request[v1.LogsStreamRequest], responseStream *connect.ServerStream[v1.LogLine]) error {
+	ids := req.Msg.GetContainerIds()
+	if len(ids) == 0 {
+		return fmt.Errorf("at least one container id is required")
+	}
+	_, dkSrv, err := h.getHost(ctx)
+	if err != nil {
+		return err
+	}
+
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	lines := make(chan contSrv.LogLine, 256)
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- dkSrv.Container.LogsStream(streamCtx, ids, contSrv.LogsStreamOptions{
+			Tail:   req.Msg.GetTail(),
+			Since:  req.Msg.GetSince(),
+			Until:  req.Msg.GetUntil(),
+			Follow: req.Msg.GetFollow(),
+		}, func(l contSrv.LogLine) {
+			select {
+			case lines <- l:
+			case <-streamCtx.Done():
+			}
+		})
+	}()
+
+	keepalive := time.NewTicker(logsKeepAliveInterval)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case line := <-lines:
+			if err := responseStream.Send(logLineToProto(line)); err != nil {
+				return err
+			}
+		case err := <-streamDone:
+			// send what the readers emitted before they finished
+			for {
+				select {
+				case line := <-lines:
+					if sendErr := responseStream.Send(logLineToProto(line)); sendErr != nil {
+						return sendErr
+					}
+				default:
+					return err
+				}
+			}
+		case <-keepalive.C:
+			if err := responseStream.Send(&v1.LogLine{}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func logLineToProto(l contSrv.LogLine) *v1.LogLine {
+	return &v1.LogLine{
+		ContainerId:   l.ContainerID,
+		ContainerName: l.ContainerName,
+		Text:          l.Text,
+		TimeNano:      l.TimeNano,
+		Stream:        l.Stream,
+	}
+}
+
 func (h *Handler) containersToRpc(result []container.Summary, host string, srv *Service) ([]*v1.ContainerList, map[string]int32) {
 	var dockerResult []*v1.ContainerList
 	statusCount := map[string]int32{}
