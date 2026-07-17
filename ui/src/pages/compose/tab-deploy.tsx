@@ -117,7 +117,7 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                 flexDirection: 'column',
                 overflow: 'hidden'
             }}>
-                <Stack direction="row" alignItems="flex-start" spacing={2}>
+                <Stack direction="row" alignItems="center" spacing={2} sx={{mb: 1}}>
                     <ComposeActionHeaders
                         selectedServices={selectedServices}
                         fetchContainers={fetchContainers}
@@ -125,10 +125,18 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                     <Box sx={{flexGrow: 1}}/>
                     <Button
                         variant="outlined"
-                        startIcon={<ReceiptLongIcon/>}
+                        size="small"
+                        startIcon={<ReceiptLongIcon sx={{fontSize: 17}}/>}
                         disabled={stackTargets.length === 0}
                         onClick={() => openLogs(tabKey('logs', '__stack__'), `${stackName}: stack logs`, stackTargets)}
-                        sx={{flexShrink: 0}}
+                        sx={{
+                            flexShrink: 0,
+                            textTransform: 'none',
+                            fontWeight: 600,
+                            borderColor: 'divider',
+                            color: 'text.secondary',
+                            '&:hover': {borderColor: 'primary.main', color: 'primary.main', bgcolor: 'action.hover'},
+                        }}
                     >
                         Stack logs
                     </Button>
