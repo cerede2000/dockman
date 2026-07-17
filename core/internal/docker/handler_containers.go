@@ -251,6 +251,45 @@ func (h *Handler) ContainerStats(ctx context.Context, req *connect.Request[v1.St
 	}), nil
 }
 
+// ContainerEvents streams this host's filtered container lifecycle events to
+// the client. A keepalive frame goes out every 30s so an otherwise silent
+// stream survives reverse-proxy idle timeouts. One daemon subscription is
+// shared by every connected client (see container.SubscribeEvents).
+func (h *Handler) ContainerEvents(ctx context.Context, req *connect.Request[v1.EventsRequest], stream *connect.ServerStream[v1.ContainerEvent]) error {
+	_, dkSrv, err := h.getHost(ctx)
+	if err != nil {
+		return err
+	}
+
+	eventsCh, unsubscribe := dkSrv.Container.SubscribeEvents()
+	defer unsubscribe()
+
+	keepalive := time.NewTicker(30 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev := <-eventsCh:
+			if err := stream.Send(&v1.ContainerEvent{
+				Action:        ev.Action,
+				Status:        ev.Status,
+				ContainerId:   ev.ID,
+				ContainerName: ev.Name,
+				Image:         ev.Image,
+				TimeNano:      ev.TimeNano,
+			}); err != nil {
+				return err
+			}
+		case <-keepalive.C:
+			if err := stream.Send(&v1.ContainerEvent{}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func (h *Handler) ContainerLogs(ctx context.Context, req *connect.Request[v1.ContainerLogsRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	if req.Msg.GetContainerID() == "" {
 		return fmt.Errorf("container id is required")
