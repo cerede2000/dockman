@@ -8,16 +8,28 @@ import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
 import "@xterm/xterm/css/xterm.css";
 import AppTerminal from "./logs-terminal.tsx";
 import LogsViewer from "../../../components/log-viewer/logs-viewer.tsx";
-import {useRef} from "react";
+import {useEffect, useRef} from "react";
 import {FitAddon} from "@xterm/addon-fit";
+import {useFileComponents} from "../state/terminal.tsx";
 
 export function LogsPanel() {
     const {panelSize, panelRef, handleMouseDown, isResizing} = useResizeBar('top')
     const isTerminalOpen = useTerminalAction(state => state.isTerminalOpen);
     const toggle = useTerminalAction(state => state.toggle);
 
-    const {tabs, activeTab, setActiveTab, close} = useTerminalTabs();
+    const {tabs, activeTab, setActiveTab, close, clearAll} = useTerminalTabs();
     const fitAddonRef = useRef<FitAddon>(new FitAddon());
+
+    // tabs hold container ids and socket urls scoped to one docker host:
+    // after a host switch they would query the wrong daemon, so drop them
+    const {host} = useFileComponents();
+    const prevHost = useRef(host);
+    useEffect(() => {
+        if (prevHost.current !== host) {
+            prevHost.current = host;
+            clearAll();
+        }
+    }, [host, clearAll]);
 
     return (
         <Paper
@@ -180,7 +192,10 @@ export function LogsPanel() {
                                     }}
                                 >
                                     {v.logsContainers ? (
-                                        <LogsViewer containers={v.logsContainers}/>
+                                        <LogsViewer
+                                            containers={v.logsContainers}
+                                            isActive={isTerminalOpen && key === activeTab}
+                                        />
                                     ) : (
                                         <AppTerminal
                                             key={v.id}

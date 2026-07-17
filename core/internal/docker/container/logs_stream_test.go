@@ -59,6 +59,38 @@ func TestLogLineWriterTrimsCarriageReturn(t *testing.T) {
 	require.Equal(t, "windows style", (*got)[0].Text)
 }
 
+func TestLogLineWriterCollapsesProgressOverwrites(t *testing.T) {
+	w := &logLineWriter{}
+	got := collectLines(w)
+
+	// a terminal shows only what was written after the last \r
+	_, _ = w.Write([]byte("Downloading 10%\rDownloading 60%\rDone\n"))
+	require.Len(t, *got, 1)
+	require.Equal(t, "Done", (*got)[0].Text)
+
+	// the daemon timestamp sits before the overwrites and must survive
+	stamp := "2026-07-17T10:11:12.123456789Z"
+	_, _ = w.Write([]byte(stamp + " 10%\r20%\n"))
+	require.Len(t, *got, 2)
+	require.Equal(t, "20%", (*got)[1].Text)
+	require.NotZero(t, (*got)[1].TimeNano)
+}
+
+func TestLogLineWriterBoundsPartialBuffer(t *testing.T) {
+	w := &logLineWriter{}
+	got := collectLines(w)
+
+	// \r-only output never produces a newline: the carry buffer must
+	// force-flush instead of growing forever
+	chunk := make([]byte, maxPartialLine+16)
+	for i := range chunk {
+		chunk[i] = 'x'
+	}
+	_, _ = w.Write(chunk)
+	require.Len(t, *got, 1)
+	require.LessOrEqual(t, len(w.partial), maxPartialLine)
+}
+
 func TestSplitLogTimestamp(t *testing.T) {
 	stamp := "2026-07-17T10:11:12.123456789Z"
 	nano, text := splitLogTimestamp(stamp + " hello world")

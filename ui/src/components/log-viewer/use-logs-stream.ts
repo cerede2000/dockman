@@ -2,7 +2,7 @@ import {useCallback, useEffect, useRef, useState} from "react";
 import {useHostClient} from "../../lib/api.ts";
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
 import {createAnsiTracker} from "./ansi.ts";
-import {appendEntries, isKeepAlive, type LogEntry, toLogEntry} from "./log-model.ts";
+import {appendEntries, isKeepAlive, type LogEntry, STREAM_INTERNAL, toLogEntry} from "./log-model.ts";
 
 export type LogStreamStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'paused' | 'ended';
 
@@ -12,6 +12,7 @@ export interface LogsStreamParams {
     since?: number; // unix seconds, undefined = from the tail only
     until?: number;
     follow: boolean;
+    // pausing (or suspending a hidden tab) closes the stream, keeps the buffer
     paused: boolean;
 }
 
@@ -20,18 +21,20 @@ const RETRY_MIN_MS = 1000;
 const RETRY_MAX_MS = 30000;
 
 // Streams the requested containers' logs into an immutable, capped LogEntry
-// buffer. Pausing closes the stream but keeps the buffer; resuming (and any
-// silent reconnection) replays from the last seen timestamp and drops the
-// lines it already has, so the buffer never duplicates.
+// buffer. Resuming (after a pause or a silent reconnection) replays from the
+// last seen timestamp and drops only the overlap it already has — never live
+// lines: the replay filter compares against a snapshot taken at connect time,
+// so distinct live lines sharing one timestamp all pass.
 export function useLogsStream(params: LogsStreamParams) {
     const client = useHostClient(DockerService);
     const [entries, setEntries] = useState<LogEntry[]>([]);
     const [status, setStatus] = useState<LogStreamStatus>('idle');
+    const [lastError, setLastError] = useState("");
 
     const idsKey = params.containerIds.join(',');
     const {tail, since, until, follow, paused} = params;
 
-    // newest timestamp seen per container, used to dedupe replays
+    // newest daemon timestamp seen per container, used to bound resumes
     const lastNanoRef = useRef<Map<string, bigint>>(new Map());
 
     const clear = useCallback(() => {
@@ -79,7 +82,7 @@ export function useLogsStream(params: LogsStreamParams) {
         const ansiTracker = createAnsiTracker();
 
         // resume/reconnect from just before the oldest "last seen" timestamp;
-        // the per-container dedupe below drops the overlap
+        // the replay snapshot below drops the overlap
         const resumeSince = (): number => {
             const seen = containerIds
                 .map(id => lastNanoRef.current.get(id) ?? 0n)
@@ -96,6 +99,9 @@ export function useLogsStream(params: LogsStreamParams) {
                 setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
                 attempt++;
                 let live = false;
+                // fixed snapshot: only lines at or before these timestamps are
+                // replayed history; everything past them is live and never dropped
+                const replayBar = new Map(lastNanoRef.current);
                 try {
                     const stream = client.containerLogsStream({
                         containerIds,
@@ -106,18 +112,36 @@ export function useLogsStream(params: LogsStreamParams) {
                     }, {signal: abort.signal});
 
                     for await (const line of stream) {
-                        if (!live) {
-                            live = true;
-                            backoff = RETRY_MIN_MS;
-                            setStatus('live');
+                        if (isKeepAlive(line)) {
+                            // the server is reachable even if no lines flow
+                            if (!live) {
+                                live = true;
+                                backoff = RETRY_MIN_MS;
+                                setStatus('live');
+                                setLastError("");
+                            }
+                            continue;
                         }
-                        if (isKeepAlive(line)) continue;
 
-                        const seen = lastNanoRef.current.get(line.containerId) ?? 0n;
-                        if (line.timeNano !== 0n) {
-                            if (line.timeNano <= seen) continue; // replayed line
-                            lastNanoRef.current.set(line.containerId, line.timeNano);
+                        // dockman-injected failure notices: show them, but they
+                        // are not container output — no watermark, no pacing reset
+                        if (line.stream !== STREAM_INTERNAL) {
+                            if (!live) {
+                                live = true;
+                                backoff = RETRY_MIN_MS;
+                                setStatus('live');
+                                setLastError("");
+                            }
+                            if (line.timeNano !== 0n) {
+                                const bar = replayBar.get(line.containerId);
+                                if (bar !== undefined && line.timeNano <= bar) continue; // replayed overlap
+                                const seen = lastNanoRef.current.get(line.containerId) ?? 0n;
+                                if (line.timeNano > seen) {
+                                    lastNanoRef.current.set(line.containerId, line.timeNano);
+                                }
+                            }
                         }
+
                         const segments = ansiTracker(`${line.containerId}|${line.stream}`, line.text);
                         pending.push(toLogEntry(line, segments));
                         scheduleFlush();
@@ -130,8 +154,9 @@ export function useLogsStream(params: LogsStreamParams) {
                         return;
                     }
                     // follow stream ended without an abort: server went away
-                } catch {
+                } catch (err) {
                     if (closed || abort.signal.aborted) return;
+                    setLastError(err instanceof Error ? err.message : String(err));
                 }
 
                 flush();
@@ -149,5 +174,5 @@ export function useLogsStream(params: LogsStreamParams) {
         };
     }, [client, idsKey, tail, since, until, follow, paused]);
 
-    return {entries, status, clear};
+    return {entries, status, lastError, clear};
 }

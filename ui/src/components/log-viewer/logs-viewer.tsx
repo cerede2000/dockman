@@ -1,4 +1,4 @@
-import {type CSSProperties, useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {
     Box,
     Chip,
@@ -23,6 +23,7 @@ import PauseIcon from "@mui/icons-material/Pause";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import CheckIcon from "@mui/icons-material/Check";
 import DownloadIcon from "@mui/icons-material/Download";
 import DateRangeIcon from "@mui/icons-material/DateRange";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
@@ -31,13 +32,17 @@ import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import scrollbarStyles from "../scrollbar-style.tsx";
 import {ANSI_PALETTE_DARK, ANSI_PALETTE_LIGHT, type AnsiSegment} from "./ansi.ts";
+import {useCopyButton} from "../../hooks/copy.ts";
 import {
+    compileQuery,
     containerColor,
     formatLogTime,
     highlightSegments,
     type LogEntry,
+    type LogQuery,
     logsToText,
     matchesQuery,
+    STREAM_INTERNAL,
 } from "./log-model.ts";
 import {type LogStreamStatus, useLogsStream} from "./use-logs-stream.ts";
 
@@ -48,6 +53,9 @@ export interface LogsViewerContainer {
 
 interface LogsViewerProps {
     containers: LogsViewerContainer[];
+    // hidden tabs pass false: the stream suspends (buffer kept) and the view
+    // snaps back to the bottom when shown again
+    isActive?: boolean;
 }
 
 // scroll distance from the bottom under which the view is considered "at the
@@ -66,11 +74,6 @@ const TAIL_OPTIONS = [100, 500, 1000, 2000];
 const FONT_SIZES = [10, 12, 14, 16];
 
 type StreamFilter = 'all' | 'stdout' | 'stderr';
-const STREAM_OPTIONS: { value: StreamFilter; label: string }[] = [
-    {value: 'all', label: 'All streams'},
-    {value: 'stdout', label: 'stdout'},
-    {value: 'stderr', label: 'stderr'},
-];
 
 // same default stack as Dockhand's "System Monospace"
 const LOG_FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
@@ -129,10 +132,16 @@ const segmentStyle = (s: AnsiSegment, ansi: string[]): CSSProperties => ({
     textDecoration: s.underline ? 'underline' : undefined,
 });
 
-function LogRow({entry, lineNumber, lowerQuery, isCurrentMatch, showTimestamps, showLineNumbers, showName, nameColor, wrap, theme}: {
+const streamBorder = (stream: number) => {
+    if (stream === STREAM_INTERNAL) return 'rgba(255,167,38,0.8)'; // dockman notice
+    if (stream === 2) return 'rgba(244,67,54,0.55)'; // stderr
+    return 'transparent';
+};
+
+function LogRow({entry, lineNumber, query, isCurrentMatch, showTimestamps, showLineNumbers, showName, nameColor, wrap, theme}: {
     entry: LogEntry;
     lineNumber: number;
-    lowerQuery: string;
+    query: LogQuery | null;
     isCurrentMatch: boolean;
     showTimestamps: boolean;
     showLineNumbers: boolean;
@@ -141,17 +150,47 @@ function LogRow({entry, lineNumber, lowerQuery, isCurrentMatch, showTimestamps, 
     wrap: boolean;
     theme: ViewerTheme;
 }) {
-    const pieces = highlightSegments(entry.segments, lowerQuery);
+    const isInternal = entry.stream === STREAM_INTERNAL;
+
+    let content: ReactNode;
+    if (query === null) {
+        // fast path: no search, render the parsed segments directly
+        content = entry.segments.map((s, i) => (
+            <span key={i} style={segmentStyle(s, theme.ansi)}>{s.text}</span>
+        ));
+    } else {
+        content = highlightSegments(entry.segments, query).map((piece, i) => {
+            const style = segmentStyle(piece.segment, theme.ansi);
+            if (!piece.isMatch) {
+                return <span key={i} style={style}>{piece.segment.text}</span>;
+            }
+            return (
+                <mark
+                    key={i}
+                    style={{
+                        ...style,
+                        backgroundColor: isCurrentMatch ? 'rgba(255,193,7,0.95)' : 'rgba(255,193,7,0.4)',
+                        color: isCurrentMatch ? '#000' : style.color ?? theme.fg,
+                    }}
+                >
+                    {piece.segment.text}
+                </mark>
+            );
+        });
+    }
+
     return (
         <div
             data-log-id={entry.id}
             style={{
                 whiteSpace: wrap ? 'pre-wrap' : 'pre',
                 wordBreak: wrap ? 'break-all' : 'normal',
-                borderLeft: `2px solid ${entry.stream === 2 ? 'rgba(244,67,54,0.55)' : 'transparent'}`,
+                borderLeft: `2px solid ${streamBorder(entry.stream)}`,
                 paddingLeft: 6,
                 minHeight: '1.4em',
                 lineHeight: 1.4,
+                fontStyle: isInternal ? 'italic' : undefined,
+                opacity: isInternal ? 0.85 : undefined,
             }}
         >
             {showLineNumbers && (
@@ -174,42 +213,52 @@ function LogRow({entry, lineNumber, lowerQuery, isCurrentMatch, showTimestamps, 
             {showName && entry.containerName !== "" && (
                 <span style={{color: nameColor, fontWeight: 600}}>[{entry.containerName}] </span>
             )}
-            {pieces.map((piece, i) => {
-                const style = segmentStyle(piece.segment, theme.ansi);
-                if (!piece.isMatch) {
-                    return <span key={i} style={style}>{piece.segment.text}</span>;
-                }
-                return (
-                    <mark
-                        key={i}
-                        style={{
-                            ...style,
-                            backgroundColor: isCurrentMatch ? 'rgba(255,193,7,0.95)' : 'rgba(255,193,7,0.4)',
-                            color: isCurrentMatch ? '#000' : style.color ?? theme.fg,
-                        }}
-                    >
-                        {piece.segment.text}
-                    </mark>
-                );
-            })}
+            {content}
         </div>
     );
 }
 
-export function LogsViewer({containers}: LogsViewerProps) {
+const selectSx = {fontSize: '0.8rem', '& .MuiSelect-select': {py: 0.5}};
+
+function ToolbarSelect<T extends string | number>({value, onChange, options}: {
+    value: T;
+    onChange: (value: T) => void;
+    options: { value: T; label: string }[];
+}) {
+    return (
+        <Select
+            size="small"
+            value={value}
+            onChange={(e) => onChange(e.target.value as T)}
+            sx={selectSx}
+        >
+            {options.map(option => (
+                <MenuItem key={String(option.value)} value={option.value} sx={{fontSize: '0.8rem'}}>
+                    {option.label}
+                </MenuItem>
+            ))}
+        </Select>
+    );
+}
+
+const toolbarRowSx = {
+    px: 1, py: 0.5,
+    borderBottom: '1px solid', borderColor: 'divider',
+    flexShrink: 0, bgcolor: '#1E1E1E',
+};
+
+export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
     const isMerged = containers.length > 1;
     const hasNames = containers.some(c => c.name !== undefined) || !isMerged;
 
-    // merged view: which containers are enabled (all by default)
+    // merged view: chips hide a container's lines from display only — the
+    // stream keeps running for all of them so the scrollback survives toggles
     const [disabledIds, setDisabledIds] = useState<ReadonlySet<string>>(new Set());
-    const activeIds = useMemo(
-        () => containers.map(c => c.id).filter(id => !disabledIds.has(id)),
-        [containers, disabledIds],
-    );
 
     const [query, setQuery] = useState("");
     const [filterMode, setFilterMode] = useState(false);
     const [currentMatch, setCurrentMatch] = useState(0);
+    const [streamFilter, setStreamFilter] = useState<StreamFilter>('all');
 
     const [showTimestamps, setShowTimestamps] = useState(() => readBoolPref(PREF_TIMESTAMPS, false));
     const [wrap, setWrap] = useState(() => readBoolPref(PREF_WRAP, true));
@@ -221,7 +270,6 @@ export function LogsViewer({containers}: LogsViewerProps) {
 
     const [paused, setPaused] = useState(false);
     const [autoScroll, setAutoScroll] = useState(true);
-    const [streamFilter, setStreamFilter] = useState<StreamFilter>('all');
 
     // time range: unix seconds once applied; an upper bound ends the stream
     const [range, setRange] = useState<{ since?: number; until?: number }>({});
@@ -231,13 +279,14 @@ export function LogsViewer({containers}: LogsViewerProps) {
 
     const theme = light ? LIGHT_THEME : DARK_THEME;
 
-    const {entries, status, clear} = useLogsStream({
-        containerIds: activeIds,
+    const allIds = useMemo(() => containers.map(c => c.id), [containers]);
+    const {entries, status, lastError, clear} = useLogsStream({
+        containerIds: allIds,
         tail,
         since: range.since,
         until: range.until,
         follow: range.until === undefined,
-        paused,
+        paused: paused || !isActive,
     });
 
     const boolToggle = (key: string, set: (fn: (prev: boolean) => boolean) => void) => () => set(prev => {
@@ -259,21 +308,29 @@ export function LogsViewer({containers}: LogsViewerProps) {
         setFontSize(value);
     };
 
-    const lowerQuery = query.trim().toLowerCase();
+    const logQuery = useMemo(() => compileQuery(query), [query]);
     const displayed = useMemo(() => {
         const wantedStream = streamFilter === 'stdout' ? 1 : streamFilter === 'stderr' ? 2 : 0;
-        let visible = wantedStream === 0 ? entries : entries.filter(e => e.stream === wantedStream);
-        if (filterMode && lowerQuery) {
-            visible = visible.filter(e => matchesQuery(e, lowerQuery));
+        let visible = entries;
+        if (isMerged && disabledIds.size > 0) {
+            visible = visible.filter(e => !disabledIds.has(e.containerId) || e.stream === STREAM_INTERNAL);
+        }
+        if (wantedStream !== 0) {
+            visible = visible.filter(e => e.stream === wantedStream || e.stream === STREAM_INTERNAL);
+        }
+        if (filterMode && logQuery) {
+            visible = visible.filter(e => matchesQuery(e, logQuery));
         }
         return visible;
-    }, [entries, streamFilter, filterMode, lowerQuery]);
+    }, [entries, isMerged, disabledIds, streamFilter, filterMode, logQuery]);
+
     const matchIds = useMemo(
-        () => (lowerQuery ? displayed.filter(e => matchesQuery(e, lowerQuery)).map(e => e.id) : []),
-        [displayed, lowerQuery],
+        () => (logQuery ? displayed.filter(e => matchesQuery(e, logQuery)).map(e => e.id) : []),
+        [displayed, logQuery],
     );
+    // single clamped cursor: the raw state may go stale when matches shrink
     const boundedMatch = matchIds.length === 0 ? 0 : Math.min(currentMatch, matchIds.length - 1);
-    const currentMatchId = matchIds.length > 0 ? matchIds[boundedMatch] : undefined;
+    const currentMatchId = matchIds[boundedMatch];
 
     const colorFor = useCallback((containerId: string) => {
         if (!isMerged) return theme.singleName;
@@ -285,8 +342,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const programmaticScroll = useRef(false);
 
-    useEffect(() => {
-        if (!autoScroll || paused) return;
+    const scrollToBottom = useCallback(() => {
         const el = scrollRef.current;
         if (!el) return;
         programmaticScroll.current = true;
@@ -294,7 +350,12 @@ export function LogsViewer({containers}: LogsViewerProps) {
         requestAnimationFrame(() => {
             programmaticScroll.current = false;
         });
-    }, [entries, autoScroll, paused, wrap, showTimestamps, fontSize]);
+    }, []);
+
+    useEffect(() => {
+        if (!autoScroll || paused || !isActive) return;
+        scrollToBottom();
+    }, [entries, autoScroll, paused, isActive, wrap, showTimestamps, fontSize, scrollToBottom]);
 
     const handleScroll = () => {
         if (programmaticScroll.current) return;
@@ -322,8 +383,9 @@ export function LogsViewer({containers}: LogsViewerProps) {
     }, [matchIds, boundedMatch, scrollToEntry]);
 
     // --- clipboard / file export ---
+    const {handleCopy: copyText, copiedId} = useCopyButton();
     const exportText = () => logsToText(displayed, showTimestamps, showNames && hasNames);
-    const handleCopy = () => navigator.clipboard?.writeText(exportText());
+    const handleCopy = () => copyText(exportText());
     const handleDownload = () => {
         const label = isMerged ? 'stack' : (containers[0]?.name ?? containers[0]?.id.substring(0, 12) ?? 'container');
         const blob = new Blob([exportText()], {type: 'text/plain'});
@@ -331,7 +393,9 @@ export function LogsViewer({containers}: LogsViewerProps) {
         const a = document.createElement('a');
         a.href = url;
         a.download = `${label}-logs.txt`;
+        document.body.appendChild(a);
         a.click();
+        a.remove();
         URL.revokeObjectURL(url);
     };
 
@@ -353,6 +417,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
     };
     const rangeActive = range.since !== undefined || range.until !== undefined;
 
+    const enabledCount = containers.length - disabledIds.size;
     const toggleContainer = (id: string) => {
         setDisabledIds(prev => {
             if (prev.has(id)) {
@@ -360,8 +425,8 @@ export function LogsViewer({containers}: LogsViewerProps) {
                 next.delete(id);
                 return next;
             }
-            // never disable the last enabled container
-            if (activeIds.length <= 1) return prev;
+            // never hide the last visible container
+            if (enabledCount <= 1) return prev;
             return new Set(prev).add(id);
         });
     };
@@ -375,14 +440,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
     return (
         <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: theme.bg}}>
             {/* toolbar */}
-            <Stack
-                direction="row"
-                spacing={0.5}
-                alignItems="center"
-                flexWrap="wrap"
-                useFlexGap
-                sx={{px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0, bgcolor: '#1E1E1E'}}
-            >
+            <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={toolbarRowSx}>
                 <TextField
                     size="small"
                     placeholder="Search logs..."
@@ -408,7 +466,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
                         },
                     }}
                 />
-                {lowerQuery && (
+                {logQuery && (
                     <>
                         <Typography variant="caption" sx={{color: 'text.secondary', minWidth: 48, textAlign: 'center'}}>
                             {matchIds.length === 0 ? '0/0' : `${boundedMatch + 1}/${matchIds.length}`}
@@ -433,42 +491,25 @@ export function LogsViewer({containers}: LogsViewerProps) {
 
                 <Box sx={{flexGrow: 1}}/>
 
-                <Select
-                    size="small"
+                <ToolbarSelect<StreamFilter>
                     value={streamFilter}
-                    onChange={(e) => setStreamFilter(e.target.value as StreamFilter)}
-                    sx={{fontSize: '0.8rem', '& .MuiSelect-select': {py: 0.5}}}
-                >
-                    {STREAM_OPTIONS.map(option => (
-                        <MenuItem key={option.value} value={option.value} sx={{fontSize: '0.8rem'}}>
-                            {option.label}
-                        </MenuItem>
-                    ))}
-                </Select>
-                <Select
-                    size="small"
+                    onChange={setStreamFilter}
+                    options={[
+                        {value: 'all', label: 'All streams'},
+                        {value: 'stdout', label: 'stdout'},
+                        {value: 'stderr', label: 'stderr'},
+                    ]}
+                />
+                <ToolbarSelect<number>
                     value={tail}
-                    onChange={(e) => changeTail(Number(e.target.value))}
-                    sx={{fontSize: '0.8rem', '& .MuiSelect-select': {py: 0.5}}}
-                >
-                    {TAIL_OPTIONS.map(option => (
-                        <MenuItem key={option} value={option} sx={{fontSize: '0.8rem'}}>
-                            {option} lines
-                        </MenuItem>
-                    ))}
-                </Select>
-                <Select
-                    size="small"
+                    onChange={changeTail}
+                    options={TAIL_OPTIONS.map(v => ({value: v, label: `${v} lines`}))}
+                />
+                <ToolbarSelect<number>
                     value={fontSize}
-                    onChange={(e) => changeFontSize(Number(e.target.value))}
-                    sx={{fontSize: '0.8rem', '& .MuiSelect-select': {py: 0.5}}}
-                >
-                    {FONT_SIZES.map(option => (
-                        <MenuItem key={option} value={option} sx={{fontSize: '0.8rem'}}>
-                            {option}px
-                        </MenuItem>
-                    ))}
-                </Select>
+                    onChange={changeFontSize}
+                    options={FONT_SIZES.map(v => ({value: v, label: `${v}px`}))}
+                />
 
                 <Tooltip title="Time range">
                     <IconButton size="small" sx={iconSx(rangeActive)} onClick={(e) => setRangeAnchor(e.currentTarget)}>
@@ -506,10 +547,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
                     <IconButton size="small" sx={iconSx(autoScroll)} onClick={() => {
                         const next = !autoScroll;
                         setAutoScroll(next);
-                        if (next) {
-                            const el = scrollRef.current;
-                            if (el) el.scrollTop = el.scrollHeight;
-                        }
+                        if (next) scrollToBottom();
                     }}>
                         <VerticalAlignBottomIcon sx={{fontSize: 18}}/>
                     </IconButton>
@@ -524,9 +562,11 @@ export function LogsViewer({containers}: LogsViewerProps) {
                         <DeleteSweepIcon sx={{fontSize: 18}}/>
                     </IconButton>
                 </Tooltip>
-                <Tooltip title="Copy to clipboard">
+                <Tooltip title={copiedId ? "Copied!" : "Copy to clipboard"}>
                     <IconButton size="small" sx={iconSx(false)} onClick={handleCopy}>
-                        <ContentCopyIcon sx={{fontSize: 18}}/>
+                        {copiedId
+                            ? <CheckIcon sx={{fontSize: 18, color: '#66bb6a'}}/>
+                            : <ContentCopyIcon sx={{fontSize: 18}}/>}
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Download as .txt">
@@ -535,23 +575,19 @@ export function LogsViewer({containers}: LogsViewerProps) {
                     </IconButton>
                 </Tooltip>
 
-                <Stack direction="row" spacing={0.75} alignItems="center" sx={{ml: 0.5}}>
-                    <Box sx={{width: 8, height: 8, borderRadius: '50%', bgcolor: statusMeta.color}}/>
-                    <Typography variant="caption" sx={{color: 'text.secondary'}}>
-                        {statusMeta.label} · {displayed.length}
-                    </Typography>
-                </Stack>
+                <Tooltip title={lastError ? `Last error: ${lastError}` : ""}>
+                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ml: 0.5}}>
+                        <Box sx={{width: 8, height: 8, borderRadius: '50%', bgcolor: statusMeta.color}}/>
+                        <Typography variant="caption" sx={{color: 'text.secondary'}}>
+                            {statusMeta.label} · {displayed.length}
+                        </Typography>
+                    </Stack>
+                </Tooltip>
             </Stack>
 
             {/* merged view: container chips */}
             {isMerged && (
-                <Stack
-                    direction="row"
-                    spacing={0.5}
-                    flexWrap="wrap"
-                    useFlexGap
-                    sx={{px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0, bgcolor: '#1E1E1E'}}
-                >
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={toolbarRowSx}>
                     {containers.map((c, idx) => {
                         const enabled = !disabledIds.has(c.id);
                         return (
@@ -594,7 +630,9 @@ export function LogsViewer({containers}: LogsViewerProps) {
             >
                 {displayed.length === 0 ? (
                     <Typography variant="body2" sx={{color: theme.timestamp, p: 2, fontStyle: 'italic'}}>
-                        {status === 'connecting' ? 'Waiting for logs...' : 'No log lines'}
+                        {status === 'connecting' ? 'Waiting for logs...'
+                            : lastError ? `No log lines — ${lastError}`
+                                : 'No log lines'}
                     </Typography>
                 ) : (
                     displayed.map((entry, index) => (
@@ -602,7 +640,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
                             key={entry.id}
                             entry={entry}
                             lineNumber={index + 1}
-                            lowerQuery={lowerQuery}
+                            query={logQuery}
                             isCurrentMatch={entry.id === currentMatchId}
                             showTimestamps={showTimestamps}
                             showLineNumbers={showLineNumbers}

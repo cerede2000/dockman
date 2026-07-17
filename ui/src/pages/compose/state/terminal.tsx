@@ -96,37 +96,48 @@ export function createTab(wsUrl: string, title: string, interactive: boolean) {
     return tab;
 }
 
+// tabs are stored under an explicit unique key (host/alias/file/container)
+// while title stays the short display name — short names may collide across
+// stacks, keys must not
 export const useContainerExec = create<{
     execParams: (
+        key: string,
         title: string,
         wsUrl: string,
         interactive: boolean,
     ) => void
 }>(() => ({
-    execParams: (title, wsUrl, interactive) => {
+    execParams: (key, title, wsUrl, interactive) => {
         useTerminalAction.getState().open()
 
-        const tab = createTab(wsUrl, title, interactive);
+        const tabsStore = useTerminalTabs.getState()
+        if (tabsStore.tabs.has(key)) {
+            // never replace a live shell session, just focus it
+            tabsStore.setActiveTab(key)
+            return
+        }
 
-        useTerminalTabs.getState().addTab(title, tab)
+        tabsStore.addTab(key, createTab(wsUrl, title, interactive))
     },
 }))
 
 // opens (or re-activates) a structured log viewer tab in the bottom panel
 export const useLogsPanel = create<{
-    openLogs: (title: string, containers: { id: string; name?: string }[]) => void
+    openLogs: (key: string, title: string, containers: { id: string; name?: string }[]) => void
 }>(() => ({
-    openLogs: (title, containers) => {
+    openLogs: (key, title, containers) => {
         useTerminalAction.getState().open()
 
         const tabsStore = useTerminalTabs.getState()
-        if (tabsStore.tabs.has(title)) {
-            // keep the running stream and its buffer, just focus it
-            tabsStore.setActiveTab(title)
+        if (tabsStore.tabs.has(key)) {
+            // keep the buffer, but refresh the container set: ids go stale
+            // when a stack is redeployed (recreated containers get new ids)
+            tabsStore.updateTab(key, tab => ({...tab, title, logsContainers: containers}))
+            tabsStore.setActiveTab(key)
             return
         }
 
-        tabsStore.addTab(title, {
+        tabsStore.addTab(key, {
             id: makeID(),
             title,
             interactive: false,

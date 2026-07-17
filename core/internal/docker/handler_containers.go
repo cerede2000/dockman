@@ -7,8 +7,10 @@ import (
 	"io"
 	"maps"
 	"net/netip"
+	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -286,8 +288,16 @@ func (h *Handler) ContainerLogs(ctx context.Context, req *connect.Request[v1.Con
 }
 
 // logsKeepAliveInterval paces empty LogLine frames so proxies do not cut the
-// stream during quiet periods
-const logsKeepAliveInterval = 30 * time.Second
+// stream during quiet periods. 5s survives even aggressive idle timeouts
+// (Traefik defaults to 10s); DOCKMAN_LOGS_KEEPALIVE overrides it in seconds.
+var logsKeepAliveInterval = func() time.Duration {
+	if raw := os.Getenv("DOCKMAN_LOGS_KEEPALIVE"); raw != "" {
+		if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 5 * time.Second
+}()
 
 func (h *Handler) ContainerLogsStream(ctx context.Context, req *connect.Request[v1.LogsStreamRequest], responseStream *connect.ServerStream[v1.LogLine]) error {
 	ids := req.Msg.GetContainerIds()
@@ -303,9 +313,9 @@ func (h *Handler) ContainerLogsStream(ctx context.Context, req *connect.Request[
 	defer cancel()
 
 	lines := make(chan contSrv.LogLine, 256)
-	streamDone := make(chan error, 1)
+	streamErr := make(chan error, 1)
 	go func() {
-		streamDone <- dkSrv.Container.LogsStream(streamCtx, ids, contSrv.LogsStreamOptions{
+		streamErr <- dkSrv.Container.LogsStream(streamCtx, ids, contSrv.LogsStreamOptions{
 			Tail:   req.Msg.GetTail(),
 			Since:  req.Msg.GetSince(),
 			Until:  req.Msg.GetUntil(),
@@ -316,6 +326,9 @@ func (h *Handler) ContainerLogsStream(ctx context.Context, req *connect.Request[
 			case <-streamCtx.Done():
 			}
 		})
+		// all reader goroutines are done: closing drains the buffered lines
+		// through the single receive loop below, then ends the stream
+		close(lines)
 	}()
 
 	keepalive := time.NewTicker(logsKeepAliveInterval)
@@ -325,21 +338,12 @@ func (h *Handler) ContainerLogsStream(ctx context.Context, req *connect.Request[
 		select {
 		case <-ctx.Done():
 			return nil
-		case line := <-lines:
+		case line, ok := <-lines:
+			if !ok {
+				return <-streamErr
+			}
 			if err := responseStream.Send(logLineToProto(line)); err != nil {
 				return err
-			}
-		case err := <-streamDone:
-			// send what the readers emitted before they finished
-			for {
-				select {
-				case line := <-lines:
-					if sendErr := responseStream.Send(logLineToProto(line)); sendErr != nil {
-						return sendErr
-					}
-				default:
-					return err
-				}
 			}
 		case <-keepalive.C:
 			if err := responseStream.Send(&v1.LogLine{}); err != nil {
