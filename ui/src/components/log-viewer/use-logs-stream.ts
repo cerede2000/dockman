@@ -14,6 +14,8 @@ export interface LogsStreamParams {
     follow: boolean;
     // pausing (or suspending a hidden tab) closes the stream, keeps the buffer
     paused: boolean;
+    // bump to drop the buffer and reload the stream from scratch
+    reloadKey?: number;
 }
 
 const FLUSH_DELAY_MS = 80;
@@ -32,10 +34,13 @@ export function useLogsStream(params: LogsStreamParams) {
     const [lastError, setLastError] = useState("");
 
     const idsKey = params.containerIds.join(',');
-    const {tail, since, until, follow, paused} = params;
+    const {tail, since, until, follow, paused, reloadKey = 0} = params;
 
     // newest daemon timestamp seen per container, used to bound resumes
     const lastNanoRef = useRef<Map<string, bigint>>(new Map());
+    // newest timestamp seen overall: lines without one inherit it as their
+    // ordering key so they keep their arrival position in the sorted buffer
+    const sortKeyRef = useRef(0n);
 
     const clear = useCallback(() => {
         setEntries([]);
@@ -45,7 +50,8 @@ export function useLogsStream(params: LogsStreamParams) {
     useEffect(() => {
         setEntries([]);
         lastNanoRef.current = new Map();
-    }, [client, idsKey, tail, since, until, follow]);
+        sortKeyRef.current = 0n;
+    }, [client, idsKey, tail, since, until, follow, reloadKey]);
 
     useEffect(() => {
         if (!idsKey) {
@@ -143,7 +149,11 @@ export function useLogsStream(params: LogsStreamParams) {
                         }
 
                         const segments = ansiTracker(`${line.containerId}|${line.stream}`, line.text);
-                        pending.push(toLogEntry(line, segments));
+                        if (line.timeNano > sortKeyRef.current) {
+                            sortKeyRef.current = line.timeNano;
+                        }
+                        const sortKey = line.timeNano !== 0n ? line.timeNano : sortKeyRef.current;
+                        pending.push(toLogEntry(line, segments, sortKey));
                         scheduleFlush();
                     }
 
@@ -172,7 +182,7 @@ export function useLogsStream(params: LogsStreamParams) {
             abort.abort();
             if (flushTimer !== null) clearTimeout(flushTimer);
         };
-    }, [client, idsKey, tail, since, until, follow, paused]);
+    }, [client, idsKey, tail, since, until, follow, paused, reloadKey]);
 
     return {entries, status, lastError, clear};
 }

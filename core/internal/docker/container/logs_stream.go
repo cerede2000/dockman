@@ -120,7 +120,51 @@ func (s *Service) LogsStream(ctx context.Context, containerIDs []string, opts Lo
 	return nil
 }
 
+// streamContainerLogs keeps a container's logs flowing for as long as the
+// request lives. The daemon ends a follow stream every time the container
+// stops, so in follow mode the reader is reopened, resuming with nanosecond
+// precision right after the last delivered line — a restarted container keeps
+// logging into the same stream instead of going silent.
 func (s *Service) streamContainerLogs(ctx context.Context, containerID string, logOpts client.ContainerLogsOptions, emit func(LogLine)) error {
+	var lastNano int64
+	emitTracked := func(l LogLine) {
+		if l.TimeNano > lastNano {
+			lastNano = l.TimeNano
+		}
+		emit(l)
+	}
+
+	opts := logOpts
+	reopenDelay := time.Second
+	for {
+		emittedBefore := lastNano
+		err := s.openContainerLogsOnce(ctx, containerID, opts, emitTracked)
+		if err != nil || !opts.Follow || ctx.Err() != nil {
+			return err
+		}
+
+		// resume just past the last delivered line; Tail switches to "all" so
+		// nothing inside the resume window is skipped
+		if lastNano > 0 {
+			opts.Since = time.Unix(0, lastNano+1).UTC().Format(time.RFC3339Nano)
+			opts.Tail = "all"
+		}
+
+		// a container that stays down should not be polled aggressively
+		if lastNano > emittedBefore {
+			reopenDelay = time.Second
+		} else {
+			reopenDelay = min(reopenDelay*2, 10*time.Second)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(reopenDelay):
+		}
+	}
+}
+
+func (s *Service) openContainerLogsOnce(ctx context.Context, containerID string, logOpts client.ContainerLogsOptions, emit func(LogLine)) error {
 	inspect, err := s.Client.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return fmt.Errorf("unable to inspect container: %w", err)
@@ -133,10 +177,13 @@ func (s *Service) streamContainerLogs(ctx context.Context, containerID string, l
 	}
 	defer func() { _ = reader.Close() }()
 
-	// the demux loop below blocks on reader.Reader; closing the reader when the
-	// client goes away is what unblocks it
+	// the demux loop below blocks on reader.Reader; closing the reader when
+	// the client goes away is what unblocks it. openCtx scopes the closer
+	// goroutine to this open, so reopen cycles do not accumulate goroutines.
+	openCtx, openCancel := context.WithCancel(ctx)
+	defer openCancel()
 	go func() {
-		<-ctx.Done()
+		<-openCtx.Done()
 		_ = reader.Close()
 	}()
 
