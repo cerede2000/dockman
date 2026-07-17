@@ -334,7 +334,17 @@ const FileTabBar = ({track}: { track: number }) => {
     const tabLabels = useMemo(() => buildTabLabels(tablist), [tablist])
 
     return (
-        <Box sx={{borderBottom: 1, borderColor: 'divider', flexShrink: 0}}>
+        <Box
+            sx={{borderBottom: 1, borderColor: 'divider', flexShrink: 0}}
+            // accept drops over the whole strip (gaps, whitespace) so no
+            // release point triggers the browser's snap-back animation
+            onDragOver={(e) => {
+                if (!draggedTab) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+            }}
+            onDrop={(e) => e.preventDefault()}
+        >
             <Tabs
                 value={currentFilename}
                 onChange={(_event, value) => onTabClick(value as string, track)}
@@ -362,8 +372,14 @@ const FileTabBar = ({track}: { track: number }) => {
                                 setDraggedTab(tabFilename);
                             }}
                             onDragOver={(e) => {
-                                if (!draggedTab || draggedTab === tabFilename) return;
+                                if (!draggedTab) return;
+                                // always accept the drop — releasing over an
+                                // unaccepted zone (including the dragged tab
+                                // itself) plays the browser's translucent
+                                // snap-back-to-origin animation
                                 e.preventDefault();
+                                e.dataTransfer.dropEffect = 'move';
+                                if (draggedTab === tabFilename) return;
                                 // Only swap once the pointer crosses the middle of the
                                 // hovered tab in the travel direction: tabs have
                                 // variable widths, and swapping on first contact makes
