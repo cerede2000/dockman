@@ -8,14 +8,17 @@ export interface LogEntry {
     // styled segments parsed once on arrival, with cross-line SGR continuity
     segments: AnsiSegment[];
     timeNano: bigint; // 0n when the line had no parsable daemon timestamp
-    stream: number; // 1 = stdout, 2 = stderr
+    stream: number; // 0 = dockman-internal notice, 1 = stdout, 2 = stderr
     containerId: string;
     containerName: string;
 }
 
+// lines dockman itself injects (stream failures) — not container output
+export const STREAM_INTERNAL = 0;
+
 // soft cap: the buffer may grow to 2x before being compacted back, so steady
 // streaming does not reslice the whole array on every batch
-export const LOG_BUFFER_CAP = 2000;
+const LOG_BUFFER_CAP = 2000;
 
 let nextEntryId = 1;
 
@@ -47,7 +50,7 @@ export function appendEntries(buffer: LogEntry[], batch: LogEntry[]): LogEntry[]
 }
 
 // merged-view container prefix palette, assigned by position in the request
-export const CONTAINER_COLORS = [
+const CONTAINER_COLORS = [
     '#64b5f6', '#81c784', '#ffb74d', '#e57373', '#ba68c8',
     '#f06292', '#4db6ac', '#fff176', '#a1887f', '#90a4ae',
 ];
@@ -63,9 +66,25 @@ export function formatLogTime(timeNano: bigint): string {
         + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 }
 
-export const matchesQuery = (entry: LogEntry, lowerQuery: string) =>
-    entry.text.toLowerCase().includes(lowerQuery)
-    || entry.containerName.toLowerCase().includes(lowerQuery);
+// case-insensitive matching via regex on the original text: unlike a
+// toLowerCase+indexOf scan, offsets always align (case folding can change
+// string length, e.g. İ), and there is no per-line lowered copy to allocate
+export interface LogQuery {
+    // non-global, for boolean tests
+    test: RegExp;
+    // global twin, for highlight scanning
+    scan: RegExp;
+}
+
+export function compileQuery(raw: string): LogQuery | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return {test: new RegExp(escaped, 'i'), scan: new RegExp(escaped, 'gi')};
+}
+
+export const matchesQuery = (entry: LogEntry, query: LogQuery) =>
+    query.test.test(entry.text) || query.test.test(entry.containerName);
 
 // plain-text export used by copy and download
 export function logsToText(entries: LogEntry[], withTimestamps: boolean, withNames: boolean): string {
@@ -84,25 +103,26 @@ export interface HighlightedPiece {
     isMatch: boolean;
 }
 
-export function highlightSegments(segments: AnsiSegment[], lowerQuery: string): HighlightedPiece[] {
-    if (!lowerQuery) return segments.map(segment => ({segment, isMatch: false}));
-
+export function highlightSegments(segments: AnsiSegment[], query: LogQuery): HighlightedPiece[] {
     const pieces: HighlightedPiece[] = [];
     for (const segment of segments) {
-        const lower = segment.text.toLowerCase();
+        const text = segment.text;
         let from = 0;
-        while (from < segment.text.length) {
-            const at = lower.indexOf(lowerQuery, from);
-            if (at < 0) {
-                pieces.push({segment: {...segment, text: segment.text.slice(from)}, isMatch: false});
-                break;
+        query.scan.lastIndex = 0;
+        for (let m = query.scan.exec(text); m !== null; m = query.scan.exec(text)) {
+            if (m.index > from) {
+                pieces.push({segment: {...segment, text: text.slice(from, m.index)}, isMatch: false});
             }
-            if (at > from) {
-                pieces.push({segment: {...segment, text: segment.text.slice(from, at)}, isMatch: false});
+            if (m[0] !== "") {
+                pieces.push({segment: {...segment, text: m[0]}, isMatch: true});
+                from = m.index + m[0].length;
             }
-            pieces.push({segment: {...segment, text: segment.text.slice(at, at + lowerQuery.length)}, isMatch: true});
-            from = at + lowerQuery.length;
+            // never spin on a zero-length match
+            if (m[0] === "") query.scan.lastIndex++;
+        }
+        if (from < text.length) {
+            pieces.push({segment: {...segment, text: text.slice(from)}, isMatch: false});
         }
     }
-    return pieces.filter(p => p.segment.text !== "");
+    return pieces;
 }

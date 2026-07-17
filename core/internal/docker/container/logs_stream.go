@@ -20,8 +20,19 @@ const (
 	// client does not ask for a specific amount
 	defaultStreamTail = 1000
 
-	StreamStdout int32 = 1
-	StreamStderr int32 = 2
+	// mergedTailFloor is the per-container minimum when a merged request
+	// splits its tail budget across containers
+	mergedTailFloor = 50
+
+	// maxPartialLine force-flushes a line that never sees a newline
+	// (\r-only progress output) so the carry buffer stays bounded
+	maxPartialLine = 64 * 1024
+
+	// StreamInternal tags lines dockman itself injects (stream failures);
+	// they carry no daemon timestamp and are not container output
+	StreamInternal int32 = 0
+	StreamStdout   int32 = 1
+	StreamStderr   int32 = 2
 )
 
 // LogsStreamOptions mirrors the ContainerLogsStream request
@@ -54,6 +65,17 @@ func (s *Service) LogsStream(ctx context.Context, containerIDs []string, opts Lo
 	if tail <= 0 {
 		tail = defaultStreamTail
 	}
+	// merged view: treat tail as a global budget so N containers do not each
+	// replay the full amount (the client caps its buffer anyway)
+	if n := int32(len(containerIDs)); n > 1 {
+		perContainer := tail / n
+		if perContainer < mergedTailFloor {
+			perContainer = mergedTailFloor
+		}
+		if perContainer < tail {
+			tail = perContainer
+		}
+	}
 
 	logOpts := client.ContainerLogsOptions{
 		ShowStdout: true,
@@ -82,13 +104,14 @@ func (s *Service) LogsStream(ctx context.Context, containerIDs []string, opts Lo
 			err := s.streamContainerLogs(streamCtx, containerID, logOpts, emit)
 			if err != nil && streamCtx.Err() == nil {
 				log.Warn().Err(err).Str("container", containerID).Msg("container log stream failed")
-				// surface the failure in the viewer instead of dying silently
+				// surface the failure in the viewer instead of dying silently;
+				// StreamInternal + no timestamp keeps it out of the client's
+				// replay watermark and reconnect pacing
 				emit(LogLine{
 					ContainerID:   containerID,
 					ContainerName: containerID,
 					Text:          "dockman: log stream error: " + err.Error(),
-					TimeNano:      time.Now().UnixNano(),
-					Stream:        StreamStderr,
+					Stream:        StreamInternal,
 				})
 			}
 		}(id)
@@ -135,7 +158,8 @@ func (s *Service) streamContainerLogs(ctx context.Context, containerID string, l
 }
 
 // logLineWriter splits a raw log byte stream into lines, keeping the trailing
-// partial line between writes until its newline (or Flush) arrives
+// partial line between writes until its newline (or Flush) arrives; the carry
+// buffer is reused across writes and force-flushed if it grows pathological
 type logLineWriter struct {
 	id      string
 	name    string
@@ -145,34 +169,49 @@ type logLineWriter struct {
 }
 
 func (w *logLineWriter) Write(p []byte) (int, error) {
-	n := len(p)
+	w.partial = append(w.partial, p...)
+
+	start := 0
 	for {
-		idx := bytes.IndexByte(p, '\n')
+		idx := bytes.IndexByte(w.partial[start:], '\n')
 		if idx < 0 {
-			w.partial = append(w.partial, p...)
-			return n, nil
+			break
 		}
-		line := p[:idx]
-		if len(w.partial) > 0 {
-			line = append(w.partial, line...)
-			w.partial = nil
-		}
-		w.emitLine(line)
-		p = p[idx+1:]
+		w.emitLine(w.partial[start : start+idx])
+		start += idx + 1
 	}
+	if start > 0 {
+		kept := copy(w.partial, w.partial[start:])
+		w.partial = w.partial[:kept]
+	}
+
+	// \r-only progress output never produces a newline: flush a bounded
+	// snapshot instead of growing forever
+	if len(w.partial) > maxPartialLine {
+		w.emitLine(w.partial)
+		w.partial = w.partial[:0]
+	}
+	return len(p), nil
 }
 
 // Flush emits the pending partial line, if any; call it when the stream ends
 func (w *logLineWriter) Flush() {
 	if len(w.partial) > 0 {
 		w.emitLine(w.partial)
-		w.partial = nil
+		w.partial = w.partial[:0]
 	}
 }
 
 func (w *logLineWriter) emitLine(line []byte) {
 	text := strings.TrimSuffix(string(line), "\r")
+	// the daemon timestamp sits at the start of the line: take it off before
+	// collapsing any carriage-return overwrites
 	timeNano, text := splitLogTimestamp(text)
+	// carriage-return overwrites (progress bars): a terminal only shows what
+	// was written after the last \r, so keep exactly that
+	if idx := strings.LastIndexByte(text, '\r'); idx >= 0 {
+		text = text[idx+1:]
+	}
 	w.emit(LogLine{
 		ContainerID:   w.id,
 		ContainerName: w.name,
@@ -189,7 +228,13 @@ func splitLogTimestamp(line string) (int64, string) {
 	if idx <= 0 {
 		return 0, line
 	}
-	ts, err := time.Parse(time.RFC3339Nano, line[:idx])
+	// cheap shape check before the (comparatively) expensive time.Parse:
+	// daemon timestamps always look like 2006-01-02T15:04:05...
+	head := line[:idx]
+	if len(head) < 20 || head[4] != '-' || head[7] != '-' || head[10] != 'T' {
+		return 0, line
+	}
+	ts, err := time.Parse(time.RFC3339Nano, head)
 	if err != nil {
 		return 0, line
 	}
