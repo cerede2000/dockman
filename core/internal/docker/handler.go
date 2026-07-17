@@ -242,6 +242,12 @@ func (h *Handler) ComposeUpdate(ctx context.Context, req *connect.Request[v1.Com
 	//return nil
 }
 
+func (h *Handler) DockerCommand(ctx context.Context, req *connect.Request[v1.DockerCommandRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
+	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
+		return dkSrv.Compose.RunDockerCommand(ctx, req.Msg.GetCommand(), writer)
+	})
+}
+
 func (h *Handler) ComposeValidate(ctx context.Context, req *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ComposeValidateResponse], error) {
 	var validationResult []error
 

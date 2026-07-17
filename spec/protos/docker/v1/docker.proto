@@ -39,6 +39,10 @@ service DockerService {
   rpc ComposeValidate(ComposeFile) returns (ComposeValidateResponse) {}
   rpc ComposeFileStatus(ComposeFileStatusRequest) returns (ComposeFileStatusResponse) {}
 
+  // runs a user-provided docker CLI command on the selected host and streams
+  // its combined output; only the docker binary is allowed
+  rpc DockerCommand(DockerCommandRequest) returns (stream LogsMessage) {}
+
   // images
   rpc ImageList(ListImagesRequest) returns (ListImagesResponse) {}
   rpc ImageRemove(RemoveImageRequest) returns (RemoveImageResponse) {}
@@ -411,6 +415,11 @@ message LogLine {
   int64 timeNano = 4;
   // 1 = stdout, 2 = stderr
   int32 stream = 5;
+}
+
+message DockerCommandRequest {
+  // full command line, e.g. "docker run --rm -p 8080:80 nginx:alpine"
+  string command = 1;
 }
 
 message StatsResponse {

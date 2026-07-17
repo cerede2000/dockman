@@ -5,6 +5,7 @@ import TerminalIcon from '@mui/icons-material/Terminal';
 import {deployActionsConfig, useComposeAction} from "../state/compose.tsx";
 import {DockerService} from "../../../gen/docker/v1/docker_pb.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
+import {DockerCommandButton} from "./docker-command-button.tsx";
 
 export function ComposeActionHeaders({selectedServices, fetchContainers}: {
     selectedServices: string[];
@@ -69,6 +70,7 @@ export function ComposeActionHeaders({selectedServices, fetchContainers}: {
                     {action.name.charAt(0).toUpperCase() + action.name.slice(1)}
                 </Button>
             ))}
+            <DockerCommandButton/>
             {lastRun && (
                 <Tooltip title={lastRun.running
                     ? `${lastRun.action} running — show output`
