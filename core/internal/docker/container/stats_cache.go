@@ -146,15 +146,28 @@ func (s *Service) collectStats(ctx context.Context, containers []container.Summa
 	return out
 }
 
-func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info container.Summary) (Stats, error) {
-	stat := Stats{
+// MetricsPending marks a Stats carrying only identity fields, streamed ahead
+// of the real reading so the UI paints rows instantly while the daemon
+// samples (~1s per container). The UI renders metric cells as pending until
+// the real stats replace the row.
+const MetricsPending = -1
+
+// IdentityStats returns the summary's identity fields only, metrics pending.
+func IdentityStats(info container.Summary) Stats {
+	return Stats{
 		ID:        info.ID[:12],
 		Name:      info.Names[0],
 		Image:     info.Image,
 		State:     string(info.State),
 		Health:    summaryHealth(info),
 		IPAddress: summaryIPs(info),
+		CPUUsage:  MetricsPending,
 	}
+}
+
+func (s *Service) statsFor(ctx context.Context, cache *hostStatsCache, info container.Summary) (Stats, error) {
+	stat := IdentityStats(info)
+	stat.CPUUsage = 0
 
 	// inspect-only fields, served from cache while the container's status text
 	// is unchanged; non-fatal so a race with a disappearing container can't

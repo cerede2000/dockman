@@ -279,6 +279,15 @@ func (h *Handler) ContainerStatsStream(ctx context.Context, req *connect.Request
 		}
 	}
 
+	// paint-first: emit each container's identity immediately (metrics
+	// pending) so every view fills in the time of a container listing; the
+	// real stats replace the rows as each ~1s read completes
+	for _, ct := range containers {
+		if err := stream.Send(ToRPCStat(contSrv.IdentityStats(ct))); err != nil {
+			return err
+		}
+	}
+
 	var sendErr error
 	dkSrv.Container.StatsStream(ctx, containers, func(st contSrv.Stats) {
 		if sendErr != nil {
