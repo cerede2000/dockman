@@ -112,6 +112,33 @@ export const useContainerExec = create<{
     },
 }))
 
+// opens (or re-activates) a structured log viewer tab in the bottom panel
+export const useLogsPanel = create<{
+    openLogs: (title: string, containers: { id: string; name?: string }[]) => void
+}>(() => ({
+    openLogs: (title, containers) => {
+        useTerminalAction.getState().open()
+
+        const tabsStore = useTerminalTabs.getState()
+        if (tabsStore.tabs.has(title)) {
+            // keep the running stream and its buffer, just focus it
+            tabsStore.setActiveTab(title)
+            return
+        }
+
+        tabsStore.addTab(title, {
+            id: makeID(),
+            title,
+            interactive: false,
+            onTerminal: () => {
+            },
+            onClose: () => {
+            },
+            logsContainers: containers,
+        })
+    },
+}))
+
 
 export interface TabTerminal {
     id: string;
@@ -119,6 +146,8 @@ export interface TabTerminal {
     onTerminal: (term: Terminal) => void;
     onClose: () => void;
     interactive: boolean;
+    // when set, the tab hosts the structured log viewer instead of a terminal
+    logsContainers?: { id: string; name?: string }[];
 }
 
 export const useTerminalAction = create<{

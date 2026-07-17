@@ -1,9 +1,17 @@
 // Minimal ANSI SGR parser: turns a raw log line into styled segments that can
 // be rendered as plain React spans (no innerHTML). Non-SGR escape sequences
 // (cursor movement, OSC titles...) are stripped.
+//
+// The 16 base colors are kept as palette indexes so the viewer can resolve
+// them against its dark or light palette at render time; 256-color and
+// truecolor sequences resolve to concrete values.
 
 export interface AnsiSegment {
     text: string;
+    // 0-15 palette index, resolved by the active theme at render time
+    colorIdx?: number;
+    backgroundIdx?: number;
+    // concrete css color (256-color cube / truecolor)
     color?: string;
     background?: string;
     bold?: boolean;
@@ -12,20 +20,24 @@ export interface AnsiSegment {
     underline?: boolean;
 }
 
-// xterm-ish palette tuned for the app's dark background
-const BASE_COLORS = [
+// tuned for the dark log background
+export const ANSI_PALETTE_DARK = [
     '#3f3f3f', '#e57373', '#81c784', '#ffd54f',
     '#64b5f6', '#ba68c8', '#4dd0e1', '#e0e0e0',
-];
-const BRIGHT_COLORS = [
     '#9e9e9e', '#ef9a9a', '#a5d6a7', '#fff176',
     '#90caf9', '#ce93d8', '#80deea', '#ffffff',
 ];
 
+// same hues, darkened to stay readable on a light background
+export const ANSI_PALETTE_LIGHT = [
+    '#424242', '#c62828', '#2e7d32', '#9e7c00',
+    '#1565c0', '#7b1fa2', '#00838f', '#616161',
+    '#757575', '#e53935', '#43a047', '#b8860b',
+    '#1e88e5', '#8e24aa', '#00acc1', '#212121',
+];
+
 function xterm256Color(n: number): string | undefined {
-    if (n < 0 || n > 255) return undefined;
-    if (n < 8) return BASE_COLORS[n];
-    if (n < 16) return BRIGHT_COLORS[n - 8];
+    if (n < 16 || n > 255) return undefined;
     if (n < 232) {
         // 6x6x6 color cube
         const v = n - 16;
@@ -41,12 +53,28 @@ function xterm256Color(n: number): string | undefined {
 }
 
 interface SgrState {
+    colorIdx?: number;
+    backgroundIdx?: number;
     color?: string;
     background?: string;
     bold?: boolean;
     dim?: boolean;
     italic?: boolean;
     underline?: boolean;
+}
+
+function setFg(state: SgrState, idx?: number, concrete?: string) {
+    delete state.colorIdx;
+    delete state.color;
+    if (idx !== undefined) state.colorIdx = idx;
+    if (concrete !== undefined) state.color = concrete;
+}
+
+function setBg(state: SgrState, idx?: number, concrete?: string) {
+    delete state.backgroundIdx;
+    delete state.background;
+    if (idx !== undefined) state.backgroundIdx = idx;
+    if (concrete !== undefined) state.background = concrete;
 }
 
 function applySgr(state: SgrState, params: number[]): SgrState {
@@ -61,22 +89,26 @@ function applySgr(state: SgrState, params: number[]): SgrState {
         else if (p === 22) { delete next.bold; delete next.dim; }
         else if (p === 23) delete next.italic;
         else if (p === 24) delete next.underline;
-        else if (p >= 30 && p <= 37) next.color = BASE_COLORS[p - 30];
-        else if (p === 39) delete next.color;
-        else if (p >= 40 && p <= 47) next.background = BASE_COLORS[p - 40];
-        else if (p === 49) delete next.background;
-        else if (p >= 90 && p <= 97) next.color = BRIGHT_COLORS[p - 90];
-        else if (p >= 100 && p <= 107) next.background = BRIGHT_COLORS[p - 100];
+        else if (p >= 30 && p <= 37) setFg(next, p - 30);
+        else if (p === 39) setFg(next);
+        else if (p >= 40 && p <= 47) setBg(next, p - 40);
+        else if (p === 49) setBg(next);
+        else if (p >= 90 && p <= 97) setFg(next, p - 90 + 8);
+        else if (p >= 100 && p <= 107) setBg(next, p - 100 + 8);
         else if (p === 38 || p === 48) {
             // extended color: 38;5;n or 38;2;r;g;b
-            const target = p === 38 ? 'color' : 'background';
+            const set = p === 38 ? setFg : setBg;
             if (params[i + 1] === 5) {
-                const c = xterm256Color(params[i + 2] ?? -1);
-                if (c) next[target] = c;
+                const n = params[i + 2] ?? -1;
+                if (n >= 0 && n < 16) set(next, n);
+                else {
+                    const c = xterm256Color(n);
+                    if (c) set(next, undefined, c);
+                }
                 i += 2;
             } else if (params[i + 1] === 2) {
                 const [r, g, b] = [params[i + 2] ?? 0, params[i + 3] ?? 0, params[i + 4] ?? 0];
-                next[target] = `rgb(${r},${g},${b})`;
+                set(next, undefined, `rgb(${r},${g},${b})`);
                 i += 4;
             }
         }
