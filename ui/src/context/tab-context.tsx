@@ -22,7 +22,7 @@ interface EditorState {
     lastOpened: Record<number, string>;
 
     update: (filename: string, details: Partial<TabDetails>) => void;
-    create: (filename: string, track?: number, tabIndex?: number) => void;
+    create: (filename: string, track?: number, tabIndex?: number, limit?: number) => void;
     close: (filename: string, track?: number) => { next: string, wasActive: boolean };
     rename: (oldFilename: string, newFilename: string) => string;
     active: (filename: string, track?: number) => void;
@@ -47,7 +47,7 @@ export const useTabsStore = create<EditorState>()(
             return get().allTabs[filename];
         },
 
-        create: (filename, track = 0, tabIndex = 0) => {
+        create: (filename, track = 0, tabIndex = 0, limit = 0) => {
             const key = getContextKey();
             set((state) => {
                 if (!state.allTabs[filename]) {
@@ -68,7 +68,31 @@ export const useTabsStore = create<EditorState>()(
                     state.contextTabs[key] = {0: new Set(), 1: new Set()};
                 }
 
-                state.contextTabs[key][track].add(filename);
+                const tabs = state.contextTabs[key][track];
+
+                // Enforce tab limit: evict the oldest tabs to make room
+                if (limit > 0 && !tabs.has(filename)) {
+                    const order = Array.from(tabs);
+                    while (order.length >= limit) {
+                        const oldest = order.shift();
+                        if (oldest === undefined) break;
+                        tabs.delete(oldest);
+
+                        // Cleanup allTabs if no longer used anywhere
+                        let stillInUse = false;
+                        for (const k of Object.keys(state.contextTabs)) {
+                            if (state.contextTabs[k][0]?.has(oldest) || state.contextTabs[k][1]?.has(oldest)) {
+                                stillInUse = true;
+                                break;
+                            }
+                        }
+                        if (!stillInUse) {
+                            delete state.allTabs[oldest];
+                        }
+                    }
+                }
+
+                tabs.add(filename);
             });
         },
 
@@ -194,7 +218,7 @@ export const useTabs = (): TabsContextType => {
 
 export function TabsProvider({children}: { children: ReactNode }) {
     const {dockYaml} = useConfig()
-    // const tabLimit = dockYaml?.tabLimit ?? 5
+    const tabLimit = dockYaml?.tabLimit ?? 5
 
     const location = useLocation();
     const navigate = useNavigate();
@@ -212,9 +236,9 @@ export function TabsProvider({children}: { children: ReactNode }) {
 
     const handleOpenTab = useCallback((filename: string, track: number = 0) => {
         const params = new URLSearchParams(location.search);
-        create(filename, track, Number(params.get("tab") ?? stackDefaultTab(dockYaml, filename)))
+        create(filename, track, Number(params.get("tab") ?? stackDefaultTab(dockYaml, filename)), tabLimit)
         active(filename, track)
-    }, [location.search, create, active, dockYaml]);
+    }, [location.search, create, active, dockYaml, tabLimit]);
 
     const handleCloseTab = useCallback((filename: string, track: number = 0) => {
         const {next, wasActive} = close(filename, track)
