@@ -183,6 +183,10 @@ function LogRow({entry, lineNumber, query, isCurrentMatch, showTimestamps, showL
     return (
         <div
             data-log-id={entry.id}
+            // rendered by the container's ::before rule: pseudo-element text is
+            // not selectable and, unlike a user-select:none span, does not
+            // block a selection that starts over the gutter
+            data-ln={showLineNumbers ? lineNumber : undefined}
             style={{
                 whiteSpace: wrap ? 'pre-wrap' : 'pre',
                 wordBreak: wrap ? 'break-all' : 'normal',
@@ -194,20 +198,6 @@ function LogRow({entry, lineNumber, query, isCurrentMatch, showTimestamps, showL
                 opacity: isInternal ? 0.85 : undefined,
             }}
         >
-            {showLineNumbers && (
-                <span style={{
-                    color: theme.lineNumber,
-                    userSelect: 'none',
-                    display: 'inline-block',
-                    minWidth: '3.5em',
-                    textAlign: 'right',
-                    paddingRight: '0.7em',
-                    marginRight: '0.7em',
-                    borderRight: `1px solid ${theme.lineNumberSep}`,
-                }}>
-                    {lineNumber}
-                </span>
-            )}
             {showTimestamps && entry.timeNano !== 0n && (
                 <span style={{color: theme.timestamp}}>{formatLogTime(entry.timeNano)} </span>
             )}
@@ -643,6 +633,18 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                     // exactly the kind of text that must stay selectable
                     userSelect: 'text',
                     cursor: 'text',
+                    // line-number gutter as pseudo-elements (Dockhand-style):
+                    // never part of the selection or the copied text
+                    '& [data-ln]::before': {
+                        content: 'attr(data-ln)',
+                        display: 'inline-block',
+                        minWidth: '3.5em',
+                        textAlign: 'right',
+                        paddingRight: '0.7em',
+                        marginRight: '0.7em',
+                        borderRight: `1px solid ${theme.lineNumberSep}`,
+                        color: theme.lineNumber,
+                    },
                     ...scrollbarStyles,
                 }}
             >
