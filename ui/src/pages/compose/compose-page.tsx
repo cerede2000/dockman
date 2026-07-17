@@ -341,6 +341,11 @@ const FileTabBar = ({track}: { track: number }) => {
                 variant="scrollable"
                 scrollButtons="auto"
                 sx={{minHeight: tabMinHeight}}
+                slotProps={{
+                    // the sliding underline chasing tabs mid-drag reads as
+                    // the drop not having happened — freeze it while dragging
+                    indicator: {sx: {transition: draggedTab ? 'none' : undefined}},
+                }}
             >
                 {tablist.map((tabFilename) => {
                     const label = tabLabels.get(tabFilename) ?? {
@@ -359,8 +364,18 @@ const FileTabBar = ({track}: { track: number }) => {
                             onDragOver={(e) => {
                                 if (!draggedTab || draggedTab === tabFilename) return;
                                 e.preventDefault();
-                                // live reorder: slide the dragged tab into this slot
-                                reorderTab(draggedTab, tablist.indexOf(tabFilename), track);
+                                // Only swap once the pointer crosses the middle of the
+                                // hovered tab in the travel direction: tabs have
+                                // variable widths, and swapping on first contact makes
+                                // the swapped-in neighbor land under the pointer and
+                                // swap straight back — a visible jitter loop.
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const middle = rect.left + rect.width / 2;
+                                const from = tablist.indexOf(draggedTab);
+                                const to = tablist.indexOf(tabFilename);
+                                if (to > from && e.clientX < middle) return;
+                                if (to < from && e.clientX > middle) return;
+                                reorderTab(draggedTab, to, track);
                             }}
                             onDrop={(e) => e.preventDefault()}
                             onDragEnd={() => setDraggedTab(null)}
