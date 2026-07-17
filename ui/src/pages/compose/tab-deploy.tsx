@@ -146,11 +146,11 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                     display: 'flex',
                     flexGrow: 1,
                     overflow: 'hidden',
-                    border: '2px ridge',
-                    borderColor: 'rgba(255, 255, 255, 0.23)',
-                    borderRadius: 3,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 2,
                     flexDirection: 'column',
-                    backgroundColor: 'rgb(41,41,41)'
+                    backgroundColor: 'background.paper'
                 }}>
                     <ContainerTable
                         containers={containers}

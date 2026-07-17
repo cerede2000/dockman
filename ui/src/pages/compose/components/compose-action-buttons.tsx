@@ -1,6 +1,6 @@
 import {useHostClient} from "../../../lib/api.ts";
 import {useFileComponents} from "../state/terminal.tsx";
-import {Box, Button, CircularProgress, IconButton, Tooltip} from "@mui/material";
+import {Box, Button, ButtonGroup, CircularProgress, IconButton, Tooltip} from "@mui/material";
 import TerminalIcon from '@mui/icons-material/Terminal';
 import {deployActionsConfig, useComposeAction} from "../state/compose.tsx";
 import {DockerService} from "../../../gen/docker/v1/docker_pb.ts";
@@ -54,22 +54,41 @@ export function ComposeActionHeaders({selectedServices, fetchContainers}: {
     };
 
     return (
-        <Box sx={{display: 'flex', gap: 2, flexWrap: 'wrap', mb: 3, flexShrink: 0, alignItems: 'center'}}>
-            {deployActionsConfig.map((action) => (
-                <Button
-                    key={action.name}
-                    variant="outlined"
-                    disabled={!!activeAction}
-                    onClick={() => handleComposeAction(action.name, action.message, action.rpcName)}
-                    startIcon={
-                        activeAction === action.name ?
-                            <CircularProgress size={20} color="inherit"/> :
-                            action.icon
-                    }
-                >
-                    {action.name.charAt(0).toUpperCase() + action.name.slice(1)}
-                </Button>
-            ))}
+        <Box sx={{display: 'flex', gap: 1.5, flexWrap: 'wrap', mb: 2, flexShrink: 0, alignItems: 'center'}}>
+            <ButtonGroup
+                variant="outlined"
+                size="small"
+                sx={{
+                    '& .MuiButton-root': {
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        px: 1.5,
+                        borderColor: 'divider',
+                        color: 'text.secondary',
+                        '&:hover': {
+                            borderColor: 'primary.main',
+                            color: 'primary.main',
+                            bgcolor: 'action.hover',
+                        },
+                    },
+                    '& .MuiButton-startIcon svg': {fontSize: 17},
+                }}
+            >
+                {deployActionsConfig.map((action) => (
+                    <Button
+                        key={action.name}
+                        disabled={!!activeAction}
+                        onClick={() => handleComposeAction(action.name, action.message, action.rpcName)}
+                        startIcon={
+                            activeAction === action.name ?
+                                <CircularProgress size={15} color="inherit"/> :
+                                action.icon
+                        }
+                    >
+                        {action.name.charAt(0).toUpperCase() + action.name.slice(1)}
+                    </Button>
+                ))}
+            </ButtonGroup>
             <DockerCommandButton/>
             {lastRun && (
                 <Tooltip title={lastRun.running
