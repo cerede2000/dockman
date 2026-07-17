@@ -74,24 +74,28 @@ interface ViewerTheme {
     fg: string;
     timestamp: string;
     lineNumber: string;
+    lineNumberSep: string;
     singleName: string;
     ansi: string[];
 }
 
+// backgrounds match Dockhand: zinc-950 dark, gray-50 light
 const DARK_THEME: ViewerTheme = {
-    bg: '#1E1E1E',
+    bg: '#09090b',
     fg: '#CCCCCC',
     timestamp: '#858585',
     lineNumber: '#6a6a6a',
+    lineNumberSep: 'rgba(255,255,255,0.18)',
     singleName: '#9e9e9e',
     ansi: ANSI_PALETTE_DARK,
 };
 
 const LIGHT_THEME: ViewerTheme = {
-    bg: '#fafafa',
+    bg: '#f9fafb',
     fg: '#1f1f1f',
     timestamp: '#8a8a8a',
     lineNumber: '#9e9e9e',
+    lineNumberSep: 'rgba(0,0,0,0.18)',
     singleName: '#757575',
     ansi: ANSI_PALETTE_LIGHT,
 };
@@ -151,7 +155,9 @@ function LogRow({entry, lineNumber, lowerQuery, isCurrentMatch, showTimestamps, 
                     display: 'inline-block',
                     minWidth: '3.5em',
                     textAlign: 'right',
-                    paddingRight: '0.8em',
+                    paddingRight: '0.7em',
+                    marginRight: '0.7em',
+                    borderRight: `1px solid ${theme.lineNumberSep}`,
                 }}>
                     {lineNumber}
                 </span>
