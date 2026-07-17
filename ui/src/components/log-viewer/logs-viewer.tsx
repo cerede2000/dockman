@@ -38,7 +38,6 @@ import {
     type LogEntry,
     logsToText,
     matchesQuery,
-    segmentsFor,
 } from "./log-model.ts";
 import {type LogStreamStatus, useLogsStream} from "./use-logs-stream.ts";
 
@@ -65,6 +64,13 @@ const PREF_LIGHT = 'dockman-logs-light';
 
 const TAIL_OPTIONS = [100, 500, 1000, 2000];
 const FONT_SIZES = [10, 12, 14, 16];
+
+type StreamFilter = 'all' | 'stdout' | 'stderr';
+const STREAM_OPTIONS: { value: StreamFilter; label: string }[] = [
+    {value: 'all', label: 'All streams'},
+    {value: 'stdout', label: 'stdout'},
+    {value: 'stderr', label: 'stderr'},
+];
 
 // same default stack as Dockhand's "System Monospace"
 const LOG_FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
@@ -135,7 +141,7 @@ function LogRow({entry, lineNumber, lowerQuery, isCurrentMatch, showTimestamps, 
     wrap: boolean;
     theme: ViewerTheme;
 }) {
-    const pieces = highlightSegments(segmentsFor(entry.text), lowerQuery);
+    const pieces = highlightSegments(entry.segments, lowerQuery);
     return (
         <div
             data-log-id={entry.id}
@@ -215,6 +221,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
 
     const [paused, setPaused] = useState(false);
     const [autoScroll, setAutoScroll] = useState(true);
+    const [streamFilter, setStreamFilter] = useState<StreamFilter>('all');
 
     // time range: unix seconds once applied; an upper bound ends the stream
     const [range, setRange] = useState<{ since?: number; until?: number }>({});
@@ -253,10 +260,14 @@ export function LogsViewer({containers}: LogsViewerProps) {
     };
 
     const lowerQuery = query.trim().toLowerCase();
-    const displayed = useMemo(
-        () => (filterMode && lowerQuery ? entries.filter(e => matchesQuery(e, lowerQuery)) : entries),
-        [entries, filterMode, lowerQuery],
-    );
+    const displayed = useMemo(() => {
+        const wantedStream = streamFilter === 'stdout' ? 1 : streamFilter === 'stderr' ? 2 : 0;
+        let visible = wantedStream === 0 ? entries : entries.filter(e => e.stream === wantedStream);
+        if (filterMode && lowerQuery) {
+            visible = visible.filter(e => matchesQuery(e, lowerQuery));
+        }
+        return visible;
+    }, [entries, streamFilter, filterMode, lowerQuery]);
     const matchIds = useMemo(
         () => (lowerQuery ? displayed.filter(e => matchesQuery(e, lowerQuery)).map(e => e.id) : []),
         [displayed, lowerQuery],
@@ -422,6 +433,18 @@ export function LogsViewer({containers}: LogsViewerProps) {
 
                 <Box sx={{flexGrow: 1}}/>
 
+                <Select
+                    size="small"
+                    value={streamFilter}
+                    onChange={(e) => setStreamFilter(e.target.value as StreamFilter)}
+                    sx={{fontSize: '0.8rem', '& .MuiSelect-select': {py: 0.5}}}
+                >
+                    {STREAM_OPTIONS.map(option => (
+                        <MenuItem key={option.value} value={option.value} sx={{fontSize: '0.8rem'}}>
+                            {option.label}
+                        </MenuItem>
+                    ))}
+                </Select>
                 <Select
                     size="small"
                     value={tail}

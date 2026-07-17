@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {useHostClient} from "../../lib/api.ts";
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
+import {createAnsiTracker} from "./ansi.ts";
 import {appendEntries, isKeepAlive, type LogEntry, toLogEntry} from "./log-model.ts";
 
 export type LogStreamStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'paused' | 'ended';
@@ -73,6 +74,10 @@ export function useLogsStream(params: LogsStreamParams) {
 
         const containerIds = idsKey.split(',');
 
+        // colors opened on one line carry to the next (banners are colored
+        // once for a whole block); state survives silent reconnections
+        const ansiTracker = createAnsiTracker();
+
         // resume/reconnect from just before the oldest "last seen" timestamp;
         // the per-container dedupe below drops the overlap
         const resumeSince = (): number => {
@@ -108,13 +113,13 @@ export function useLogsStream(params: LogsStreamParams) {
                         }
                         if (isKeepAlive(line)) continue;
 
-                        const entry = toLogEntry(line);
-                        const seen = lastNanoRef.current.get(entry.containerId) ?? 0n;
-                        if (entry.timeNano !== 0n) {
-                            if (entry.timeNano <= seen) continue; // replayed line
-                            lastNanoRef.current.set(entry.containerId, entry.timeNano);
+                        const seen = lastNanoRef.current.get(line.containerId) ?? 0n;
+                        if (line.timeNano !== 0n) {
+                            if (line.timeNano <= seen) continue; // replayed line
+                            lastNanoRef.current.set(line.containerId, line.timeNano);
                         }
-                        pending.push(entry);
+                        const segments = ansiTracker(`${line.containerId}|${line.stream}`, line.text);
+                        pending.push(toLogEntry(line, segments));
                         scheduleFlush();
                     }
 

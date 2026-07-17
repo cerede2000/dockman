@@ -38,11 +38,17 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
     const closeErrorDialog = () => setComposeErrorDialog(p => ({...p, dialog: false}));
     // const showErrorDialog = (message: string) => setComposeErrorDialog({dialog: true, message});
 
-    // logs open in the bottom panel, next to terminals
+    // logs open in the bottom panel, next to terminals; tabs are named
+    // stack/container (the stack being the compose file's folder)
     const openLogs = useLogsPanel(state => state.openLogs)
 
+    const stackName = useMemo(() => {
+        const parts = selectedPage.split('/');
+        return parts.length > 1 ? parts[parts.length - 2] : selectedPage;
+    }, [selectedPage]);
+
     const handleContainerLogs = (containerId: string, containerName: string) => {
-        openLogs(`${selectedPage}: logs-${containerName}`, [{id: containerId, name: containerName}])
+        openLogs(`${stackName}/${containerName}`, [{id: containerId, name: containerName}])
     };
 
     const stackTargets = useMemo(
@@ -76,7 +82,7 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
 
     const handleConnect = (containerId: string, containerName: string, cmd: string) => {
         const url = createExecUrl(containerId, cmd, debuggerImage)
-        execContainer(`${selectedPage}: exec-${containerName}`, url, true)
+        execContainer(`${stackName}/${containerName} (exec)`, url, true)
         closeExecDialog()
     }
 
@@ -112,7 +118,7 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                         variant="outlined"
                         startIcon={<ReceiptLongIcon/>}
                         disabled={stackTargets.length === 0}
-                        onClick={() => openLogs(`${selectedPage}: stack logs`, stackTargets)}
+                        onClick={() => openLogs(`${stackName}: stack logs`, stackTargets)}
                         sx={{flexShrink: 0}}
                     >
                         Stack logs

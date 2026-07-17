@@ -1,9 +1,12 @@
 import type {LogLine} from "../../gen/docker/v1/docker_pb.ts";
-import {type AnsiSegment, parseAnsi} from "./ansi.ts";
+import type {AnsiSegment} from "./ansi.ts";
 
 export interface LogEntry {
     id: number;
+    // plain text with ANSI codes stripped: what search, copy and download see
     text: string;
+    // styled segments parsed once on arrival, with cross-line SGR continuity
+    segments: AnsiSegment[];
     timeNano: bigint; // 0n when the line had no parsable daemon timestamp
     stream: number; // 1 = stdout, 2 = stderr
     containerId: string;
@@ -20,10 +23,11 @@ let nextEntryId = 1;
 export const isKeepAlive = (line: LogLine) =>
     line.containerId === "" && line.text === "" && line.timeNano === 0n;
 
-export function toLogEntry(line: LogLine): LogEntry {
+export function toLogEntry(line: LogLine, segments: AnsiSegment[]): LogEntry {
     return {
         id: nextEntryId++,
-        text: line.text,
+        text: segments.map(s => s.text).join(""),
+        segments,
         timeNano: line.timeNano,
         stream: line.stream,
         containerId: line.containerId,
@@ -69,25 +73,8 @@ export function logsToText(entries: LogEntry[], withTimestamps: boolean, withNam
         let line = "";
         if (withTimestamps && e.timeNano !== 0n) line += `${formatLogTime(e.timeNano)} `;
         if (withNames && e.containerName) line += `[${e.containerName}] `;
-        return line + stripAnsi(e.text);
+        return line + e.text;
     }).join("\n");
-}
-
-export function stripAnsi(text: string): string {
-    return segmentsFor(text).map(s => s.text).join("");
-}
-
-// per-line ANSI parse cache; entries are immutable so the cache never stales
-const ansiCache = new Map<string, AnsiSegment[]>();
-const ANSI_CACHE_MAX = LOG_BUFFER_CAP * 4;
-
-export function segmentsFor(text: string): AnsiSegment[] {
-    const hit = ansiCache.get(text);
-    if (hit) return hit;
-    const parsed = parseAnsi(text);
-    if (ansiCache.size >= ANSI_CACHE_MAX) ansiCache.clear();
-    ansiCache.set(text, parsed);
-    return parsed;
 }
 
 // splits ANSI segments around query matches so the matching parts can be
