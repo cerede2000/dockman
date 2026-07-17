@@ -27,6 +27,7 @@ interface EditorState {
     rename: (oldFilename: string, newFilename: string) => string;
     active: (filename: string, track?: number) => void;
     load: (filename: string) => TabDetails | undefined;
+    reorder: (filename: string, targetIndex: number, track?: number) => void;
 }
 
 export const getContextKey = () => {
@@ -147,6 +148,25 @@ export const useTabsStore = create<EditorState>()(
         active: (filename, track = 0) => {
             set((state) => {
                 state.lastOpened[track] = filename;
+            });
+        },
+
+        // moves a tab to targetIndex within its track; tab order is the
+        // Set's insertion order, so the Set is rebuilt in the new order
+        reorder: (filename, targetIndex, track = 0) => {
+            const key = getContextKey();
+            set((state) => {
+                const tabs = state.contextTabs[key]?.[track];
+                if (!tabs || !tabs.has(filename)) return;
+
+                const order = Array.from(tabs);
+                const from = order.indexOf(filename);
+                const to = Math.max(0, Math.min(targetIndex, order.length - 1));
+                if (from === to) return;
+
+                order.splice(from, 1);
+                order.splice(to, 0, filename);
+                state.contextTabs[key][track] = new Set(order);
             });
         },
     }))
