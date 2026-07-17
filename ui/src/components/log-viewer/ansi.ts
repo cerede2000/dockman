@@ -20,12 +20,13 @@ export interface AnsiSegment {
     underline?: boolean;
 }
 
-// tuned for the dark log background
+// the VS Code terminal palette: what `docker logs` looks like in a real
+// terminal, and what the previous xterm-based viewer rendered
 export const ANSI_PALETTE_DARK = [
-    '#3f3f3f', '#e57373', '#81c784', '#ffd54f',
-    '#64b5f6', '#ba68c8', '#4dd0e1', '#e0e0e0',
-    '#9e9e9e', '#ef9a9a', '#a5d6a7', '#fff176',
-    '#90caf9', '#ce93d8', '#80deea', '#ffffff',
+    '#3f3f3f', '#cd3131', '#0dbc79', '#e5e510',
+    '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
+    '#666666', '#f14c4c', '#23d18b', '#f5f543',
+    '#3b8eea', '#d670d6', '#29b8db', '#ffffff',
 ];
 
 // same hues, darkened to stay readable on a light background
@@ -52,7 +53,9 @@ function xterm256Color(n: number): string | undefined {
     return `rgb(${gray},${gray},${gray})`;
 }
 
-interface SgrState {
+// SGR state carried across lines: a real terminal keeps the current color
+// until a reset, even across newlines (multi-line banners are colored once)
+export interface AnsiState {
     colorIdx?: number;
     backgroundIdx?: number;
     color?: string;
@@ -62,6 +65,10 @@ interface SgrState {
     italic?: boolean;
     underline?: boolean;
 }
+
+type SgrState = AnsiState;
+
+const hasState = (s: SgrState) => Object.keys(s).length > 0;
 
 function setFg(state: SgrState, idx?: number, concrete?: string) {
     delete state.colorIdx;
@@ -118,13 +125,22 @@ function applySgr(state: SgrState, params: number[]): SgrState {
 
 const ESC = '\x1b';
 
-export function parseAnsi(line: string): AnsiSegment[] {
+export interface ParsedLine {
+    segments: AnsiSegment[];
+    // state left active at the end of the line, to seed the next one
+    end: AnsiState;
+}
+
+export function parseAnsi(line: string, initial: AnsiState = {}): ParsedLine {
     if (!line.includes(ESC)) {
-        return line ? [{text: line}] : [];
+        const segments: AnsiSegment[] = line
+            ? [hasState(initial) ? {text: line, ...initial} : {text: line}]
+            : [];
+        return {segments, end: initial};
     }
 
     const segments: AnsiSegment[] = [];
-    let state: SgrState = {};
+    let state: SgrState = {...initial};
     let plain = '';
 
     const push = () => {
@@ -167,5 +183,16 @@ export function parseAnsi(line: string): AnsiSegment[] {
         }
     }
     push();
-    return segments;
+    return {segments, end: state};
+}
+
+// stateful line parser: keeps the running SGR state per source key
+// (container|stream) so colors opened on one line carry to the next
+export function createAnsiTracker() {
+    const states = new Map<string, AnsiState>();
+    return (key: string, rawText: string): AnsiSegment[] => {
+        const {segments, end} = parseAnsi(rawText, states.get(key));
+        states.set(key, end);
+        return segments;
+    };
 }
