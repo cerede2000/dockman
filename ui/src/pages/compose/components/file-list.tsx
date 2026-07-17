@@ -26,6 +26,7 @@ import {formatDockyaml} from "./viewer-dockyml.tsx";
 import {useComposeFileState} from "../state/status.ts";
 import {callRPC, useHostClient} from "../../../lib/api.ts";
 import {DockerService} from "../../../gen/docker/v1/docker_pb.ts";
+import {useDockerEvents} from "../../../hooks/docker-events.ts";
 
 export function FileList() {
     const showSearch = useFileSearch(state => state.open)
@@ -228,6 +229,9 @@ const FileListInner = () => {
     const openFiles = useComposeFileState(state => state.openFiles)
     const setStatus = useComposeFileState(state => state.setStatus)
     const dockerSrv = useHostClient(DockerService)
+    // container lifecycle events refresh the stack dots instantly; the
+    // interval is only a safety net
+    const eventBump = useDockerEvents()
 
 
     const openFilesRef = useRef(openFiles)
@@ -248,9 +252,10 @@ const FileListInner = () => {
         }
 
         refresh().then()
-        const interval = setInterval(refresh, 3000)
+        const interval = setInterval(refresh, 30000)
         return () => clearInterval(interval)
-    }, [])
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [eventBump])
 
     if (isLoading && files.length < 1) {
         return (

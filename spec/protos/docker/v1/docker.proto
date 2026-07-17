@@ -21,6 +21,10 @@ service DockerService {
   // shadows the message name inside the service scope)
   rpc ContainerStatsStream(StatsRequest) returns (stream .docker.v1.ContainerStats) {}
   rpc ContainerLogs(ContainerLogsRequest) returns (stream LogsMessage) {}
+  // pushes filtered container lifecycle events (start/stop/die/health
+  // transitions...) so views can refresh reactively instead of polling;
+  // empty-action messages are keepalives
+  rpc ContainerEvents(EventsRequest) returns (stream ContainerEvent) {}
   rpc ContainerInspect(ContainerLogsRequest) returns (ContainerInspectMessage) {}
 
   // compose
@@ -358,6 +362,23 @@ message DeleteNetworkRequest {
 }
 
 message DeleteNetworkResponse {
+}
+
+message EventsRequest {
+  string host = 1;
+}
+
+message ContainerEvent {
+  // create / start / stop / die / kill / restart / pause / unpause /
+  // destroy / rename / update / oom / health_status.
+  // Empty for keepalive frames.
+  string action = 1;
+  // health_status only: healthy / unhealthy / ...
+  string status = 2;
+  string containerId = 3;
+  string containerName = 4;
+  string image = 5;
+  int64 timeNano = 6;
 }
 
 message ContainerLogsRequest {
