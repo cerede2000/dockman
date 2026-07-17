@@ -89,6 +89,9 @@ const (
 	// DockerServiceComposeFileStatusProcedure is the fully-qualified name of the DockerService's
 	// ComposeFileStatus RPC.
 	DockerServiceComposeFileStatusProcedure = "/docker.v1.DockerService/ComposeFileStatus"
+	// DockerServiceDockerCommandProcedure is the fully-qualified name of the DockerService's
+	// DockerCommand RPC.
+	DockerServiceDockerCommandProcedure = "/docker.v1.DockerService/DockerCommand"
 	// DockerServiceImageListProcedure is the fully-qualified name of the DockerService's ImageList RPC.
 	DockerServiceImageListProcedure = "/docker.v1.DockerService/ImageList"
 	// DockerServiceImageRemoveProcedure is the fully-qualified name of the DockerService's ImageRemove
@@ -146,6 +149,9 @@ type DockerServiceClient interface {
 	ComposeList(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ListResponse], error)
 	ComposeValidate(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ComposeValidateResponse], error)
 	ComposeFileStatus(context.Context, *connect.Request[v1.ComposeFileStatusRequest]) (*connect.Response[v1.ComposeFileStatusResponse], error)
+	// runs a user-provided docker CLI command on the selected host and streams
+	// its combined output; only the docker binary is allowed
+	DockerCommand(context.Context, *connect.Request[v1.DockerCommandRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	// images
 	ImageList(context.Context, *connect.Request[v1.ListImagesRequest]) (*connect.Response[v1.ListImagesResponse], error)
 	ImageRemove(context.Context, *connect.Request[v1.RemoveImageRequest]) (*connect.Response[v1.RemoveImageResponse], error)
@@ -287,6 +293,12 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(dockerServiceMethods.ByName("ComposeFileStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		dockerCommand: connect.NewClient[v1.DockerCommandRequest, v1.LogsMessage](
+			httpClient,
+			baseURL+DockerServiceDockerCommandProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("DockerCommand")),
+			connect.WithClientOptions(opts...),
+		),
 		imageList: connect.NewClient[v1.ListImagesRequest, v1.ListImagesResponse](
 			httpClient,
 			baseURL+DockerServiceImageListProcedure,
@@ -377,6 +389,7 @@ type dockerServiceClient struct {
 	composeList       *connect.Client[v1.ComposeFile, v1.ListResponse]
 	composeValidate   *connect.Client[v1.ComposeFile, v1.ComposeValidateResponse]
 	composeFileStatus *connect.Client[v1.ComposeFileStatusRequest, v1.ComposeFileStatusResponse]
+	dockerCommand     *connect.Client[v1.DockerCommandRequest, v1.LogsMessage]
 	imageList         *connect.Client[v1.ListImagesRequest, v1.ListImagesResponse]
 	imageRemove       *connect.Client[v1.RemoveImageRequest, v1.RemoveImageResponse]
 	imagePruneUnused  *connect.Client[v1.ImagePruneRequest, v1.ImagePruneResponse]
@@ -485,6 +498,11 @@ func (c *dockerServiceClient) ComposeFileStatus(ctx context.Context, req *connec
 	return c.composeFileStatus.CallUnary(ctx, req)
 }
 
+// DockerCommand calls docker.v1.DockerService.DockerCommand.
+func (c *dockerServiceClient) DockerCommand(ctx context.Context, req *connect.Request[v1.DockerCommandRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error) {
+	return c.dockerCommand.CallServerStream(ctx, req)
+}
+
 // ImageList calls docker.v1.DockerService.ImageList.
 func (c *dockerServiceClient) ImageList(ctx context.Context, req *connect.Request[v1.ListImagesRequest]) (*connect.Response[v1.ListImagesResponse], error) {
 	return c.imageList.CallUnary(ctx, req)
@@ -563,6 +581,9 @@ type DockerServiceHandler interface {
 	ComposeList(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ListResponse], error)
 	ComposeValidate(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ComposeValidateResponse], error)
 	ComposeFileStatus(context.Context, *connect.Request[v1.ComposeFileStatusRequest]) (*connect.Response[v1.ComposeFileStatusResponse], error)
+	// runs a user-provided docker CLI command on the selected host and streams
+	// its combined output; only the docker binary is allowed
+	DockerCommand(context.Context, *connect.Request[v1.DockerCommandRequest], *connect.ServerStream[v1.LogsMessage]) error
 	// images
 	ImageList(context.Context, *connect.Request[v1.ListImagesRequest]) (*connect.Response[v1.ListImagesResponse], error)
 	ImageRemove(context.Context, *connect.Request[v1.RemoveImageRequest]) (*connect.Response[v1.RemoveImageResponse], error)
@@ -700,6 +721,12 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(dockerServiceMethods.ByName("ComposeFileStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	dockerServiceDockerCommandHandler := connect.NewServerStreamHandler(
+		DockerServiceDockerCommandProcedure,
+		svc.DockerCommand,
+		connect.WithSchema(dockerServiceMethods.ByName("DockerCommand")),
+		connect.WithHandlerOptions(opts...),
+	)
 	dockerServiceImageListHandler := connect.NewUnaryHandler(
 		DockerServiceImageListProcedure,
 		svc.ImageList,
@@ -806,6 +833,8 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 			dockerServiceComposeValidateHandler.ServeHTTP(w, r)
 		case DockerServiceComposeFileStatusProcedure:
 			dockerServiceComposeFileStatusHandler.ServeHTTP(w, r)
+		case DockerServiceDockerCommandProcedure:
+			dockerServiceDockerCommandHandler.ServeHTTP(w, r)
 		case DockerServiceImageListProcedure:
 			dockerServiceImageListHandler.ServeHTTP(w, r)
 		case DockerServiceImageRemoveProcedure:
@@ -911,6 +940,10 @@ func (UnimplementedDockerServiceHandler) ComposeValidate(context.Context, *conne
 
 func (UnimplementedDockerServiceHandler) ComposeFileStatus(context.Context, *connect.Request[v1.ComposeFileStatusRequest]) (*connect.Response[v1.ComposeFileStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ComposeFileStatus is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) DockerCommand(context.Context, *connect.Request[v1.DockerCommandRequest], *connect.ServerStream[v1.LogsMessage]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.DockerCommand is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ImageList(context.Context, *connect.Request[v1.ListImagesRequest]) (*connect.Response[v1.ListImagesResponse], error) {
