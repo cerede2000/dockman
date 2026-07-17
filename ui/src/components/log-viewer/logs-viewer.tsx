@@ -25,7 +25,12 @@ import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DownloadIcon from "@mui/icons-material/Download";
 import DateRangeIcon from "@mui/icons-material/DateRange";
+import LocalOfferIcon from "@mui/icons-material/LocalOffer";
+import TagIcon from "@mui/icons-material/Tag";
+import LightModeIcon from "@mui/icons-material/LightMode";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
 import scrollbarStyles from "../scrollbar-style.tsx";
+import {ANSI_PALETTE_DARK, ANSI_PALETTE_LIGHT, type AnsiSegment} from "./ansi.ts";
 import {
     containerColor,
     formatLogTime,
@@ -53,8 +58,43 @@ const BOTTOM_STICKINESS_PX = 40;
 const PREF_TIMESTAMPS = 'dockman-logs-timestamps';
 const PREF_WRAP = 'dockman-logs-wrap';
 const PREF_TAIL = 'dockman-logs-tail';
+const PREF_NAMES = 'dockman-logs-names';
+const PREF_LINE_NUMBERS = 'dockman-logs-linenumbers';
+const PREF_FONT_SIZE = 'dockman-logs-fontsize';
+const PREF_LIGHT = 'dockman-logs-light';
 
 const TAIL_OPTIONS = [100, 500, 1000, 2000];
+const FONT_SIZES = [10, 12, 14, 16];
+
+// same default stack as Dockhand's "System Monospace"
+const LOG_FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+
+interface ViewerTheme {
+    bg: string;
+    fg: string;
+    timestamp: string;
+    lineNumber: string;
+    singleName: string;
+    ansi: string[];
+}
+
+const DARK_THEME: ViewerTheme = {
+    bg: '#1E1E1E',
+    fg: '#CCCCCC',
+    timestamp: '#858585',
+    lineNumber: '#6a6a6a',
+    singleName: '#9e9e9e',
+    ansi: ANSI_PALETTE_DARK,
+};
+
+const LIGHT_THEME: ViewerTheme = {
+    bg: '#fafafa',
+    fg: '#1f1f1f',
+    timestamp: '#8a8a8a',
+    lineNumber: '#9e9e9e',
+    singleName: '#757575',
+    ansi: ANSI_PALETTE_LIGHT,
+};
 
 const STATUS_META: Record<LogStreamStatus, { label: string; color: string }> = {
     idle: {label: 'Idle', color: '#9e9e9e'},
@@ -70,14 +110,26 @@ const readBoolPref = (key: string, fallback: boolean) => {
     return raw === null ? fallback : raw === 'true';
 };
 
-function LogRow({entry, lowerQuery, isCurrentMatch, showTimestamps, showName, nameColor, wrap}: {
+const segmentStyle = (s: AnsiSegment, ansi: string[]): CSSProperties => ({
+    color: s.color ?? (s.colorIdx !== undefined ? ansi[s.colorIdx] : undefined),
+    backgroundColor: s.background ?? (s.backgroundIdx !== undefined ? ansi[s.backgroundIdx] : undefined),
+    fontWeight: s.bold ? 700 : undefined,
+    opacity: s.dim ? 0.6 : undefined,
+    fontStyle: s.italic ? 'italic' : undefined,
+    textDecoration: s.underline ? 'underline' : undefined,
+});
+
+function LogRow({entry, lineNumber, lowerQuery, isCurrentMatch, showTimestamps, showLineNumbers, showName, nameColor, wrap, theme}: {
     entry: LogEntry;
+    lineNumber: number;
     lowerQuery: string;
     isCurrentMatch: boolean;
     showTimestamps: boolean;
+    showLineNumbers: boolean;
     showName: boolean;
     nameColor: string;
     wrap: boolean;
+    theme: ViewerTheme;
 }) {
     const pieces = highlightSegments(segmentsFor(entry.text), lowerQuery);
     return (
@@ -92,24 +144,28 @@ function LogRow({entry, lowerQuery, isCurrentMatch, showTimestamps, showName, na
                 lineHeight: 1.4,
             }}
         >
+            {showLineNumbers && (
+                <span style={{
+                    color: theme.lineNumber,
+                    userSelect: 'none',
+                    display: 'inline-block',
+                    minWidth: '3.5em',
+                    textAlign: 'right',
+                    paddingRight: '0.8em',
+                }}>
+                    {lineNumber}
+                </span>
+            )}
             {showTimestamps && entry.timeNano !== 0n && (
-                <span style={{color: '#858585'}}>{formatLogTime(entry.timeNano)} </span>
+                <span style={{color: theme.timestamp}}>{formatLogTime(entry.timeNano)} </span>
             )}
             {showName && entry.containerName !== "" && (
                 <span style={{color: nameColor, fontWeight: 600}}>[{entry.containerName}] </span>
             )}
             {pieces.map((piece, i) => {
-                const s = piece.segment;
-                const style: CSSProperties = {
-                    color: s.color,
-                    backgroundColor: s.background,
-                    fontWeight: s.bold ? 700 : undefined,
-                    opacity: s.dim ? 0.6 : undefined,
-                    fontStyle: s.italic ? 'italic' : undefined,
-                    textDecoration: s.underline ? 'underline' : undefined,
-                };
+                const style = segmentStyle(piece.segment, theme.ansi);
                 if (!piece.isMatch) {
-                    return <span key={i} style={style}>{s.text}</span>;
+                    return <span key={i} style={style}>{piece.segment.text}</span>;
                 }
                 return (
                     <mark
@@ -117,10 +173,10 @@ function LogRow({entry, lowerQuery, isCurrentMatch, showTimestamps, showName, na
                         style={{
                             ...style,
                             backgroundColor: isCurrentMatch ? 'rgba(255,193,7,0.95)' : 'rgba(255,193,7,0.4)',
-                            color: isCurrentMatch ? '#000' : s.color ?? '#fff',
+                            color: isCurrentMatch ? '#000' : style.color ?? theme.fg,
                         }}
                     >
-                        {s.text}
+                        {piece.segment.text}
                     </mark>
                 );
             })}
@@ -130,6 +186,7 @@ function LogRow({entry, lowerQuery, isCurrentMatch, showTimestamps, showName, na
 
 export function LogsViewer({containers}: LogsViewerProps) {
     const isMerged = containers.length > 1;
+    const hasNames = containers.some(c => c.name !== undefined) || !isMerged;
 
     // merged view: which containers are enabled (all by default)
     const [disabledIds, setDisabledIds] = useState<ReadonlySet<string>>(new Set());
@@ -144,7 +201,11 @@ export function LogsViewer({containers}: LogsViewerProps) {
 
     const [showTimestamps, setShowTimestamps] = useState(() => readBoolPref(PREF_TIMESTAMPS, false));
     const [wrap, setWrap] = useState(() => readBoolPref(PREF_WRAP, true));
+    const [showNames, setShowNames] = useState(() => readBoolPref(PREF_NAMES, true));
+    const [showLineNumbers, setShowLineNumbers] = useState(() => readBoolPref(PREF_LINE_NUMBERS, false));
+    const [light, setLight] = useState(() => readBoolPref(PREF_LIGHT, false));
     const [tail, setTail] = useState(() => Number(localStorage.getItem(PREF_TAIL)) || 1000);
+    const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem(PREF_FONT_SIZE)) || 12);
 
     const [paused, setPaused] = useState(false);
     const [autoScroll, setAutoScroll] = useState(true);
@@ -155,6 +216,8 @@ export function LogsViewer({containers}: LogsViewerProps) {
     const [sinceInput, setSinceInput] = useState("");
     const [untilInput, setUntilInput] = useState("");
 
+    const theme = light ? LIGHT_THEME : DARK_THEME;
+
     const {entries, status, clear} = useLogsStream({
         containerIds: activeIds,
         tail,
@@ -164,17 +227,23 @@ export function LogsViewer({containers}: LogsViewerProps) {
         paused,
     });
 
-    const toggleTimestamps = () => setShowTimestamps(prev => {
-        localStorage.setItem(PREF_TIMESTAMPS, String(!prev));
+    const boolToggle = (key: string, set: (fn: (prev: boolean) => boolean) => void) => () => set(prev => {
+        localStorage.setItem(key, String(!prev));
         return !prev;
     });
-    const toggleWrap = () => setWrap(prev => {
-        localStorage.setItem(PREF_WRAP, String(!prev));
-        return !prev;
-    });
+    const toggleTimestamps = boolToggle(PREF_TIMESTAMPS, setShowTimestamps);
+    const toggleWrap = boolToggle(PREF_WRAP, setWrap);
+    const toggleNames = boolToggle(PREF_NAMES, setShowNames);
+    const toggleLineNumbers = boolToggle(PREF_LINE_NUMBERS, setShowLineNumbers);
+    const toggleLight = boolToggle(PREF_LIGHT, setLight);
+
     const changeTail = (value: number) => {
         localStorage.setItem(PREF_TAIL, String(value));
         setTail(value);
+    };
+    const changeFontSize = (value: number) => {
+        localStorage.setItem(PREF_FONT_SIZE, String(value));
+        setFontSize(value);
     };
 
     const lowerQuery = query.trim().toLowerCase();
@@ -190,9 +259,10 @@ export function LogsViewer({containers}: LogsViewerProps) {
     const currentMatchId = matchIds.length > 0 ? matchIds[boundedMatch] : undefined;
 
     const colorFor = useCallback((containerId: string) => {
+        if (!isMerged) return theme.singleName;
         const idx = containers.findIndex(c => c.id === containerId);
         return containerColor(idx < 0 ? 0 : idx);
-    }, [containers]);
+    }, [containers, isMerged, theme.singleName]);
 
     // --- scrolling ---
     const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -207,7 +277,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
         requestAnimationFrame(() => {
             programmaticScroll.current = false;
         });
-    }, [entries, autoScroll, paused, wrap, showTimestamps]);
+    }, [entries, autoScroll, paused, wrap, showTimestamps, fontSize]);
 
     const handleScroll = () => {
         if (programmaticScroll.current) return;
@@ -235,7 +305,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
     }, [matchIds, boundedMatch, scrollToEntry]);
 
     // --- clipboard / file export ---
-    const exportText = () => logsToText(displayed, showTimestamps, isMerged);
+    const exportText = () => logsToText(displayed, showTimestamps, showNames && hasNames);
     const handleCopy = () => navigator.clipboard?.writeText(exportText());
     const handleDownload = () => {
         const label = isMerged ? 'stack' : (containers[0]?.name ?? containers[0]?.id.substring(0, 12) ?? 'container');
@@ -286,7 +356,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
     });
 
     return (
-        <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: '#1E1E1E'}}>
+        <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: theme.bg}}>
             {/* toolbar */}
             <Stack
                 direction="row"
@@ -294,7 +364,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
                 alignItems="center"
                 flexWrap="wrap"
                 useFlexGap
-                sx={{px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0}}
+                sx={{px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0, bgcolor: '#1E1E1E'}}
             >
                 <TextField
                     size="small"
@@ -310,7 +380,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
                             goToMatch(e.shiftKey ? -1 : 1);
                         }
                     }}
-                    sx={{width: 230, '& .MuiInputBase-root': {fontSize: '0.8rem'}}}
+                    sx={{width: 210, '& .MuiInputBase-root': {fontSize: '0.8rem'}}}
                     slotProps={{
                         input: {
                             startAdornment: (
@@ -358,6 +428,18 @@ export function LogsViewer({containers}: LogsViewerProps) {
                         </MenuItem>
                     ))}
                 </Select>
+                <Select
+                    size="small"
+                    value={fontSize}
+                    onChange={(e) => changeFontSize(Number(e.target.value))}
+                    sx={{fontSize: '0.8rem', '& .MuiSelect-select': {py: 0.5}}}
+                >
+                    {FONT_SIZES.map(option => (
+                        <MenuItem key={option} value={option} sx={{fontSize: '0.8rem'}}>
+                            {option}px
+                        </MenuItem>
+                    ))}
+                </Select>
 
                 <Tooltip title="Time range">
                     <IconButton size="small" sx={iconSx(rangeActive)} onClick={(e) => setRangeAnchor(e.currentTarget)}>
@@ -369,9 +451,26 @@ export function LogsViewer({containers}: LogsViewerProps) {
                         <AccessTimeIcon sx={{fontSize: 18}}/>
                     </IconButton>
                 </Tooltip>
+                {hasNames && (
+                    <Tooltip title="Toggle container name">
+                        <IconButton size="small" sx={iconSx(showNames)} onClick={toggleNames}>
+                            <LocalOfferIcon sx={{fontSize: 18}}/>
+                        </IconButton>
+                    </Tooltip>
+                )}
+                <Tooltip title="Toggle line numbers">
+                    <IconButton size="small" sx={iconSx(showLineNumbers)} onClick={toggleLineNumbers}>
+                        <TagIcon sx={{fontSize: 18}}/>
+                    </IconButton>
+                </Tooltip>
                 <Tooltip title="Toggle word wrap">
                     <IconButton size="small" sx={iconSx(wrap)} onClick={toggleWrap}>
                         <WrapTextIcon sx={{fontSize: 18}}/>
+                    </IconButton>
+                </Tooltip>
+                <Tooltip title={light ? "Dark log background" : "Light log background"}>
+                    <IconButton size="small" sx={iconSx(light)} onClick={toggleLight}>
+                        {light ? <DarkModeIcon sx={{fontSize: 18}}/> : <LightModeIcon sx={{fontSize: 18}}/>}
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Follow new lines">
@@ -422,7 +521,7 @@ export function LogsViewer({containers}: LogsViewerProps) {
                     spacing={0.5}
                     flexWrap="wrap"
                     useFlexGap
-                    sx={{px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0}}
+                    sx={{px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', flexShrink: 0, bgcolor: '#1E1E1E'}}
                 >
                     {containers.map((c, idx) => {
                         const enabled = !disabledIds.has(c.id);
@@ -457,27 +556,31 @@ export function LogsViewer({containers}: LogsViewerProps) {
                     overflow: 'auto',
                     px: 1,
                     py: 0.5,
-                    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-                    fontSize: 12,
-                    color: '#CCCCCC',
+                    fontFamily: LOG_FONT,
+                    fontSize,
+                    color: theme.fg,
+                    bgcolor: theme.bg,
                     ...scrollbarStyles,
                 }}
             >
                 {displayed.length === 0 ? (
-                    <Typography variant="body2" sx={{color: 'text.secondary', p: 2, fontStyle: 'italic'}}>
+                    <Typography variant="body2" sx={{color: theme.timestamp, p: 2, fontStyle: 'italic'}}>
                         {status === 'connecting' ? 'Waiting for logs...' : 'No log lines'}
                     </Typography>
                 ) : (
-                    displayed.map(entry => (
+                    displayed.map((entry, index) => (
                         <LogRow
                             key={entry.id}
                             entry={entry}
+                            lineNumber={index + 1}
                             lowerQuery={lowerQuery}
                             isCurrentMatch={entry.id === currentMatchId}
                             showTimestamps={showTimestamps}
-                            showName={isMerged}
+                            showLineNumbers={showLineNumbers}
+                            showName={showNames && hasNames}
                             nameColor={colorFor(entry.containerId)}
                             wrap={wrap}
+                            theme={theme}
                         />
                     ))
                 )}

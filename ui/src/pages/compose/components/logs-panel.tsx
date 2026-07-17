@@ -7,6 +7,7 @@ import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
 
 import "@xterm/xterm/css/xterm.css";
 import AppTerminal from "./logs-terminal.tsx";
+import LogsViewer from "../../../components/log-viewer/logs-viewer.tsx";
 import {useRef} from "react";
 import {FitAddon} from "@xterm/addon-fit";
 
@@ -178,12 +179,16 @@ export function LogsPanel() {
                                         flex: 1
                                     }}
                                 >
-                                    <AppTerminal
-                                        key={v.id}
-                                        {...v}
-                                        fit={fitAddonRef}
-                                        isActive={key === activeTab}
-                                    />
+                                    {v.logsContainers ? (
+                                        <LogsViewer containers={v.logsContainers}/>
+                                    ) : (
+                                        <AppTerminal
+                                            key={v.id}
+                                            {...v}
+                                            fit={fitAddonRef}
+                                            isActive={key === activeTab}
+                                        />
+                                    )}
                                 </Box>
                             )
                         })
