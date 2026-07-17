@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useMemo, useState} from 'react';
 import {
     Autocomplete,
     Box,
@@ -7,15 +7,20 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    IconButton,
     Link,
+    Stack,
     TextField,
     Typography
 } from '@mui/material';
+import CloseIcon from '@mui/icons-material/Close';
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import {ContainerTable} from './components/container-info-table';
-import {useContainerExecWsUrl, useContainerLogsWsUrl} from "../../lib/api.ts";
+import {useContainerExecWsUrl} from "../../lib/api.ts";
 import {useDockerCompose} from '../../hooks/docker-compose.ts';
 import {useContainerExec} from "./state/terminal.tsx";
 import {ComposeActionHeaders} from "./components/compose-action-buttons.tsx";
+import LogsViewer, {type LogsViewerContainer} from "../../components/log-viewer/logs-viewer.tsx";
 
 interface DeployPageProps {
     selectedPage: string;
@@ -36,12 +41,17 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
     const closeErrorDialog = () => setComposeErrorDialog(p => ({...p, dialog: false}));
     // const showErrorDialog = (message: string) => setComposeErrorDialog({dialog: true, message});
 
-    const getLogUrl = useContainerLogsWsUrl()
+    // logs dialog: a single service or the whole stack merged
+    const [logTargets, setLogTargets] = useState<LogsViewerContainer[] | null>(null)
 
     const handleContainerLogs = (containerId: string, containerName: string) => {
-        const url = getLogUrl(containerId)
-        execContainer(`${selectedPage}: logs-${containerName}`, url, false)
+        setLogTargets([{id: containerId, name: containerName}])
     };
+
+    const stackTargets = useMemo(
+        () => containers.map(c => ({id: c.id, name: c.serviceName || c.name})),
+        [containers],
+    );
 
     const execContainer = useContainerExec(state => state.execParams)
 
@@ -95,10 +105,22 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                 flexDirection: 'column',
                 overflow: 'hidden'
             }}>
-                <ComposeActionHeaders
-                    selectedServices={selectedServices}
-                    fetchContainers={fetchContainers}
-                />
+                <Stack direction="row" alignItems="flex-start" spacing={2}>
+                    <ComposeActionHeaders
+                        selectedServices={selectedServices}
+                        fetchContainers={fetchContainers}
+                    />
+                    <Box sx={{flexGrow: 1}}/>
+                    <Button
+                        variant="outlined"
+                        startIcon={<ReceiptLongIcon/>}
+                        disabled={stackTargets.length === 0}
+                        onClick={() => setLogTargets(stackTargets)}
+                        sx={{flexShrink: 0}}
+                    >
+                        Stack logs
+                    </Button>
+                </Stack>
                 <Box sx={{
                     height: '100%',
                     display: 'flex',
@@ -120,6 +142,28 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                     />
                 </Box>
             </Box>
+
+            <Dialog
+                open={logTargets !== null}
+                onClose={() => setLogTargets(null)}
+                fullWidth
+                maxWidth="xl"
+                slotProps={{paper: {sx: {height: '85vh', bgcolor: '#1E1E1E'}}}}
+            >
+                <DialogTitle sx={{py: 1, pr: 1, display: 'flex', alignItems: 'center', gap: 1}}>
+                    <ReceiptLongIcon fontSize="small"/>
+                    {logTargets?.length === 1
+                        ? `Logs — ${logTargets[0].name ?? logTargets[0].id.substring(0, 12)}`
+                        : `Stack logs — ${selectedPage}`}
+                    <Box sx={{flexGrow: 1}}/>
+                    <IconButton size="small" onClick={() => setLogTargets(null)}>
+                        <CloseIcon fontSize="small"/>
+                    </IconButton>
+                </DialogTitle>
+                <DialogContent sx={{p: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
+                    {logTargets !== null && <LogsViewer containers={logTargets}/>}
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={composeErrorDialog.dialog} onClose={closeErrorDialog}>
                 <DialogTitle>Error</DialogTitle>
