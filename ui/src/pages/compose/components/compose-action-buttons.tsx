@@ -3,6 +3,7 @@ import {useFileComponents} from "../state/terminal.tsx";
 import {Box, Button, CircularProgress} from "@mui/material";
 import {deployActionsConfig, useComposeAction} from "../state/compose.tsx";
 import {DockerService} from "../../../gen/docker/v1/docker_pb.ts";
+import {DockerCommandButton} from "./docker-command-button.tsx";
 
 export function ComposeActionHeaders({selectedServices, fetchContainers}: {
     selectedServices: string[];
@@ -46,6 +47,7 @@ export function ComposeActionHeaders({selectedServices, fetchContainers}: {
                     {action.name.charAt(0).toUpperCase() + action.name.slice(1)}
                 </Button>
             ))}
+            <DockerCommandButton/>
         </Box>
     )
 }
