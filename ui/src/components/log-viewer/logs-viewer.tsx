@@ -22,6 +22,7 @@ import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
 import PauseIcon from "@mui/icons-material/Pause";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import CheckIcon from "@mui/icons-material/Check";
 import DownloadIcon from "@mui/icons-material/Download";
@@ -270,6 +271,7 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
 
     const [paused, setPaused] = useState(false);
     const [autoScroll, setAutoScroll] = useState(true);
+    const [reloadKey, setReloadKey] = useState(0);
 
     // time range: unix seconds once applied; an upper bound ends the stream
     const [range, setRange] = useState<{ since?: number; until?: number }>({});
@@ -287,7 +289,14 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
         until: range.until,
         follow: range.until === undefined,
         paused: paused || !isActive,
+        reloadKey,
     });
+
+    const handleReload = () => {
+        setPaused(false);
+        setAutoScroll(true);
+        setReloadKey(k => k + 1);
+    };
 
     const boolToggle = (key: string, set: (fn: (prev: boolean) => boolean) => void) => () => set(prev => {
         localStorage.setItem(key, String(!prev));
@@ -557,6 +566,11 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                         {paused ? <PlayArrowIcon sx={{fontSize: 18}}/> : <PauseIcon sx={{fontSize: 18}}/>}
                     </IconButton>
                 </Tooltip>
+                <Tooltip title="Reload stream">
+                    <IconButton size="small" sx={iconSx(false)} onClick={handleReload}>
+                        <RefreshIcon sx={{fontSize: 18}}/>
+                    </IconButton>
+                </Tooltip>
                 <Tooltip title="Clear">
                     <IconButton size="small" sx={iconSx(false)} onClick={clear}>
                         <DeleteSweepIcon sx={{fontSize: 18}}/>
@@ -625,6 +639,10 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                     fontSize,
                     color: theme.fg,
                     bgcolor: theme.bg,
+                    // the app chrome disables text selection; log content is
+                    // exactly the kind of text that must stay selectable
+                    userSelect: 'text',
+                    cursor: 'text',
                     ...scrollbarStyles,
                 }}
             >

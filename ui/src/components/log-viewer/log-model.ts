@@ -8,6 +8,9 @@ export interface LogEntry {
     // styled segments parsed once on arrival, with cross-line SGR continuity
     segments: AnsiSegment[];
     timeNano: bigint; // 0n when the line had no parsable daemon timestamp
+    // chronological ordering key: the daemon timestamp, or for lines without
+    // one the newest timestamp seen at arrival so they keep their position
+    sortKey: bigint;
     stream: number; // 0 = dockman-internal notice, 1 = stdout, 2 = stderr
     containerId: string;
     containerName: string;
@@ -26,23 +29,47 @@ let nextEntryId = 1;
 export const isKeepAlive = (line: LogLine) =>
     line.containerId === "" && line.text === "" && line.timeNano === 0n;
 
-export function toLogEntry(line: LogLine, segments: AnsiSegment[]): LogEntry {
+export function toLogEntry(line: LogLine, segments: AnsiSegment[], sortKey: bigint): LogEntry {
     return {
         id: nextEntryId++,
         text: segments.map(s => s.text).join(""),
         segments,
         timeNano: line.timeNano,
+        sortKey,
         stream: line.stream,
         containerId: line.containerId,
         containerName: line.containerName,
     };
 }
 
+// merges a batch into the buffer keeping it sorted by sortKey: the containers
+// of a merged view replay their history concurrently, so lines arrive
+// interleaved by reader speed — display must follow the timestamps instead
+const bySortKey = (a: LogEntry, b: LogEntry) =>
+    a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0;
+
 export function appendEntries(buffer: LogEntry[], batch: LogEntry[]): LogEntry[] {
     if (batch.length === 0) return buffer;
+    // stable sort: equal timestamps keep their arrival order
+    let sorted = [...batch].sort(bySortKey);
     // an oversized batch alone can exceed the cap, pre-trim it
-    const trimmed = batch.length > LOG_BUFFER_CAP ? batch.slice(-LOG_BUFFER_CAP) : batch;
-    const next = [...buffer, ...trimmed];
+    if (sorted.length > LOG_BUFFER_CAP) sorted = sorted.slice(-LOG_BUFFER_CAP);
+
+    let next: LogEntry[];
+    if (buffer.length === 0 || sorted[0].sortKey >= buffer[buffer.length - 1].sortKey) {
+        // fast path: the whole batch belongs at the end
+        next = [...buffer, ...sorted];
+    } else {
+        // merge two sorted arrays; buffer entries win ties to stay stable
+        next = new Array<LogEntry>(buffer.length + sorted.length);
+        let i = 0, j = 0, k = 0;
+        while (i < buffer.length && j < sorted.length) {
+            next[k++] = buffer[i].sortKey <= sorted[j].sortKey ? buffer[i++] : sorted[j++];
+        }
+        while (i < buffer.length) next[k++] = buffer[i++];
+        while (j < sorted.length) next[k++] = sorted[j++];
+    }
+
     if (next.length > LOG_BUFFER_CAP * 2) {
         return next.slice(-LOG_BUFFER_CAP);
     }
