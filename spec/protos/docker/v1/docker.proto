@@ -16,6 +16,7 @@ service DockerService {
   rpc ContainerList(ContainerListRequest) returns (ListResponse) {}
   rpc ContainerStats(StatsRequest) returns (StatsResponse) {}
   rpc ContainerLogs(ContainerLogsRequest) returns (stream LogsMessage) {}
+  rpc ContainerLogsStream(LogsStreamRequest) returns (stream LogLine) {}
   rpc ContainerInspect(ContainerLogsRequest) returns (ContainerInspectMessage) {}
 
   // compose
@@ -331,6 +332,29 @@ message ContainerLogsRequest {
 
 message LogsMessage {
   string message = 1;
+}
+
+message LogsStreamRequest {
+  // one id = single container view, several = merged stack view
+  repeated string containerIds = 1;
+  // number of trailing lines per container, <= 0 means the server default
+  int32 tail = 2;
+  // unix seconds bounds, 0 means unbounded
+  int64 since = 3;
+  int64 until = 4;
+  // keep the stream open for new lines; false ends it once history is sent
+  bool follow = 5;
+}
+
+// a frame with an empty containerId and text is a keepalive
+message LogLine {
+  string containerId = 1;
+  string containerName = 2;
+  // line content without the daemon timestamp prefix
+  string text = 3;
+  int64 timeNano = 4;
+  // 1 = stdout, 2 = stderr
+  int32 stream = 5;
 }
 
 message StatsResponse {
