@@ -66,6 +66,9 @@ const (
 	// DockerServiceContainerEventsProcedure is the fully-qualified name of the DockerService's
 	// ContainerEvents RPC.
 	DockerServiceContainerEventsProcedure = "/docker.v1.DockerService/ContainerEvents"
+	// DockerServiceContainerLogsStreamProcedure is the fully-qualified name of the DockerService's
+	// ContainerLogsStream RPC.
+	DockerServiceContainerLogsStreamProcedure = "/docker.v1.DockerService/ContainerLogsStream"
 	// DockerServiceContainerInspectProcedure is the fully-qualified name of the DockerService's
 	// ContainerInspect RPC.
 	DockerServiceContainerInspectProcedure = "/docker.v1.DockerService/ContainerInspect"
@@ -153,6 +156,7 @@ type DockerServiceClient interface {
 	// transitions...) so views can refresh reactively instead of polling;
 	// empty-action messages are keepalives
 	ContainerEvents(context.Context, *connect.Request[v1.EventsRequest]) (*connect.ServerStreamForClient[v1.ContainerEvent], error)
+	ContainerLogsStream(context.Context, *connect.Request[v1.LogsStreamRequest]) (*connect.ServerStreamForClient[v1.LogLine], error)
 	ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error)
 	// compose
 	ComposeUp(context.Context, *connect.Request[v1.ComposeFile]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
@@ -256,6 +260,12 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DockerServiceContainerEventsProcedure,
 			connect.WithSchema(dockerServiceMethods.ByName("ContainerEvents")),
+			connect.WithClientOptions(opts...),
+		),
+		containerLogsStream: connect.NewClient[v1.LogsStreamRequest, v1.LogLine](
+			httpClient,
+			baseURL+DockerServiceContainerLogsStreamProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("ContainerLogsStream")),
 			connect.WithClientOptions(opts...),
 		),
 		containerInspect: connect.NewClient[v1.ContainerLogsRequest, v1.ContainerInspectMessage](
@@ -406,6 +416,7 @@ type dockerServiceClient struct {
 	containerStatsStream *connect.Client[v1.StatsRequest, v1.ContainerStats]
 	containerLogs        *connect.Client[v1.ContainerLogsRequest, v1.LogsMessage]
 	containerEvents      *connect.Client[v1.EventsRequest, v1.ContainerEvent]
+	containerLogsStream  *connect.Client[v1.LogsStreamRequest, v1.LogLine]
 	containerInspect     *connect.Client[v1.ContainerLogsRequest, v1.ContainerInspectMessage]
 	composeUp            *connect.Client[v1.ComposeFile, v1.LogsMessage]
 	composeDown          *connect.Client[v1.ComposeFile, v1.LogsMessage]
@@ -483,6 +494,11 @@ func (c *dockerServiceClient) ContainerLogs(ctx context.Context, req *connect.Re
 // ContainerEvents calls docker.v1.DockerService.ContainerEvents.
 func (c *dockerServiceClient) ContainerEvents(ctx context.Context, req *connect.Request[v1.EventsRequest]) (*connect.ServerStreamForClient[v1.ContainerEvent], error) {
 	return c.containerEvents.CallServerStream(ctx, req)
+}
+
+// ContainerLogsStream calls docker.v1.DockerService.ContainerLogsStream.
+func (c *dockerServiceClient) ContainerLogsStream(ctx context.Context, req *connect.Request[v1.LogsStreamRequest]) (*connect.ServerStreamForClient[v1.LogLine], error) {
+	return c.containerLogsStream.CallServerStream(ctx, req)
 }
 
 // ContainerInspect calls docker.v1.DockerService.ContainerInspect.
@@ -616,6 +632,7 @@ type DockerServiceHandler interface {
 	// transitions...) so views can refresh reactively instead of polling;
 	// empty-action messages are keepalives
 	ContainerEvents(context.Context, *connect.Request[v1.EventsRequest], *connect.ServerStream[v1.ContainerEvent]) error
+	ContainerLogsStream(context.Context, *connect.Request[v1.LogsStreamRequest], *connect.ServerStream[v1.LogLine]) error
 	ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error)
 	// compose
 	ComposeUp(context.Context, *connect.Request[v1.ComposeFile], *connect.ServerStream[v1.LogsMessage]) error
@@ -715,6 +732,12 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		DockerServiceContainerEventsProcedure,
 		svc.ContainerEvents,
 		connect.WithSchema(dockerServiceMethods.ByName("ContainerEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dockerServiceContainerLogsStreamHandler := connect.NewServerStreamHandler(
+		DockerServiceContainerLogsStreamProcedure,
+		svc.ContainerLogsStream,
+		connect.WithSchema(dockerServiceMethods.ByName("ContainerLogsStream")),
 		connect.WithHandlerOptions(opts...),
 	)
 	dockerServiceContainerInspectHandler := connect.NewUnaryHandler(
@@ -873,6 +896,8 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 			dockerServiceContainerLogsHandler.ServeHTTP(w, r)
 		case DockerServiceContainerEventsProcedure:
 			dockerServiceContainerEventsHandler.ServeHTTP(w, r)
+		case DockerServiceContainerLogsStreamProcedure:
+			dockerServiceContainerLogsStreamHandler.ServeHTTP(w, r)
 		case DockerServiceContainerInspectProcedure:
 			dockerServiceContainerInspectHandler.ServeHTTP(w, r)
 		case DockerServiceComposeUpProcedure:
@@ -968,6 +993,10 @@ func (UnimplementedDockerServiceHandler) ContainerLogs(context.Context, *connect
 
 func (UnimplementedDockerServiceHandler) ContainerEvents(context.Context, *connect.Request[v1.EventsRequest], *connect.ServerStream[v1.ContainerEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerEvents is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) ContainerLogsStream(context.Context, *connect.Request[v1.LogsStreamRequest], *connect.ServerStream[v1.LogLine]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerLogsStream is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error) {
