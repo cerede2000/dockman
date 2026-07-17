@@ -259,6 +259,22 @@ export function useDockerStats(selectedPage?: string) {
                     file: selectedPage ? {filename: selectedPage} : undefined,
                 })) {
                     if (isCancelled) return;
+
+                    // identity-only row streamed ahead of its ~1s reading so
+                    // the view paints instantly: never overwrite a row that
+                    // already has real values, never record it as history
+                    if (stat.cpuUsage < 0) {
+                        if (!merged.has(stat.id)) {
+                            merged.set(stat.id, stat);
+                            applyRows(sortRows([...merged.values()], sortRef.current.field, sortRef.current.order));
+                            if (loadingRef.current) {
+                                setLoading(false);
+                                loadingRef.current = false;
+                            }
+                        }
+                        continue;
+                    }
+
                     merged.set(stat.id, stat);
                     seen.add(stat.id);
                     seenNames.add(stat.name);
@@ -326,10 +342,11 @@ export function useDockerStats(selectedPage?: string) {
 
     // Instant first paint: seed the rows from the (immediate) container list
     // while the first stats reads sample in the daemon; metrics cells render
-    // as pending and fill in as each container's stats arrive. Only for the
-    // host-wide view — a stack tab can't be scoped from the list.
+    // as pending and fill in as each container's stats arrive. Stack tabs are
+    // matched by the compose project name — conventionally the compose file's
+    // directory name; when the project was renamed the match finds nothing
+    // and the stream's identity wave paints the rows instead.
     useEffect(() => {
-        if (selectedPage) return;
         let cancelled = false;
 
         const seed = async () => {
@@ -337,8 +354,13 @@ export function useDockerStats(selectedPage?: string) {
             // never overwrite real stats with placeholders
             if (cancelled || gotStats.current || !val) return;
 
+            const project = selectedPage
+                ? (selectedPage.split('/').slice(-2, -1)[0] ?? '').toLowerCase()
+                : '';
+
             const rows = val.list
                 .filter(c => c.state === 'running')
+                .filter(c => !selectedPage || c.stackName.toLowerCase() === project)
                 .map(c => create(ContainerStatsSchema, {
                     id: c.id.substring(0, 12),
                     name: c.name,
@@ -349,6 +371,7 @@ export function useDockerStats(selectedPage?: string) {
                     cpuUsage: METRICS_PENDING,
                 }))
                 .sort((a, b) => a.name.localeCompare(b.name));
+            if (rows.length === 0) return;
 
             // merge under any stats that already trickled in
             const byId = new Map(rows.map(r => [r.id, r]));
