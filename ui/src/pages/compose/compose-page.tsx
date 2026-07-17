@@ -282,6 +282,9 @@ const FileTabBar = ({track}: { track: number }) => {
 
     const navigate = useNavigate();
     const {closeTab, onTabClick} = useTabs();
+    const reorderTab = useTabsStore(state => state.reorder);
+    // Chrome-style drag: the dragged tab slides into the hovered slot live
+    const [draggedTab, setDraggedTab] = useState<string | null>(null);
 
     const contextKey = `${host}/${alias}`
     const compact = useCompactMode(state => state.enabled)
@@ -348,7 +351,26 @@ const FileTabBar = ({track}: { track: number }) => {
                         <Tab
                             key={tabFilename}
                             value={tabFilename}
-                            sx={{textTransform: 'none', p: 0.5, minHeight: tabMinHeight, maxWidth: 200}}
+                            draggable
+                            onDragStart={(e) => {
+                                e.dataTransfer.effectAllowed = 'move';
+                                setDraggedTab(tabFilename);
+                            }}
+                            onDragOver={(e) => {
+                                if (!draggedTab || draggedTab === tabFilename) return;
+                                e.preventDefault();
+                                // live reorder: slide the dragged tab into this slot
+                                reorderTab(draggedTab, tablist.indexOf(tabFilename), track);
+                            }}
+                            onDrop={(e) => e.preventDefault()}
+                            onDragEnd={() => setDraggedTab(null)}
+                            sx={{
+                                textTransform: 'none',
+                                p: 0.5,
+                                minHeight: tabMinHeight,
+                                maxWidth: 200,
+                                opacity: draggedTab === tabFilename ? 0.4 : 1,
+                            }}
                             label={
                                 <Box sx={{
                                     display: 'flex',
