@@ -158,28 +158,27 @@ export function ContainerTable(
                 </TableCell>
             ),
             cell: (c) => (
-                <TableCell sx={{width: 180}}>
+                <TableCell sx={{width: 150, whiteSpace: 'nowrap'}}>
                     <Tooltip title={new Date(c.created).toLocaleString()} arrow placement="top">
-                        <Stack spacing={0}>
-                            <Stack direction="row" spacing={1} alignItems="center">
-                                <Typography variant="body2" sx={{fontWeight: 600, color: 'info.main'}}>
-                                    {formatTimeAgo(new Date(c.created))}
-                                </Typography>
-                            </Stack>
+                        <Box>
+                            <Typography variant="body2" sx={{fontWeight: 500, lineHeight: 1.3}}>
+                                {formatTimeAgo(new Date(c.created))}
+                            </Typography>
                             <Typography
                                 variant="caption"
                                 sx={{
-                                    fontFamily: 'monospace',
                                     color: 'text.secondary',
-                                    fontSize: '0.7rem',
+                                    fontSize: '0.68rem',
+                                    whiteSpace: 'nowrap',
                                 }}
                             >
+                                {new Date(c.created).toLocaleDateString()}{' '}
                                 {new Date(c.created).toLocaleTimeString([], {
                                     hour: '2-digit',
                                     minute: '2-digit'
-                                })} {new Date(c.created).toLocaleDateString()}
+                                })}
                             </Typography>
-                        </Stack>
+                        </Box>
                     </Tooltip>
                 </TableCell>
             )
@@ -230,15 +229,21 @@ export function ContainerTable(
                             target="_blank"
                             sx={{
                                 fontSize: '0.75rem',
-                                fontWeight: 600,
+                                fontWeight: 500,
+                                color: 'text.secondary',
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: 0.5,
-                                textDecoration: 'none'
+                                textDecoration: 'none',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                maxWidth: 240,
+                                '&:hover': {color: 'primary.main'},
                             }}
                             onClick={(e) => e.stopPropagation()}
                         >
-                            {c.imageName.split(':')[0]} <OpenIcon sx={{fontSize: 10}}/>
+                            {c.imageName.split(':')[0]} <OpenIcon sx={{fontSize: 10, flexShrink: 0}}/>
                         </Link>
                         {c.updateAvailable && <UpdateIcon sx={{fontSize: 14, color: 'warning.main'}}/>}
                     </Stack>
@@ -259,10 +264,12 @@ export function ContainerTable(
                 </TableCell>
             ),
             cell: (c) => (
-                <TableCell>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                        <ComposeLink stackName={c.stackName} servicePath={c.servicePath}/>
-                    </Stack>
+                <TableCell sx={{maxWidth: 150}}>
+                    <Tooltip title={c.stackName} arrow placement="top">
+                        <Box sx={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
+                            <ComposeLink stackName={c.stackName} servicePath={c.servicePath}/>
+                        </Box>
+                    </Tooltip>
                 </TableCell>
             )
         },
@@ -338,7 +345,12 @@ export function ContainerTable(
                             onClick={() => handleRowClick(getContName(c))}
                             selected={selectedServices.includes(getContName(c))}
                             key={c.id}
-                            sx={{cursor: 'pointer', '&.Mui-selected': {bgcolor: 'primary.lighter'}}}
+                            sx={{
+                                cursor: 'pointer',
+                                '&:nth-of-type(odd)': {bgcolor: 'rgba(255,255,255,0.015)'},
+                                '& td': {borderColor: 'rgba(255,255,255,0.06)'},
+                                '&.Mui-selected': {bgcolor: 'primary.lighter'},
+                            }}
                         >
                             {Object.values(tableInfo).map((col, idx) => <React.Fragment
                                 key={idx}>{col.cell(c)}</React.Fragment>)}
@@ -367,12 +379,13 @@ const ActionBtn = ({icon, title, onClick}: { icon: any, title: string, onClick: 
             size="small"
             onClick={onClick}
             sx={{
-                border: '1px solid',
-                borderColor: 'divider',
-                borderRadius: 1.5,
-                p: 0.4,
-                fontSize: '1.1rem',
-                color: 'primary.main'
+                p: 0.5,
+                fontSize: '1.05rem',
+                color: 'text.secondary',
+                '&:hover': {
+                    color: 'primary.main',
+                    bgcolor: 'action.hover',
+                },
             }}
         >
             {icon}
@@ -437,11 +450,12 @@ const formatPorts = (ports: Port[]) => {
                 component="span"
                 sx={{
                     bgcolor: 'action.hover',
-                    px: 0.5,
+                    px: 0.6,
                     py: 0.1,
-                    borderRadius: 0.5,
-                    border: '1px solid',
-                    borderColor: 'divider'
+                    borderRadius: 0.75,
+                    fontFamily: 'monospace',
+                    fontSize: '0.72rem',
+                    whiteSpace: 'nowrap',
                 }}
             >
                 <ContainerInfoPort port={p}/>
@@ -458,11 +472,12 @@ const formatIPAddr = (addrs: string[]) => {
             component="span"
             sx={{
                 bgcolor: 'action.hover',
-                px: 0.5,
+                px: 0.6,
                 py: 0.1,
-                borderRadius: 0.5,
-                border: '1px solid',
-                borderColor: 'divider'
+                borderRadius: 0.75,
+                fontFamily: 'monospace',
+                fontSize: '0.72rem',
+                whiteSpace: 'nowrap',
             }}
         >
             <Tooltip title="Open IP in new tab" arrow>
@@ -470,7 +485,11 @@ const formatIPAddr = (addrs: string[]) => {
                     href={`http://${addr}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    sx={{color: 'info.main', textDecoration: 'none', '&:hover': {textDecoration: 'underline'}}}
+                    sx={{
+                        color: 'text.secondary',
+                        textDecoration: 'none',
+                        '&:hover': {color: 'primary.main', textDecoration: 'underline'},
+                    }}
                 >
                     {addr}
                 </Link>
