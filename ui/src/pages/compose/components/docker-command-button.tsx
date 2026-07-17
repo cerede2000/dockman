@@ -56,8 +56,16 @@ export function DockerCommandButton() {
             <Tooltip title="Run a docker command">
                 <Button
                     variant="outlined"
-                    startIcon={<TerminalIcon/>}
+                    size="small"
+                    startIcon={<TerminalIcon sx={{fontSize: 17}}/>}
                     onClick={() => setOpen(true)}
+                    sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        borderColor: 'divider',
+                        color: 'text.secondary',
+                        '&:hover': {borderColor: 'primary.main', color: 'primary.main', bgcolor: 'action.hover'},
+                    }}
                 >
                     Run
                 </Button>
