@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef} from 'react'
+import {useCallback, useEffect} from 'react'
 import {Box, CircularProgress, Divider, IconButton, List, Toolbar, Tooltip, Typography} from '@mui/material'
 import {Add as AddIcon, Cached, Search as SearchIcon} from '@mui/icons-material'
 import {ShortcutFormatter} from "./shortcut-formatter.tsx"
@@ -182,28 +182,35 @@ const FileListInner = () => {
     const eventBump = useDockerEvents()
 
 
-    const openFilesRef = useRef(openFiles)
     useEffect(() => {
-        openFilesRef.current = openFiles
-    }, [openFiles])
+        let cancelled = false
 
-    useEffect(() => {
         const refresh = async () => {
-            const currentElement = openFilesRef.current[`${host}/${alias}`];
+            const currentElement = openFiles[`${host}/${alias}`];
             if (!currentElement) return;
 
             const keys = Object.keys(currentElement)
+            if (keys.length === 0) return;
+
             const {val} = await callRPC(() => dockerSrv.composeFileStatus({ files: keys }))
-            if (val) {
+            if (val && !cancelled) {
                 setStatus(val.status)
             }
         }
 
-        refresh().then()
+        // Re-runs whenever the tracked file set changes (the tree registers
+        // its compose files progressively at mount — the dots must load as
+        // soon as the files are known, not at the next poll) and on every
+        // container event. The short delay coalesces those mount-time
+        // registrations into a single request.
+        const initial = setTimeout(refresh, 150)
         const interval = setInterval(refresh, 30000)
-        return () => clearInterval(interval)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [eventBump])
+        return () => {
+            cancelled = true
+            clearTimeout(initial)
+            clearInterval(interval)
+        }
+    }, [openFiles, host, alias, dockerSrv, setStatus, eventBump])
 
 
     return (
