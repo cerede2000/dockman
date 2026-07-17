@@ -6,7 +6,7 @@ import {Close} from '@mui/icons-material';
 import ActionSidebar from "./components/action-sidebar.tsx";
 import CoreComposeEmpty, {InvalidAlias} from "./compose-empty.tsx";
 import {LogsPanel} from "./components/logs-panel.tsx";
-import {getExt} from "./components/file-icon.tsx";
+import FileIcon, {getExt} from "./components/file-icon.tsx";
 import ViewerSqlite from "./components/viewer-sqlite.tsx";
 import ViewerText from "./components/viewer-text.tsx";
 import ViewerDockyaml, {formatDockyaml} from "./components/viewer-dockyml.tsx";
@@ -239,9 +239,41 @@ export const ComposePageInner = () => {
     );
 };
 
-function getTabName(filename: string): string {
-    const s = filename.split("/").pop() ?? filename;
-    return s.slice(0, 19) // max name limit of 19 chars
+interface TabLabel {
+    name: string;
+    // disambiguating parent folder, only set when several open tabs share
+    // the same file name (VS Code behavior)
+    hint: string;
+}
+
+// buildTabLabels labels every tab with its file name, adding the parent
+// folder as a hint when open tabs collide on the same name — and walking up
+// the path while the hints themselves collide (bounded, most trees are flat).
+function buildTabLabels(filenames: string[]): Map<string, TabLabel> {
+    const byBase = new Map<string, string[]>();
+    for (const f of filenames) {
+        const base = f.split('/').pop() ?? f;
+        byBase.set(base, [...(byBase.get(base) ?? []), f]);
+    }
+
+    const labels = new Map<string, TabLabel>();
+    for (const [base, paths] of byBase) {
+        if (paths.length === 1) {
+            labels.set(paths[0], {name: base, hint: ''});
+            continue;
+        }
+
+        let hints: string[] = [];
+        for (let depth = 1; depth <= 3; depth++) {
+            hints = paths.map(p => {
+                const parts = p.split('/');
+                return parts.slice(Math.max(0, parts.length - 1 - depth), -1).join('/');
+            });
+            if (new Set(hints).size === paths.length) break;
+        }
+        paths.forEach((p, i) => labels.set(p, {name: base, hint: hints[i]}));
+    }
+    return labels;
 }
 
 const FileTabBar = ({track}: { track: number }) => {
@@ -296,6 +328,8 @@ const FileTabBar = ({track}: { track: number }) => {
         return Array.from(tabs);
     }, [tabs])
 
+    const tabLabels = useMemo(() => buildTabLabels(tablist), [tablist])
+
     return (
         <Box sx={{borderBottom: 1, borderColor: 'divider', flexShrink: 0}}>
             <Tabs
@@ -305,35 +339,89 @@ const FileTabBar = ({track}: { track: number }) => {
                 scrollButtons="auto"
                 sx={{minHeight: tabMinHeight}}
             >
-                {tablist.map((tabFilename) => (
-                    <Tab
-                        key={tabFilename}
-                        value={tabFilename}
-                        sx={{textTransform: 'none', p: 0.5, minHeight: tabMinHeight}}
-                        label={
-                            <Box sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                px: 1
-                            }}>
-                                <Tooltip title={tabFilename}>
-                                    <span>{getTabName(tabFilename)}</span>
-                                </Tooltip>
-                                <IconButton
-                                    size="small"
-                                    component="div"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        closeTab(tabFilename, track)
-                                    }}
-                                    sx={{ml: 1.5}}
-                                >
-                                    <Close sx={{fontSize: '1rem'}}/>
-                                </IconButton>
-                            </Box>
-                        }
-                    />
-                ))}
+                {tablist.map((tabFilename) => {
+                    const label = tabLabels.get(tabFilename) ?? {
+                        name: tabFilename.split('/').pop() ?? tabFilename,
+                        hint: '',
+                    };
+                    return (
+                        <Tab
+                            key={tabFilename}
+                            value={tabFilename}
+                            sx={{textTransform: 'none', p: 0.5, minHeight: tabMinHeight, maxWidth: 200}}
+                            label={
+                                <Box sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 0.75,
+                                    px: 0.5,
+                                    minWidth: 0,
+                                    // the icon slot doubles as the close button on
+                                    // hover — no reserved width, no layout shift
+                                    '&:hover .tab-icon': {opacity: 0},
+                                    '&:hover .tab-close': {opacity: 1},
+                                }}>
+                                    <Box sx={{position: 'relative', width: 18, height: 18, flexShrink: 0}}>
+                                        <Box
+                                            className="tab-icon"
+                                            sx={{
+                                                position: 'absolute',
+                                                inset: 0,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                transition: 'opacity 0.1s',
+                                                '& img': {width: 16, height: 16},
+                                                '& svg': {fontSize: 16},
+                                            }}
+                                        >
+                                            <FileIcon filename={tabFilename}/>
+                                        </Box>
+                                        <IconButton
+                                            className="tab-close"
+                                            size="small"
+                                            component="div"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                closeTab(tabFilename, track)
+                                            }}
+                                            sx={{
+                                                position: 'absolute',
+                                                inset: 0,
+                                                p: 0,
+                                                opacity: 0,
+                                                transition: 'opacity 0.1s',
+                                            }}
+                                        >
+                                            <Close sx={{fontSize: '1rem'}}/>
+                                        </IconButton>
+                                    </Box>
+                                    <Tooltip title={tabFilename}>
+                                        <Box sx={{
+                                            display: 'flex',
+                                            alignItems: 'baseline',
+                                            gap: 0.6,
+                                            minWidth: 0,
+                                        }}>
+                                            <Typography component="span" variant="body2" noWrap>
+                                                {label.name.slice(0, 19)}
+                                            </Typography>
+                                            {label.hint && (
+                                                <Typography component="span" variant="caption" noWrap sx={{
+                                                    color: 'text.secondary',
+                                                    fontSize: '0.7rem',
+                                                    maxWidth: 84,
+                                                }}>
+                                                    · {label.hint}
+                                                </Typography>
+                                            )}
+                                        </Box>
+                                    </Tooltip>
+                                </Box>
+                            }
+                        />
+                    );
+                })}
             </Tabs>
         </Box>
     );
