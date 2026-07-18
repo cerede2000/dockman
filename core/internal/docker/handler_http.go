@@ -35,6 +35,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux := http.NewServeMux()
 	subMux.HandleFunc("GET /exec/{contId}", h.containerExec)
 	subMux.HandleFunc("GET /logs/{contId}", h.containerLogs)
+	subMux.HandleFunc("GET /shell", h.hostShell)
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
 
 	return subMux
