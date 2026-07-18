@@ -1,4 +1,4 @@
-import {Box, Divider, Paper, Stack, Typography} from "@mui/material";
+import {Box, Divider, Paper, Stack, Tooltip, Typography} from "@mui/material";
 import {
     Dns as ContainerIcon,
     ImportExport as NetworkIcon,
@@ -6,7 +6,7 @@ import {
     Speed as CpuIcon,
     Storage as StorageIcon
 } from "@mui/icons-material";
-import {formatBytes, getUsageColor} from "../../../lib/editor.ts";
+import {formatBytes} from "../../../lib/editor.ts";
 import {type ReactNode} from "react";
 import {type AggregateSnapshot} from "../../../hooks/docker-containers-stats.ts";
 import Sparkline from "../../../components/sparkline.tsx";
@@ -27,7 +27,8 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
         <Paper
             variant="outlined"
             sx={{
-                p: 2,
+                px: 2.5,
+                py: 1.5,
                 mb: 2,
                 borderRadius: 2,
                 bgcolor: t.panel,
@@ -38,51 +39,48 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
         >
             <Stack
                 direction="row"
-                spacing={4}
+                spacing={3}
                 divider={<Divider orientation="vertical" flexItem sx={{borderColor: t.border}}/>}
-                sx={{width: '100%', overflowX: 'auto'}}
+                sx={{width: '100%', overflowX: 'auto', alignItems: 'stretch'}}
             >
-                {/* Container count */}
-                <StatItem
-                    icon={<ContainerIcon sx={{color: t.cpuLine}}/>}
+                <StatTile
+                    icon={<ContainerIcon/>}
                     label="Containers"
                     value={aggregates ? aggregates.total.toString() : '–'}
-                    subValue={aggregates ? `${aggregates.running} running` : ''}
+                    sub={aggregates ? `${aggregates.running} running` : ''}
                 />
 
-                {/* Total CPU with per-cycle history */}
-                <ChartItem
-                    icon={<CpuIcon sx={{color: getUsageColor((aggregates?.cpu ?? 0) / 10)}}/>}
+                <StatTile
+                    icon={<CpuIcon/>}
                     label="Total CPU"
                     value={aggregates ? `${aggregates.cpu.toFixed(1)}%` : '–'}
-                    data={aggregates?.cpuHistory ?? []}
-                    color={t.cpuLine}
+                    spark={{data: aggregates?.cpuHistory ?? [], color: t.cpuLine}}
                 />
 
-                {/* Aggregate memory with per-cycle history */}
-                <ChartItem
-                    icon={<MemoryIcon sx={{color: getUsageColor(memPercent)}}/>}
+                <StatTile
+                    icon={<MemoryIcon/>}
                     label="Memory"
                     value={aggregates ? formatBytes(aggregates.memUsed) : '–'}
-                    subValue={aggregates ? `${memPercent.toFixed(1)}% of limits` : ''}
-                    data={aggregates?.memHistory ?? []}
-                    color={t.memLine}
+                    sub={aggregates && aggregates.memLimit > 0
+                        ? `${memPercent.toFixed(1)}% of ${formatBytes(aggregates.memLimit)}`
+                        : ''}
+                    spark={{data: aggregates?.memHistory ?? [], color: t.memLine}}
                 />
 
-                {/* Network totals */}
-                <StatItem
-                    icon={<NetworkIcon sx={{color: t.netUp}}/>}
+                <StatTile
+                    icon={<NetworkIcon/>}
                     label="Network I/O"
-                    value={aggregates ? formatBytes(aggregates.netRx + aggregates.netTx) : '–'}
-                    subValue={aggregates ? `↓ ${formatBytes(aggregates.netRx)}  ↑ ${formatBytes(aggregates.netTx)}` : ''}
+                    value={aggregates ? `↓ ${formatBytes(aggregates.netRx)}` : '–'}
+                    sub={aggregates ? `↑ ${formatBytes(aggregates.netTx)}` : ''}
+                    tooltip={aggregates ? `Total ${formatBytes(aggregates.netRx + aggregates.netTx)}` : ''}
                 />
 
-                {/* Disk totals */}
-                <StatItem
-                    icon={<StorageIcon sx={{color: t.diskWrite}}/>}
+                <StatTile
+                    icon={<StorageIcon/>}
                     label="Block I/O"
-                    value={aggregates ? formatBytes(aggregates.diskR + aggregates.diskW) : '–'}
-                    subValue={aggregates ? `r ${formatBytes(aggregates.diskR)}  w ${formatBytes(aggregates.diskW)}` : ''}
+                    value={aggregates ? `R ${formatBytes(aggregates.diskR)}` : '–'}
+                    sub={aggregates ? `W ${formatBytes(aggregates.diskW)}` : ''}
+                    tooltip={aggregates ? `Total ${formatBytes(aggregates.diskR + aggregates.diskW)}` : ''}
                 />
             </Stack>
         </Paper>
@@ -91,63 +89,55 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
 
 export default AggregateStats;
 
-function StatItem({icon, label, value, subValue}: {
+// one quiet tile: dim small-caps label with a small dim icon, a single
+// non-wrapping mono value line, an optional dim detail line, and an optional
+// sparkline sitting to the right of the numbers
+function StatTile({icon, label, value, sub, spark, tooltip}: {
     icon: ReactNode,
     label: string,
     value: string,
-    subValue: string
+    sub?: string,
+    spark?: { data: number[], color: string },
+    tooltip?: string,
 }) {
-    return (
-        <Box sx={{minWidth: 140}}>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{mb: 0.5}}>
-                {icon}
-                <Typography variant="overline" sx={{fontWeight: 700, color: t.textDim, lineHeight: 1}}>
+    const body = (
+        <Box sx={{minWidth: 150, flex: '1 0 auto'}}>
+            <Stack direction="row" spacing={0.75} alignItems="center" sx={{mb: 0.5, color: t.textDim}}>
+                <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{icon}</Box>
+                <Typography variant="overline" sx={{fontWeight: 700, lineHeight: 1, letterSpacing: '0.08em'}}>
                     {label}
                 </Typography>
             </Stack>
-            <Typography variant="h6" sx={{fontFamily: t.mono, fontWeight: 800, lineHeight: 1.2, color: t.text}}>
-                {value}
-            </Typography>
-            <Typography variant="caption" sx={{whiteSpace: 'nowrap', color: t.textDim, fontFamily: t.mono}}>
-                {subValue}
-            </Typography>
-        </Box>
-    );
-}
-
-function ChartItem({icon, label, value, subValue, data, color}: {
-    icon: ReactNode,
-    label: string,
-    value: string,
-    subValue?: string,
-    data: number[],
-    color: string,
-}) {
-    return (
-        <Box sx={{minWidth: 200}}>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{mb: 0.5}}>
-                {icon}
-                <Typography variant="overline" sx={{fontWeight: 700, color: t.textDim, lineHeight: 1}}>
-                    {label}
-                </Typography>
-            </Stack>
-            <Stack direction="row" spacing={1.5} alignItems="flex-end">
-                <Box>
-                    <Typography variant="h6"
-                                sx={{fontFamily: t.mono, fontWeight: 800, lineHeight: 1.2, color: t.text}}>
+            <Stack direction="row" spacing={1.5} alignItems="center">
+                <Box sx={{minWidth: 0}}>
+                    <Typography sx={{
+                        fontFamily: t.mono,
+                        fontWeight: 700,
+                        fontSize: '1.05rem',
+                        lineHeight: 1.25,
+                        color: t.text,
+                        whiteSpace: 'nowrap',
+                    }}>
                         {value}
                     </Typography>
-                    {subValue && (
-                        <Typography variant="caption"
-                                    sx={{whiteSpace: 'nowrap', color: t.textDim, fontFamily: t.mono}}>
-                            {subValue}
-                        </Typography>
-                    )}
+                    <Typography variant="caption" sx={{
+                        whiteSpace: 'nowrap',
+                        color: t.textDim,
+                        fontFamily: t.mono,
+                        display: 'block',
+                        minHeight: '1.1em',
+                    }}>
+                        {sub ?? ''}
+                    </Typography>
                 </Box>
-                <Box sx={{width: 140}}>
-                    <Sparkline data={data} color={color} height={34}/>
-                </Box>
+                {spark && (
+                    <Box sx={{width: 120, flexShrink: 0}}>
+                        <Sparkline data={spark.data} color={spark.color} height={30}/>
+                    </Box>
+                )}
             </Stack>
         </Box>
     );
+
+    return tooltip ? <Tooltip title={tooltip} arrow placement="top">{body}</Tooltip> : body;
 }
