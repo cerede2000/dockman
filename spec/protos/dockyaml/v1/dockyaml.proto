@@ -42,6 +42,13 @@ message DockmanYaml {
   StatsConfig statsPage = 10;
   ComposeConfig composePage = 11;
   EditorConfig editorPage = 12;
+  MonitorConfig monitorPage = 13;
+}
+
+message MonitorConfig {
+  // stack row density in the monitor view: "full" (default) shows CPU/RAM
+  // values with their charts, "compact" shows the values only
+  string stackRows = 1;
 }
 
 message ComposeConfig {

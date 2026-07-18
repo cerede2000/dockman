@@ -74,6 +74,13 @@ func (d *DockmanYaml) ToProto() *v1.DockmanYaml {
 		StatsPage:                  d.StatsPage.toProto(),
 		ComposePage:                d.ComposePage.toProto(),
 		EditorPage:                 d.EditorPage.toProto(),
+		MonitorPage:                d.MonitorPage.toProto(),
+	}
+}
+
+func (m MonitorConfig) toProto() *v1.MonitorConfig {
+	return &v1.MonitorConfig{
+		StackRows: m.StackRows,
 	}
 }
 

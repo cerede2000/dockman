@@ -36,6 +36,9 @@ var defaultDockmanYaml = DockmanYaml{
 	ComposePage: ComposeConfig{
 		DefaultTab: "editor",
 	},
+	MonitorPage: MonitorConfig{
+		StackRows: "full",
+	},
 }
 
 type DockmanYaml struct {
@@ -67,6 +70,9 @@ type DockmanYaml struct {
 
 	// configure the compose stack view
 	ComposePage ComposeConfig `yaml:"compose"`
+
+	// configure the monitor view
+	MonitorPage MonitorConfig `yaml:"monitor"`
 
 	// configure the file editor
 	EditorPage EditorConfig `yaml:"editor"`
@@ -100,6 +106,12 @@ type StatsConfig struct {
 type ComposeConfig struct {
 	// tab shown when opening a compose stack: editor (default), deploy or stats
 	DefaultTab string `yaml:"defaultTab"`
+}
+
+type MonitorConfig struct {
+	// stack row density in the monitor view: "full" (default) shows CPU/RAM
+	// values with their charts, "compact" shows the values only
+	StackRows string `yaml:"stackRows"`
 }
 
 type EditorConfig struct {

@@ -222,17 +222,18 @@ func (h *Handler) ContainerTop(ctx context.Context, req *connect.Request[v1.Cont
 	}), nil
 }
 
+// ContainerUpdate force-updates the given containers' images: pull the tag,
+// and when a newer image came down recreate the container on it (with
+// rollback on failure) — see updater.ContainersUpdateByContainerID.
 func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error) {
-	_, _, err := h.getHost(ctx)
+	_, dkSrv, err := h.getHost(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// todo
-	//err = h.updater(host).ContainersUpdateByContainerID(ctx, req.Msg.ContainerIds...)
-	//if err != nil {
-	//	return nil, err
-	//}
+	if err = dkSrv.Updater.ContainersUpdateByContainerID(ctx, req.Msg.ContainerIds...); err != nil {
+		return nil, err
+	}
 	return connect.NewResponse(&v1.Empty{}), nil
 }
 
