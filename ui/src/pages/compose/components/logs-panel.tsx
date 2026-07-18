@@ -8,7 +8,7 @@ import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
 import "@xterm/xterm/css/xterm.css";
 import AppTerminal from "./logs-terminal.tsx";
 import LogsViewer from "../../../components/log-viewer/logs-viewer.tsx";
-import {useEffect, useRef, useState} from "react";
+import {useCallback, useEffect, useRef, useState} from "react";
 import {FitAddon} from "@xterm/addon-fit";
 import {useFileComponents} from "../state/terminal.tsx";
 
@@ -28,6 +28,35 @@ export function LogsPanel() {
     const [hovered, setHovered] = useState(false);
     const bodyVisible = isTerminalOpen && (!floatMode || hovered);
 
+    // collapsing the instant the pointer slips out makes the overlay hard to
+    // use: give a grace period instead, and never collapse mid-drag — the
+    // pointer routinely exits the panel while resizing via the top handle
+    const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pointerInside = useRef(false);
+    const cancelCollapse = useCallback(() => {
+        if (collapseTimer.current !== null) {
+            clearTimeout(collapseTimer.current);
+            collapseTimer.current = null;
+        }
+    }, []);
+    const scheduleCollapse = useCallback(() => {
+        cancelCollapse();
+        collapseTimer.current = setTimeout(() => {
+            collapseTimer.current = null;
+            setHovered(false);
+        }, 500);
+    }, [cancelCollapse]);
+    useEffect(() => cancelCollapse, [cancelCollapse]);
+    useEffect(() => {
+        if (isResizing) {
+            cancelCollapse();
+        } else if (!pointerInside.current) {
+            // drag ended with the pointer outside: collapse after the grace
+            // period, since no mouseleave will fire again
+            scheduleCollapse();
+        }
+    }, [isResizing, cancelCollapse, scheduleCollapse]);
+
     // tabs hold container ids and socket urls scoped to one docker host:
     // after a host switch they would query the wrong daemon, so drop them
     const {host} = useFileComponents();
@@ -41,8 +70,16 @@ export function LogsPanel() {
 
     return (
         <Box
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            onMouseEnter={() => {
+                pointerInside.current = true;
+                cancelCollapse();
+                setHovered(true);
+            }}
+            onMouseLeave={() => {
+                pointerInside.current = false;
+                if (isResizing) return;
+                scheduleCollapse();
+            }}
             sx={{
                 display: isTerminalOpen ? 'block' : 'none',
                 position: 'relative',
