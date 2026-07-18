@@ -113,7 +113,10 @@ function computeAggregates(scope: string, rows: ContainerStats[]): AggregateSnap
                 acc.restarting++;
                 break;
         }
-        if (curr.health === 'unhealthy') acc.unhealthy++;
+        // healthchecks only run on running containers: a stopped/paused
+        // container's health field is the daemon's stale last state, counting
+        // it would double-book the container as stopped AND unhealthy
+        if (curr.state === 'running' && curr.health === 'unhealthy') acc.unhealthy++;
         return acc;
     }, {
         cpu: 0, memUsed: 0, memLimit: 0, netRx: 0, netTx: 0, diskR: 0, diskW: 0,

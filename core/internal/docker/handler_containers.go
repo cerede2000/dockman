@@ -231,7 +231,7 @@ func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.C
 		return nil, err
 	}
 
-	if err = dkSrv.Updater.ContainersUpdateByContainerID(ctx, req.Msg.ContainerIds...); err != nil {
+	if err = dkSrv.Updater.ContainersForceUpdate(ctx, req.Msg.ContainerIds...); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&v1.Empty{}), nil

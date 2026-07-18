@@ -3,6 +3,7 @@ import {
     Checkbox,
     CircularProgress,
     IconButton,
+    Link,
     ListItemIcon,
     ListItemText,
     Menu,
@@ -28,6 +29,7 @@ import {
     ExpandMore,
     Pause,
     PlayArrow,
+    ReceiptLong,
     RestartAlt,
     RocketLaunch,
     Stop,
@@ -42,6 +44,7 @@ import type {ContainerList, ContainerStats} from '../../gen/docker/v1/docker_pb.
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes, getUsageColor} from '../../lib/editor.ts';
+import {ContainerInfoPort} from '../compose/components/container-info-port.tsx';
 
 export interface MonitorRow {
     info: ContainerList;
@@ -94,6 +97,9 @@ interface MonitorTableProps {
     // dockman.yml monitor.stackRows: compact stack rows drop the charts
     stackRowsCompact: boolean;
     runningStacks: Record<string, boolean>;
+    // last action outcome per compose file — drives the output button
+    stackRuns: Record<string, 'running' | 'failed' | 'done'>;
+    onStackOutput: (group: StackGroup) => void;
     onRowAction: (row: MonitorRow, action: RowAction) => void;
     onRowLogs: (row: MonitorRow) => void;
     onRowExec: (row: MonitorRow) => void;
@@ -189,8 +195,8 @@ export function MonitorTable(props: MonitorTableProps) {
 function StackRow(props: MonitorTableProps & { group: StackGroup }) {
     const {
         group, expanded, onToggleExpand, selectedStacks, selectedContainers,
-        onToggleStack, onToggleContainers, runningStacks,
-        onStackAction, onStackRedeploy, onStackLogs, onStackEdit,
+        onToggleStack, onToggleContainers, runningStacks, stackRuns,
+        onStackAction, onStackRedeploy, onStackLogs, onStackEdit, onStackOutput,
     } = props;
 
     const isExpanded = expanded[group.stack] ?? false;
@@ -216,10 +222,11 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
 
     const s = group.stats;
     const memPercent = s && s.memLimit > 0 ? (s.memUsed / s.memLimit) * 100 : 0;
+    const lastRun = hasFile ? stackRuns[group.servicePath] : undefined;
 
     return (
-        <TableRow sx={{bgcolor: 'rgba(255,255,255,0.03)'}}>
-            <TableCell padding="checkbox" sx={bodyCell}>
+        <TableRow sx={{bgcolor: t.header}}>
+            <TableCell padding="checkbox" sx={{...bodyCell, borderLeft: '3px solid #4db6ac'}}>
                 <Tooltip title={isStack && hasFile ? "Select stack" : "Select containers"} arrow>
                     <span>
                         <Checkbox
@@ -289,6 +296,17 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                             icon={<RestartAlt sx={{fontSize: 15}}/>}
                         />
                         <RedeployMenuButton disabled={busy} onPick={opts => onStackRedeploy(group, opts)}/>
+                        {lastRun && (
+                            <Tooltip title={lastRun === 'failed' ? 'Last action output (failed)' : 'Last action output'} arrow>
+                                <IconButton size="small" onClick={() => onStackOutput(group)}
+                                            sx={{
+                                                color: lastRun === 'failed' ? '#ef5350' : t.textDim,
+                                                '&:hover': {color: lastRun === 'failed' ? '#ef5350' : t.text},
+                                            }}>
+                                    <ReceiptLong sx={{fontSize: 15}}/>
+                                </IconButton>
+                            </Tooltip>
+                        )}
                     </>
                 )}
                 <StackActionButton
@@ -383,14 +401,17 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
     const memPercent = s && Number(s.memoryLimit) > 0
         ? (Number(s.memoryUsage) / Number(s.memoryLimit)) * 100 : 0;
 
-    const ports = c.ports
+    const portsList = c.ports
         .filter(p => p.public > 0)
-        .map(p => `${p.public}:${p.private}`)
-        .filter((v, i, arr) => arr.indexOf(v) === i);
+        .filter((p, i, arr) =>
+            arr.findIndex(q => q.public === p.public && q.private === p.private && q.type === p.type) === i);
+    // traefik-declared hostnames land in the address list next to plain ips;
+    // anything with letters and a dot (and no ipv6 colon) reads as a domain
+    const domains = c.IPAddress.filter(a => /[a-z]/i.test(a) && a.includes('.') && !a.includes(':'));
 
     return (
         <TableRow hover sx={{'&:hover': {bgcolor: t.rowHover}}}>
-            <TableCell padding="checkbox" sx={bodyCell}>
+            <TableCell padding="checkbox" sx={{...bodyCell, borderLeft: '3px solid rgba(77,182,172,0.25)'}}>
                 <Checkbox
                     size="small"
                     checked={isChecked}
@@ -399,7 +420,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     sx={{color: t.textDim, p: 0.5}}
                 />
             </TableCell>
-            <TableCell sx={{...bodyCell, maxWidth: 240}}>
+            <TableCell sx={{...bodyCell, maxWidth: 240, pl: 2.5}}>
                 <Stack direction="row" spacing={0.5} alignItems="center">
                     <Typography noWrap sx={{fontWeight: 600, fontSize: '0.82rem'}}>
                         {c.name}
@@ -434,12 +455,42 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
             <TableCell sx={{...bodyCell, whiteSpace: 'nowrap', fontFamily: t.mono, fontSize: '0.72rem', color: t.textDim}}>
                 {s ? <>↓ {formatBytes(Number(s.networkRx))}<br/>↑ {formatBytes(Number(s.networkTx))}</> : '–'}
             </TableCell>
-            <TableCell sx={{...bodyCell, maxWidth: 150}}>
-                <Tooltip title={ports.join(', ')} arrow disableHoverListener={ports.length === 0}>
-                    <Typography noWrap sx={{fontFamily: t.mono, fontSize: '0.72rem', color: t.textDim}}>
-                        {ports.length > 0 ? ports.join(', ') : '–'}
-                    </Typography>
-                </Tooltip>
+            <TableCell sx={{...bodyCell, maxWidth: 230}}>
+                {portsList.length === 0 && domains.length === 0 ? (
+                    <Typography sx={{fontFamily: t.mono, fontSize: '0.72rem', color: t.textDim}}>–</Typography>
+                ) : (
+                    <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5}>
+                        {portsList.map((p, i) => (
+                            <Box key={`p${i}`} component="span"
+                                 sx={{
+                                     bgcolor: 'rgba(255,255,255,0.06)',
+                                     px: 0.6, py: 0.1, borderRadius: 0.75,
+                                     fontFamily: t.mono, fontSize: '0.7rem', whiteSpace: 'nowrap',
+                                 }}>
+                                <ContainerInfoPort port={p}/>
+                            </Box>
+                        ))}
+                        {domains.map(d => (
+                            <Box key={d} component="span"
+                                 sx={{
+                                     bgcolor: 'rgba(255,255,255,0.06)',
+                                     px: 0.6, py: 0.1, borderRadius: 0.75,
+                                     fontFamily: t.mono, fontSize: '0.7rem', whiteSpace: 'nowrap',
+                                 }}>
+                                <Tooltip title="Open in new tab" arrow>
+                                    <Link href={`http://${d}`} target="_blank" rel="noopener noreferrer"
+                                          sx={{
+                                              color: 'info.main',
+                                              textDecoration: 'none',
+                                              '&:hover': {textDecoration: 'underline'},
+                                          }}>
+                                        {d}
+                                    </Link>
+                                </Tooltip>
+                            </Box>
+                        ))}
+                    </Stack>
+                )}
             </TableCell>
             <TableCell align="right" sx={{...bodyCell, whiteSpace: 'nowrap'}}>
                 <Tooltip title={isActive ? 'Stop' : 'Start'} arrow>
@@ -497,9 +548,13 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
 }
 
 // state as a colored icon (tooltip carries the word), health spelled out
-// next to it when the container has a healthcheck
+// next to it when the container has a healthcheck. Health only means
+// something while the container runs: the daemon keeps serving the last
+// health state on stopped/paused containers, which would wrongly paint
+// them unhealthy.
 function StateCell({state, health}: { state: string, health: string }) {
-    const visual = (health === 'unhealthy')
+    const isRunning = state === 'running';
+    const visual = (isRunning && health === 'unhealthy')
         ? {icon: <WarningAmber/>, color: '#ef5350'}
         : stateVisual[state] ?? {icon: <Stop/>, color: t.textDim};
 
@@ -511,7 +566,7 @@ function StateCell({state, health}: { state: string, health: string }) {
                         {visual.icon}
                     </Box>
                 </Tooltip>
-                {health && (
+                {health && isRunning && (
                     <Typography sx={{
                         fontSize: '0.7rem',
                         fontFamily: t.mono,

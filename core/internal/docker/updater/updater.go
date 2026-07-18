@@ -2,7 +2,9 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -79,6 +81,54 @@ func (u *Service) ContainersUpdateByContainerID(ctx context.Context, containerID
 	}
 
 	return u.containersUpdateLoop(ctx, list)
+}
+
+// ContainersForceUpdate pulls each container's image tag and recreates the
+// container when the pull brought down a different image. Unlike the
+// metadata-driven update loop it needs no registry digest lookup, and it
+// reports failures instead of skipping silently — this backs the explicit
+// per-container Update action in the UI.
+func (u *Service) ContainersForceUpdate(ctx context.Context, containerID ...string) error {
+	list, err := u.srv.ContainerListByIDs(ctx, containerID...)
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("no containers found for the given ids")
+	}
+
+	var errs []error
+	for _, cur := range list {
+		imgTag := cur.Image
+
+		if err := u.srv.ImagePull(ctx, imgTag, io.Discard); err != nil {
+			errs = append(errs, fmt.Errorf("%s: pull %s: %w", cur.Names[0], imgTag, err))
+			continue
+		}
+
+		localImages, err := u.cli().ImageList(ctx, client.ImageListOptions{
+			Filters: client.Filters{}.Add("reference", imgTag),
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: inspect %s: %w", cur.Names[0], imgTag, err))
+			continue
+		}
+
+		newID := ""
+		if len(localImages.Items) > 0 {
+			newID = localImages.Items[0].ID
+		}
+		if newID == "" || newID == cur.ImageID {
+			log.Info().Str("container", cur.Names[0]).Str("img", imgTag).
+				Msg("image unchanged after pull, container kept as is")
+			continue
+		}
+
+		if err := u.ContainerRecreate(ctx, imgTag, cur); err != nil {
+			errs = append(errs, fmt.Errorf("%s: recreate: %w", cur.Names[0], err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ContainersUpdateByImage finds all containers using the specified image,

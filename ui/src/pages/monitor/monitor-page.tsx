@@ -131,10 +131,13 @@ function MonitorPage() {
     const execContainer = useContainerExec(state => state.execParams);
     const openLogs = useLogsPanel(state => state.openLogs);
     const runAction = useComposeAction(state => state.runAction);
+    const openOutput = useComposeAction(state => state.openOutput);
     // string-valued selector: output appends leave it unchanged, so the page
-    // only re-renders when a stack action actually starts or finishes
-    const runningStackKeys = useComposeAction(state =>
-        Object.entries(state.runs).filter(([, r]) => r.running).map(([f]) => f).sort().join('|'));
+    // only re-renders when a stack action starts, finishes or flips outcome
+    const stackRunKeys = useComposeAction(state =>
+        Object.entries(state.runs)
+            .map(([f, r]) => `${f}=${r.running ? 'running' : r.failed ? 'failed' : 'done'}`)
+            .sort().join('|'));
 
     // the stats stream and the container list agree on names (leading slash
     // trimmed on both sides), while their id fields differ — join by name
@@ -193,17 +196,30 @@ function MonitorPage() {
                     counts.stopped++;
                     break;
             }
-            if (c.health === 'unhealthy') counts.unhealthy++;
+            // health only means something while the container runs; stale
+            // health on stopped/paused containers must not double-count
+            if (c.state === 'running' && c.health === 'unhealthy') counts.unhealthy++;
         }
         return counts;
     }, [containers]);
-    const runningStacks = useMemo(() => {
-        const map: Record<string, boolean> = {};
-        for (const file of runningStackKeys.split('|')) {
-            if (file) map[file] = true;
+    // last (or current) action outcome per compose file, for the busy
+    // spinner and the last-action output button on stack rows
+    const stackRuns = useMemo(() => {
+        const map: Record<string, 'running' | 'failed' | 'done'> = {};
+        for (const entry of stackRunKeys.split('|')) {
+            if (!entry) continue;
+            const idx = entry.lastIndexOf('=');
+            map[entry.slice(0, idx)] = entry.slice(idx + 1) as 'running' | 'failed' | 'done';
         }
         return map;
-    }, [runningStackKeys]);
+    }, [stackRunKeys]);
+    const runningStacks = useMemo(() => {
+        const map: Record<string, boolean> = {};
+        for (const [file, status] of Object.entries(stackRuns)) {
+            if (status === 'running') map[file] = true;
+        }
+        return map;
+    }, [stackRuns]);
 
     const allExpanded = groups.length > 0 && groups.every(g => expanded[g.stack] ?? false);
 
@@ -512,6 +528,8 @@ function MonitorPage() {
                                     now={now}
                                     stackRowsCompact={compactStacks}
                                     runningStacks={runningStacks}
+                                    stackRuns={stackRuns}
+                                    onStackOutput={(group) => openOutput(group.servicePath)}
                                     onRowAction={handleRowAction}
                                     onRowLogs={handleRowLogs}
                                     onRowExec={handleRowExec}
