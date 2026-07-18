@@ -1,7 +1,7 @@
 import {Box, Chip, Typography} from '@mui/material';
 import {BarChart as StatsIcon} from '@mui/icons-material';
 import {useMemo} from 'react';
-import {useDockerStats} from "../../hooks/docker-containers-stats.ts";
+import {useDockerStats, useHostStats} from "../../hooks/docker-containers-stats.ts";
 import {ContainerStatTable} from './components/container-stat-table.tsx';
 import AggregateStats from "./components/container-stat-chart.tsx";
 import {statsTheme} from "./components/stats-theme.ts";
@@ -20,6 +20,9 @@ export function TabStat({selectedPage = "", variant = 'tab'}: StackStatsProps) {
     const {containers, history, aggregates, loading, handleSortChange, sortOrder, sortField} = useDockerStats(selectedPage)
     const {search, setSearch, searchInputRef} = useSearch()
     const host = useHostStore(state => state.host)
+    // the host-wide view reads the real host usage; stack views keep the
+    // per-container aggregation
+    const hostStats = useHostStats(!selectedPage)
 
     const isPage = variant === 'page';
 
@@ -61,7 +64,7 @@ export function TabStat({selectedPage = "", variant = 'tab'}: StackStatsProps) {
             )}
 
             <Box sx={{flexShrink: 0}}>
-                <AggregateStats aggregates={aggregates}/>
+                <AggregateStats aggregates={aggregates} hostStats={hostStats}/>
             </Box>
 
             <Box sx={{flexGrow: 1, minHeight: 0}}>

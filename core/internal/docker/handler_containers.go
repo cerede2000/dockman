@@ -253,6 +253,25 @@ func (h *Handler) ContainerStats(ctx context.Context, req *connect.Request[v1.St
 	}), nil
 }
 
+func (h *Handler) HostStats(ctx context.Context, _ *connect.Request[v1.Empty]) (*connect.Response[v1.HostStatsResponse], error) {
+	_, dkSrv, err := h.getHost(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	stats, err := dkSrv.Compose.HostStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.HostStatsResponse{
+		CpuPercent: stats.CPUPercent,
+		MemUsed:    stats.MemUsed,
+		MemTotal:   stats.MemTotal,
+		Cpus:       stats.CPUs,
+	}), nil
+}
+
 // ContainerStatsStream emits each container's stats as soon as its read
 // completes (the daemon needs ~1s per container to build a sample), so the
 // client paints progressively instead of waiting for the slowest container.
