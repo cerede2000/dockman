@@ -70,6 +70,10 @@ function recordStat(host: string, stat: ContainerStats) {
 export interface AggregateSnapshot {
     total: number;
     running: number;
+    stopped: number;
+    paused: number;
+    restarting: number;
+    unhealthy: number;
     cpu: number;
     memUsed: number;
     memLimit: number;
@@ -93,9 +97,28 @@ function computeAggregates(scope: string, rows: ContainerStats[]): AggregateSnap
         acc.netTx += Number(curr.networkTx);
         acc.diskR += Number(curr.blockRead);
         acc.diskW += Number(curr.blockWrite);
-        if (curr.state === 'running') acc.running++;
+        switch (curr.state) {
+            case 'running':
+                acc.running++;
+                break;
+            case 'exited':
+            case 'dead':
+            case 'created':
+                acc.stopped++;
+                break;
+            case 'paused':
+                acc.paused++;
+                break;
+            case 'restarting':
+                acc.restarting++;
+                break;
+        }
+        if (curr.health === 'unhealthy') acc.unhealthy++;
         return acc;
-    }, {cpu: 0, memUsed: 0, memLimit: 0, netRx: 0, netTx: 0, diskR: 0, diskW: 0, running: 0});
+    }, {
+        cpu: 0, memUsed: 0, memLimit: 0, netRx: 0, netTx: 0, diskR: 0, diskW: 0,
+        running: 0, stopped: 0, paused: 0, restarting: 0, unhealthy: 0,
+    });
 
     const prev = aggHistories.get(scope) ?? {cpu: [], mem: []};
     const h: StatHistory = {
@@ -409,4 +432,62 @@ export function useDockerStats(selectedPage?: string) {
         setRefreshInterval,
         refreshInterval,
     };
+}
+
+// real host-level usage for the general stats view (Dockhand-style): the
+// backend reads /proc through the host's runner, so ssh hosts work too
+export interface HostStatsView {
+    cpuPercent: number;
+    memUsed: number;
+    memTotal: number;
+    cpuHistory: number[];
+    memHistory: number[];
+}
+
+// survives remounts, keyed per host like the container histories
+const hostHistories = new Map<string, StatHistory>();
+
+export function useHostStats(enabled: boolean): HostStatsView | null {
+    const dockerService = useHostClient(DockerService);
+    const selectedHost = useHostStore(state => state.host);
+    const [stats, setStats] = useState<HostStatsView | null>(null);
+
+    useEffect(() => {
+        if (!enabled) {
+            setStats(null);
+            return;
+        }
+
+        let cancelled = false;
+        const fetchStats = async () => {
+            const {val} = await callRPC(() => dockerService.hostStats({}));
+            if (cancelled || !val || val.memTotal === 0n) return;
+
+            const memUsed = Number(val.memUsed);
+            const memTotal = Number(val.memTotal);
+            const prev = hostHistories.get(selectedHost) ?? {cpu: [], mem: []};
+            const h: StatHistory = {
+                cpu: [...prev.cpu.slice(-(HISTORY_CAP - 1)), val.cpuPercent],
+                mem: [...prev.mem.slice(-(HISTORY_CAP - 1)), memTotal > 0 ? (memUsed / memTotal) * 100 : 0],
+            };
+            hostHistories.set(selectedHost, h);
+
+            setStats({
+                cpuPercent: val.cpuPercent,
+                memUsed,
+                memTotal,
+                cpuHistory: h.cpu,
+                memHistory: h.mem,
+            });
+        };
+
+        void fetchStats();
+        const id = setInterval(fetchStats, DEFAULT_REFRESH);
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+        };
+    }, [enabled, dockerService, selectedHost]);
+
+    return stats;
 }

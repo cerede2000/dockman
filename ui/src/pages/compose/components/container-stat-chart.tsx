@@ -3,12 +3,17 @@ import {
     Dns as ContainerIcon,
     ImportExport as NetworkIcon,
     Memory as MemoryIcon,
+    Pause as PauseIcon,
+    PlayArrow as PlayArrowIcon,
+    RestartAlt as RestartIcon,
     Speed as CpuIcon,
-    Storage as StorageIcon
+    Stop as StopIcon,
+    Storage as StorageIcon,
+    WarningAmber as WarningIcon,
 } from "@mui/icons-material";
 import {formatBytes} from "../../../lib/editor.ts";
 import {type ReactNode} from "react";
-import {type AggregateSnapshot} from "../../../hooks/docker-containers-stats.ts";
+import {type AggregateSnapshot, type HostStatsView} from "../../../hooks/docker-containers-stats.ts";
 import Sparkline from "../../../components/sparkline.tsx";
 import {statsTheme as t} from "./stats-theme.ts";
 
@@ -16,17 +21,24 @@ interface AggregateStatsProps {
     // computed once per completed refresh cycle — null until the first
     // cycle lands, so the header never renders half-updated totals
     aggregates: AggregateSnapshot | null;
+    // when set (general view), CPU and memory show the real host usage
+    // Dockhand-style instead of summing container numbers; stack views
+    // keep the per-container aggregation
+    hostStats?: HostStatsView | null;
 }
 
-// cumulative load stays default-colored while calm, then warns
+// load stays default-colored while calm, then warns
 const cpuValueColor = (cpu: number) =>
     cpu < 50 ? t.text : cpu < 85 ? '#ffb74d' : '#ef5350';
 
-function AggregateStats({aggregates}: AggregateStatsProps) {
-    const memPercent = aggregates && aggregates.memLimit > 0
-        ? (aggregates.memUsed / aggregates.memLimit) * 100
-        : 0;
-    const cpu = aggregates?.cpu ?? 0;
+function AggregateStats({aggregates, hostStats}: AggregateStatsProps) {
+    const memPercent = hostStats
+        ? (hostStats.memTotal > 0 ? (hostStats.memUsed / hostStats.memTotal) * 100 : 0)
+        : (aggregates && aggregates.memLimit > 0 ? (aggregates.memUsed / aggregates.memLimit) * 100 : 0);
+    const cpu = hostStats ? hostStats.cpuPercent : (aggregates?.cpu ?? 0);
+    const cpuReady = hostStats ? true : aggregates !== null;
+    const memUsed = hostStats ? hostStats.memUsed : aggregates?.memUsed;
+    const memCeil = hostStats ? hostStats.memTotal : aggregates?.memLimit;
 
     return (
         <Paper
@@ -48,33 +60,28 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
                 divider={<Divider orientation="vertical" flexItem sx={{borderColor: t.border}}/>}
                 sx={{width: '100%', alignItems: 'stretch'}}
             >
-                {/* compact: one line says it all */}
-                <CompactTile
-                    icon={<ContainerIcon/>}
-                    label="Containers"
-                    value={aggregates ? `${aggregates.running} running of ${aggregates.total}` : '–'}
-                    grow={false}
-                />
+                {/* per-state breakdown, wraps onto more lines when narrow */}
+                <StateTile aggregates={aggregates}/>
 
                 {/* charted tiles: value block + a chart that takes the room */}
                 <ChartTile
                     icon={<CpuIcon/>}
-                    label="Total CPU"
-                    value={aggregates ? `${aggregates.cpu.toFixed(1)}%` : '–'}
+                    label={hostStats ? "Host CPU" : "Total CPU"}
+                    value={cpuReady ? `${cpu.toFixed(1)}%` : '–'}
                     valueColor={cpuValueColor(cpu)}
                     sub=""
-                    data={aggregates?.cpuHistory ?? []}
+                    data={hostStats ? hostStats.cpuHistory : aggregates?.cpuHistory ?? []}
                     color={t.cpuLine}
                 />
 
                 <ChartTile
                     icon={<MemoryIcon/>}
-                    label="Memory"
-                    value={aggregates ? formatBytes(aggregates.memUsed) : '–'}
-                    sub={aggregates && aggregates.memLimit > 0
-                        ? `${memPercent.toFixed(1)}% of ${formatBytes(aggregates.memLimit)}`
+                    label={hostStats ? "Host Memory" : "Memory"}
+                    value={memUsed !== undefined ? formatBytes(memUsed) : '–'}
+                    sub={memCeil && memCeil > 0
+                        ? `${memPercent.toFixed(1)}% of ${formatBytes(memCeil)}`
                         : ''}
-                    data={aggregates?.memHistory ?? []}
+                    data={hostStats ? hostStats.memHistory : aggregates?.memHistory ?? []}
                     color={t.memLine}
                 />
 
@@ -99,6 +106,45 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
 }
 
 export default AggregateStats;
+
+// Dockhand-style status strip: one icon+count pair per container state,
+// wrapping onto extra lines instead of stretching the band
+function StateTile({aggregates}: { aggregates: AggregateSnapshot | null }) {
+    const entries: { icon: ReactNode, count: number, color: string, title: string }[] = aggregates ? [
+        {icon: <PlayArrowIcon/>, count: aggregates.running, color: '#66bb6a', title: 'Running'},
+        {icon: <StopIcon/>, count: aggregates.stopped, color: '#9e9e9e', title: 'Stopped'},
+        {icon: <PauseIcon/>, count: aggregates.paused, color: '#ffb74d', title: 'Paused'},
+        {icon: <RestartIcon/>, count: aggregates.restarting, color: '#4db6ac', title: 'Restarting'},
+        {icon: <WarningIcon/>, count: aggregates.unhealthy, color: '#ef5350', title: 'Unhealthy'},
+    ] : [];
+
+    return (
+        <Box sx={{flex: '0 1 auto', minWidth: 120, maxWidth: 210, alignSelf: 'center'}}>
+            <TileLabel icon={<ContainerIcon/>} label="Containers"/>
+            {aggregates ? (
+                <Stack direction="row" spacing={1.25} alignItems="center" flexWrap="wrap" useFlexGap>
+                    {entries.map(e => (
+                        <Tooltip key={e.title} title={e.title} arrow placement="top">
+                            <Stack direction="row" spacing={0.25} alignItems="center" sx={{color: e.color}}>
+                                <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{e.icon}</Box>
+                                <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.85rem', lineHeight: 1}}>
+                                    {e.count}
+                                </Typography>
+                            </Stack>
+                        </Tooltip>
+                    ))}
+                    <Typography noWrap sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.75rem', lineHeight: 1}}>
+                        Total {aggregates.total}
+                    </Typography>
+                </Stack>
+            ) : (
+                <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.95rem', color: t.text}}>
+                    –
+                </Typography>
+            )}
+        </Box>
+    );
+}
 
 function TileLabel({icon, label}: { icon: ReactNode, label: string }) {
     return (
