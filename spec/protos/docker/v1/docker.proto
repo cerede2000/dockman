@@ -10,6 +10,8 @@ service DockerService {
   rpc ContainerStop(ContainerRequest) returns (LogsMessage) {}
   rpc ContainerRemove(ContainerRequest) returns (LogsMessage) {}
   rpc ContainerRestart(ContainerRequest) returns (LogsMessage) {}
+  rpc ContainerPause(ContainerRequest) returns (LogsMessage) {}
+  rpc ContainerUnpause(ContainerRequest) returns (LogsMessage) {}
   rpc ContainerUpdate(ContainerRequest) returns (Empty) {}
   rpc ContainerTop(ContainerTopRequest) returns (ContainerTopResponse) {}
 
@@ -39,6 +41,9 @@ service DockerService {
   rpc ComposeStop(ComposeFile) returns (stream LogsMessage) {}
   rpc ComposeRestart(ComposeFile) returns (stream LogsMessage) {}
   rpc ComposeUpdate(ComposeFile) returns (stream LogsMessage) {}
+  // compose up -d with explicit force flags (pull / build / recreate),
+  // so a stack can be redeployed in one action
+  rpc ComposeRedeploy(ComposeRedeployRequest) returns (stream LogsMessage) {}
   rpc ComposeList(ComposeFile) returns (ListResponse) {}
   rpc ComposeValidate(ComposeFile) returns (ComposeValidateResponse) {}
   rpc ComposeFileStatus(ComposeFileStatusRequest) returns (ComposeFileStatusResponse) {}
@@ -543,4 +548,14 @@ message ComposeFile {
   string filename = 1;
 
   repeated string selectedServices = 3;
+}
+
+message ComposeRedeployRequest {
+  ComposeFile file = 1;
+  // force-pull images (--pull always)
+  bool pull = 2;
+  // force-build images (--build)
+  bool build = 3;
+  // recreate containers even when nothing changed (--force-recreate)
+  bool recreate = 4;
 }

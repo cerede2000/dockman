@@ -80,6 +80,26 @@ func (s *Service) ContainersStop(ctx context.Context, containerId ...string) err
 	return nil
 }
 
+func (s *Service) ContainersPause(ctx context.Context, containerId ...string) error {
+	for _, cont := range containerId {
+		_, err := s.Client.ContainerPause(ctx, cont, client.ContainerPauseOptions{})
+		if err != nil {
+			return fmt.Errorf("unable to pause Container: %s => %w", cont, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) ContainersUnpause(ctx context.Context, containerId ...string) error {
+	for _, cont := range containerId {
+		_, err := s.Client.ContainerUnpause(ctx, cont, client.ContainerUnpauseOptions{})
+		if err != nil {
+			return fmt.Errorf("unable to unpause Container: %s => %w", cont, err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) ContainersRestart(ctx context.Context, containerId ...string) error {
 	for _, cont := range containerId {
 		_, err := s.Client.ContainerRestart(ctx, cont, client.ContainerRestartOptions{})

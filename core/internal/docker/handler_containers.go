@@ -77,6 +77,34 @@ func (h *Handler) ContainerStop(ctx context.Context, req *connect.Request[v1.Con
 	return connect.NewResponse(&v1.LogsMessage{}), nil
 }
 
+func (h *Handler) ContainerPause(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
+	_, dkSrv, err := h.getHost(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = dkSrv.Container.ContainersPause(ctx, req.Msg.ContainerIds...)
+	if err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.LogsMessage{}), nil
+}
+
+func (h *Handler) ContainerUnpause(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
+	_, dkSrv, err := h.getHost(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = dkSrv.Container.ContainersUnpause(ctx, req.Msg.ContainerIds...)
+	if err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.LogsMessage{}), nil
+}
+
 func (h *Handler) ContainerRemove(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
 	_, dkSrv, err := h.getHost(ctx)
 	if err != nil {

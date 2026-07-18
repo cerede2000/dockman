@@ -232,6 +232,19 @@ func (h *Handler) ComposeRestart(ctx context.Context, req *connect.Request[v1.Co
 
 }
 
+func (h *Handler) ComposeRedeploy(ctx context.Context, req *connect.Request[v1.ComposeRedeployRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
+	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
+		file := req.Msg.GetFile()
+		return dkSrv.Compose.Redeploy(
+			ctx,
+			file.GetFilename(),
+			writer,
+			req.Msg.GetPull(), req.Msg.GetBuild(), req.Msg.GetRecreate(),
+			file.GetSelectedServices()...,
+		)
+	})
+}
+
 func (h *Handler) ComposeUpdate(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
 		return dkSrv.Compose.Update(ctx, req.Msg.Filename, writer, req.Msg.SelectedServices...)

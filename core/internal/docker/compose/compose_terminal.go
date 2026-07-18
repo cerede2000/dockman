@@ -209,6 +209,35 @@ func (c *Service) Up(
 	)
 }
 
+// Redeploy runs `up -d` with explicit force flags so a stack can be
+// re-rolled in one action: pull images, rebuild, or recreate containers
+// even when nothing changed.
+func (c *Service) Redeploy(
+	ctx context.Context,
+	filename string,
+	out io.Writer,
+	pull, build, recreate bool,
+	services ...string,
+) error {
+	return c.withCmd(
+		ctx, filename, out,
+		func(cmdList []string) []string {
+			cmdList = append(cmdList, "up", "-d", "-y", "--remove-orphans")
+			if pull {
+				cmdList = append(cmdList, "--pull", "always")
+			}
+			if build {
+				cmdList = append(cmdList, "--build")
+			}
+			if recreate {
+				cmdList = append(cmdList, "--force-recreate")
+			}
+			return cmdList
+		},
+		services,
+	)
+}
+
 func (c *Service) Down(
 	ctx context.Context,
 	filename string,
