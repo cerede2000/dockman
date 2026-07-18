@@ -1,9 +1,12 @@
 import {
     Box,
     Checkbox,
-    Chip,
     CircularProgress,
     IconButton,
+    ListItemIcon,
+    ListItemText,
+    Menu,
+    MenuItem,
     Stack,
     Table,
     TableBody,
@@ -15,23 +18,29 @@ import {
     Typography,
 } from '@mui/material';
 import {
+    ArrowDownward,
     ArrowUpward,
+    Build,
+    CloudDownload,
+    Delete,
     EditNote,
     ExpandLess,
     ExpandMore,
+    Pause,
     PlayArrow,
     RestartAlt,
+    RocketLaunch,
     Stop,
     Subject,
     Terminal,
     Upgrade,
+    WarningAmber,
 } from '@mui/icons-material';
-import {Fragment, type ReactNode} from 'react';
+import {Fragment, type MouseEvent, type ReactNode, useState} from 'react';
 import type {ContainerList, ContainerStats} from '../../gen/docker/v1/docker_pb.ts';
-import {statsTheme as t, stateBadges} from '../compose/components/stats-theme.ts';
+import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes} from '../../lib/editor.ts';
-import {formatTimeAgo} from '../../lib/table.ts';
 
 export interface MonitorRow {
     info: ContainerList;
@@ -47,14 +56,25 @@ export interface StackGroup {
     rows: MonitorRow[];
 }
 
-export type RowAction = 'start' | 'stop' | 'restart';
-export type StackAction = 'up' | 'stop' | 'restart';
+export type RowAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'remove';
+export type StackAction = 'up' | 'down' | 'start' | 'stop' | 'restart';
+
+export interface RedeployOptions {
+    pull: boolean;
+    build: boolean;
+    recreate: boolean;
+}
 
 interface MonitorTableProps {
     groups: StackGroup[];
     history: Map<string, { cpu: number[]; mem: number[] }>;
-    selected: string[];
-    onToggleSelect: (ids: string[], on: boolean) => void;
+    // stack and container selections are mutually exclusive: picking one
+    // kind clears the other, and the toolbar actions adapt to the kind
+    selectedContainers: string[];
+    selectedStacks: string[];
+    onToggleContainers: (ids: string[], on: boolean) => void;
+    onToggleStack: (stack: string, on: boolean) => void;
+    onToggleAllStacks: (stacks: string[], on: boolean) => void;
     expanded: Record<string, boolean>;
     onToggleExpand: (stack: string) => void;
     // explicit clock so the memoized rows re-render on tick
@@ -64,6 +84,7 @@ interface MonitorTableProps {
     onRowLogs: (row: MonitorRow) => void;
     onRowExec: (row: MonitorRow) => void;
     onStackAction: (group: StackGroup, action: StackAction) => void;
+    onStackRedeploy: (group: StackGroup, opts: RedeployOptions) => void;
     onStackLogs: (group: StackGroup) => void;
     onStackEdit: (group: StackGroup) => void;
 }
@@ -85,12 +106,27 @@ const bodyCell = {
     py: 0.5,
 };
 
-export function MonitorTable(props: MonitorTableProps) {
-    const {groups, selected, onToggleSelect} = props;
+const disabledIcon = {color: 'rgba(255,255,255,0.15)'};
 
-    const allIds = groups.flatMap(g => g.rows.map(r => r.info.id));
-    const allSelected = allIds.length > 0 && allIds.every(id => selected.includes(id));
-    const someSelected = allIds.some(id => selected.includes(id));
+// per-state icon + color, shared by the state column
+const stateVisual: Record<string, { icon: ReactNode, color: string }> = {
+    running: {icon: <PlayArrow/>, color: '#66bb6a'},
+    restarting: {icon: <RestartAlt/>, color: '#4db6ac'},
+    paused: {icon: <Pause/>, color: '#ffb74d'},
+    exited: {icon: <Stop/>, color: '#9e9e9e'},
+    created: {icon: <Stop/>, color: '#64748b'},
+    dead: {icon: <WarningAmber/>, color: '#ef5350'},
+    removing: {icon: <Delete/>, color: '#ef5350'},
+};
+
+export function MonitorTable(props: MonitorTableProps) {
+    const {groups, selectedStacks, onToggleAllStacks} = props;
+
+    // header checkbox drives stack selection (containers are picked row by
+    // row); standalone containers have no stack to select
+    const selectableStacks = groups.filter(g => g.stack && g.servicePath).map(g => g.stack);
+    const allStacksSelected = selectableStacks.length > 0 && selectableStacks.every(s => selectedStacks.includes(s));
+    const someStacksSelected = selectableStacks.some(s => selectedStacks.includes(s));
 
     return (
         <TableContainer sx={{height: '100%', bgcolor: t.panel}}>
@@ -98,13 +134,15 @@ export function MonitorTable(props: MonitorTableProps) {
                 <TableHead>
                     <TableRow>
                         <TableCell padding="checkbox" sx={headCell}>
-                            <Checkbox
-                                size="small"
-                                checked={allSelected}
-                                indeterminate={someSelected && !allSelected}
-                                onChange={e => onToggleSelect(allIds, e.target.checked)}
-                                sx={{color: t.textDim, p: 0.5}}
-                            />
+                            <Tooltip title="Select all stacks" arrow>
+                                <Checkbox
+                                    size="small"
+                                    checked={allStacksSelected}
+                                    indeterminate={someStacksSelected && !allStacksSelected}
+                                    onChange={e => onToggleAllStacks(selectableStacks, e.target.checked)}
+                                    sx={{color: t.textDim, p: 0.5}}
+                                />
+                            </Tooltip>
                         </TableCell>
                         <TableCell sx={headCell}>NAME</TableCell>
                         <TableCell sx={headCell}>STATE</TableCell>
@@ -113,14 +151,14 @@ export function MonitorTable(props: MonitorTableProps) {
                         <TableCell sx={{...headCell, minWidth: 150}}>MEMORY</TableCell>
                         <TableCell sx={headCell}>NET I/O</TableCell>
                         <TableCell sx={headCell}>PORTS</TableCell>
-                        <TableCell sx={{...headCell, width: 170}} align="right">ACTIONS</TableCell>
+                        <TableCell sx={{...headCell, width: 210}} align="right">ACTIONS</TableCell>
                     </TableRow>
                 </TableHead>
                 <TableBody>
                     {groups.map(group => (
                         <Fragment key={group.stack || '(standalone)'}>
                             <StackRow {...props} group={group}/>
-                            {(props.expanded[group.stack] ?? true) && group.rows.map(row => (
+                            {(props.expanded[group.stack] ?? false) && group.rows.map(row => (
                                 <ContainerRow {...props} key={row.info.id} row={row}/>
                             ))}
                         </Fragment>
@@ -131,37 +169,49 @@ export function MonitorTable(props: MonitorTableProps) {
     );
 }
 
-function StackRow({group, expanded, onToggleExpand, selected, onToggleSelect, runningStacks, onStackAction, onStackLogs, onStackEdit}:
-                      MonitorTableProps & { group: StackGroup }) {
-    const isExpanded = expanded[group.stack] ?? true;
-    const ids = group.rows.map(r => r.info.id);
-    const allChecked = ids.length > 0 && ids.every(id => selected.includes(id));
-    const someChecked = ids.some(id => selected.includes(id));
-    const running = group.rows.filter(r => r.info.state === 'running').length;
+function StackRow(props: MonitorTableProps & { group: StackGroup }) {
+    const {
+        group, expanded, onToggleExpand, selectedStacks, selectedContainers,
+        onToggleStack, onToggleContainers, runningStacks,
+        onStackAction, onStackRedeploy, onStackLogs, onStackEdit,
+    } = props;
+
+    const isExpanded = expanded[group.stack] ?? false;
+    const isStack = group.stack !== '';
     const hasFile = group.servicePath !== '';
     const busy = runningStacks[group.servicePath] ?? false;
+    const running = group.rows.filter(r => r.info.state === 'running').length;
+    // paused/restarting containers still count as an "active" stack: down is
+    // the meaningful direction, up only once everything is stopped
+    const active = group.rows.some(r => ['running', 'restarting', 'paused'].includes(r.info.state));
 
-    const stackActions: { action: StackAction, title: string, icon: ReactNode }[] = [
-        {action: 'up', title: 'Up', icon: <ArrowUpward sx={{fontSize: 15}}/>},
-        {action: 'stop', title: 'Stop', icon: <Stop sx={{fontSize: 15}}/>},
-        {action: 'restart', title: 'Restart', icon: <RestartAlt sx={{fontSize: 15}}/>},
-    ];
+    const ids = group.rows.map(r => r.info.id);
+    const checked = isStack && hasFile
+        ? selectedStacks.includes(group.stack)
+        : ids.length > 0 && ids.every(id => selectedContainers.includes(id));
+    const indeterminate = !(isStack && hasFile)
+        && !checked && ids.some(id => selectedContainers.includes(id));
 
     return (
         <TableRow sx={{bgcolor: 'rgba(255,255,255,0.03)'}}>
             <TableCell padding="checkbox" sx={bodyCell}>
-                <Checkbox
-                    size="small"
-                    checked={allChecked}
-                    indeterminate={someChecked && !allChecked}
-                    onChange={e => onToggleSelect(ids, e.target.checked)}
-                    sx={{color: t.textDim, p: 0.5}}
-                />
+                <Tooltip title={isStack && hasFile ? "Select stack" : "Select containers"} arrow>
+                    <Checkbox
+                        size="small"
+                        checked={checked}
+                        indeterminate={indeterminate}
+                        onChange={e => isStack && hasFile
+                            ? onToggleStack(group.stack, e.target.checked)
+                            : onToggleContainers(ids, e.target.checked)}
+                        sx={{color: t.textDim, p: 0.5}}
+                    />
+                </Tooltip>
             </TableCell>
             <TableCell colSpan={7} sx={{...bodyCell, py: 0.25}}>
-                <Stack direction="row" spacing={0.75} alignItems="center">
-                    <IconButton size="small" onClick={() => onToggleExpand(group.stack)}
-                                sx={{color: t.textDim, p: 0.25}}>
+                <Stack direction="row" spacing={0.75} alignItems="center"
+                       onClick={() => onToggleExpand(group.stack)}
+                       sx={{cursor: 'pointer', userSelect: 'none'}}>
+                    <IconButton size="small" sx={{color: t.textDim, p: 0.25}}>
                         {isExpanded ? <ExpandLess sx={{fontSize: 17}}/> : <ExpandMore sx={{fontSize: 17}}/>}
                     </IconButton>
                     <Typography sx={{fontWeight: 700, fontSize: '0.85rem', color: t.text}}>
@@ -174,44 +224,114 @@ function StackRow({group, expanded, onToggleExpand, selected, onToggleSelect, ru
                 </Stack>
             </TableCell>
             <TableCell align="right" sx={{...bodyCell, py: 0.25, whiteSpace: 'nowrap'}}>
-                {hasFile && stackActions.map(a => (
-                    <Tooltip key={a.action} title={`Stack ${a.title.toLowerCase()}`} arrow>
-                        <span>
-                            <IconButton size="small" disabled={busy}
-                                        onClick={() => onStackAction(group, a.action)}
-                                        sx={{color: t.textDim, '&:hover': {color: t.text}}}>
-                                {a.icon}
-                            </IconButton>
-                        </span>
-                    </Tooltip>
-                ))}
-                <Tooltip title="Stack logs" arrow>
-                    <IconButton size="small" onClick={() => onStackLogs(group)}
-                                sx={{color: t.textDim, '&:hover': {color: t.text}}}>
-                        <Subject sx={{fontSize: 15}}/>
-                    </IconButton>
-                </Tooltip>
                 {hasFile && (
-                    <Tooltip title="Open compose file" arrow>
-                        <IconButton size="small" onClick={() => onStackEdit(group)}
-                                    sx={{color: t.textDim, '&:hover': {color: t.text}}}>
-                            <EditNote sx={{fontSize: 16}}/>
-                        </IconButton>
-                    </Tooltip>
+                    <>
+                        <StackActionButton
+                            title={active ? 'Stack down (remove containers)' : 'Stack up'}
+                            disabled={busy}
+                            onClick={() => onStackAction(group, active ? 'down' : 'up')}
+                            icon={active ? <ArrowDownward sx={{fontSize: 15}}/> : <ArrowUpward sx={{fontSize: 15}}/>}
+                        />
+                        <StackActionButton
+                            title={running > 0 ? 'Stack stop' : 'Stack start'}
+                            disabled={busy}
+                            onClick={() => onStackAction(group, running > 0 ? 'stop' : 'start')}
+                            icon={running > 0 ? <Stop sx={{fontSize: 15}}/> : <PlayArrow sx={{fontSize: 15}}/>}
+                        />
+                        <StackActionButton
+                            title="Stack restart"
+                            disabled={busy}
+                            onClick={() => onStackAction(group, 'restart')}
+                            icon={<RestartAlt sx={{fontSize: 15}}/>}
+                        />
+                        <RedeployMenuButton disabled={busy} onPick={opts => onStackRedeploy(group, opts)}/>
+                    </>
+                )}
+                <StackActionButton
+                    title={isStack ? "Stack logs" : "Logs"}
+                    onClick={() => onStackLogs(group)}
+                    icon={<Subject sx={{fontSize: 15}}/>}
+                />
+                {hasFile && (
+                    <StackActionButton
+                        title="Open compose file"
+                        onClick={() => onStackEdit(group)}
+                        icon={<EditNote sx={{fontSize: 16}}/>}
+                    />
                 )}
             </TableCell>
         </TableRow>
     );
 }
 
-function ContainerRow({row, history, selected, onToggleSelect, now, onRowAction, onRowLogs, onRowExec}:
-                          MonitorTableProps & { row: MonitorRow }) {
+function StackActionButton({title, icon, onClick, disabled}: {
+    title: string,
+    icon: ReactNode,
+    onClick: () => void,
+    disabled?: boolean,
+}) {
+    return (
+        <Tooltip title={title} arrow>
+            <span>
+                <IconButton size="small" disabled={disabled} onClick={onClick}
+                            sx={{color: t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
+                    {icon}
+                </IconButton>
+            </span>
+        </Tooltip>
+    );
+}
+
+// redeploy = compose up -d with a forced option, picked from a small menu
+function RedeployMenuButton({disabled, onPick}: {
+    disabled?: boolean,
+    onPick: (opts: RedeployOptions) => void,
+}) {
+    const [anchor, setAnchor] = useState<null | HTMLElement>(null);
+
+    const pick = (opts: RedeployOptions) => {
+        setAnchor(null);
+        onPick(opts);
+    };
+
+    return (
+        <>
+            <Tooltip title="Redeploy…" arrow>
+                <span>
+                    <IconButton size="small" disabled={disabled}
+                                onClick={(e: MouseEvent<HTMLElement>) => setAnchor(e.currentTarget)}
+                                sx={{color: t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
+                        <RocketLaunch sx={{fontSize: 15}}/>
+                    </IconButton>
+                </span>
+            </Tooltip>
+            <Menu anchorEl={anchor} open={anchor !== null} onClose={() => setAnchor(null)}>
+                <MenuItem onClick={() => pick({pull: true, build: false, recreate: false})}>
+                    <ListItemIcon><CloudDownload sx={{fontSize: 17}}/></ListItemIcon>
+                    <ListItemText primary="Pull images (force)" secondary="up -d --pull always"/>
+                </MenuItem>
+                <MenuItem onClick={() => pick({pull: false, build: true, recreate: false})}>
+                    <ListItemIcon><Build sx={{fontSize: 17}}/></ListItemIcon>
+                    <ListItemText primary="Build images (force)" secondary="up -d --build"/>
+                </MenuItem>
+                <MenuItem onClick={() => pick({pull: false, build: false, recreate: true})}>
+                    <ListItemIcon><RestartAlt sx={{fontSize: 17}}/></ListItemIcon>
+                    <ListItemText primary="Recreate (force)" secondary="up -d --force-recreate"/>
+                </MenuItem>
+            </Menu>
+        </>
+    );
+}
+
+function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
+    const {row, history, selectedContainers, onToggleContainers, now, onRowAction, onRowLogs, onRowExec} = props;
     const c = row.info;
     const s = row.stats;
     const hist = history.get(c.name);
-    const badge = stateBadges[c.state] ?? {bg: 'rgba(71,85,105,0.55)', fg: '#cbd5e1', label: c.state};
     const isRunning = c.state === 'running';
-    const isChecked = selected.includes(c.id);
+    const isPaused = c.state === 'paused';
+    const isActive = ['running', 'restarting', 'paused'].includes(c.state);
+    const isChecked = selectedContainers.includes(c.id);
 
     const ports = c.ports
         .filter(p => p.public > 0)
@@ -224,7 +344,7 @@ function ContainerRow({row, history, selected, onToggleSelect, now, onRowAction,
                 <Checkbox
                     size="small"
                     checked={isChecked}
-                    onChange={e => onToggleSelect([c.id], e.target.checked)}
+                    onChange={e => onToggleContainers([c.id], e.target.checked)}
                     sx={{color: t.textDim, p: 0.5}}
                 />
             </TableCell>
@@ -243,23 +363,9 @@ function ContainerRow({row, history, selected, onToggleSelect, now, onRowAction,
                     {c.imageName}
                 </Typography>
             </TableCell>
-            <TableCell sx={bodyCell}>
-                <Stack direction="row" spacing={0.5} alignItems="center">
-                    <Chip label={badge.label} size="small"
-                          sx={{bgcolor: badge.bg, color: badge.fg, fontWeight: 700, fontSize: '0.65rem', height: 19}}/>
-                    {c.health && (
-                        <Typography sx={{
-                            fontSize: '0.68rem',
-                            fontFamily: t.mono,
-                            color: c.health === 'healthy' ? '#66bb6a' : c.health === 'unhealthy' ? '#ef5350' : t.textDim,
-                        }}>
-                            {c.health}
-                        </Typography>
-                    )}
-                </Stack>
-            </TableCell>
+            <StateCell state={c.state} health={c.health}/>
             <TableCell sx={{...bodyCell, whiteSpace: 'nowrap', fontFamily: t.mono, fontSize: '0.75rem', color: t.textDim}}>
-                {isRunning && c.created ? formatTimeAgo(new Date(c.created), now) : '–'}
+                {isRunning && s ? formatUptime(s.startedAt, now) : '–'}
             </TableCell>
             <MetricCell
                 value={s ? `${s.cpuUsage.toFixed(1)}%` : '–'}
@@ -282,28 +388,32 @@ function ContainerRow({row, history, selected, onToggleSelect, now, onRowAction,
                 </Tooltip>
             </TableCell>
             <TableCell align="right" sx={{...bodyCell, whiteSpace: 'nowrap'}}>
-                <Tooltip title="Start" arrow>
-                    <span>
-                        <IconButton size="small" disabled={isRunning}
-                                    onClick={() => onRowAction(row, 'start')}
-                                    sx={{color: '#66bb6a', '&.Mui-disabled': {color: 'rgba(255,255,255,0.15)'}}}>
-                            <PlayArrow sx={{fontSize: 16}}/>
-                        </IconButton>
-                    </span>
-                </Tooltip>
-                <Tooltip title="Stop" arrow>
-                    <span>
-                        <IconButton size="small" disabled={!isRunning}
-                                    onClick={() => onRowAction(row, 'stop')}
-                                    sx={{color: '#ef5350', '&.Mui-disabled': {color: 'rgba(255,255,255,0.15)'}}}>
-                            <Stop sx={{fontSize: 16}}/>
-                        </IconButton>
-                    </span>
+                <Tooltip title={isActive ? 'Stop' : 'Start'} arrow>
+                    <IconButton size="small"
+                                onClick={() => onRowAction(row, isActive ? 'stop' : 'start')}
+                                sx={{color: isActive ? '#ef5350' : '#66bb6a'}}>
+                        {isActive ? <Stop sx={{fontSize: 16}}/> : <PlayArrow sx={{fontSize: 16}}/>}
+                    </IconButton>
                 </Tooltip>
                 <Tooltip title="Restart" arrow>
                     <IconButton size="small" onClick={() => onRowAction(row, 'restart')}
                                 sx={{color: '#4db6ac'}}>
                         <RestartAlt sx={{fontSize: 16}}/>
+                    </IconButton>
+                </Tooltip>
+                <Tooltip title={isPaused ? 'Unpause' : 'Pause'} arrow>
+                    <span>
+                        <IconButton size="small" disabled={!isRunning && !isPaused}
+                                    onClick={() => onRowAction(row, isPaused ? 'unpause' : 'pause')}
+                                    sx={{color: isPaused ? '#ffb74d' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
+                            <Pause sx={{fontSize: 16}}/>
+                        </IconButton>
+                    </span>
+                </Tooltip>
+                <Tooltip title="Remove" arrow>
+                    <IconButton size="small" onClick={() => onRowAction(row, 'remove')}
+                                sx={{color: t.textDim, '&:hover': {color: '#ef5350'}}}>
+                        <Delete sx={{fontSize: 16}}/>
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Logs" arrow>
@@ -316,13 +426,42 @@ function ContainerRow({row, history, selected, onToggleSelect, now, onRowAction,
                     <span>
                         <IconButton size="small" disabled={!isRunning}
                                     onClick={() => onRowExec(row)}
-                                    sx={{color: t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': {color: 'rgba(255,255,255,0.15)'}}}>
+                                    sx={{color: t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
                             <Terminal sx={{fontSize: 16}}/>
                         </IconButton>
                     </span>
                 </Tooltip>
             </TableCell>
         </TableRow>
+    );
+}
+
+// state as a colored icon (tooltip carries the word), health spelled out
+// next to it when the container has a healthcheck
+function StateCell({state, health}: { state: string, health: string }) {
+    const visual = (health === 'unhealthy')
+        ? {icon: <WarningAmber/>, color: '#ef5350'}
+        : stateVisual[state] ?? {icon: <Stop/>, color: t.textDim};
+
+    return (
+        <TableCell sx={bodyCell}>
+            <Stack direction="row" spacing={0.5} alignItems="center">
+                <Tooltip title={state} arrow>
+                    <Box sx={{display: 'flex', color: visual.color, '& svg': {fontSize: 17}}}>
+                        {visual.icon}
+                    </Box>
+                </Tooltip>
+                {health && (
+                    <Typography sx={{
+                        fontSize: '0.7rem',
+                        fontFamily: t.mono,
+                        color: health === 'healthy' ? '#66bb6a' : health === 'unhealthy' ? '#ef5350' : t.textDim,
+                    }}>
+                        {health}
+                    </Typography>
+                )}
+            </Stack>
+        </TableCell>
     );
 }
 
@@ -345,4 +484,21 @@ function MetricCell({value, data, color}: { value: string, data: number[], color
             </Stack>
         </TableCell>
     );
+}
+
+// how long the container has been up, from the stats' RFC3339 started_at:
+// "3d 4h", "5h 12m", "8m", "42s"
+function formatUptime(startedAt: string, now: number): string {
+    if (!startedAt || startedAt.startsWith('0001')) return '–';
+    const start = Date.parse(startedAt);
+    if (isNaN(start)) return '–';
+    let secs = Math.floor((now - start) / 1000);
+    if (secs < 0) secs = 0;
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m`;
+    return `${secs}s`;
 }

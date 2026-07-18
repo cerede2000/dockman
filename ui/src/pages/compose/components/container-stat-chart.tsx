@@ -107,39 +107,49 @@ function AggregateStats({aggregates, hostStats}: AggregateStatsProps) {
 
 export default AggregateStats;
 
-// Dockhand-style status strip: one icon+count pair per container state.
-// The total lives on the label line so the strip itself stays one row in
-// the common case (it can still wrap when very narrow).
+// Dockhand-style status strip over two fixed rows: totals and the common
+// states first (total / running / stopped), the exceptional states below
+// (paused / restarting / unhealthy).
 function StateTile({aggregates}: { aggregates: AggregateSnapshot | null }) {
-    const entries: { icon: ReactNode, count: number, color: string, title: string }[] = aggregates ? [
-        {icon: <PlayArrowIcon/>, count: aggregates.running, color: '#66bb6a', title: 'Running'},
-        {icon: <StopIcon/>, count: aggregates.stopped, color: '#9e9e9e', title: 'Stopped'},
-        {icon: <PauseIcon/>, count: aggregates.paused, color: '#ffb74d', title: 'Paused'},
-        {icon: <RestartIcon/>, count: aggregates.restarting, color: '#4db6ac', title: 'Restarting'},
-        {icon: <WarningIcon/>, count: aggregates.unhealthy, color: '#ef5350', title: 'Unhealthy'},
+    const rows: { icon: ReactNode, count: number, color: string, title: string }[][] = aggregates ? [
+        [
+            {icon: <ContainerIcon/>, count: aggregates.total, color: t.text, title: 'Total'},
+            {icon: <PlayArrowIcon/>, count: aggregates.running, color: '#66bb6a', title: 'Running'},
+            {icon: <StopIcon/>, count: aggregates.stopped, color: '#9e9e9e', title: 'Stopped'},
+        ],
+        [
+            {icon: <PauseIcon/>, count: aggregates.paused, color: '#ffb74d', title: 'Paused'},
+            {icon: <RestartIcon/>, count: aggregates.restarting, color: '#4db6ac', title: 'Restarting'},
+            {icon: <WarningIcon/>, count: aggregates.unhealthy, color: '#ef5350', title: 'Unhealthy'},
+        ],
     ] : [];
 
     return (
         <Box sx={{flex: '0 1 auto', minWidth: 108, maxWidth: 175, alignSelf: 'center'}}>
-            <TileLabel icon={<ContainerIcon/>}
-                       label={aggregates ? `Containers · ${aggregates.total}` : 'Containers'}/>
             {aggregates ? (
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                    {entries.map(e => (
-                        <Tooltip key={e.title} title={e.title} arrow placement="top">
-                            <Stack direction="row" spacing={0.25} alignItems="center" sx={{color: e.color}}>
-                                <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{e.icon}</Box>
-                                <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.85rem', lineHeight: 1}}>
-                                    {e.count}
-                                </Typography>
-                            </Stack>
-                        </Tooltip>
+                <Stack spacing={0.75}>
+                    {rows.map((row, i) => (
+                        <Stack key={i} direction="row" spacing={1.5} alignItems="center">
+                            {row.map(e => (
+                                <Tooltip key={e.title} title={e.title} arrow placement="top">
+                                    <Stack direction="row" spacing={0.25} alignItems="center" sx={{color: e.color}}>
+                                        <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{e.icon}</Box>
+                                        <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.85rem', lineHeight: 1}}>
+                                            {e.count}
+                                        </Typography>
+                                    </Stack>
+                                </Tooltip>
+                            ))}
+                        </Stack>
                     ))}
                 </Stack>
             ) : (
-                <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.95rem', color: t.text}}>
-                    –
-                </Typography>
+                <>
+                    <TileLabel icon={<ContainerIcon/>} label="Containers"/>
+                    <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.95rem', color: t.text}}>
+                        –
+                    </Typography>
+                </>
             )}
         </Box>
     );

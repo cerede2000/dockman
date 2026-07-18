@@ -5,7 +5,9 @@ import type {CallOptions} from "@connectrpc/connect";
 import {makeID, type TabTerminal, useTerminalAction, useTerminalTabs} from "./terminal.tsx";
 
 type ComposeFileClean = Omit<ComposeFile, "$typeName" | "$unknown">;
-type ActiveAction = typeof deployActionsConfig[number]['name'];
+// 'redeploy' is triggered from the monitor view (compose up with force
+// flags); it has no entry in the deploy button config
+type ActiveAction = typeof deployActionsConfig[number]['name'] | 'redeploy';
 type ComposeActionStreamFn = (request: ComposeFileClean, options?: CallOptions) => AsyncIterable<LogsMessage>;
 
 
