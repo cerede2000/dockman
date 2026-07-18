@@ -1,20 +1,32 @@
-import {useFileComponents, useTerminalAction} from "../state/terminal.tsx";
+import {useContainerExec, useFileComponents, useTerminalAction} from "../state/terminal.tsx";
 import {Box, Divider, IconButton, Tooltip, Typography} from "@mui/material";
-import {EditRounded, Folder, TerminalOutlined} from "@mui/icons-material"; // Hub is a good default for "Alias/Connection"
+import {EditRounded, Folder, Terminal, TerminalOutlined} from "@mui/icons-material"; // Hub is a good default for "Alias/Connection"
 import {useEffect} from "react";
 import {useSideBarAction} from "../state/files.ts";
 import {useAlias} from "../../../context/alias-context.tsx";
 import {useNavigate} from "react-router-dom";
 import {type FolderAlias} from "../../../gen/host/v1/host_pb.ts";
 import {useAliasAddDialogState} from "./add-alias-dialog.tsx";
+import {useHostShellWsUrl} from "../../../lib/api.ts";
 
 const ActionSidebar = () => {
     const {isSidebarOpen, toggle: fileSideBarToggle} = useSideBarAction(state => state);
     const {isTerminalOpen, toggle: terminalToggle} = useTerminalAction(state => state);
     const {aliases} = useAlias();
     const nav = useNavigate()
-    const {alias: activeAlias, host} = useFileComponents()
+    const {alias: activeAlias, host, filename} = useFileComponents()
     const openD = useAliasAddDialogState(state => state.setOpen)
+
+    const createShellUrl = useHostShellWsUrl()
+    const execParams = useContainerExec(state => state.execParams)
+
+    // shell on the current host, in the open compose file's folder when a
+    // file is being edited, otherwise in the runner user's home
+    const openHostShell = () => {
+        const dir = filename ? filename.split('/').slice(0, -1).pop() : ''
+        const title = dir ? `${dir} (shell)` : `${host} (shell)`
+        execParams(title, createShellUrl(filename || undefined), true)
+    }
 
     const handleAliasClick = (alias: FolderAlias) => {
         nav(`/${host}/files/${alias.alias}`)
@@ -138,6 +150,22 @@ const ActionSidebar = () => {
 
                 {/* Bottom Section: Tools */}
                 <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', pb: 1}}>
+                    <Tooltip
+                        title={filename ? `Host shell (${filename.split('/').slice(0, -1).pop()})` : "Host shell (home)"}
+                        placement="right"
+                    >
+                        <IconButton
+                            onClick={openHostShell}
+                            sx={{
+                                color: 'rgba(255,255,255,0.5)',
+                                borderRadius: 0,
+                                width: '100%',
+                                '&:hover': {color: 'white'}
+                            }}
+                        >
+                            <Terminal fontSize="medium"/>
+                        </IconButton>
+                    </Tooltip>
                     <Tooltip title="Terminal (Alt+F12)" placement="right">
                         <IconButton
                             onClick={terminalToggle}
