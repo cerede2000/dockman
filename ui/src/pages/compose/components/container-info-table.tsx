@@ -65,6 +65,16 @@ export function ContainerTable(
         if (!loading) setIsLoaded(true);
     }, [loading]);
 
+    // relative times ("28 seconds ago") are computed at render time; since
+    // data refreshes are event-driven (no fast polling anymore), tick a
+    // re-render so the labels keep counting between refreshes. `now` feeds
+    // formatTimeAgo explicitly so memoization recomputes on each tick.
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        const id = setInterval(() => setNow(Date.now()), 10000);
+        return () => clearInterval(id);
+    }, []);
+
     const getContName = (c: ContainerList) => useContainerId ? c.id : c.serviceName;
 
     const {sortField, sortOrder, handleSort} = useSort(
@@ -162,7 +172,7 @@ export function ContainerTable(
                     <Tooltip title={new Date(c.created).toLocaleString()} arrow placement="top">
                         <Box>
                             <Typography variant="body2" sx={{fontWeight: 500, lineHeight: 1.3}}>
-                                {formatTimeAgo(new Date(c.created))}
+                                {formatTimeAgo(new Date(c.created), now)}
                             </Typography>
                             <Typography
                                 variant="caption"
