@@ -27,9 +27,9 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
         <Paper
             variant="outlined"
             sx={{
-                px: 2.5,
-                py: 1.5,
-                mb: 2,
+                px: 2,
+                py: 1,
+                mb: 1.5,
                 borderRadius: 2,
                 bgcolor: t.panel,
                 borderColor: t.border,
@@ -89,10 +89,9 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
 
 export default AggregateStats;
 
-// one quiet tile: dim small-caps label with a small dim icon, a single
-// non-wrapping mono value line, an optional dim detail line, and an optional
-// sparkline stacked under the numbers so tiles stay narrow and the band
-// never overflows: label, value, detail, then a full-width mini chart
+// one quiet two-line tile: dim small-caps label, then a single row carrying
+// the mono value, its dim inline detail and (when present) a small sparkline
+// pinned to the right — the whole band stays ~2 text lines tall
 function StatTile({icon, label, value, sub, spark, tooltip}: {
     icon: ReactNode,
     label: string,
@@ -103,35 +102,42 @@ function StatTile({icon, label, value, sub, spark, tooltip}: {
 }) {
     const body = (
         <Box sx={{flex: '1 1 0', minWidth: 0}}>
-            <Stack direction="row" spacing={0.75} alignItems="center" sx={{mb: 0.5, color: t.textDim}}>
-                <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{icon}</Box>
+            <Stack direction="row" spacing={0.75} alignItems="center" sx={{mb: 0.25, color: t.textDim}}>
+                <Box sx={{display: 'flex', '& svg': {fontSize: 14}}}>{icon}</Box>
                 <Typography variant="overline" noWrap
-                            sx={{fontWeight: 700, lineHeight: 1, letterSpacing: '0.08em'}}>
+                            sx={{fontWeight: 700, lineHeight: 1, letterSpacing: '0.08em', fontSize: '0.62rem'}}>
                     {label}
                 </Typography>
             </Stack>
-            <Typography noWrap sx={{
-                fontFamily: t.mono,
-                fontWeight: 700,
-                fontSize: '1.05rem',
-                lineHeight: 1.25,
-                color: t.text,
-            }}>
-                {value}
-            </Typography>
-            <Typography variant="caption" noWrap sx={{
-                color: t.textDim,
-                fontFamily: t.mono,
-                display: 'block',
-                minHeight: '1.1em',
-            }}>
-                {sub ?? ''}
-            </Typography>
-            {spark && (
-                <Box sx={{mt: 0.5}}>
-                    <Sparkline data={spark.data} color={spark.color} height={22}/>
-                </Box>
-            )}
+            <Stack direction="row" spacing={1} alignItems="center" sx={{minWidth: 0}}>
+                <Typography noWrap sx={{
+                    fontFamily: t.mono,
+                    fontWeight: 700,
+                    fontSize: '1rem',
+                    lineHeight: 1.3,
+                    color: t.text,
+                    flexShrink: 0,
+                }}>
+                    {value}
+                </Typography>
+                {sub && (
+                    <Typography variant="caption" noWrap sx={{
+                        color: t.textDim,
+                        fontFamily: t.mono,
+                        minWidth: 0,
+                    }}>
+                        {sub}
+                    </Typography>
+                )}
+                {spark && (
+                    <>
+                        <Box sx={{flexGrow: 1}}/>
+                        <Box sx={{width: 90, flexShrink: 0}}>
+                            <Sparkline data={spark.data} color={spark.color} height={20}/>
+                        </Box>
+                    </>
+                )}
+            </Stack>
         </Box>
     );
 
