@@ -191,7 +191,9 @@ function MonitorPage() {
         );
     };
 
-    const bulkStackAction = (action: StackAction) => {
+    // async to satisfy the shared ActionButtons handler contract; the stack
+    // runs themselves are fire-and-forget background actions
+    const bulkStackAction = async (action: StackAction) => {
         for (const stackName of selectedStacks) {
             const group = groups.find(g => g.stack === stackName);
             if (group?.servicePath) runStack(group.stack, group.servicePath, action);
