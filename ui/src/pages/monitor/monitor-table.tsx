@@ -33,6 +33,7 @@ import {
     Stop,
     Subject,
     Terminal,
+    Update,
     Upgrade,
     WarningAmber,
 } from '@mui/icons-material';
@@ -67,7 +68,7 @@ export interface StackGroup {
     stats: StackStats | null;
 }
 
-export type RowAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'remove';
+export type RowAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'update' | 'remove';
 export type StackAction = 'up' | 'down' | 'start' | 'stop' | 'restart';
 
 export interface RedeployOptions {
@@ -90,6 +91,8 @@ interface MonitorTableProps {
     onToggleExpand: (stack: string) => void;
     // explicit clock so the memoized rows re-render on tick
     now: number;
+    // dockman.yml monitor.stackRows: compact stack rows drop the charts
+    stackRowsCompact: boolean;
     runningStacks: Record<string, boolean>;
     onRowAction: (row: MonitorRow, action: RowAction) => void;
     onRowLogs: (row: MonitorRow) => void;
@@ -253,6 +256,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                 textColor={s ? getUsageColor(s.cpu) : t.textDim}
                 data={s?.cpuHist}
                 lineColor={t.cpuLine}
+                chart={!props.stackRowsCompact}
             />
             <MetricCell
                 text={s ? formatBytes(s.memUsed) : '…'}
@@ -260,6 +264,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                 textColor={s ? getUsageColor(memPercent) : t.textDim}
                 data={s?.memHist}
                 lineColor={t.memLine}
+                chart={!props.stackRowsCompact}
             />
             <TableCell colSpan={2} sx={bodyCell}/>
             <TableCell align="right" sx={{...bodyCell, py: 0.25, whiteSpace: 'nowrap'}}>
@@ -459,6 +464,12 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                         </IconButton>
                     </span>
                 </Tooltip>
+                <Tooltip title={c.updateAvailable ? `Update image (${c.updateAvailable} available)` : 'Update image'} arrow>
+                    <IconButton size="small" onClick={() => onRowAction(row, 'update')}
+                                sx={{color: c.updateAvailable ? '#4db6ac' : t.textDim, '&:hover': {color: t.text}}}>
+                        <Update sx={{fontSize: 16}}/>
+                    </IconButton>
+                </Tooltip>
                 <Tooltip title="Remove" arrow>
                     <IconButton size="small" onClick={() => onRowAction(row, 'remove')}
                                 sx={{color: t.textDim, '&:hover': {color: '#ef5350'}}}>
@@ -515,19 +526,21 @@ function StateCell({state, health}: { state: string, health: string }) {
 }
 
 // same recipe as the edit view's STATS tab: the live value (usage-colored)
-// sits top-left above a small sparkline of its history
-function MetricCell({text, subText, textColor, data, lineColor}: {
+// sits top-left above a small sparkline of its history; chart=false keeps
+// only the value line (compact stack rows)
+function MetricCell({text, subText, textColor, data, lineColor, chart = true}: {
     text: string;
     subText?: string;
     textColor: string;
     data?: number[];
     lineColor: string;
+    chart?: boolean;
 }) {
     return (
         <TableCell sx={bodyCell}>
             <Box sx={{width: 150}}>
                 <Typography variant="caption" component="div"
-                            sx={{fontFamily: t.mono, whiteSpace: 'nowrap', lineHeight: 1.4, mb: 0.4}}>
+                            sx={{fontFamily: t.mono, whiteSpace: 'nowrap', lineHeight: 1.4, mb: chart ? 0.4 : 0}}>
                     <Box component="span" sx={{fontWeight: 700, color: textColor}}>{text}</Box>
                     {subText && (
                         <Box component="span" sx={{color: t.textDim, fontSize: '0.65rem'}}>
@@ -535,7 +548,7 @@ function MetricCell({text, subText, textColor, data, lineColor}: {
                         </Box>
                     )}
                 </Typography>
-                <Sparkline data={data ?? []} color={lineColor} height={26}/>
+                {chart && <Sparkline data={data ?? []} color={lineColor} height={26}/>}
             </Box>
         </TableCell>
     );

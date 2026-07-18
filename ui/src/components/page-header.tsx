@@ -5,16 +5,18 @@ import type {ReactNode} from "react";
 // the uniform list-view header: icon, title, count chip, optional extra
 // info chip (e.g. total image size), and the host the view looks at.
 // `right` pins content (like a search bar) to the same line.
-export default function PageHeader({icon, title, count, extra, host, right}: {
+export default function PageHeader({icon, title, count, extra, host, right, compact}: {
     icon: ReactNode,
     title: string,
     count?: number | string,
     extra?: string,
     host?: string,
     right?: ReactNode,
+    // tighter bottom margin for views that stack more chrome under the title
+    compact?: boolean,
 }) {
     return (
-        <Box sx={{mb: 2, display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0}}>
+        <Box sx={{mb: compact ? 1 : 2, display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0}}>
             <Box sx={{display: 'flex', color: 'primary.main', '& svg': {fontSize: 20}}}>{icon}</Box>
             <Typography variant="h6" sx={{fontWeight: 800, letterSpacing: -0.5}}>
                 {title}

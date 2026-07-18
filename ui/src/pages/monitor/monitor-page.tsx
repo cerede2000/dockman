@@ -10,6 +10,7 @@ import {
     Stop,
     UnfoldLess,
     UnfoldMore,
+    Update,
 } from '@mui/icons-material';
 import {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
@@ -21,6 +22,7 @@ import ActionButtons from '../../components/action-buttons.tsx';
 import scrollbarStyles from '../../components/scrollbar-style.tsx';
 import {useDockerContainers} from '../../hooks/docker-containers.ts';
 import {useDockerStats, useHostStats} from '../../hooks/docker-containers-stats.ts';
+import {useConfig} from '../../hooks/config.ts';
 import {callRPC, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useHostStore} from '../compose/state/files.ts';
@@ -98,6 +100,9 @@ function MonitorPage() {
     const {search, setSearch, searchInputRef} = useSearch();
     const navigate = useNavigate();
     const host = useHostStore(state => state.host);
+    const {dockYaml} = useConfig();
+    // dockman.yml → monitor.stackRows: "compact" drops the stack rows' charts
+    const compactStacks = (dockYaml?.monitorPage?.stackRows ?? '').trim().toLowerCase() === 'compact';
 
     // stack and container selections are mutually exclusive; the toolbar
     // switches to whichever kind is active
@@ -219,6 +224,7 @@ function MonitorPage() {
         restart: {rpc: 'containerRestart', message: 'restarted'},
         pause: {rpc: 'containerPause', message: 'paused'},
         unpause: {rpc: 'containerUnpause', message: 'unpaused'},
+        update: {rpc: 'containerUpdate', message: 'updated'},
         remove: {rpc: 'containerRemove', message: 'removed'},
     };
 
@@ -350,6 +356,12 @@ function MonitorPage() {
             tooltip: '',
         },
         {
+            action: 'update', buttonText: 'Update', icon: <Update/>,
+            disabled: selectedContainers.length === 0,
+            handler: () => containerAction('update', 'containerUpdate', 'updated', selectedContainers),
+            tooltip: 'Pull the image and recreate when a newer one exists',
+        },
+        {
             action: 'remove', buttonText: 'Remove', icon: <Delete/>,
             disabled: selectedContainers.length === 0,
             handler: () => containerAction('remove', 'containerRemove', 'removed', selectedContainers),
@@ -402,7 +414,7 @@ function MonitorPage() {
                     title="Monitor"
                     count={total}
                     host={host}
-                    right={<SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>}
+                    compact
                 />
 
                 <Box sx={{flexShrink: 0}}>
@@ -424,6 +436,12 @@ function MonitorPage() {
                         borderColor: t.border,
                     }}
                 >
+                    <Box sx={{flex: 1, maxWidth: 270}}>
+                        <SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>
+                    </Box>
+
+                    <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
+
                     <ActionButtons actions={stacksMode ? stackBulkActions : containerBulkActions}/>
                     <RefreshButton onClick={refreshContainers} loading={loading}/>
                     <Button
@@ -492,6 +510,7 @@ function MonitorPage() {
                                     onToggleExpand={(stack) => setExpanded(prev =>
                                         ({...prev, [stack]: !(prev[stack] ?? false)}))}
                                     now={now}
+                                    stackRowsCompact={compactStacks}
                                     runningStacks={runningStacks}
                                     onRowAction={handleRowAction}
                                     onRowLogs={handleRowLogs}
