@@ -64,12 +64,13 @@ const NetworksPage = () => {
         }}>
             <Card
                 sx={{
-                    mb: 3,
-                    p: 2,
+                    mb: 1.5,
+                    px: 1.5,
+                    py: 1,
                     display: 'flex',
                     alignItems: 'center',
                     flexWrap: 'wrap',
-                    gap: 3,
+                    gap: 1.5,
                     backgroundColor: 'background.paper',
                     boxShadow: 2,
                     borderRadius: 2,
@@ -93,7 +94,7 @@ const NetworksPage = () => {
 
                 <Tooltip title={loading ? 'Refreshing...' : 'Refresh Networks'}>
                     <Button
-                        variant="contained"
+                        variant="outlined"
                         size="small"
                         onClick={loadNetworks}
                         disabled={loading}
@@ -112,9 +113,9 @@ const NetworksPage = () => {
             {/* Table Container */}
             <Box sx={{
                 flexGrow: 1,
-                border: '3px ridge',
-                borderColor: 'rgba(255, 255, 255, 0.23)',
-                borderRadius: 3,
+                border: '1px solid',
+                borderColor: 'divider',
+                borderRadius: 2,
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
