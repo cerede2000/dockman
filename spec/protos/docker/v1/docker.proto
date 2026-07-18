@@ -20,6 +20,10 @@ service DockerService {
   // (fully qualified return type: the sibling ContainerStats rpc otherwise
   // shadows the message name inside the service scope)
   rpc ContainerStatsStream(StatsRequest) returns (stream .docker.v1.ContainerStats) {}
+  // real host-level usage (from /proc via the host's runner, so it works for
+  // ssh hosts too) — the general stats view shows this instead of summing
+  // per-container numbers
+  rpc HostStats(Empty) returns (HostStatsResponse) {}
   rpc ContainerLogs(ContainerLogsRequest) returns (stream LogsMessage) {}
   rpc ContainerInspect(ContainerLogsRequest) returns (ContainerInspectMessage) {}
 
@@ -336,6 +340,14 @@ message ContainerLogsRequest {
 
 message LogsMessage {
   string message = 1;
+}
+
+message HostStatsResponse {
+  // whole-host cpu usage in percent (0-100), 0 until two samples exist
+  double cpuPercent = 1;
+  int64 memUsed = 2;
+  int64 memTotal = 3;
+  int32 cpus = 4;
 }
 
 message StatsResponse {
