@@ -1,5 +1,5 @@
-import {Box, Divider, IconButton, ListItemButton, Paper, Stack, Typography} from '@mui/material';
-import {Close, ExpandMore, TerminalRounded} from '@mui/icons-material';
+import {Box, Divider, IconButton, ListItemButton, Paper, Stack, Tooltip, Typography} from '@mui/material';
+import {ClearAll, Close, ExpandMore, TerminalRounded} from '@mui/icons-material';
 import {useTerminalAction, useTerminalTabs} from "../state/terminal.tsx";
 import useResizeBar from "../hooks/resize-hook.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
@@ -16,6 +16,7 @@ export function LogsPanel() {
     const {panelSize, panelRef, handleMouseDown, isResizing} = useResizeBar('top')
     const isTerminalOpen = useTerminalAction(state => state.isTerminalOpen);
     const toggle = useTerminalAction(state => state.toggle);
+    const closePanel = useTerminalAction(state => state.close);
 
     const {tabs, activeTab, setActiveTab, close, clearAll} = useTerminalTabs();
     const fitAddonRef = useRef<FitAddon>(new FitAddon());
@@ -93,20 +94,43 @@ export function LogsPanel() {
                         flex: 1,
                         ...scrollbarStyles
                     }}>
-                        <Box sx={{display: 'flex', flexDirection: 'row', alignItems: 'center', p: 1}}>
+                        <Box sx={{display: 'flex', flexDirection: 'row', alignItems: 'center', px: 1, py: 0.25}}>
                             <IconButton
                                 size="small"
-                                sx={{color: 'white', mr: 1}}
+                                sx={{color: 'rgba(255,255,255,0.7)', mr: 0.5, p: 0.25}}
                                 onClick={(ev) => {
                                     ev.stopPropagation()
                                     toggle()
                                 }}
                             >
-                                <ExpandMore/>
+                                <ExpandMore sx={{fontSize: 18}}/>
                             </IconButton>
-                            <Typography variant="subtitle2" sx={{flexShrink: 0, color: 'white', fontWeight: 'bold'}}>
+                            <Typography variant="caption" sx={{
+                                flexGrow: 1,
+                                color: 'rgba(255,255,255,0.8)',
+                                fontWeight: 700,
+                                letterSpacing: '0.08em',
+                            }}>
                                 LOGS
                             </Typography>
+                            <Tooltip title="Close all tabs">
+                                <IconButton
+                                    size="small"
+                                    sx={{color: 'rgba(255,255,255,0.5)', p: 0.25, mr: 0.25}}
+                                    onClick={() => clearAll()}
+                                >
+                                    <ClearAll sx={{fontSize: 16}}/>
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Close panel">
+                                <IconButton
+                                    size="small"
+                                    sx={{color: 'rgba(255,255,255,0.5)', p: 0.25}}
+                                    onClick={() => closePanel()}
+                                >
+                                    <Close sx={{fontSize: 16}}/>
+                                </IconButton>
+                            </Tooltip>
                         </Box>
 
                         <Divider sx={{borderColor: 'rgba(255,255,255,0.1)'}}/>

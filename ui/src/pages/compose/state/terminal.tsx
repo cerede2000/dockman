@@ -201,6 +201,8 @@ export const useTerminalTabs = create<{
                 activeTab: null,
                 tabs: new Map<string, TabTerminal>,
             })
+            // an empty panel has nothing to show: collapse it
+            useTerminalAction.getState().close()
         },
         updateTab: (id, term) => {
             const tab = get().tabs.get(id)
@@ -244,6 +246,12 @@ export const useTerminalTabs = create<{
                     activeTab: newActiveTab
                 };
             });
+
+            // closing the last tab collapses the panel instead of leaving
+            // an empty shell open
+            if (get().tabs.size === 0) {
+                useTerminalAction.getState().close()
+            }
         },
     })
 )
