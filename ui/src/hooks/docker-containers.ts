@@ -4,6 +4,7 @@ import {DockerService, type ListResponse} from '../gen/docker/v1/docker_pb.ts'
 import {useSnackbar} from "./snackbar.ts"
 import {useHostStore} from "../pages/compose/state/files.ts";
 import {useDockerEvents} from "./docker-events.ts";
+import {FAST_POLL_MS, IDLE_POLL_MS, isSettling} from "./container-freshness.ts";
 
 export function useDockerContainers() {
     const dockerService = useHostClient(DockerService)
@@ -37,6 +38,13 @@ export function useDockerContainers() {
             setLoading(false)
         })
     }, [fetchContainers]) // run only once on page load
+
+    // fast cadence while containers settle (start, health checks, restarts),
+    // slow safety net once stable
+    useEffect(() => {
+        const fast = (containers?.list ?? []).some(c => isSettling(c.state, c.health, c.created));
+        setRefreshInterval(fast ? FAST_POLL_MS : IDLE_POLL_MS);
+    }, [containers])
 
     useEffect(() => {
         fetchContainers().then()
