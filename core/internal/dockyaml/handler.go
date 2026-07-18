@@ -75,6 +75,7 @@ func (d *DockmanYaml) ToProto() *v1.DockmanYaml {
 		ComposePage:                d.ComposePage.toProto(),
 		EditorPage:                 d.EditorPage.toProto(),
 		MonitorPage:                d.MonitorPage.toProto(),
+		DefaultView:                d.DefaultView,
 	}
 }
 

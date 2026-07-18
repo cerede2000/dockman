@@ -39,6 +39,7 @@ var defaultDockmanYaml = DockmanYaml{
 	MonitorPage: MonitorConfig{
 		StackRows: "full",
 	},
+	DefaultView: "files",
 }
 
 type DockmanYaml struct {
@@ -73,6 +74,10 @@ type DockmanYaml struct {
 
 	// configure the monitor view
 	MonitorPage MonitorConfig `yaml:"monitor"`
+
+	// view opened when landing on a host: files (default), monitor, stats,
+	// containers, images, volumes, networks or cleaner
+	DefaultView string `yaml:"defaultView"`
 
 	// configure the file editor
 	EditorPage EditorConfig `yaml:"editor"`

@@ -34,6 +34,13 @@ func formatCPU(statsJSON container.StatsResponse) float64 {
 		cpuPercent = (cpuDelta / systemCpuDelta) * numberCPUs * 100.0
 	}
 
+	// a container's first samples after start can carry garbage deltas
+	// (zeroed precpu counters, clock jumps) that explode into absurd
+	// percentages; nothing real exceeds every core at 100%
+	if maxPercent := numberCPUs * 100.0; maxPercent > 0 && cpuPercent > maxPercent {
+		cpuPercent = maxPercent
+	}
+
 	return cpuPercent
 }
 

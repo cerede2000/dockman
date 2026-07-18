@@ -43,6 +43,9 @@ message DockmanYaml {
   ComposeConfig composePage = 11;
   EditorConfig editorPage = 12;
   MonitorConfig monitorPage = 13;
+  // view opened when landing on a host: files (default), monitor, stats,
+  // containers, images, volumes, networks or cleaner
+  string defaultView = 14;
 }
 
 message MonitorConfig {
