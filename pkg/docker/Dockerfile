@@ -45,7 +45,9 @@ RUN curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERS
 
 FROM alpine:latest AS alpine
 
-RUN apk add --no-cache tzdata su-exec
+# docker-cli powers the run-a-docker-command feature on the local host
+# (remote hosts run it over ssh); it talks to the mounted daemon socket
+RUN apk add --no-cache tzdata su-exec docker-cli
 
 COPY pkg/docker/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -61,7 +63,7 @@ COPY --from=back /build/dockman dockman
 
 COPY --from=front /frontend/dist/ ./dist
 
-RUN docker-compose version
+RUN docker-compose version && docker --version
 
 EXPOSE 8866
 
