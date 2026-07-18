@@ -70,10 +70,16 @@ export function ContainerTable(
     // re-render so the labels keep counting between refreshes. `now` feeds
     // formatTimeAgo explicitly so memoization recomputes on each tick.
     const [now, setNow] = useState(() => Date.now());
+    // rows created moments ago tick every 2s so their age counts smoothly
+    // right after an action; stable tables settle to a 10s tick
+    const hasFresh = containers.some(c => {
+        const age = now - new Date(c.created).getTime();
+        return age >= 0 && age < 90_000;
+    });
     useEffect(() => {
-        const id = setInterval(() => setNow(Date.now()), 10000);
+        const id = setInterval(() => setNow(Date.now()), hasFresh ? 2000 : 10000);
         return () => clearInterval(id);
-    }, []);
+    }, [hasFresh]);
 
     const getContName = (c: ContainerList) => useContainerId ? c.id : c.serviceName;
 
