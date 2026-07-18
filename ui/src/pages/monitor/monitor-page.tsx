@@ -1,10 +1,11 @@
-import {Box, Button, Chip, Divider, Fade, Paper} from '@mui/material';
+import {Box, Button, Chip, Divider, Fade, Paper, Tooltip} from '@mui/material';
 import {
     ArrowDownward,
     ArrowUpward,
     Delete,
     Pause,
     PlayArrow,
+    PlayCircleOutline,
     RestartAlt,
     SpaceDashboardOutlined,
     Stop,
@@ -145,7 +146,7 @@ function sumSeries(series: number[][]): number[] {
 // and Containers pages are left untouched.
 function MonitorPage() {
     const dockerService = useHostClient(DockerService);
-    const {containers, loading, refreshContainers, fetchContainers} = useDockerContainers();
+    const {containers, loading, fetchContainers} = useDockerContainers();
     const {history, containers: statContainers, aggregates} = useDockerStats("");
     const hostStats = useHostStats(true);
     const {showSuccess, showError} = useSnackbar();
@@ -314,6 +315,18 @@ function MonitorPage() {
     }, [stackRuns]);
 
     const allExpanded = groups.length > 0 && groups.every(g => effectiveExpanded[g.stack] ?? false);
+
+    // the list is event-driven, so a manual refresh often changes nothing
+    // visible: give the button its own spinner so the fetch is observable
+    const [refreshing, setRefreshing] = useState(false);
+    const handleRefresh = async () => {
+        setRefreshing(true);
+        try {
+            await fetchContainers();
+        } finally {
+            setRefreshing(false);
+        }
+    };
 
     // restore the saved scroll offset once the table is mounted with data
     useEffect(() => {
@@ -499,7 +512,7 @@ function MonitorPage() {
             tooltip: '',
         },
         {
-            action: 'unpause', buttonText: 'Unpause', icon: <PlayArrow/>,
+            action: 'unpause', buttonText: 'Unpause', icon: <PlayCircleOutline/>,
             disabled: selectedContainers.length === 0,
             handler: () => containerAction('unpause', 'containerUnpause', 'unpaused', selectedContainers),
             tooltip: '',
@@ -573,66 +586,66 @@ function MonitorPage() {
                     compact
                 />
 
-                <Box sx={{flexShrink: 0}}>
-                    <AggregateStats aggregates={aggregates} hostStats={hostStats}
-                                    states={containers ? stateCounts : null}/>
-                </Box>
-
+                {/* host band and toolbar share one frame, split by an inner rule */}
                 <Paper
                     variant="outlined"
                     sx={{
-                        px: 1.5,
-                        py: 1,
-                        mb: 1.5,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
+                        mb: 1,
                         borderRadius: 2,
                         bgcolor: t.panel,
                         borderColor: t.border,
+                        flexShrink: 0,
+                        overflow: 'hidden',
                     }}
                 >
-                    <Box sx={{flex: 1, maxWidth: 270}}>
-                        <SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>
-                    </Box>
+                    <AggregateStats aggregates={aggregates} hostStats={hostStats}
+                                    states={containers ? stateCounts : null} bare/>
 
-                    <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
+                    <Divider sx={{borderColor: t.border}}/>
 
-                    <ActionButtons actions={stacksMode ? stackBulkActions : containerBulkActions}/>
-                    <RefreshButton onClick={refreshContainers} loading={loading}/>
-                    <Button
-                        variant="outlined"
-                        size="small"
-                        onClick={() => setExpanded(allExpanded
-                            ? {}
-                            : Object.fromEntries(groups.map(g => [g.stack, true])))}
-                        startIcon={allExpanded ? <UnfoldLess sx={{fontSize: 17}}/> : <UnfoldMore sx={{fontSize: 17}}/>}
-                        sx={{
-                            textTransform: 'none',
-                            fontWeight: 600,
-                            px: 1.5,
-                            borderColor: 'divider',
-                            color: 'text.secondary',
-                            whiteSpace: 'nowrap',
-                            '&:hover': {borderColor: 'primary.main', color: 'primary.main', bgcolor: 'action.hover'},
-                        }}
-                    >
-                        {allExpanded ? 'Collapse all' : 'Expand all'}
-                    </Button>
-                    {(stacksMode || selectedContainers.length > 0) && (
-                        <>
-                            <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
-                            <Chip
-                                size="small"
+                    <Box sx={{px: 1.5, py: 0.75, display: 'flex', alignItems: 'center', gap: 1.5}}>
+                        <Box sx={{flex: 1, maxWidth: 270}}>
+                            <SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>
+                        </Box>
+
+                        <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
+
+                        <ActionButtons iconOnly actions={stacksMode ? stackBulkActions : containerBulkActions}/>
+                        <RefreshButton iconOnly onClick={handleRefresh} loading={refreshing}/>
+                        <Tooltip title={allExpanded ? 'Collapse all' : 'Expand all'}>
+                            <Button
                                 variant="outlined"
-                                color="primary"
-                                label={stacksMode
-                                    ? `${selectedStacks.length} stack${selectedStacks.length > 1 ? 's' : ''} selected`
-                                    : `${selectedContainers.length} container${selectedContainers.length > 1 ? 's' : ''} selected`}
-                                sx={{fontWeight: 700}}
-                            />
-                        </>
-                    )}
+                                size="small"
+                                onClick={() => setExpanded(allExpanded
+                                    ? {}
+                                    : Object.fromEntries(groups.map(g => [g.stack, true])))}
+                                sx={{
+                                    px: 0.5,
+                                    minWidth: 34,
+                                    borderColor: 'divider',
+                                    color: 'text.secondary',
+                                    '&:hover': {borderColor: 'primary.main', color: 'primary.main', bgcolor: 'action.hover'},
+                                    '& svg': {fontSize: 17},
+                                }}
+                            >
+                                {allExpanded ? <UnfoldLess/> : <UnfoldMore/>}
+                            </Button>
+                        </Tooltip>
+                        {(stacksMode || selectedContainers.length > 0) && (
+                            <>
+                                <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
+                                <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    color="primary"
+                                    label={stacksMode
+                                        ? `${selectedStacks.length} stack${selectedStacks.length > 1 ? 's' : ''} selected`
+                                        : `${selectedContainers.length} container${selectedContainers.length > 1 ? 's' : ''} selected`}
+                                    sx={{fontWeight: 700}}
+                                />
+                            </>
+                        )}
+                    </Box>
                 </Paper>
 
                 <Paper
@@ -646,7 +659,6 @@ function MonitorPage() {
                         flexDirection: 'column',
                         bgcolor: t.panel,
                         borderColor: t.border,
-                        mb: 1,
                     }}
                 >
                     {loading ? (

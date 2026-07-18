@@ -39,13 +39,16 @@ interface AggregateStatsProps {
     // when provided they replace the cycle-based aggregate counts, which
     // refresh more slowly
     states?: StateCounts | null;
+    // render without the outer card (the caller embeds the band in its own
+    // frame, e.g. merged with the toolbar)
+    bare?: boolean;
 }
 
 // load stays default-colored while calm, then warns
 const cpuValueColor = (cpu: number) =>
     cpu < 50 ? t.text : cpu < 85 ? '#ffb74d' : '#ef5350';
 
-function AggregateStats({aggregates, hostStats, states}: AggregateStatsProps) {
+function AggregateStats({aggregates, hostStats, states, bare = false}: AggregateStatsProps) {
     const memPercent = hostStats
         ? (hostStats.memTotal > 0 ? (hostStats.memUsed / hostStats.memTotal) * 100 : 0)
         : (aggregates && aggregates.memLimit > 0 ? (aggregates.memUsed / aggregates.memLimit) * 100 : 0);
@@ -56,13 +59,14 @@ function AggregateStats({aggregates, hostStats, states}: AggregateStatsProps) {
 
     return (
         <Paper
-            variant="outlined"
+            variant={bare ? "elevation" : "outlined"}
+            elevation={0}
             sx={{
                 px: 2,
                 py: 1,
-                mb: 1.5,
-                borderRadius: 2,
-                bgcolor: t.panel,
+                mb: bare ? 0 : 1.5,
+                borderRadius: bare ? 0 : 2,
+                bgcolor: bare ? 'transparent' : t.panel,
                 borderColor: t.border,
                 display: 'flex',
                 alignItems: 'center'

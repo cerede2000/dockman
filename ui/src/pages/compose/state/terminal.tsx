@@ -177,13 +177,25 @@ export interface TabTerminal {
     logsContainers?: { id: string; name?: string }[];
 }
 
+const FLOAT_MODE_KEY = 'dockman-panel-float';
+
 export const useTerminalAction = create<{
     isTerminalOpen: boolean;
+    // floating panel: only a slim header stays docked at the bottom, the
+    // body overlays the content while hovered
+    floatMode: boolean;
+    toggleFloat: () => void;
     toggle: () => void;
     open: () => void
     close: () => void
 }>(set => ({
     isTerminalOpen: false,
+    floatMode: localStorage.getItem(FLOAT_MODE_KEY) === '1',
+    toggleFloat: () => set(state => {
+        const next = !state.floatMode;
+        localStorage.setItem(FLOAT_MODE_KEY, next ? '1' : '0');
+        return {floatMode: next};
+    }),
     toggle: () => set(state => ({
         isTerminalOpen: !state.isTerminalOpen
     })),

@@ -41,7 +41,12 @@ export default function PageHeader({icon, title, count, extra, host, right, comp
 
 // refresh at the same size and weight as the action buttons, so it sits in
 // the same toolbar row instead of floating alone in a corner
-export function RefreshButton({onClick, loading}: { onClick: () => void, loading?: boolean }) {
+export function RefreshButton({onClick, loading, iconOnly}: {
+    onClick: () => void,
+    loading?: boolean,
+    // symbol-only variant matching icon-only action rows
+    iconOnly?: boolean,
+}) {
     return (
         <Tooltip title="Refresh">
             <span>
@@ -50,13 +55,14 @@ export function RefreshButton({onClick, loading}: { onClick: () => void, loading
                     size="small"
                     onClick={onClick}
                     disabled={loading}
-                    startIcon={loading
+                    startIcon={iconOnly ? undefined : (loading
                         ? <CircularProgress size={15} color="inherit"/>
-                        : <Refresh sx={{fontSize: 17}}/>}
+                        : <Refresh sx={{fontSize: 17}}/>)}
                     sx={{
                         textTransform: 'none',
                         fontWeight: 600,
-                        px: 1.5,
+                        px: iconOnly ? 0.5 : 1.5,
+                        minWidth: iconOnly ? 34 : undefined,
                         borderColor: 'divider',
                         color: 'text.secondary',
                         whiteSpace: 'nowrap',
@@ -65,9 +71,12 @@ export function RefreshButton({onClick, loading}: { onClick: () => void, loading
                             color: 'primary.main',
                             bgcolor: 'action.hover',
                         },
+                        '& svg': {fontSize: 17},
                     }}
                 >
-                    Refresh
+                    {iconOnly
+                        ? (loading ? <CircularProgress size={15} color="inherit"/> : <Refresh sx={{fontSize: 17}}/>)
+                        : 'Refresh'}
                 </Button>
             </span>
         </Tooltip>

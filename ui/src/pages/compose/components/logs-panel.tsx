@@ -1,5 +1,5 @@
 import {Box, Divider, IconButton, ListItemButton, Paper, Stack, Tooltip, Typography} from '@mui/material';
-import {ClearAll, Close, ExpandMore, TerminalRounded} from '@mui/icons-material';
+import {ClearAll, Close, ExpandMore, PushPin, PushPinOutlined, TerminalRounded} from '@mui/icons-material';
 import {useTerminalAction, useTerminalTabs} from "../state/terminal.tsx";
 import useResizeBar from "../hooks/resize-hook.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
@@ -8,7 +8,7 @@ import InsertDriveFile from '@mui/icons-material/InsertDriveFile';
 import "@xterm/xterm/css/xterm.css";
 import AppTerminal from "./logs-terminal.tsx";
 import LogsViewer from "../../../components/log-viewer/logs-viewer.tsx";
-import {useEffect, useRef} from "react";
+import {useEffect, useRef, useState} from "react";
 import {FitAddon} from "@xterm/addon-fit";
 import {useFileComponents} from "../state/terminal.tsx";
 
@@ -17,9 +17,16 @@ export function LogsPanel() {
     const isTerminalOpen = useTerminalAction(state => state.isTerminalOpen);
     const toggle = useTerminalAction(state => state.toggle);
     const closePanel = useTerminalAction(state => state.close);
+    const floatMode = useTerminalAction(state => state.floatMode);
+    const toggleFloat = useTerminalAction(state => state.toggleFloat);
 
     const {tabs, activeTab, setActiveTab, close, clearAll} = useTerminalTabs();
     const fitAddonRef = useRef<FitAddon>(new FitAddon());
+
+    // floating mode: only a slim bar stays docked; the body overlays the
+    // content above it while the pointer is over the bar or the body
+    const [hovered, setHovered] = useState(false);
+    const bodyVisible = isTerminalOpen && (!floatMode || hovered);
 
     // tabs hold container ids and socket urls scoped to one docker host:
     // after a host switch they would query the wrong daemon, so drop them
@@ -33,22 +40,77 @@ export function LogsPanel() {
     }, [host, clearAll]);
 
     return (
-        <Paper
-            elevation={8}
-            ref={panelRef}
+        <Box
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
             sx={{
-                display: (isTerminalOpen) ? 'flex' : 'none',
-                height: `${panelSize}px`,
-                transition: isResizing ? 'none' : 'height 0.1s ease-in-out',
-                overflow: 'hidden',
+                display: isTerminalOpen ? 'block' : 'none',
                 position: 'relative',
-                flexDirection: 'column',
-                bgcolor: '#000000',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: '4px',
                 flexShrink: 0,
             }}
         >
+            {floatMode && (
+                <Box sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.75,
+                    height: 26,
+                    px: 1,
+                    bgcolor: '#121212',
+                    borderTop: '1px solid rgba(255,255,255,0.15)',
+                    cursor: 'default',
+                }}>
+                    <TerminalRounded sx={{fontSize: 14, color: 'rgba(255,255,255,0.6)'}}/>
+                    <Typography variant="caption" sx={{
+                        color: 'rgba(255,255,255,0.8)',
+                        fontWeight: 700,
+                        letterSpacing: '0.08em',
+                        lineHeight: 1,
+                    }}>
+                        LOGS
+                    </Typography>
+                    <Typography variant="caption" sx={{color: 'rgba(255,255,255,0.4)', lineHeight: 1}}>
+                        · {tabs.size}
+                    </Typography>
+                    <Box sx={{flexGrow: 1}}/>
+                    <Tooltip title="Pin the panel (always open)">
+                        <IconButton size="small" sx={{color: 'rgba(255,255,255,0.5)', p: 0.25}}
+                                    onClick={toggleFloat}>
+                            <PushPinOutlined sx={{fontSize: 14}}/>
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Close panel">
+                        <IconButton size="small" sx={{color: 'rgba(255,255,255,0.5)', p: 0.25}}
+                                    onClick={() => closePanel()}>
+                            <Close sx={{fontSize: 14}}/>
+                        </IconButton>
+                    </Tooltip>
+                </Box>
+            )}
+
+            <Paper
+                elevation={8}
+                ref={panelRef}
+                sx={{
+                    display: bodyVisible ? 'flex' : 'none',
+                    height: `${panelSize}px`,
+                    transition: isResizing ? 'none' : 'height 0.1s ease-in-out',
+                    overflow: 'hidden',
+                    position: floatMode ? 'absolute' : 'relative',
+                    ...(floatMode ? {
+                        bottom: '100%',
+                        left: 0,
+                        right: 0,
+                        zIndex: 1250,
+                        boxShadow: '0 -10px 28px rgba(0,0,0,0.65)',
+                    } : {}),
+                    flexDirection: 'column',
+                    bgcolor: '#000000',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    borderRadius: '4px',
+                    flexShrink: 0,
+                }}
+            >
             {/* Resize Handle */}
             <Box
                 onMouseDown={event => {
@@ -113,6 +175,17 @@ export function LogsPanel() {
                             }}>
                                 LOGS
                             </Typography>
+                            <Tooltip title={floatMode ? "Pin the panel (always open)" : "Float the panel (peek on hover)"}>
+                                <IconButton
+                                    size="small"
+                                    sx={{color: 'rgba(255,255,255,0.5)', p: 0.25, mr: 0.25}}
+                                    onClick={toggleFloat}
+                                >
+                                    {floatMode
+                                        ? <PushPin sx={{fontSize: 15}}/>
+                                        : <PushPinOutlined sx={{fontSize: 15}}/>}
+                                </IconButton>
+                            </Tooltip>
                             <Tooltip title="Close all tabs">
                                 <IconButton
                                     size="small"
@@ -218,14 +291,14 @@ export function LogsPanel() {
                                     {v.logsContainers ? (
                                         <LogsViewer
                                             containers={v.logsContainers}
-                                            isActive={isTerminalOpen && key === activeTab}
+                                            isActive={bodyVisible && key === activeTab}
                                         />
                                     ) : (
                                         <AppTerminal
                                             key={v.id}
                                             {...v}
                                             fit={fitAddonRef}
-                                            isActive={key === activeTab}
+                                            isActive={bodyVisible && key === activeTab}
                                         />
                                     )}
                                 </Box>
@@ -234,7 +307,8 @@ export function LogsPanel() {
                     )}
                 </Box>
             </Box>
-        </Paper>
+            </Paper>
+        </Box>
     )
 }
 
