@@ -12,7 +12,7 @@ import {
     UnfoldMore,
     Update,
 } from '@mui/icons-material';
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import "@xterm/xterm/css/xterm.css";
 import PageHeader, {RefreshButton} from '../../components/page-header.tsx';
@@ -35,6 +35,7 @@ import {ContainersLoading} from '../containers/containers-loading.tsx';
 import {
     MonitorTable,
     type MonitorRow,
+    type MonitorSortField,
     type RedeployOptions,
     type RowAction,
     type StackAction,
@@ -43,11 +44,55 @@ import {
 } from './monitor-table.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 
+// per-host view memory: expand/collapse choices and scroll offset survive
+// navigating away and back (module-level on purpose — state resets with the
+// component, this must not)
+const monitorViewMemory = new Map<string, { expanded: Record<string, boolean>, scroll: number }>();
+
+function viewMemoryFor(host: string) {
+    const entry = monitorViewMemory.get(host) ?? {expanded: {}, scroll: 0};
+    monitorViewMemory.set(host, entry);
+    return entry;
+}
+
+// per-row sort key; -Number.MAX_VALUE sinks rows without a usable value
+function rowSortValue(r: MonitorRow, field: MonitorSortField): number {
+    const s = r.stats;
+    switch (field) {
+        case 'cpu':
+            return s ? Math.max(s.cpuUsage, 0) : -Number.MAX_VALUE;
+        case 'mem':
+            return s ? Number(s.memoryUsage) : -Number.MAX_VALUE;
+        case 'net':
+            return s ? Number(s.networkRx) + Number(s.networkTx) : -Number.MAX_VALUE;
+        case 'uptime': {
+            if (r.info.state !== 'running' || !s?.startedAt) return -Number.MAX_VALUE;
+            const start = Date.parse(s.startedAt);
+            // older start = longer uptime = bigger value
+            return isNaN(start) ? -Number.MAX_VALUE : -start;
+        }
+    }
+}
+
+// stack sort key: aggregate for the metric columns, best member for uptime
+function groupSortValue(g: StackGroup, field: MonitorSortField): number {
+    switch (field) {
+        case 'cpu':
+            return g.stats?.cpu ?? -Number.MAX_VALUE;
+        case 'mem':
+            return g.stats?.memUsed ?? -Number.MAX_VALUE;
+        case 'net':
+            return g.stats ? g.stats.netRx + g.stats.netTx : -Number.MAX_VALUE;
+        case 'uptime':
+            return Math.max(-Number.MAX_VALUE, ...g.rows.map(r => rowSortValue(r, 'uptime')));
+    }
+}
+
 // sums the member containers' live metrics and their history windows;
 // sparklines scale to the window's shape, so a summed series keeps the
 // aggregate's evolution readable
 function aggregateStack(rows: MonitorRow[], history: Map<string, { cpu: number[]; mem: number[] }>): StackStats | null {
-    let cpu = 0, memUsed = 0, memLimit = 0, seen = 0;
+    let cpu = 0, memUsed = 0, memLimit = 0, netRx = 0, netTx = 0, seen = 0;
     for (const r of rows) {
         const s = r.stats;
         if (!s) continue;
@@ -57,6 +102,8 @@ function aggregateStack(rows: MonitorRow[], history: Map<string, { cpu: number[]
         // same host-ceiling logic as the aggregate band: unlimited containers
         // report the host total, summing would count it once per container
         memLimit = Math.max(memLimit, Number(s.memoryLimit));
+        netRx += Number(s.networkRx);
+        netTx += Number(s.networkTx);
     }
     if (seen === 0) return null;
 
@@ -69,7 +116,7 @@ function aggregateStack(rows: MonitorRow[], history: Map<string, { cpu: number[]
         memSeries.push(h.mem);
     }
 
-    return {cpu, memUsed, memLimit, cpuHist: sumSeries(cpuSeries), memHist: sumSeries(memSeries)};
+    return {cpu, memUsed, memLimit, netRx, netTx, cpuHist: sumSeries(cpuSeries), memHist: sumSeries(memSeries)};
 }
 
 // element-wise sum of series aligned on their most recent points
@@ -108,8 +155,17 @@ function MonitorPage() {
     // switches to whichever kind is active
     const [selectedContainers, setSelectedContainers] = useState<string[]>([]);
     const [selectedStacks, setSelectedStacks] = useState<string[]>([]);
-    const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+    const [expanded, setExpanded] = useState<Record<string, boolean>>(() => viewMemoryFor(host).expanded);
+    const [sortField, setSortField] = useState<MonitorSortField | null>(null);
+    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [now, setNow] = useState(() => Date.now());
+    const scrollRef = useRef<HTMLDivElement | null>(null);
+    const scrollRestored = useRef(false);
+
+    // remember the expand/collapse choices for this host
+    useEffect(() => {
+        viewMemoryFor(host).expanded = expanded;
+    }, [expanded, host]);
 
     // uptime column tick; freshness of the values themselves comes from the
     // stats stream
@@ -124,7 +180,8 @@ function MonitorPage() {
         clearTabs();
         setSelectedContainers([]);
         setSelectedStacks([]);
-        setExpanded({});
+        setExpanded(viewMemoryFor(host).expanded);
+        scrollRestored.current = false;
     }, [host]);
 
     const createExecUrl = useContainerExecWsUrl();
@@ -159,19 +216,36 @@ function MonitorPage() {
             byStack.set(key, group);
         }
 
+        const dir = sortOrder === 'asc' ? 1 : -1;
         return [...byStack.values()]
-            .map(g => ({
-                ...g,
-                rows: [...g.rows].sort((a, b) => a.info.name.localeCompare(b.info.name)),
-                stats: aggregateStack(g.rows, history),
-            }))
+            .map(g => {
+                const rows = [...g.rows].sort((a, b) => a.info.name.localeCompare(b.info.name));
+                if (sortField) {
+                    // stable metric sub-sort inside each stack (name breaks ties)
+                    rows.sort((a, b) => (rowSortValue(a, sortField) - rowSortValue(b, sortField)) * dir);
+                }
+                return {...g, rows, stats: aggregateStack(g.rows, history)};
+            })
             .sort((a, b) => {
-                // loose containers first (#standalone), then stacks A→Z
+                // loose containers first (#standalone), then the sort order
                 if (!a.stack) return -1;
                 if (!b.stack) return 1;
+                if (sortField) {
+                    const diff = (groupSortValue(a, sortField) - groupSortValue(b, sortField)) * dir;
+                    if (diff !== 0) return diff;
+                }
                 return a.stack.localeCompare(b.stack);
             });
-    }, [containers, statsByName, history, search]);
+    }, [containers, statsByName, history, search, sortField, sortOrder]);
+
+    // a live search opens every matching stack so the hits are visible;
+    // the user's own expand/collapse choices come back once it clears
+    const effectiveExpanded = useMemo(() => {
+        if (!search.trim()) return expanded;
+        const all: Record<string, boolean> = {};
+        for (const g of groups) all[g.stack] = true;
+        return all;
+    }, [search, expanded, groups]);
 
     const total = containers?.list.length ?? 0;
 
@@ -221,7 +295,25 @@ function MonitorPage() {
         return map;
     }, [stackRuns]);
 
-    const allExpanded = groups.length > 0 && groups.every(g => expanded[g.stack] ?? false);
+    const allExpanded = groups.length > 0 && groups.every(g => effectiveExpanded[g.stack] ?? false);
+
+    // restore the saved scroll offset once the table is mounted with data
+    useEffect(() => {
+        if (scrollRestored.current || loading) return;
+        const el = scrollRef.current;
+        if (!el) return;
+        el.scrollTop = viewMemoryFor(host).scroll;
+        scrollRestored.current = true;
+    }, [loading, groups.length, host]);
+
+    const handleSortChange = (field: MonitorSortField) => {
+        if (sortField === field) {
+            setSortOrder(prev => prev === 'desc' ? 'asc' : 'desc');
+        } else {
+            setSortField(field);
+            setSortOrder('desc');
+        }
+    };
 
     // ---- container actions -------------------------------------------------
 
@@ -522,9 +614,16 @@ function MonitorPage() {
                                     onToggleContainers={toggleContainers}
                                     onToggleStack={toggleStack}
                                     onToggleAllStacks={toggleAllStacks}
-                                    expanded={expanded}
+                                    expanded={effectiveExpanded}
                                     onToggleExpand={(stack) => setExpanded(prev =>
                                         ({...prev, [stack]: !(prev[stack] ?? false)}))}
+                                    sortField={sortField}
+                                    sortOrder={sortOrder}
+                                    onSortChange={handleSortChange}
+                                    scrollRef={scrollRef}
+                                    onScroll={(top) => {
+                                        viewMemoryFor(host).scroll = top;
+                                    }}
                                     now={now}
                                     stackRowsCompact={compactStacks}
                                     runningStacks={runningStacks}

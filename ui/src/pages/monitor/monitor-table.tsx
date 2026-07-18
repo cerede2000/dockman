@@ -15,6 +15,7 @@ import {
     TableContainer,
     TableHead,
     TableRow,
+    TableSortLabel,
     Tooltip,
     Typography,
 } from '@mui/material';
@@ -39,7 +40,7 @@ import {
     Upgrade,
     WarningAmber,
 } from '@mui/icons-material';
-import {Fragment, type MouseEvent, type ReactNode, useState} from 'react';
+import {Fragment, type MouseEvent, type ReactNode, type Ref, useState} from 'react';
 import type {ContainerList, ContainerStats} from '../../gen/docker/v1/docker_pb.ts';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import Sparkline from '../../components/sparkline.tsx';
@@ -56,9 +57,15 @@ export interface StackStats {
     cpu: number;
     memUsed: number;
     memLimit: number;
+    netRx: number;
+    netTx: number;
     cpuHist: number[];
     memHist: number[];
 }
+
+// sortable metric columns; stacks sort by their aggregate and their member
+// containers sub-sort by the same field
+export type MonitorSortField = 'uptime' | 'cpu' | 'mem' | 'net';
 
 export interface StackGroup {
     // display name; empty for containers outside any compose stack
@@ -92,6 +99,12 @@ interface MonitorTableProps {
     onToggleAllStacks: (stacks: string[], on: boolean) => void;
     expanded: Record<string, boolean>;
     onToggleExpand: (stack: string) => void;
+    sortField: MonitorSortField | null;
+    sortOrder: 'asc' | 'desc';
+    onSortChange: (field: MonitorSortField) => void;
+    // scroll position persistence across navigations
+    scrollRef: Ref<HTMLDivElement>;
+    onScroll: (top: number) => void;
     // explicit clock so the memoized rows re-render on tick
     now: number;
     // dockman.yml monitor.stackRows: compact stack rows drop the charts
@@ -140,7 +153,24 @@ const stateVisual: Record<string, { icon: ReactNode, color: string }> = {
 };
 
 export function MonitorTable(props: MonitorTableProps) {
-    const {groups, selectedStacks, selectedContainers, onToggleAllStacks} = props;
+    const {groups, selectedStacks, selectedContainers, onToggleAllStacks, sortField, sortOrder, onSortChange, scrollRef, onScroll} = props;
+
+    const sortLabelSx = {
+        color: `${t.textDim} !important`,
+        '&.Mui-active': {color: `${t.text} !important`},
+        '& .MuiTableSortLabel-icon': {color: `${t.textDim} !important`},
+    };
+
+    const sortableHead = (field: MonitorSortField, label: string) => (
+        <TableSortLabel
+            active={sortField === field}
+            direction={sortField === field ? sortOrder : 'desc'}
+            onClick={() => onSortChange(field)}
+            sx={sortLabelSx}
+        >
+            {label}
+        </TableSortLabel>
+    );
 
     // header checkbox drives stack selection (containers are picked row by
     // row); standalone containers have no stack to select
@@ -149,7 +179,11 @@ export function MonitorTable(props: MonitorTableProps) {
     const someStacksSelected = selectableStacks.some(s => selectedStacks.includes(s));
 
     return (
-        <TableContainer sx={{height: '100%', bgcolor: t.panel}}>
+        <TableContainer
+            ref={scrollRef}
+            onScroll={e => onScroll((e.target as HTMLDivElement).scrollTop)}
+            sx={{height: '100%', bgcolor: t.panel}}
+        >
             <Table size="small" stickyHeader>
                 <TableHead>
                     <TableRow>
@@ -169,10 +203,10 @@ export function MonitorTable(props: MonitorTableProps) {
                         </TableCell>
                         <TableCell sx={headCell}>NAME</TableCell>
                         <TableCell sx={headCell}>STATE</TableCell>
-                        <TableCell sx={headCell}>UPTIME</TableCell>
-                        <TableCell sx={{...headCell, minWidth: 130}}>CPU</TableCell>
-                        <TableCell sx={{...headCell, minWidth: 150}}>MEMORY</TableCell>
-                        <TableCell sx={headCell}>NET I/O</TableCell>
+                        <TableCell sx={headCell}>{sortableHead('uptime', 'UPTIME')}</TableCell>
+                        <TableCell sx={{...headCell, minWidth: 130}}>{sortableHead('cpu', 'CPU')}</TableCell>
+                        <TableCell sx={{...headCell, minWidth: 150}}>{sortableHead('mem', 'MEMORY')}</TableCell>
+                        <TableCell sx={headCell}>{sortableHead('net', 'NET I/O')}</TableCell>
                         <TableCell sx={headCell}>PORTS</TableCell>
                         <TableCell sx={{...headCell, width: 210}} align="right">ACTIONS</TableCell>
                     </TableRow>
@@ -225,8 +259,12 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
     const lastRun = hasFile ? stackRuns[group.servicePath] : undefined;
 
     return (
-        <TableRow sx={{bgcolor: t.header}}>
-            <TableCell padding="checkbox" sx={{...bodyCell, borderLeft: '3px solid #4db6ac'}}>
+        // the whole row toggles expand/collapse; the checkbox and the action
+        // cluster opt out via stopPropagation
+        <TableRow onClick={() => onToggleExpand(group.stack)}
+                  sx={{bgcolor: t.header, cursor: 'pointer'}}>
+            <TableCell padding="checkbox" onClick={e => e.stopPropagation()}
+                       sx={{...bodyCell, borderLeft: '3px solid #4db6ac', cursor: 'default'}}>
                 <Tooltip title={isStack && hasFile ? "Select stack" : "Select containers"} arrow>
                     <span>
                         <Checkbox
@@ -243,9 +281,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                 </Tooltip>
             </TableCell>
             <TableCell colSpan={3} sx={{...bodyCell, py: 0.25}}>
-                <Stack direction="row" spacing={0.75} alignItems="center"
-                       onClick={() => onToggleExpand(group.stack)}
-                       sx={{cursor: 'pointer', userSelect: 'none'}}>
+                <Stack direction="row" spacing={0.75} alignItems="center" sx={{userSelect: 'none'}}>
                     <IconButton size="small" sx={{color: t.textDim, p: 0.25}}>
                         {isExpanded ? <ExpandLess sx={{fontSize: 17}}/> : <ExpandMore sx={{fontSize: 17}}/>}
                     </IconButton>
@@ -274,7 +310,8 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                 chart={!props.stackRowsCompact}
             />
             <TableCell colSpan={2} sx={bodyCell}/>
-            <TableCell align="right" sx={{...bodyCell, py: 0.25, whiteSpace: 'nowrap'}}>
+            <TableCell align="right" onClick={e => e.stopPropagation()}
+                       sx={{...bodyCell, py: 0.25, whiteSpace: 'nowrap', cursor: 'default'}}>
                 {hasFile && (
                     <>
                         <StackActionButton
@@ -406,8 +443,9 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
         .filter((p, i, arr) =>
             arr.findIndex(q => q.public === p.public && q.private === p.private && q.type === p.type) === i);
     // traefik-declared hostnames land in the address list next to plain ips;
-    // anything with letters and a dot (and no ipv6 colon) reads as a domain
-    const domains = c.IPAddress.filter(a => /[a-z]/i.test(a) && a.includes('.') && !a.includes(':'));
+    // anything with letters and a dot (and no ipv6 colon) reads as a domain.
+    // several router rules can declare the same host (priorities): distinct.
+    const domains = [...new Set(c.IPAddress.filter(a => /[a-z]/i.test(a) && a.includes('.') && !a.includes(':')))];
 
     return (
         <TableRow hover sx={{'&:hover': {bgcolor: t.rowHover}}}>
@@ -459,7 +497,8 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 {portsList.length === 0 && domains.length === 0 ? (
                     <Typography sx={{fontFamily: t.mono, fontSize: '0.72rem', color: t.textDim}}>–</Typography>
                 ) : (
-                    <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5}>
+                    // one entry per line, ports then hostnames
+                    <Stack spacing={0.4} alignItems="flex-start">
                         {portsList.map((p, i) => (
                             <Box key={`p${i}`} component="span"
                                  sx={{
