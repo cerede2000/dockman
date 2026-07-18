@@ -39,9 +39,9 @@ function AggregateStats({aggregates}: AggregateStatsProps) {
         >
             <Stack
                 direction="row"
-                spacing={3}
+                spacing={2.5}
                 divider={<Divider orientation="vertical" flexItem sx={{borderColor: t.border}}/>}
-                sx={{width: '100%', overflowX: 'auto', alignItems: 'stretch'}}
+                sx={{width: '100%', alignItems: 'stretch'}}
             >
                 <StatTile
                     icon={<ContainerIcon/>}
@@ -91,7 +91,8 @@ export default AggregateStats;
 
 // one quiet tile: dim small-caps label with a small dim icon, a single
 // non-wrapping mono value line, an optional dim detail line, and an optional
-// sparkline sitting to the right of the numbers
+// sparkline stacked under the numbers so tiles stay narrow and the band
+// never overflows: label, value, detail, then a full-width mini chart
 function StatTile({icon, label, value, sub, spark, tooltip}: {
     icon: ReactNode,
     label: string,
@@ -101,41 +102,36 @@ function StatTile({icon, label, value, sub, spark, tooltip}: {
     tooltip?: string,
 }) {
     const body = (
-        <Box sx={{minWidth: 150, flex: '1 0 auto'}}>
+        <Box sx={{flex: '1 1 0', minWidth: 0}}>
             <Stack direction="row" spacing={0.75} alignItems="center" sx={{mb: 0.5, color: t.textDim}}>
                 <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{icon}</Box>
-                <Typography variant="overline" sx={{fontWeight: 700, lineHeight: 1, letterSpacing: '0.08em'}}>
+                <Typography variant="overline" noWrap
+                            sx={{fontWeight: 700, lineHeight: 1, letterSpacing: '0.08em'}}>
                     {label}
                 </Typography>
             </Stack>
-            <Stack direction="row" spacing={1.5} alignItems="center">
-                <Box sx={{minWidth: 0}}>
-                    <Typography sx={{
-                        fontFamily: t.mono,
-                        fontWeight: 700,
-                        fontSize: '1.05rem',
-                        lineHeight: 1.25,
-                        color: t.text,
-                        whiteSpace: 'nowrap',
-                    }}>
-                        {value}
-                    </Typography>
-                    <Typography variant="caption" sx={{
-                        whiteSpace: 'nowrap',
-                        color: t.textDim,
-                        fontFamily: t.mono,
-                        display: 'block',
-                        minHeight: '1.1em',
-                    }}>
-                        {sub ?? ''}
-                    </Typography>
+            <Typography noWrap sx={{
+                fontFamily: t.mono,
+                fontWeight: 700,
+                fontSize: '1.05rem',
+                lineHeight: 1.25,
+                color: t.text,
+            }}>
+                {value}
+            </Typography>
+            <Typography variant="caption" noWrap sx={{
+                color: t.textDim,
+                fontFamily: t.mono,
+                display: 'block',
+                minHeight: '1.1em',
+            }}>
+                {sub ?? ''}
+            </Typography>
+            {spark && (
+                <Box sx={{mt: 0.5}}>
+                    <Sparkline data={spark.data} color={spark.color} height={22}/>
                 </Box>
-                {spark && (
-                    <Box sx={{width: 120, flexShrink: 0}}>
-                        <Sparkline data={spark.data} color={spark.color} height={30}/>
-                    </Box>
-                )}
-            </Stack>
+            )}
         </Box>
     );
 

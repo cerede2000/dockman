@@ -85,7 +85,10 @@ function computeAggregates(scope: string, rows: ContainerStats[]): AggregateSnap
     const t = rows.reduce((acc, curr) => {
         acc.cpu += Math.max(curr.cpuUsage, 0);
         acc.memUsed += Number(curr.memoryUsage);
-        acc.memLimit += Number(curr.memoryLimit);
+        // containers without an explicit memory limit report the host's total
+        // RAM as their limit: summing would count the host once per container
+        // (4 containers on a 32GB host -> "128GB"), the max is the real ceiling
+        acc.memLimit = Math.max(acc.memLimit, Number(curr.memoryLimit));
         acc.netRx += Number(curr.networkRx);
         acc.netTx += Number(curr.networkTx);
         acc.diskR += Number(curr.blockRead);
