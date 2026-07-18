@@ -55,10 +55,13 @@ function viewMemoryFor(host: string) {
     return entry;
 }
 
-// per-row sort key; -Number.MAX_VALUE sinks rows without a usable value
+// per-row sort key; -Number.MAX_VALUE sinks rows without a usable value.
+// 'name' is compared as text in the comparators, not through this function.
 function rowSortValue(r: MonitorRow, field: MonitorSortField): number {
     const s = r.stats;
     switch (field) {
+        case 'name':
+            return 0;
         case 'cpu':
             return s ? Math.max(s.cpuUsage, 0) : -Number.MAX_VALUE;
         case 'mem':
@@ -77,6 +80,8 @@ function rowSortValue(r: MonitorRow, field: MonitorSortField): number {
 // stack sort key: aggregate for the metric columns, best member for uptime
 function groupSortValue(g: StackGroup, field: MonitorSortField): number {
     switch (field) {
+        case 'name':
+            return 0;
         case 'cpu':
             return g.stats?.cpu ?? -Number.MAX_VALUE;
         case 'mem':
@@ -220,7 +225,9 @@ function MonitorPage() {
         return [...byStack.values()]
             .map(g => {
                 const rows = [...g.rows].sort((a, b) => a.info.name.localeCompare(b.info.name));
-                if (sortField) {
+                if (sortField === 'name') {
+                    if (sortOrder === 'desc') rows.reverse();
+                } else if (sortField) {
                     // stable metric sub-sort inside each stack (name breaks ties)
                     rows.sort((a, b) => (rowSortValue(a, sortField) - rowSortValue(b, sortField)) * dir);
                 }
@@ -230,6 +237,9 @@ function MonitorPage() {
                 // loose containers first (#standalone), then the sort order
                 if (!a.stack) return -1;
                 if (!b.stack) return 1;
+                if (sortField === 'name') {
+                    return a.stack.localeCompare(b.stack) * dir;
+                }
                 if (sortField) {
                     const diff = (groupSortValue(a, sortField) - groupSortValue(b, sortField)) * dir;
                     if (diff !== 0) return diff;
@@ -311,7 +321,8 @@ function MonitorPage() {
             setSortOrder(prev => prev === 'desc' ? 'asc' : 'desc');
         } else {
             setSortField(field);
-            setSortOrder('desc');
+            // names read naturally A→Z, metrics hottest-first
+            setSortOrder(field === 'name' ? 'asc' : 'desc');
         }
     };
 
@@ -408,8 +419,9 @@ function MonitorPage() {
             createExecUrl(row.info.id, '/bin/sh'),
             true);
 
+    // ?tab=0 pins the EDITOR tab regardless of the compose.defaultTab setting
     const handleStackEdit = (group: StackGroup) =>
-        navigate(`/${host}/files/${group.servicePath}`);
+        navigate(`/${host}/files/${group.servicePath}?tab=0`);
 
     // ---- selection + toolbar ----------------------------------------------
 

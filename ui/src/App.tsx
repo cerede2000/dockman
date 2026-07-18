@@ -17,7 +17,8 @@ import {SnackbarProvider} from "./context/snackbar-context.tsx";
 import {UploadProgressToast} from "./components/upload-progress-toast.tsx";
 import {BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams} from "react-router-dom";
 import {AuthProvider} from "./context/auth-context.tsx";
-import React from 'react';
+import React, {useEffect, useState} from 'react';
+import {useConfig} from './hooks/config.ts';
 import {useAuth} from "./hooks/auth.ts";
 import {AuthPage} from './pages/auth/auth-page.tsx';
 import {SettingsPage} from "./pages/settings/settings-page.tsx";
@@ -62,7 +63,7 @@ export function App() {
                                     <Route index element={<HomeIndexRedirect/>}/>
 
                                     <Route path=":host">
-                                        <Route index element={<Navigate to="files" replace/>}/>
+                                        <Route index element={<HostDefaultViewRedirect/>}/>
 
                                         <Route path="test" element={<TestPage/>}/>
 
@@ -122,6 +123,27 @@ function HomeIndexRedirect() {
     const {availableHosts} = useHostManager()
     const at = availableHosts.at(0) ?? "";
     return <Navigate to={`/${at}`} replace/>;
+}
+
+const VALID_DEFAULT_VIEWS = ['files', 'monitor', 'stats', 'containers', 'images', 'volumes', 'networks', 'cleaner'];
+
+// landing view for a host, per dockman.yml defaultView; waits briefly for
+// the config so the preference applies on a cold load, then falls back to
+// files if it never arrives
+function HostDefaultViewRedirect() {
+    const {dockYaml} = useConfig();
+    const [waited, setWaited] = useState(false);
+
+    useEffect(() => {
+        const id = setTimeout(() => setWaited(true), 1500);
+        return () => clearTimeout(id);
+    }, []);
+
+    if (!dockYaml && !waited) return null;
+
+    const view = (dockYaml?.defaultView ?? '').trim().toLowerCase();
+    const target = VALID_DEFAULT_VIEWS.includes(view) ? view : 'files';
+    return <Navigate to={target} replace/>;
 }
 
 

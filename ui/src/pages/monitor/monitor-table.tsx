@@ -63,9 +63,9 @@ export interface StackStats {
     memHist: number[];
 }
 
-// sortable metric columns; stacks sort by their aggregate and their member
-// containers sub-sort by the same field
-export type MonitorSortField = 'uptime' | 'cpu' | 'mem' | 'net';
+// sortable columns; stacks sort by their aggregate (or name) and their
+// member containers sub-sort by the same field
+export type MonitorSortField = 'name' | 'uptime' | 'cpu' | 'mem' | 'net';
 
 export interface StackGroup {
     // display name; empty for containers outside any compose stack
@@ -164,7 +164,7 @@ export function MonitorTable(props: MonitorTableProps) {
     const sortableHead = (field: MonitorSortField, label: string) => (
         <TableSortLabel
             active={sortField === field}
-            direction={sortField === field ? sortOrder : 'desc'}
+            direction={sortField === field ? sortOrder : (field === 'name' ? 'asc' : 'desc')}
             onClick={() => onSortChange(field)}
             sx={sortLabelSx}
         >
@@ -201,7 +201,7 @@ export function MonitorTable(props: MonitorTableProps) {
                                 </span>
                             </Tooltip>
                         </TableCell>
-                        <TableCell sx={headCell}>NAME</TableCell>
+                        <TableCell sx={headCell}>{sortableHead('name', 'NAME')}</TableCell>
                         <TableCell sx={headCell}>STATE</TableCell>
                         <TableCell sx={headCell}>{sortableHead('uptime', 'UPTIME')}</TableCell>
                         <TableCell sx={{...headCell, minWidth: 130}}>{sortableHead('cpu', 'CPU')}</TableCell>
