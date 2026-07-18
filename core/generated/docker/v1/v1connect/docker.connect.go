@@ -158,7 +158,9 @@ type DockerServiceClient interface {
 	ContainerRestart(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerPause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerUnpause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
-	ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error)
+	// force-updates the containers' images (pull, recreate when the image
+	// changed, rollback on failure), streaming per-step progress
+	ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error)
 	ContainerList(context.Context, *connect.Request[v1.ContainerListRequest]) (*connect.Response[v1.ListResponse], error)
 	ContainerStats(context.Context, *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error)
@@ -258,7 +260,7 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(dockerServiceMethods.ByName("ContainerUnpause")),
 			connect.WithClientOptions(opts...),
 		),
-		containerUpdate: connect.NewClient[v1.ContainerRequest, v1.Empty](
+		containerUpdate: connect.NewClient[v1.ContainerRequest, v1.LogsMessage](
 			httpClient,
 			baseURL+DockerServiceContainerUpdateProcedure,
 			connect.WithSchema(dockerServiceMethods.ByName("ContainerUpdate")),
@@ -467,7 +469,7 @@ type dockerServiceClient struct {
 	containerRestart     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerPause       *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerUnpause     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
-	containerUpdate      *connect.Client[v1.ContainerRequest, v1.Empty]
+	containerUpdate      *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerTop         *connect.Client[v1.ContainerTopRequest, v1.ContainerTopResponse]
 	containerList        *connect.Client[v1.ContainerListRequest, v1.ListResponse]
 	containerStats       *connect.Client[v1.StatsRequest, v1.StatsResponse]
@@ -533,8 +535,8 @@ func (c *dockerServiceClient) ContainerUnpause(ctx context.Context, req *connect
 }
 
 // ContainerUpdate calls docker.v1.DockerService.ContainerUpdate.
-func (c *dockerServiceClient) ContainerUpdate(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error) {
-	return c.containerUpdate.CallUnary(ctx, req)
+func (c *dockerServiceClient) ContainerUpdate(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error) {
+	return c.containerUpdate.CallServerStream(ctx, req)
 }
 
 // ContainerTop calls docker.v1.DockerService.ContainerTop.
@@ -706,7 +708,9 @@ type DockerServiceHandler interface {
 	ContainerRestart(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerPause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerUnpause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
-	ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error)
+	// force-updates the containers' images (pull, recreate when the image
+	// changed, rollback on failure), streaming per-step progress
+	ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest], *connect.ServerStream[v1.LogsMessage]) error
 	ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error)
 	ContainerList(context.Context, *connect.Request[v1.ContainerListRequest]) (*connect.Response[v1.ListResponse], error)
 	ContainerStats(context.Context, *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error)
@@ -802,7 +806,7 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(dockerServiceMethods.ByName("ContainerUnpause")),
 		connect.WithHandlerOptions(opts...),
 	)
-	dockerServiceContainerUpdateHandler := connect.NewUnaryHandler(
+	dockerServiceContainerUpdateHandler := connect.NewServerStreamHandler(
 		DockerServiceContainerUpdateProcedure,
 		svc.ContainerUpdate,
 		connect.WithSchema(dockerServiceMethods.ByName("ContainerUpdate")),
@@ -1113,8 +1117,8 @@ func (UnimplementedDockerServiceHandler) ContainerUnpause(context.Context, *conn
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerUnpause is not implemented"))
 }
 
-func (UnimplementedDockerServiceHandler) ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerUpdate is not implemented"))
+func (UnimplementedDockerServiceHandler) ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest], *connect.ServerStream[v1.LogsMessage]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerUpdate is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error) {

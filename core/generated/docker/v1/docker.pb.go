@@ -4702,15 +4702,15 @@ const file_docker_v1_docker_proto_rawDesc = "" +
 	"\aSTARTED\x10\a*\x19\n" +
 	"\x05ORDER\x12\a\n" +
 	"\x03DSC\x10\x00\x12\a\n" +
-	"\x03ASC\x10\x012\xd4\x17\n" +
+	"\x03ASC\x10\x012\xdc\x17\n" +
 	"\rDockerService\x12G\n" +
 	"\x0eContainerStart\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12F\n" +
 	"\rContainerStop\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12H\n" +
 	"\x0fContainerRemove\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12I\n" +
 	"\x10ContainerRestart\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12G\n" +
 	"\x0eContainerPause\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12I\n" +
-	"\x10ContainerUnpause\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12B\n" +
-	"\x0fContainerUpdate\x12\x1b.docker.v1.ContainerRequest\x1a\x10.docker.v1.Empty\"\x00\x12Q\n" +
+	"\x10ContainerUnpause\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x00\x12J\n" +
+	"\x0fContainerUpdate\x12\x1b.docker.v1.ContainerRequest\x1a\x16.docker.v1.LogsMessage\"\x000\x01\x12Q\n" +
 	"\fContainerTop\x12\x1e.docker.v1.ContainerTopRequest\x1a\x1f.docker.v1.ContainerTopResponse\"\x00\x12K\n" +
 	"\rContainerList\x12\x1f.docker.v1.ContainerListRequest\x1a\x17.docker.v1.ListResponse\"\x00\x12E\n" +
 	"\x0eContainerStats\x12\x17.docker.v1.StatsRequest\x1a\x18.docker.v1.StatsResponse\"\x00\x12N\n" +
@@ -4915,7 +4915,7 @@ var file_docker_v1_docker_proto_depIdxs = []int32{
 	55, // 73: docker.v1.DockerService.ContainerRestart:output_type -> docker.v1.LogsMessage
 	55, // 74: docker.v1.DockerService.ContainerPause:output_type -> docker.v1.LogsMessage
 	55, // 75: docker.v1.DockerService.ContainerUnpause:output_type -> docker.v1.LogsMessage
-	67, // 76: docker.v1.DockerService.ContainerUpdate:output_type -> docker.v1.Empty
+	55, // 76: docker.v1.DockerService.ContainerUpdate:output_type -> docker.v1.LogsMessage
 	6,  // 77: docker.v1.DockerService.ContainerTop:output_type -> docker.v1.ContainerTopResponse
 	63, // 78: docker.v1.DockerService.ContainerList:output_type -> docker.v1.ListResponse
 	60, // 79: docker.v1.DockerService.ContainerStats:output_type -> docker.v1.StatsResponse
