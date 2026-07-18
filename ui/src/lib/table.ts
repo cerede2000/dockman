@@ -126,8 +126,10 @@ const rtf = new Intl.RelativeTimeFormat('en', {numeric: 'always', style: "long",
 
 
 
-export function formatTimeAgo(timestamp: Date) {
-    const diff = (new Date().getTime() - timestamp.getTime()) / 1000;
+// now is an explicit input so memoized callers can tick a re-render and have
+// the relative label actually recompute
+export function formatTimeAgo(timestamp: Date, now: number = Date.now()) {
+    const diff = (now - timestamp.getTime()) / 1000;
 
     if (diff < 60) {
         return rtf.format(-Math.round(diff), 'second');
