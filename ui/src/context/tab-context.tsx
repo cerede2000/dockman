@@ -28,6 +28,7 @@ interface EditorState {
     active: (filename: string, track?: number) => void;
     load: (filename: string) => TabDetails | undefined;
     reorder: (filename: string, targetIndex: number, track?: number) => void;
+    clear: (track?: number) => void;
 }
 
 export const getContextKey = () => {
@@ -175,6 +176,36 @@ export const useTabsStore = create<EditorState>()(
             });
         },
 
+        // closes every tab of the current context's track, dropping saved
+        // details unless another context or track still shows the file
+        clear: (track = 0) => {
+            const key = getContextKey();
+            set((state) => {
+                const tabs = state.contextTabs[key]?.[track];
+                if (!tabs || tabs.size === 0) return;
+
+                for (const filename of tabs) {
+                    let stillInUse = false;
+                    for (const k of Object.keys(state.contextTabs)) {
+                        for (const tr of [0, 1]) {
+                            if (k === key && tr === track) continue;
+                            if (state.contextTabs[k][tr]?.has(filename)) {
+                                stillInUse = true;
+                                break;
+                            }
+                        }
+                        if (stillInUse) break;
+                    }
+                    if (!stillInUse) {
+                        delete state.allTabs[filename];
+                    }
+                }
+
+                state.contextTabs[key][track] = new Set();
+                state.lastOpened[track] = '';
+            });
+        },
+
         // moves a tab to targetIndex within its track; tab order is the
         // Set's insertion order, so the Set is rebuilt in the new order
         reorder: (filename, targetIndex, track = 0) => {
@@ -204,6 +235,7 @@ export interface TabsContextType {
     closeTab: (filename: string, track?: number) => void;
     renameTab: (oldFilename: string, newFilename: string) => void;
     onTabClick: (filename: string, track?: number) => void;
+    closeAllTabs: (track?: number) => void;
 }
 
 export const TabsContext = createContext<TabsContextType | undefined>(undefined);
@@ -225,7 +257,7 @@ export function TabsProvider({children}: { children: ReactNode }) {
     const editorUrl = useEditorUrl()
     const {filename, splitFilename} = useFileComponents()
 
-    const {active, load, rename, update, create, close} = useTabsStore()
+    const {active, load, rename, update, create, close, clear} = useTabsStore()
 
     const handleTabClick = useCallback((filename: string, track: number = 0) => {
         // files opened for the first time start on the dockman.yml default tab
@@ -255,6 +287,17 @@ export function TabsProvider({children}: { children: ReactNode }) {
             }
         }
     }, [close, editorUrl, navigate])
+
+    const handleCloseAllTabs = useCallback((track: number = 0) => {
+        clear(track)
+        if (track === 1) {
+            navigate(editorUrl(undefined, undefined, 1))
+        } else {
+            const h = useHostStore.getState().host;
+            const a = useAliasStore.getState().alias;
+            navigate(`/${h}/files/${a}`);
+        }
+    }, [clear, editorUrl, navigate])
 
     const handleTabRename = useCallback((oldFilename: string, newFilename: string) => {
         rename(oldFilename, newFilename)
@@ -287,6 +330,7 @@ export function TabsProvider({children}: { children: ReactNode }) {
 
     const value = {
         openTab: handleOpenTab,
+        closeAllTabs: handleCloseAllTabs,
         closeTab: handleCloseTab,
         renameTab: handleTabRename,
         onTabClick: handleTabClick,
