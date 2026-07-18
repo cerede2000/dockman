@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 )
 
 // HostStats is whole-host usage read from /proc through the host's runner:
@@ -19,37 +19,53 @@ type HostStats struct {
 	CPUs       int32
 }
 
-type cpuSample struct {
-	idle  uint64
-	total uint64
+// gap between the two /proc/stat reads a CPU percentage is computed from;
+// top measures over a comparable window
+const cpuSampleGap = 500 * time.Millisecond
+
+type procSample struct {
+	idle     uint64
+	total    uint64
+	cpus     int32
+	memTotal int64
+	memAvail int64
+	haveCPU  bool
 }
 
-// previous CPU sample per host: each call reports usage since the last one
-var (
-	cpuSamplesMu sync.Mutex
-	cpuSamples   = map[string]cpuSample{}
-)
-
+// HostStats measures usage over its own two-read window, so concurrent
+// callers can't corrupt each other's baseline.
 func (c *Service) HostStats(ctx context.Context) (HostStats, error) {
+	before, err := c.readProc(ctx)
+	if err != nil {
+		return HostStats{}, err
+	}
+	select {
+	case <-ctx.Done():
+		return HostStats{}, ctx.Err()
+	case <-time.After(cpuSampleGap):
+	}
+	after, err := c.readProc(ctx)
+	if err != nil {
+		return HostStats{}, err
+	}
+	return hostStatsFromSamples(before, after), nil
+}
+
+func (c *Service) readProc(ctx context.Context) (procSample, error) {
 	out := new(bytes.Buffer)
 	errW := new(bytes.Buffer)
 	if err := c.runner.Run(ctx, []string{"cat", "/proc/stat", "/proc/meminfo"}, ".", out, errW); err != nil {
 		if errW.Len() > 0 {
-			return HostStats{}, fmt.Errorf("%s", errW.String())
+			return procSample{}, fmt.Errorf("%s", errW.String())
 		}
-		return HostStats{}, err
+		return procSample{}, err
 	}
-	return parseHostProc(c.hostname, out.String()), nil
+	return parseProcSample(out.String()), nil
 }
 
-// parseHostProc digests the concatenated /proc/stat + /proc/meminfo output.
-// The CPU percentage is a delta against the previous sample stored for this
-// host, so the first call after startup reports 0.
-func parseHostProc(host, raw string) HostStats {
-	var stats HostStats
-	var sample cpuSample
-	var memTotal, memAvail int64
-	haveCPU := false
+// parseProcSample digests concatenated /proc/stat + /proc/meminfo output.
+func parseProcSample(raw string) procSample {
+	var s procSample
 
 	for _, line := range strings.Split(raw, "\n") {
 		fields := strings.Fields(line)
@@ -58,51 +74,56 @@ func parseHostProc(host, raw string) HostStats {
 		}
 		switch {
 		case fields[0] == "cpu":
-			// aggregate line: user nice system idle iowait irq softirq steal...
+			// aggregate line: user nice system idle iowait irq softirq steal
+			// guest guest_nice — guest time is already included in user, so
+			// counting fields 8+ again would inflate the busy share
 			for i, f := range fields[1:] {
+				if i >= 8 {
+					break
+				}
 				v, err := strconv.ParseUint(f, 10, 64)
 				if err != nil {
 					continue
 				}
-				sample.total += v
+				s.total += v
 				if i == 3 || i == 4 { // idle + iowait count as idle time
-					sample.idle += v
+					s.idle += v
 				}
 			}
-			haveCPU = true
+			s.haveCPU = true
 		case strings.HasPrefix(fields[0], "cpu"):
 			// cpu0, cpu1... one per core
-			stats.CPUs++
+			s.cpus++
 		case fields[0] == "MemTotal:":
 			if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-				memTotal = kb * 1024
+				s.memTotal = kb * 1024
 			}
 		case fields[0] == "MemAvailable:":
 			if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-				memAvail = kb * 1024
+				s.memAvail = kb * 1024
 			}
 		}
 	}
 
-	stats.MemTotal = memTotal
-	if memTotal > memAvail {
-		stats.MemUsed = memTotal - memAvail
+	return s
+}
+
+// hostStatsFromSamples turns two /proc reads into usage numbers; CPU is the
+// busy fraction of the interval between them, top-style.
+func hostStatsFromSamples(before, after procSample) HostStats {
+	stats := HostStats{
+		MemTotal: after.memTotal,
+		CPUs:     after.cpus,
+	}
+	if after.memTotal > after.memAvail {
+		stats.MemUsed = after.memTotal - after.memAvail
 	}
 
-	if haveCPU {
-		cpuSamplesMu.Lock()
-		prev, ok := cpuSamples[host]
-		cpuSamples[host] = sample
-		cpuSamplesMu.Unlock()
-
-		// counters reset on host reboot: skip that round instead of reporting garbage
-		if ok && sample.total > prev.total && sample.idle >= prev.idle {
-			dTotal := float64(sample.total - prev.total)
-			dIdle := float64(sample.idle - prev.idle)
-			pct := (1 - dIdle/dTotal) * 100
-			stats.CPUPercent = min(max(pct, 0), 100)
-		}
+	// counters can reset (host reboot between reads): report 0, not garbage
+	if before.haveCPU && after.haveCPU && after.total > before.total && after.idle >= before.idle {
+		dTotal := float64(after.total - before.total)
+		dIdle := float64(after.idle - before.idle)
+		stats.CPUPercent = min(max((1-dIdle/dTotal)*100, 0), 100)
 	}
-
 	return stats
 }

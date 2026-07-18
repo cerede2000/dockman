@@ -69,7 +69,7 @@ function AggregateStats({aggregates, hostStats}: AggregateStatsProps) {
                     label={hostStats ? "Host CPU" : "Total CPU"}
                     value={cpuReady ? `${cpu.toFixed(1)}%` : '–'}
                     valueColor={cpuValueColor(cpu)}
-                    sub=""
+                    sub={hostStats && hostStats.cpus > 0 ? `${hostStats.cpus} cores` : ''}
                     data={hostStats ? hostStats.cpuHistory : aggregates?.cpuHistory ?? []}
                     color={t.cpuLine}
                 />
@@ -107,8 +107,9 @@ function AggregateStats({aggregates, hostStats}: AggregateStatsProps) {
 
 export default AggregateStats;
 
-// Dockhand-style status strip: one icon+count pair per container state,
-// wrapping onto extra lines instead of stretching the band
+// Dockhand-style status strip: one icon+count pair per container state.
+// The total lives on the label line so the strip itself stays one row in
+// the common case (it can still wrap when very narrow).
 function StateTile({aggregates}: { aggregates: AggregateSnapshot | null }) {
     const entries: { icon: ReactNode, count: number, color: string, title: string }[] = aggregates ? [
         {icon: <PlayArrowIcon/>, count: aggregates.running, color: '#66bb6a', title: 'Running'},
@@ -119,10 +120,11 @@ function StateTile({aggregates}: { aggregates: AggregateSnapshot | null }) {
     ] : [];
 
     return (
-        <Box sx={{flex: '0 1 auto', minWidth: 120, maxWidth: 210, alignSelf: 'center'}}>
-            <TileLabel icon={<ContainerIcon/>} label="Containers"/>
+        <Box sx={{flex: '0 1 auto', minWidth: 108, maxWidth: 175, alignSelf: 'center'}}>
+            <TileLabel icon={<ContainerIcon/>}
+                       label={aggregates ? `Containers · ${aggregates.total}` : 'Containers'}/>
             {aggregates ? (
-                <Stack direction="row" spacing={1.25} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                     {entries.map(e => (
                         <Tooltip key={e.title} title={e.title} arrow placement="top">
                             <Stack direction="row" spacing={0.25} alignItems="center" sx={{color: e.color}}>
@@ -133,9 +135,6 @@ function StateTile({aggregates}: { aggregates: AggregateSnapshot | null }) {
                             </Stack>
                         </Tooltip>
                     ))}
-                    <Typography noWrap sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.75rem', lineHeight: 1}}>
-                        Total {aggregates.total}
-                    </Typography>
                 </Stack>
             ) : (
                 <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.95rem', color: t.text}}>
@@ -195,7 +194,9 @@ function CompactTile({icon, label, value, sub, tooltip, grow = true}: {
 }
 
 // label + value (and detail below it) with a chart filling the tile's
-// remaining width — CPU and memory read at a glance, same size for both
+// remaining width — CPU and memory read at a glance, same size for both.
+// The value block has a fixed width so both sparklines end up the same
+// length regardless of how wide the numbers are.
 function ChartTile({icon, label, value, valueColor, sub, data, color}: {
     icon: ReactNode,
     label: string,
@@ -209,7 +210,7 @@ function ChartTile({icon, label, value, valueColor, sub, data, color}: {
         <Box sx={{flex: '1.5 1 0', minWidth: 0}}>
             <TileLabel icon={icon} label={label}/>
             <Stack direction="row" spacing={1.5} alignItems="center" sx={{minWidth: 0}}>
-                <Box sx={{flexShrink: 0}}>
+                <Box sx={{flexShrink: 0, width: 134, overflow: 'hidden'}}>
                     <Typography noWrap sx={{
                         fontFamily: t.mono,
                         fontWeight: 700,
