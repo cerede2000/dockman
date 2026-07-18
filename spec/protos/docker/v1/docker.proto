@@ -12,7 +12,9 @@ service DockerService {
   rpc ContainerRestart(ContainerRequest) returns (LogsMessage) {}
   rpc ContainerPause(ContainerRequest) returns (LogsMessage) {}
   rpc ContainerUnpause(ContainerRequest) returns (LogsMessage) {}
-  rpc ContainerUpdate(ContainerRequest) returns (Empty) {}
+  // force-updates the containers' images (pull, recreate when the image
+  // changed, rollback on failure), streaming per-step progress
+  rpc ContainerUpdate(ContainerRequest) returns (stream LogsMessage) {}
   rpc ContainerTop(ContainerTopRequest) returns (ContainerTopResponse) {}
 
   rpc ContainerList(ContainerListRequest) returns (ListResponse) {}

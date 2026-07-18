@@ -222,19 +222,21 @@ func (h *Handler) ContainerTop(ctx context.Context, req *connect.Request[v1.Cont
 	}), nil
 }
 
-// ContainerUpdate force-updates the given containers' images: pull the tag,
-// and when a newer image came down recreate the container on it (with
-// rollback on failure) — see updater.ContainersUpdateByContainerID.
-func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error) {
-	_, dkSrv, err := h.getHost(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = dkSrv.Updater.ContainersForceUpdate(ctx, req.Msg.ContainerIds...); err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&v1.Empty{}), nil
+// ContainerUpdate force-updates the given containers' images and streams
+// per-step progress: pull the tag through the compose CLI runner (so the
+// host's registry credentials apply), and when a newer image came down,
+// recreate the container on it with rollback on failure.
+func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.ContainerRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
+	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
+		return dkSrv.Updater.ContainersForceUpdate(
+			ctx,
+			func(pullCtx context.Context, imageTag string) error {
+				return dkSrv.Compose.PullImage(pullCtx, imageTag, writer)
+			},
+			writer,
+			req.Msg.ContainerIds...,
+		)
+	})
 }
 
 func (h *Handler) ContainerStats(ctx context.Context, req *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error) {

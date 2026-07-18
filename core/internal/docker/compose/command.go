@@ -103,3 +103,18 @@ func splitCommandLine(input string) ([]string, error) {
 	flush()
 	return args, nil
 }
+
+// PullImage pulls an image through the host's docker CLI in the compose
+// runner context, so registry credentials (docker login, credential
+// helpers) apply exactly as they do for compose — a bare daemon API pull
+// is unauthenticated and fails on private registries.
+func (c *Service) PullImage(ctx context.Context, imageTag string, out io.Writer) error {
+	errWriter := new(bytes.Buffer)
+	if err := c.runner.Run(ctx, []string{"docker", "pull", imageTag}, ".", out, errWriter); err != nil {
+		if errWriter.Len() > 0 {
+			return fmt.Errorf("%s", strings.TrimSpace(errWriter.String()))
+		}
+		return err
+	}
+	return nil
+}
