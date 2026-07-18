@@ -45,6 +45,12 @@ const (
 	// DockerServiceContainerRestartProcedure is the fully-qualified name of the DockerService's
 	// ContainerRestart RPC.
 	DockerServiceContainerRestartProcedure = "/docker.v1.DockerService/ContainerRestart"
+	// DockerServiceContainerPauseProcedure is the fully-qualified name of the DockerService's
+	// ContainerPause RPC.
+	DockerServiceContainerPauseProcedure = "/docker.v1.DockerService/ContainerPause"
+	// DockerServiceContainerUnpauseProcedure is the fully-qualified name of the DockerService's
+	// ContainerUnpause RPC.
+	DockerServiceContainerUnpauseProcedure = "/docker.v1.DockerService/ContainerUnpause"
 	// DockerServiceContainerUpdateProcedure is the fully-qualified name of the DockerService's
 	// ContainerUpdate RPC.
 	DockerServiceContainerUpdateProcedure = "/docker.v1.DockerService/ContainerUpdate"
@@ -91,6 +97,9 @@ const (
 	// DockerServiceComposeUpdateProcedure is the fully-qualified name of the DockerService's
 	// ComposeUpdate RPC.
 	DockerServiceComposeUpdateProcedure = "/docker.v1.DockerService/ComposeUpdate"
+	// DockerServiceComposeRedeployProcedure is the fully-qualified name of the DockerService's
+	// ComposeRedeploy RPC.
+	DockerServiceComposeRedeployProcedure = "/docker.v1.DockerService/ComposeRedeploy"
 	// DockerServiceComposeListProcedure is the fully-qualified name of the DockerService's ComposeList
 	// RPC.
 	DockerServiceComposeListProcedure = "/docker.v1.DockerService/ComposeList"
@@ -147,6 +156,8 @@ type DockerServiceClient interface {
 	ContainerStop(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerRemove(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerRestart(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
+	ContainerPause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
+	ContainerUnpause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error)
 	ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error)
 	ContainerList(context.Context, *connect.Request[v1.ContainerListRequest]) (*connect.Response[v1.ListResponse], error)
@@ -174,6 +185,9 @@ type DockerServiceClient interface {
 	ComposeStop(context.Context, *connect.Request[v1.ComposeFile]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	ComposeRestart(context.Context, *connect.Request[v1.ComposeFile]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	ComposeUpdate(context.Context, *connect.Request[v1.ComposeFile]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
+	// compose up -d with explicit force flags (pull / build / recreate),
+	// so a stack can be redeployed in one action
+	ComposeRedeploy(context.Context, *connect.Request[v1.ComposeRedeployRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	ComposeList(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ListResponse], error)
 	ComposeValidate(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ComposeValidateResponse], error)
 	ComposeFileStatus(context.Context, *connect.Request[v1.ComposeFileStatusRequest]) (*connect.Response[v1.ComposeFileStatusResponse], error)
@@ -230,6 +244,18 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DockerServiceContainerRestartProcedure,
 			connect.WithSchema(dockerServiceMethods.ByName("ContainerRestart")),
+			connect.WithClientOptions(opts...),
+		),
+		containerPause: connect.NewClient[v1.ContainerRequest, v1.LogsMessage](
+			httpClient,
+			baseURL+DockerServiceContainerPauseProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("ContainerPause")),
+			connect.WithClientOptions(opts...),
+		),
+		containerUnpause: connect.NewClient[v1.ContainerRequest, v1.LogsMessage](
+			httpClient,
+			baseURL+DockerServiceContainerUnpauseProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("ContainerUnpause")),
 			connect.WithClientOptions(opts...),
 		),
 		containerUpdate: connect.NewClient[v1.ContainerRequest, v1.Empty](
@@ -326,6 +352,12 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DockerServiceComposeUpdateProcedure,
 			connect.WithSchema(dockerServiceMethods.ByName("ComposeUpdate")),
+			connect.WithClientOptions(opts...),
+		),
+		composeRedeploy: connect.NewClient[v1.ComposeRedeployRequest, v1.LogsMessage](
+			httpClient,
+			baseURL+DockerServiceComposeRedeployProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("ComposeRedeploy")),
 			connect.WithClientOptions(opts...),
 		),
 		composeList: connect.NewClient[v1.ComposeFile, v1.ListResponse](
@@ -433,6 +465,8 @@ type dockerServiceClient struct {
 	containerStop        *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerRemove      *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerRestart     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
+	containerPause       *connect.Client[v1.ContainerRequest, v1.LogsMessage]
+	containerUnpause     *connect.Client[v1.ContainerRequest, v1.LogsMessage]
 	containerUpdate      *connect.Client[v1.ContainerRequest, v1.Empty]
 	containerTop         *connect.Client[v1.ContainerTopRequest, v1.ContainerTopResponse]
 	containerList        *connect.Client[v1.ContainerListRequest, v1.ListResponse]
@@ -449,6 +483,7 @@ type dockerServiceClient struct {
 	composeStop          *connect.Client[v1.ComposeFile, v1.LogsMessage]
 	composeRestart       *connect.Client[v1.ComposeFile, v1.LogsMessage]
 	composeUpdate        *connect.Client[v1.ComposeFile, v1.LogsMessage]
+	composeRedeploy      *connect.Client[v1.ComposeRedeployRequest, v1.LogsMessage]
 	composeList          *connect.Client[v1.ComposeFile, v1.ListResponse]
 	composeValidate      *connect.Client[v1.ComposeFile, v1.ComposeValidateResponse]
 	composeFileStatus    *connect.Client[v1.ComposeFileStatusRequest, v1.ComposeFileStatusResponse]
@@ -485,6 +520,16 @@ func (c *dockerServiceClient) ContainerRemove(ctx context.Context, req *connect.
 // ContainerRestart calls docker.v1.DockerService.ContainerRestart.
 func (c *dockerServiceClient) ContainerRestart(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
 	return c.containerRestart.CallUnary(ctx, req)
+}
+
+// ContainerPause calls docker.v1.DockerService.ContainerPause.
+func (c *dockerServiceClient) ContainerPause(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
+	return c.containerPause.CallUnary(ctx, req)
+}
+
+// ContainerUnpause calls docker.v1.DockerService.ContainerUnpause.
+func (c *dockerServiceClient) ContainerUnpause(ctx context.Context, req *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
+	return c.containerUnpause.CallUnary(ctx, req)
 }
 
 // ContainerUpdate calls docker.v1.DockerService.ContainerUpdate.
@@ -565,6 +610,11 @@ func (c *dockerServiceClient) ComposeRestart(ctx context.Context, req *connect.R
 // ComposeUpdate calls docker.v1.DockerService.ComposeUpdate.
 func (c *dockerServiceClient) ComposeUpdate(ctx context.Context, req *connect.Request[v1.ComposeFile]) (*connect.ServerStreamForClient[v1.LogsMessage], error) {
 	return c.composeUpdate.CallServerStream(ctx, req)
+}
+
+// ComposeRedeploy calls docker.v1.DockerService.ComposeRedeploy.
+func (c *dockerServiceClient) ComposeRedeploy(ctx context.Context, req *connect.Request[v1.ComposeRedeployRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error) {
+	return c.composeRedeploy.CallServerStream(ctx, req)
 }
 
 // ComposeList calls docker.v1.DockerService.ComposeList.
@@ -654,6 +704,8 @@ type DockerServiceHandler interface {
 	ContainerStop(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerRemove(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerRestart(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
+	ContainerPause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
+	ContainerUnpause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error)
 	ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error)
 	ContainerTop(context.Context, *connect.Request[v1.ContainerTopRequest]) (*connect.Response[v1.ContainerTopResponse], error)
 	ContainerList(context.Context, *connect.Request[v1.ContainerListRequest]) (*connect.Response[v1.ListResponse], error)
@@ -681,6 +733,9 @@ type DockerServiceHandler interface {
 	ComposeStop(context.Context, *connect.Request[v1.ComposeFile], *connect.ServerStream[v1.LogsMessage]) error
 	ComposeRestart(context.Context, *connect.Request[v1.ComposeFile], *connect.ServerStream[v1.LogsMessage]) error
 	ComposeUpdate(context.Context, *connect.Request[v1.ComposeFile], *connect.ServerStream[v1.LogsMessage]) error
+	// compose up -d with explicit force flags (pull / build / recreate),
+	// so a stack can be redeployed in one action
+	ComposeRedeploy(context.Context, *connect.Request[v1.ComposeRedeployRequest], *connect.ServerStream[v1.LogsMessage]) error
 	ComposeList(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ListResponse], error)
 	ComposeValidate(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ComposeValidateResponse], error)
 	ComposeFileStatus(context.Context, *connect.Request[v1.ComposeFileStatusRequest]) (*connect.Response[v1.ComposeFileStatusResponse], error)
@@ -733,6 +788,18 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		DockerServiceContainerRestartProcedure,
 		svc.ContainerRestart,
 		connect.WithSchema(dockerServiceMethods.ByName("ContainerRestart")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dockerServiceContainerPauseHandler := connect.NewUnaryHandler(
+		DockerServiceContainerPauseProcedure,
+		svc.ContainerPause,
+		connect.WithSchema(dockerServiceMethods.ByName("ContainerPause")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dockerServiceContainerUnpauseHandler := connect.NewUnaryHandler(
+		DockerServiceContainerUnpauseProcedure,
+		svc.ContainerUnpause,
+		connect.WithSchema(dockerServiceMethods.ByName("ContainerUnpause")),
 		connect.WithHandlerOptions(opts...),
 	)
 	dockerServiceContainerUpdateHandler := connect.NewUnaryHandler(
@@ -829,6 +896,12 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		DockerServiceComposeUpdateProcedure,
 		svc.ComposeUpdate,
 		connect.WithSchema(dockerServiceMethods.ByName("ComposeUpdate")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dockerServiceComposeRedeployHandler := connect.NewServerStreamHandler(
+		DockerServiceComposeRedeployProcedure,
+		svc.ComposeRedeploy,
+		connect.WithSchema(dockerServiceMethods.ByName("ComposeRedeploy")),
 		connect.WithHandlerOptions(opts...),
 	)
 	dockerServiceComposeListHandler := connect.NewUnaryHandler(
@@ -937,6 +1010,10 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 			dockerServiceContainerRemoveHandler.ServeHTTP(w, r)
 		case DockerServiceContainerRestartProcedure:
 			dockerServiceContainerRestartHandler.ServeHTTP(w, r)
+		case DockerServiceContainerPauseProcedure:
+			dockerServiceContainerPauseHandler.ServeHTTP(w, r)
+		case DockerServiceContainerUnpauseProcedure:
+			dockerServiceContainerUnpauseHandler.ServeHTTP(w, r)
 		case DockerServiceContainerUpdateProcedure:
 			dockerServiceContainerUpdateHandler.ServeHTTP(w, r)
 		case DockerServiceContainerTopProcedure:
@@ -969,6 +1046,8 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 			dockerServiceComposeRestartHandler.ServeHTTP(w, r)
 		case DockerServiceComposeUpdateProcedure:
 			dockerServiceComposeUpdateHandler.ServeHTTP(w, r)
+		case DockerServiceComposeRedeployProcedure:
+			dockerServiceComposeRedeployHandler.ServeHTTP(w, r)
 		case DockerServiceComposeListProcedure:
 			dockerServiceComposeListHandler.ServeHTTP(w, r)
 		case DockerServiceComposeValidateProcedure:
@@ -1024,6 +1103,14 @@ func (UnimplementedDockerServiceHandler) ContainerRemove(context.Context, *conne
 
 func (UnimplementedDockerServiceHandler) ContainerRestart(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerRestart is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) ContainerPause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerPause is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) ContainerUnpause(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.LogsMessage], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerUnpause is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ContainerUpdate(context.Context, *connect.Request[v1.ContainerRequest]) (*connect.Response[v1.Empty], error) {
@@ -1088,6 +1175,10 @@ func (UnimplementedDockerServiceHandler) ComposeRestart(context.Context, *connec
 
 func (UnimplementedDockerServiceHandler) ComposeUpdate(context.Context, *connect.Request[v1.ComposeFile], *connect.ServerStream[v1.LogsMessage]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ComposeUpdate is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) ComposeRedeploy(context.Context, *connect.Request[v1.ComposeRedeployRequest], *connect.ServerStream[v1.LogsMessage]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ComposeRedeploy is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ComposeList(context.Context, *connect.Request[v1.ComposeFile]) (*connect.Response[v1.ListResponse], error) {
