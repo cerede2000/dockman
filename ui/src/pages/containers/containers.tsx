@@ -1,16 +1,12 @@
 import {
     Box,
     Chip,
-    CircularProgress,
     Divider,
     Fade,
-    IconButton,
     Paper,
-    Stack,
-    Tooltip,
-    Typography,
 } from '@mui/material';
-import {Delete, DnsOutlined, PlayArrow, Refresh, RestartAlt, Stop,} from '@mui/icons-material';
+import {Delete, DnsOutlined, PlayArrow, RestartAlt, Stop,} from '@mui/icons-material';
+import PageHeader, {RefreshButton} from "../../components/page-header.tsx";
 import {ContainerTable} from '../compose/components/container-info-table';
 import {useMemo, useState} from "react";
 import {useDockerContainers} from "../../hooks/docker-containers.ts";
@@ -110,37 +106,12 @@ function ContainersPage() {
             ...scrollbarStyles
         }}>
             {/* Header Section */}
-            <Box sx={{mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end'}}>
-                <Box>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                        <DnsOutlined color="primary" sx={{fontSize: 20}}/>
-                        <Typography variant="h6" sx={{fontWeight: 800, letterSpacing: -0.5}}>
-                            Containers
-                        </Typography>
-                        <Chip
-                            label={containers?.list.length}
-                            size="small"
-                            sx={{fontWeight: 700, color: 'primary.main'}}
-                        />
-                    </Stack>
-                    <Typography variant="caption" color="text.secondary">
-                        Manage and monitor containers on <code style={{fontWeight: 'bold'}}>{host}</code>
-                    </Typography>
-                </Box>
-
-                <Stack direction="row" spacing={1}>
-                    <Tooltip title="Refresh List">
-                        <IconButton
-                            size="small"
-                            onClick={refreshContainers}
-                            disabled={loading}
-                            sx={{border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper'}}
-                        >
-                            {loading ? <CircularProgress size={18}/> : <Refresh sx={{fontSize: 18}}/>}
-                        </IconButton>
-                    </Tooltip>
-                </Stack>
-            </Box>
+            <PageHeader
+                icon={<DnsOutlined/>}
+                title="Containers"
+                count={containers?.list.length}
+                host={host}
+            />
 
             {/* Toolbar Card */}
             <Paper
@@ -164,6 +135,7 @@ function ContainersPage() {
 
                 <Box sx={{display: 'flex', alignItems: 'center', gap: 1.5, flex: 1}}>
                     <ActionButtons actions={actions}/>
+                    <RefreshButton onClick={refreshContainers} loading={loading}/>
                     {selectedContainers.length > 0 && (
                         <Chip
                             size="small"
