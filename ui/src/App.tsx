@@ -38,6 +38,7 @@ import FileIndexRedirect, {ComposePage, FilesLayout} from "./pages/compose/compo
 import ContainerInspectPage from "./pages/containers/inspect.tsx";
 import scrollbarStyles from "./components/scrollbar-style.tsx";
 import StatsPage from "./pages/stats/stats-page.tsx";
+import MonitorPage from "./pages/monitor/monitor-page.tsx";
 import {useHostStore} from "./pages/compose/state/files.ts";
 import {enableMapSet} from "immer";
 import {SettingsOutlined as SettingsIcon} from '@mui/icons-material';
@@ -68,6 +69,10 @@ export function App() {
                                         <Route path="files" element={<FilesLayout/>}>
                                             <Route index element={<FileIndexRedirect/>}/>
                                             <Route path="*" element={<ComposePage/>}/>
+                                        </Route>
+
+                                        <Route path="monitor">
+                                            <Route index element={<MonitorPage/>}/>
                                         </Route>
 
                                         <Route path="stats">
