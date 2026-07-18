@@ -2,7 +2,7 @@ import {type JSX, useEffect, useMemo, useRef, useState} from 'react';
 import {Navigate, Outlet, useLocation, useNavigate} from 'react-router-dom';
 import {Box, CircularProgress, IconButton, Tab, Tabs, Tooltip, Typography} from '@mui/material';
 import {FileList} from "./components/file-list.tsx";
-import {Close} from '@mui/icons-material';
+import {ClearAll, Close} from '@mui/icons-material';
 import ActionSidebar from "./components/action-sidebar.tsx";
 import CoreComposeEmpty, {InvalidAlias} from "./compose-empty.tsx";
 import {LogsPanel} from "./components/logs-panel.tsx";
@@ -281,7 +281,7 @@ const FileTabBar = ({track}: { track: number }) => {
     const currentFilename = track === 0 ? filename : (splitFilename ?? '')
 
     const navigate = useNavigate();
-    const {closeTab, onTabClick} = useTabs();
+    const {closeTab, onTabClick, closeAllTabs} = useTabs();
     const reorderTab = useTabsStore(state => state.reorder);
     // Chrome-style drag: the dragged tab slides into the hovered slot live
     const [draggedTab, setDraggedTab] = useState<string | null>(null);
@@ -335,7 +335,7 @@ const FileTabBar = ({track}: { track: number }) => {
 
     return (
         <Box
-            sx={{borderBottom: 1, borderColor: 'divider', flexShrink: 0}}
+            sx={{borderBottom: 1, borderColor: 'divider', flexShrink: 0, display: 'flex', alignItems: 'center'}}
             // accept drops over the whole strip (gaps, whitespace) so no
             // release point triggers the browser's snap-back animation
             onDragOver={(e) => {
@@ -350,7 +350,7 @@ const FileTabBar = ({track}: { track: number }) => {
                 onChange={(_event, value) => onTabClick(value as string, track)}
                 variant="scrollable"
                 scrollButtons="auto"
-                sx={{minHeight: tabMinHeight}}
+                sx={{minHeight: tabMinHeight, flexGrow: 1, minWidth: 0}}
                 slotProps={{
                     // the sliding underline chasing tabs mid-drag reads as
                     // the drop not having happened — freeze it while dragging
@@ -476,6 +476,22 @@ const FileTabBar = ({track}: { track: number }) => {
                     );
                 })}
             </Tabs>
+            {tablist.length > 0 && (
+                <Tooltip title="Close all tabs">
+                    <IconButton
+                        size="small"
+                        onClick={() => closeAllTabs(track)}
+                        sx={{
+                            mx: 0.5,
+                            flexShrink: 0,
+                            color: 'text.secondary',
+                            '&:hover': {color: 'error.main', bgcolor: 'action.hover'},
+                        }}
+                    >
+                        <ClearAll sx={{fontSize: 18}}/>
+                    </IconButton>
+                </Tooltip>
+            )}
         </Box>
     );
 };
