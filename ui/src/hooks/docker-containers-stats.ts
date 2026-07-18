@@ -273,10 +273,34 @@ export function useDockerStats(selectedPage?: string) {
         let timer: ReturnType<typeof setTimeout> | null = null;
         // sort settings are read through a ref so a sort change doesn't tear
         // down the streaming cycle
+        // Coalesced paints: the stream delivers one message per container
+        // (identity wave + one per completed read), and sorting + re-rendering
+        // per message costs real CPU and allocation churn on busy hosts. A
+        // short flush window keeps the progressive-paint feel while cutting
+        // the render count by an order of magnitude.
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
         const tick = async () => {
             const cycleStart = Date.now();
+
+            const merged = new Map<string, ContainerStats>();
+
+            const flush = () => {
+                flushTimer = null;
+                if (isCancelled) return;
+                applyRows(sortRows([...merged.values()], sortRef.current.field, sortRef.current.order));
+                if (loadingRef.current) {
+                    setLoading(false);
+                    loadingRef.current = false;
+                }
+            };
+            const scheduleFlush = () => {
+                if (flushTimer === null) {
+                    flushTimer = setTimeout(flush, 200);
+                }
+            };
+
             try {
-                const merged = new Map<string, ContainerStats>();
                 for (const c of rowsRef.current) {
                     merged.set(c.id, c);
                 }
@@ -290,16 +314,12 @@ export function useDockerStats(selectedPage?: string) {
                     if (isCancelled) return;
 
                     // identity-only row streamed ahead of its ~1s reading so
-                    // the view paints instantly: never overwrite a row that
+                    // the view paints fast: never overwrite a row that
                     // already has real values, never record it as history
                     if (stat.cpuUsage < 0) {
                         if (!merged.has(stat.id)) {
                             merged.set(stat.id, stat);
-                            applyRows(sortRows([...merged.values()], sortRef.current.field, sortRef.current.order));
-                            if (loadingRef.current) {
-                                setLoading(false);
-                                loadingRef.current = false;
-                            }
+                            scheduleFlush();
                         }
                         continue;
                     }
@@ -308,16 +328,14 @@ export function useDockerStats(selectedPage?: string) {
                     seen.add(stat.id);
                     seenNames.add(stat.name);
                     recordStat(selectedHost, stat);
-                    // progressive paint: each container appears/updates as its
-                    // read completes, Dockhand-style
-                    applyRows(sortRows([...merged.values()], sortRef.current.field, sortRef.current.order));
-                    if (loadingRef.current) {
-                        setLoading(false);
-                        loadingRef.current = false;
-                    }
+                    scheduleFlush();
                 }
 
                 if (isCancelled) return;
+                if (flushTimer !== null) {
+                    clearTimeout(flushTimer);
+                    flushTimer = null;
+                }
 
                 // cycle complete: drop containers that no longer exist, then
                 // refresh the header totals in one go — computing them from
@@ -353,6 +371,7 @@ export function useDockerStats(selectedPage?: string) {
         return () => {
             isCancelled = true;
             if (timer !== null) clearTimeout(timer);
+            if (flushTimer !== null) clearTimeout(flushTimer);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedHost, dockerService, selectedPage, refreshInterval]);

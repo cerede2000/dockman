@@ -1,7 +1,7 @@
 import {immer} from "zustand/middleware/immer";
 import {getContextKey} from "../../../context/tab-context.tsx";
 import {type Status, StatusSchema} from "../../../gen/docker/v1/docker_pb.ts";
-import {create as createMessage} from "@bufbuild/protobuf";
+import {create as createMessage, equals} from "@bufbuild/protobuf";
 import {create} from "zustand";
 
 interface OpenFilesState {
@@ -59,8 +59,12 @@ export const useComposeFileState = create<OpenFilesState>()(
                 if (!state.openFiles[key]) return;
 
                 for (const [file, value] of Object.entries(input)) {
-                    // Only update if file is still tracked
-                    if (state.openFiles[key][file]) {
+                    // Only update tracked files whose status ACTUALLY changed:
+                    // blindly assigning fresh message objects gives openFiles a
+                    // new identity on every poll, which re-renders every dot —
+                    // and re-triggers any effect depending on the store.
+                    const existing = state.openFiles[key][file];
+                    if (existing && !equals(StatusSchema, existing as Status, value)) {
                         state.openFiles[key][file] = value;
                     }
                 }

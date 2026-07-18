@@ -304,6 +304,14 @@ function MonitorPage() {
         }
         return map;
     }, [stackRuns]);
+    // per-container update runs, keyed by container name
+    const updateRuns = useMemo(() => {
+        const map: Record<string, 'running' | 'failed' | 'done'> = {};
+        for (const [key, status] of Object.entries(stackRuns)) {
+            if (key.startsWith('update:')) map[key.slice('update:'.length)] = status;
+        }
+        return map;
+    }, [stackRuns]);
 
     const allExpanded = groups.length > 0 && groups.every(g => effectiveExpanded[g.stack] ?? false);
 
@@ -337,18 +345,39 @@ function MonitorPage() {
         await fetchContainers();
     }
 
-    const rowRpc: Record<RowAction, { rpc: keyof typeof dockerService, message: string }> = {
+    const rowRpc: Record<Exclude<RowAction, 'update'>, { rpc: keyof typeof dockerService, message: string }> = {
         start: {rpc: 'containerStart', message: 'started'},
         stop: {rpc: 'containerStop', message: 'stopped'},
         restart: {rpc: 'containerRestart', message: 'restarted'},
         pause: {rpc: 'containerPause', message: 'paused'},
         unpause: {rpc: 'containerUnpause', message: 'unpaused'},
-        update: {rpc: 'containerUpdate', message: 'updated'},
         remove: {rpc: 'containerRemove', message: 'removed'},
     };
 
-    const handleRowAction = (row: MonitorRow, action: RowAction) =>
+    // updates stream their progress (pull output, recreate steps) and run in
+    // the background like stack actions: one run per container, keyed
+    // update:<name>, consultable through the output button
+    const startContainerUpdate = (id: string, name: string) => {
+        runAction(
+            `update:${name}`,
+            (_req, callOpts) => dockerService.containerUpdate({containerIds: [id]}, callOpts),
+            'update',
+            [],
+            (error) => {
+                if (error) showError(`Update ${name} failed — ${error}`);
+                else showSuccess(`Update ${name} finished`);
+                void fetchContainers();
+            },
+        );
+    };
+
+    const handleRowAction = (row: MonitorRow, action: RowAction) => {
+        if (action === 'update') {
+            startContainerUpdate(row.info.id, row.info.name);
+            return;
+        }
         void containerAction(action, rowRpc[action].rpc, rowRpc[action].message, [row.info.id]);
+    };
 
     // ---- stack actions -----------------------------------------------------
 
@@ -478,7 +507,14 @@ function MonitorPage() {
         {
             action: 'update', buttonText: 'Update', icon: <Update/>,
             disabled: selectedContainers.length === 0,
-            handler: () => containerAction('update', 'containerUpdate', 'updated', selectedContainers),
+            handler: async () => {
+                const list = containers?.list ?? [];
+                for (const id of selectedContainers) {
+                    const c = list.find(x => x.id === id);
+                    if (c) startContainerUpdate(c.id, c.name);
+                }
+                setSelectedContainers([]);
+            },
             tooltip: 'Pull the image and recreate when a newer one exists',
         },
         {
@@ -641,6 +677,8 @@ function MonitorPage() {
                                     runningStacks={runningStacks}
                                     stackRuns={stackRuns}
                                     onStackOutput={(group) => openOutput(group.servicePath)}
+                                    updateRuns={updateRuns}
+                                    onUpdateOutput={(row) => openOutput(`update:${row.info.name}`)}
                                     onRowAction={handleRowAction}
                                     onRowLogs={handleRowLogs}
                                     onRowExec={handleRowExec}

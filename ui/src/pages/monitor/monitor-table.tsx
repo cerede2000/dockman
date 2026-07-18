@@ -113,6 +113,9 @@ interface MonitorTableProps {
     // last action outcome per compose file — drives the output button
     stackRuns: Record<string, 'running' | 'failed' | 'done'>;
     onStackOutput: (group: StackGroup) => void;
+    // per-container update runs (keyed by name): busy indicator + output
+    updateRuns: Record<string, 'running' | 'failed' | 'done'>;
+    onUpdateOutput: (row: MonitorRow) => void;
     onRowAction: (row: MonitorRow, action: RowAction) => void;
     onRowLogs: (row: MonitorRow) => void;
     onRowExec: (row: MonitorRow) => void;
@@ -423,7 +426,10 @@ function RedeployMenuButton({disabled, onPick}: {
 }
 
 function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
-    const {row, history, selectedContainers, selectedStacks, onToggleContainers, now, onRowAction, onRowLogs, onRowExec} = props;
+    const {
+        row, history, selectedContainers, selectedStacks, onToggleContainers,
+        now, onRowAction, onRowLogs, onRowExec, updateRuns, onUpdateOutput,
+    } = props;
     const c = row.info;
     const s = row.stats;
     const hist = history.get(c.name);
@@ -434,6 +440,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
     // selected, individual container boxes are frozen (kinds never mix)
     const stackSelected = c.stackName !== '' && selectedStacks.includes(c.stackName);
     const isChecked = stackSelected || selectedContainers.includes(c.id);
+    const updRun = updateRuns[c.name];
 
     const memPercent = s && Number(s.memoryLimit) > 0
         ? (Number(s.memoryUsage) / Number(s.memoryLimit)) * 100 : 0;
@@ -554,12 +561,30 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                         </IconButton>
                     </span>
                 </Tooltip>
-                <Tooltip title={c.updateAvailable ? `Update image (${c.updateAvailable} available)` : 'Update image'} arrow>
-                    <IconButton size="small" onClick={() => onRowAction(row, 'update')}
-                                sx={{color: c.updateAvailable ? '#4db6ac' : t.textDim, '&:hover': {color: t.text}}}>
-                        <Update sx={{fontSize: 16}}/>
-                    </IconButton>
+                <Tooltip title={updRun === 'running'
+                    ? 'Update in progress…'
+                    : c.updateAvailable ? `Update image (${c.updateAvailable} available)` : 'Update image'} arrow>
+                    <span>
+                        <IconButton size="small" disabled={updRun === 'running'}
+                                    onClick={() => onRowAction(row, 'update')}
+                                    sx={{color: c.updateAvailable ? '#4db6ac' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
+                            {updRun === 'running'
+                                ? <CircularProgress size={14} sx={{color: t.textDim}}/>
+                                : <Update sx={{fontSize: 16}}/>}
+                        </IconButton>
+                    </span>
                 </Tooltip>
+                {updRun && (
+                    <Tooltip title={updRun === 'failed' ? 'Update output (failed)' : 'Update output'} arrow>
+                        <IconButton size="small" onClick={() => onUpdateOutput(row)}
+                                    sx={{
+                                        color: updRun === 'failed' ? '#ef5350' : t.textDim,
+                                        '&:hover': {color: updRun === 'failed' ? '#ef5350' : t.text},
+                                    }}>
+                            <ReceiptLong sx={{fontSize: 15}}/>
+                        </IconButton>
+                    </Tooltip>
+                )}
                 <Tooltip title="Remove" arrow>
                     <IconButton size="small" onClick={() => onRowAction(row, 'remove')}
                                 sx={{color: t.textDim, '&:hover': {color: '#ef5350'}}}>

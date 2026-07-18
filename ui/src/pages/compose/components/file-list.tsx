@@ -226,7 +226,12 @@ const FileListInner = () => {
     const autoScrollMain = useDragAutoScroll()
     const autoScrollPinned = useDragAutoScroll()
 
-    const openFiles = useComposeFileState(state => state.openFiles)
+    // ONLY the set of tracked file keys, as a stable string: depending on the
+    // whole openFiles object re-armed this effect on every status write, and
+    // each run fires a request whose response writes statuses — a feedback
+    // loop hammering ComposeFileStatus every 150ms.
+    const trackedKeys = useComposeFileState(state =>
+        Object.keys(state.openFiles[`${host}/${alias}`] ?? {}).sort().join('|'))
     const setStatus = useComposeFileState(state => state.setStatus)
     const dockerSrv = useHostClient(DockerService)
     // container lifecycle events refresh the stack dots instantly; the
@@ -238,10 +243,7 @@ const FileListInner = () => {
         let cancelled = false
 
         const refresh = async () => {
-            const currentElement = openFiles[`${host}/${alias}`];
-            if (!currentElement) return;
-
-            const keys = Object.keys(currentElement)
+            const keys = trackedKeys ? trackedKeys.split('|') : []
             if (keys.length === 0) return;
 
             const {val} = await callRPC(() => dockerSrv.composeFileStatus({ files: keys }))
@@ -262,7 +264,7 @@ const FileListInner = () => {
             clearTimeout(initial)
             clearInterval(interval)
         }
-    }, [openFiles, host, alias, dockerSrv, setStatus, eventBump])
+    }, [trackedKeys, host, alias, dockerSrv, setStatus, eventBump])
 
     if (isLoading && files.length < 1) {
         return (
