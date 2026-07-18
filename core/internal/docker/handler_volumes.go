@@ -34,7 +34,7 @@ func (h *Handler) VolumeList(ctx context.Context, req *connect.Request[v1.ListVo
 			CreatedAt:          vol.CreatedAt,
 			Labels:             getVolumeProjectNameFromLabel(vol.Labels),
 			MountPoint:         vol.Mountpoint,
-			ComposePath:        h.getComposeFilePath(vol.ComposePath),
+			ComposePath:        dkSrv.Compose.DockmanPath(vol.ComposePath),
 			ComposeProjectName: vol.ComposeProjectName,
 		})
 	}
@@ -71,7 +71,7 @@ func (h *Handler) VolumeInspect(ctx context.Context, req *connect.Request[v1.Vol
 			CreatedAt:          vol.CreatedAt,
 			Labels:             getVolumeProjectNameFromLabel(vol.Labels),
 			MountPoint:         vol.Mountpoint,
-			ComposePath:        h.getComposeFilePath(vol.ComposePath),
+			ComposePath:        dkSrv.Compose.DockmanPath(vol.ComposePath),
 			ComposeProjectName: vol.ComposeProjectName,
 		}
 		break
