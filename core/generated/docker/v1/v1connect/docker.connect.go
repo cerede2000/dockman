@@ -60,6 +60,8 @@ const (
 	// DockerServiceContainerStatsStreamProcedure is the fully-qualified name of the DockerService's
 	// ContainerStatsStream RPC.
 	DockerServiceContainerStatsStreamProcedure = "/docker.v1.DockerService/ContainerStatsStream"
+	// DockerServiceHostStatsProcedure is the fully-qualified name of the DockerService's HostStats RPC.
+	DockerServiceHostStatsProcedure = "/docker.v1.DockerService/HostStats"
 	// DockerServiceContainerLogsProcedure is the fully-qualified name of the DockerService's
 	// ContainerLogs RPC.
 	DockerServiceContainerLogsProcedure = "/docker.v1.DockerService/ContainerLogs"
@@ -142,6 +144,10 @@ type DockerServiceClient interface {
 	// (fully qualified return type: the sibling ContainerStats rpc otherwise
 	// shadows the message name inside the service scope)
 	ContainerStatsStream(context.Context, *connect.Request[v1.StatsRequest]) (*connect.ServerStreamForClient[v1.ContainerStats], error)
+	// real host-level usage (from /proc via the host's runner, so it works for
+	// ssh hosts too) — the general stats view shows this instead of summing
+	// per-container numbers
+	HostStats(context.Context, *connect.Request[v1.Empty]) (*connect.Response[v1.HostStatsResponse], error)
 	ContainerLogs(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.ServerStreamForClient[v1.LogsMessage], error)
 	ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error)
 	// compose
@@ -233,6 +239,12 @@ func NewDockerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DockerServiceContainerStatsStreamProcedure,
 			connect.WithSchema(dockerServiceMethods.ByName("ContainerStatsStream")),
+			connect.WithClientOptions(opts...),
+		),
+		hostStats: connect.NewClient[v1.Empty, v1.HostStatsResponse](
+			httpClient,
+			baseURL+DockerServiceHostStatsProcedure,
+			connect.WithSchema(dockerServiceMethods.ByName("HostStats")),
 			connect.WithClientOptions(opts...),
 		),
 		containerLogs: connect.NewClient[v1.ContainerLogsRequest, v1.LogsMessage](
@@ -381,6 +393,7 @@ type dockerServiceClient struct {
 	containerList        *connect.Client[v1.ContainerListRequest, v1.ListResponse]
 	containerStats       *connect.Client[v1.StatsRequest, v1.StatsResponse]
 	containerStatsStream *connect.Client[v1.StatsRequest, v1.ContainerStats]
+	hostStats            *connect.Client[v1.Empty, v1.HostStatsResponse]
 	containerLogs        *connect.Client[v1.ContainerLogsRequest, v1.LogsMessage]
 	containerInspect     *connect.Client[v1.ContainerLogsRequest, v1.ContainerInspectMessage]
 	composeUp            *connect.Client[v1.ComposeFile, v1.LogsMessage]
@@ -448,6 +461,11 @@ func (c *dockerServiceClient) ContainerStats(ctx context.Context, req *connect.R
 // ContainerStatsStream calls docker.v1.DockerService.ContainerStatsStream.
 func (c *dockerServiceClient) ContainerStatsStream(ctx context.Context, req *connect.Request[v1.StatsRequest]) (*connect.ServerStreamForClient[v1.ContainerStats], error) {
 	return c.containerStatsStream.CallServerStream(ctx, req)
+}
+
+// HostStats calls docker.v1.DockerService.HostStats.
+func (c *dockerServiceClient) HostStats(ctx context.Context, req *connect.Request[v1.Empty]) (*connect.Response[v1.HostStatsResponse], error) {
+	return c.hostStats.CallUnary(ctx, req)
 }
 
 // ContainerLogs calls docker.v1.DockerService.ContainerLogs.
@@ -576,6 +594,10 @@ type DockerServiceHandler interface {
 	// (fully qualified return type: the sibling ContainerStats rpc otherwise
 	// shadows the message name inside the service scope)
 	ContainerStatsStream(context.Context, *connect.Request[v1.StatsRequest], *connect.ServerStream[v1.ContainerStats]) error
+	// real host-level usage (from /proc via the host's runner, so it works for
+	// ssh hosts too) — the general stats view shows this instead of summing
+	// per-container numbers
+	HostStats(context.Context, *connect.Request[v1.Empty]) (*connect.Response[v1.HostStatsResponse], error)
 	ContainerLogs(context.Context, *connect.Request[v1.ContainerLogsRequest], *connect.ServerStream[v1.LogsMessage]) error
 	ContainerInspect(context.Context, *connect.Request[v1.ContainerLogsRequest]) (*connect.Response[v1.ContainerInspectMessage], error)
 	// compose
@@ -663,6 +685,12 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 		DockerServiceContainerStatsStreamProcedure,
 		svc.ContainerStatsStream,
 		connect.WithSchema(dockerServiceMethods.ByName("ContainerStatsStream")),
+		connect.WithHandlerOptions(opts...),
+	)
+	dockerServiceHostStatsHandler := connect.NewUnaryHandler(
+		DockerServiceHostStatsProcedure,
+		svc.HostStats,
+		connect.WithSchema(dockerServiceMethods.ByName("HostStats")),
 		connect.WithHandlerOptions(opts...),
 	)
 	dockerServiceContainerLogsHandler := connect.NewServerStreamHandler(
@@ -817,6 +845,8 @@ func NewDockerServiceHandler(svc DockerServiceHandler, opts ...connect.HandlerOp
 			dockerServiceContainerStatsHandler.ServeHTTP(w, r)
 		case DockerServiceContainerStatsStreamProcedure:
 			dockerServiceContainerStatsStreamHandler.ServeHTTP(w, r)
+		case DockerServiceHostStatsProcedure:
+			dockerServiceHostStatsHandler.ServeHTTP(w, r)
 		case DockerServiceContainerLogsProcedure:
 			dockerServiceContainerLogsHandler.ServeHTTP(w, r)
 		case DockerServiceContainerInspectProcedure:
@@ -904,6 +934,10 @@ func (UnimplementedDockerServiceHandler) ContainerStats(context.Context, *connec
 
 func (UnimplementedDockerServiceHandler) ContainerStatsStream(context.Context, *connect.Request[v1.StatsRequest], *connect.ServerStream[v1.ContainerStats]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.ContainerStatsStream is not implemented"))
+}
+
+func (UnimplementedDockerServiceHandler) HostStats(context.Context, *connect.Request[v1.Empty]) (*connect.Response[v1.HostStatsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("docker.v1.DockerService.HostStats is not implemented"))
 }
 
 func (UnimplementedDockerServiceHandler) ContainerLogs(context.Context, *connect.Request[v1.ContainerLogsRequest], *connect.ServerStream[v1.LogsMessage]) error {
