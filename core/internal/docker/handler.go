@@ -479,16 +479,6 @@ func toRPCPort(p container.PortSummary) *v1.Port {
 	}
 }
 
-func (h *Handler) getComposeFilePath(fullPath string) string {
-	// todo
-	//composePath := filepath.ToSlash(
-	//	strings.TrimPrefix(
-	//		fullPath, h.compose().ComposeRoot,
-	//	),
-	//)
-	return strings.TrimPrefix("", "/")
-}
-
 type ContainerLogWriter struct {
 	responseStream *connect.ServerStream[v1.LogsMessage]
 }

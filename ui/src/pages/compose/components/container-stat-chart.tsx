@@ -17,6 +17,16 @@ import {type AggregateSnapshot, type HostStatsView} from "../../../hooks/docker-
 import Sparkline from "../../../components/sparkline.tsx";
 import {statsTheme as t} from "./stats-theme.ts";
 
+// per-state container counts for the status strip
+export interface StateCounts {
+    total: number;
+    running: number;
+    stopped: number;
+    paused: number;
+    restarting: number;
+    unhealthy: number;
+}
+
 interface AggregateStatsProps {
     // computed once per completed refresh cycle — null until the first
     // cycle lands, so the header never renders half-updated totals
@@ -25,13 +35,17 @@ interface AggregateStatsProps {
     // Dockhand-style instead of summing container numbers; stack views
     // keep the per-container aggregation
     hostStats?: HostStatsView | null;
+    // authoritative state counts (from the event-driven container list);
+    // when provided they replace the cycle-based aggregate counts, which
+    // refresh more slowly
+    states?: StateCounts | null;
 }
 
 // load stays default-colored while calm, then warns
 const cpuValueColor = (cpu: number) =>
     cpu < 50 ? t.text : cpu < 85 ? '#ffb74d' : '#ef5350';
 
-function AggregateStats({aggregates, hostStats}: AggregateStatsProps) {
+function AggregateStats({aggregates, hostStats, states}: AggregateStatsProps) {
     const memPercent = hostStats
         ? (hostStats.memTotal > 0 ? (hostStats.memUsed / hostStats.memTotal) * 100 : 0)
         : (aggregates && aggregates.memLimit > 0 ? (aggregates.memUsed / aggregates.memLimit) * 100 : 0);
@@ -61,7 +75,7 @@ function AggregateStats({aggregates, hostStats}: AggregateStatsProps) {
                 sx={{width: '100%', alignItems: 'stretch'}}
             >
                 {/* per-state breakdown, wraps onto more lines when narrow */}
-                <StateTile aggregates={aggregates}/>
+                <StateTile counts={states ?? aggregates}/>
 
                 {/* charted tiles: value block + a chart that takes the room */}
                 <ChartTile
@@ -110,23 +124,23 @@ export default AggregateStats;
 // Dockhand-style status strip over two fixed rows: totals and the common
 // states first (total / running / stopped), the exceptional states below
 // (paused / restarting / unhealthy).
-function StateTile({aggregates}: { aggregates: AggregateSnapshot | null }) {
-    const rows: { icon: ReactNode, count: number, color: string, title: string }[][] = aggregates ? [
+function StateTile({counts}: { counts: StateCounts | null }) {
+    const rows: { icon: ReactNode, count: number, color: string, title: string }[][] = counts ? [
         [
-            {icon: <ContainerIcon/>, count: aggregates.total, color: t.text, title: 'Total'},
-            {icon: <PlayArrowIcon/>, count: aggregates.running, color: '#66bb6a', title: 'Running'},
-            {icon: <StopIcon/>, count: aggregates.stopped, color: '#9e9e9e', title: 'Stopped'},
+            {icon: <ContainerIcon/>, count: counts.total, color: t.text, title: 'Total'},
+            {icon: <PlayArrowIcon/>, count: counts.running, color: '#66bb6a', title: 'Running'},
+            {icon: <StopIcon/>, count: counts.stopped, color: '#9e9e9e', title: 'Stopped'},
         ],
         [
-            {icon: <PauseIcon/>, count: aggregates.paused, color: '#ffb74d', title: 'Paused'},
-            {icon: <RestartIcon/>, count: aggregates.restarting, color: '#4db6ac', title: 'Restarting'},
-            {icon: <WarningIcon/>, count: aggregates.unhealthy, color: '#ef5350', title: 'Unhealthy'},
+            {icon: <PauseIcon/>, count: counts.paused, color: '#ffb74d', title: 'Paused'},
+            {icon: <RestartIcon/>, count: counts.restarting, color: '#4db6ac', title: 'Restarting'},
+            {icon: <WarningIcon/>, count: counts.unhealthy, color: '#ef5350', title: 'Unhealthy'},
         ],
     ] : [];
 
     return (
         <Box sx={{flex: '0 1 auto', minWidth: 108, maxWidth: 175, alignSelf: 'center'}}>
-            {aggregates ? (
+            {counts ? (
                 <Stack spacing={0.75}>
                     {rows.map((row, i) => (
                         <Stack key={i} direction="row" spacing={1.5} alignItems="center">

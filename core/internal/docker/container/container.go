@@ -174,11 +174,13 @@ func (s *Service) ContainerLogs(ctx context.Context, containerID string) (io.Rea
 	return logStream, inspect.Container.Config.Tty, nil
 }
 
-// ContainersListRunning lists running containers and prunes cached sampling
-// state for containers that no longer exist (this is the host-wide listing
-// the stats views poll).
+// ContainersListRunning lists ALL containers (any state) and prunes cached
+// sampling state for containers that no longer exist (this is the host-wide
+// listing the stats views poll). Non-running containers flow through the
+// stats stream as identity-only rows — statsFor skips their metric read —
+// so state counts (stopped/paused/...) stay truthful without extra cost.
 func (s *Service) ContainersListRunning(ctx context.Context) ([]container.Summary, error) {
-	list, err := s.Client.ContainerList(ctx, client.ContainerListOptions{})
+	list, err := s.Client.ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("could not list containers: %w", err)
 	}

@@ -36,6 +36,9 @@ type Service struct {
 	parser   FilenameParser
 	runner   CmdRunner
 	hostname string
+	// reverse of parser: absolute compose path -> dockman filename;
+	// injected by the host service which owns the alias table
+	pathResolver PathResolver
 }
 
 func NewComposeTerminal(

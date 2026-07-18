@@ -37,8 +37,53 @@ import {
     type RowAction,
     type StackAction,
     type StackGroup,
+    type StackStats,
 } from './monitor-table.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
+
+// sums the member containers' live metrics and their history windows;
+// sparklines scale to the window's shape, so a summed series keeps the
+// aggregate's evolution readable
+function aggregateStack(rows: MonitorRow[], history: Map<string, { cpu: number[]; mem: number[] }>): StackStats | null {
+    let cpu = 0, memUsed = 0, memLimit = 0, seen = 0;
+    for (const r of rows) {
+        const s = r.stats;
+        if (!s) continue;
+        seen++;
+        cpu += Math.max(s.cpuUsage, 0);
+        memUsed += Number(s.memoryUsage);
+        // same host-ceiling logic as the aggregate band: unlimited containers
+        // report the host total, summing would count it once per container
+        memLimit = Math.max(memLimit, Number(s.memoryLimit));
+    }
+    if (seen === 0) return null;
+
+    const cpuSeries: number[][] = [];
+    const memSeries: number[][] = [];
+    for (const r of rows) {
+        const h = history.get(r.info.name);
+        if (!h) continue;
+        cpuSeries.push(h.cpu);
+        memSeries.push(h.mem);
+    }
+
+    return {cpu, memUsed, memLimit, cpuHist: sumSeries(cpuSeries), memHist: sumSeries(memSeries)};
+}
+
+// element-wise sum of series aligned on their most recent points
+function sumSeries(series: number[][]): number[] {
+    const len = Math.max(0, ...series.map(s => s.length));
+    const out: number[] = [];
+    for (let k = len; k >= 1; k--) {
+        let sum = 0;
+        for (const s of series) {
+            const v = s[s.length - k];
+            if (v !== undefined) sum += v;
+        }
+        out.push(sum);
+    }
+    return out;
+}
 
 // one view to run the host from: real host usage on top, every container
 // grouped by stack below it, with per-row, per-stack and bulk controls plus
@@ -100,23 +145,53 @@ function MonitorPage() {
         const byStack = new Map<string, StackGroup>();
         for (const c of list) {
             const key = c.stackName;
-            const group = byStack.get(key) ?? {stack: key, servicePath: '', rows: []};
+            const group = byStack.get(key) ?? {stack: key, servicePath: '', rows: [], stats: null};
             if (c.servicePath) group.servicePath = c.servicePath;
             group.rows = [...group.rows, {info: c, stats: statsByName.get(c.name)}];
             byStack.set(key, group);
         }
 
         return [...byStack.values()]
-            .map(g => ({...g, rows: [...g.rows].sort((a, b) => a.info.name.localeCompare(b.info.name))}))
+            .map(g => ({
+                ...g,
+                rows: [...g.rows].sort((a, b) => a.info.name.localeCompare(b.info.name)),
+                stats: aggregateStack(g.rows, history),
+            }))
             .sort((a, b) => {
-                // named stacks first, loose containers at the end
-                if (!a.stack) return 1;
-                if (!b.stack) return -1;
+                // loose containers first (#standalone), then stacks A→Z
+                if (!a.stack) return -1;
+                if (!b.stack) return 1;
                 return a.stack.localeCompare(b.stack);
             });
-    }, [containers, statsByName, search]);
+    }, [containers, statsByName, history, search]);
 
     const total = containers?.list.length ?? 0;
+
+    // authoritative state counts from the (event-refreshed) container list —
+    // the band updates within seconds of a start/stop instead of waiting on
+    // a full stats cycle
+    const stateCounts = useMemo(() => {
+        const list = containers?.list ?? [];
+        const counts = {total: list.length, running: 0, stopped: 0, paused: 0, restarting: 0, unhealthy: 0};
+        for (const c of list) {
+            switch (c.state) {
+                case 'running':
+                    counts.running++;
+                    break;
+                case 'paused':
+                    counts.paused++;
+                    break;
+                case 'restarting':
+                    counts.restarting++;
+                    break;
+                default:
+                    counts.stopped++;
+                    break;
+            }
+            if (c.health === 'unhealthy') counts.unhealthy++;
+        }
+        return counts;
+    }, [containers]);
     const runningStacks = useMemo(() => {
         const map: Record<string, boolean> = {};
         for (const file of runningStackKeys.split('|')) {
@@ -331,7 +406,8 @@ function MonitorPage() {
                 />
 
                 <Box sx={{flexShrink: 0}}>
-                    <AggregateStats aggregates={aggregates} hostStats={hostStats}/>
+                    <AggregateStats aggregates={aggregates} hostStats={hostStats}
+                                    states={containers ? stateCounts : null}/>
                 </Box>
 
                 <Paper

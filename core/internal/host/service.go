@@ -3,6 +3,7 @@ package host
 import (
 	"fmt"
 	fs2 "io/fs"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -169,6 +170,26 @@ func (s *Service) GetDockerService(name string) (*docker.Service, error) {
 			}, nil
 		},
 	)
+
+	// reverse of the parser above: map the daemon's absolute compose-file
+	// path back to "alias/relpath" by matching it against the alias roots,
+	// so containers can link back to the dockman file that deployed them
+	service.Compose.SetPathResolver(func(absPath string) string {
+		aliases, err := val.As.List()
+		if err != nil {
+			return ""
+		}
+		for _, alias := range aliases {
+			root := strings.TrimSuffix(filepath.ToSlash(alias.Fullpath), "/")
+			if root == "" {
+				continue
+			}
+			if rel, found := strings.CutPrefix(absPath, root+"/"); found {
+				return alias.Alias + "/" + rel
+			}
+		}
+		return ""
+	})
 
 	return service, nil
 }

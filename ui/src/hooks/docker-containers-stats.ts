@@ -385,7 +385,6 @@ export function useDockerStats(selectedPage?: string) {
                 : '';
 
             const rows = val.list
-                .filter(c => c.state === 'running')
                 .filter(c => !selectedPage || c.stackName.toLowerCase() === project)
                 .map(c => create(ContainerStatsSchema, {
                     id: c.id.substring(0, 12),
@@ -423,7 +422,11 @@ export function useDockerStats(selectedPage?: string) {
 
     return {
         containers: rawContainers,
-        history: statHistories,
+        // fresh Map identity on every render: the module-level map mutates in
+        // place, and the React Compiler memoizes lookups like history.get(name)
+        // by reference — served the map itself, charts would freeze on their
+        // first geometry forever
+        history: new Map(statHistories),
         aggregates,
         loading,
         sortField,

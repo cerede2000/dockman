@@ -546,12 +546,13 @@ func (h *Handler) containersToRpc(result []container.Summary, host string, srv *
 			stack,
 			portSlice,
 			updater.ImageUpdate{},
+			srv.Compose.DockmanPath(stack.Labels[api.ConfigFilesLabel]),
 		))
 	}
 	return dockerResult, statusCount
 }
 
-func (h *Handler) ToProto(stack container.Summary, portSlice []*v1.Port, update updater.ImageUpdate) *v1.ContainerList {
+func (h *Handler) ToProto(stack container.Summary, portSlice []*v1.Port, update updater.ImageUpdate, servicePath string) *v1.ContainerList {
 	ipAddr := extractIPAddr(stack)
 
 	var he string
@@ -572,7 +573,7 @@ func (h *Handler) ToProto(stack container.Summary, portSlice []*v1.Port, update 
 		Ports:           portSlice,
 		ServiceName:     stack.Labels[api.ServiceLabel],
 		StackName:       stack.Labels[api.ProjectLabel],
-		ServicePath:     h.getComposeFilePath(stack.Labels[api.ConfigFilesLabel]),
+		ServicePath:     servicePath,
 	}
 }
 
