@@ -1,5 +1,5 @@
 import {Box, Divider, Drawer, List, ListItemButton, ListItemIcon, Tooltip,} from '@mui/material';
-import {FolderDelete, Logout, Settings} from '@mui/icons-material';
+import {FolderDelete, Logout, Settings, SpaceDashboardOutlined} from '@mui/icons-material';
 import {Link as RouterLink, Outlet, useLocation, useNavigate, useParams} from 'react-router-dom';
 
 import HostSelectDropdown from "./host-selector.tsx";
@@ -43,6 +43,7 @@ export function RootLayout() {
 
     const navigationItems = useMemo(() => [
         {title: 'Files', path: `/${host}/files`, icon: DockerFolderIcon},
+        {title: 'Monitor', path: `/${host}/monitor`, icon: () => <SpaceDashboardOutlined sx={{color: '#4db6ac'}}/>},
         {title: 'Stats', path: `/${host}/stats`, icon: StatsIcon},
         {title: 'Containers', path: `/${host}/containers`, icon: ContainerIcon},
         {title: 'Images', path: `/${host}/images`, icon: ImagesIcon},
