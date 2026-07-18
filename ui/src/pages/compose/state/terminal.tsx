@@ -184,12 +184,17 @@ export const useTerminalAction = create<{
     // floating panel: only a slim header stays docked at the bottom, the
     // body overlays the content while hovered
     floatMode: boolean;
+    // bumped on every open(): all tab openers (logs, exec, last action,
+    // docker run) go through open(), so the floating body can pop up when
+    // content is requested even though the pointer never touched the panel
+    revealNonce: number;
     toggleFloat: () => void;
     toggle: () => void;
     open: () => void
     close: () => void
 }>(set => ({
     isTerminalOpen: false,
+    revealNonce: 0,
     floatMode: localStorage.getItem(FLOAT_MODE_KEY) === '1',
     toggleFloat: () => set(state => {
         const next = !state.floatMode;
@@ -199,8 +204,9 @@ export const useTerminalAction = create<{
     toggle: () => set(state => ({
         isTerminalOpen: !state.isTerminalOpen
     })),
-    open: () => set(() => ({
-        isTerminalOpen: true
+    open: () => set(state => ({
+        isTerminalOpen: true,
+        revealNonce: state.revealNonce + 1,
     })),
     close: () => set(() => ({
         isTerminalOpen: false

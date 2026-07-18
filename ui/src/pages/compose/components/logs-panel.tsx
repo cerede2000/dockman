@@ -19,6 +19,7 @@ export function LogsPanel() {
     const closePanel = useTerminalAction(state => state.close);
     const floatMode = useTerminalAction(state => state.floatMode);
     const toggleFloat = useTerminalAction(state => state.toggleFloat);
+    const revealNonce = useTerminalAction(state => state.revealNonce);
 
     const {tabs, activeTab, setActiveTab, close, clearAll} = useTerminalTabs();
     const fitAddonRef = useRef<FitAddon>(new FitAddon());
@@ -56,6 +57,19 @@ export function LogsPanel() {
             scheduleCollapse();
         }
     }, [isResizing, cancelCollapse, scheduleCollapse]);
+
+    // a freshly requested tab (logs, exec, last action, docker run…) must
+    // surface the floating body even though the pointer never touched the
+    // panel; the ref seeds with the mount-time nonce so switching views
+    // doesn't count as a new request
+    const seenReveal = useRef(revealNonce);
+    useEffect(() => {
+        if (revealNonce === seenReveal.current) return;
+        seenReveal.current = revealNonce;
+        if (!floatMode) return;
+        cancelCollapse();
+        setHovered(true);
+    }, [revealNonce, floatMode, cancelCollapse]);
 
     // tabs hold container ids and socket urls scoped to one docker host:
     // after a host switch they would query the wrong daemon, so drop them

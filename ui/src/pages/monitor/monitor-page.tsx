@@ -573,8 +573,12 @@ function MonitorPage() {
                 flexDirection: 'column',
                 flexGrow: 1,
                 minHeight: 0,
-                p: {xs: 1, md: 3},
-                pb: 0,
+                // longhand paddings on purpose: a responsive `p` shorthand is
+                // emitted inside media queries that MUI sorts after plain
+                // props, so a flat `pb: 0` loses and the table keeps a dead
+                // band above the bottom panel
+                pt: {xs: 1, md: 3},
+                px: {xs: 1, md: 3},
                 overflow: 'hidden',
                 ...scrollbarStyles
             }}>
