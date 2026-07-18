@@ -9,6 +9,7 @@ require (
 	dario.cat/mergo v1.0.2
 	fyne.io/systray v1.12.0
 	github.com/coreos/go-oidc/v3 v3.17.0
+	github.com/creack/pty v1.1.24
 	github.com/docker/compose/v5 v5.1.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/fatih/color v1.18.0

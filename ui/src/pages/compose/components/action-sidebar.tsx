@@ -1,4 +1,4 @@
-import {useFileComponents, useTerminalAction} from "../state/terminal.tsx";
+import {useContainerExec, useFileComponents, useTerminalAction} from "../state/terminal.tsx";
 import {Box, Divider, IconButton, Tooltip, Typography} from "@mui/material";
 import {
     Add as AddIcon,
@@ -10,6 +10,7 @@ import {
     PushPin as PushPinIcon,
     PushPinOutlined as PushPinOutlinedIcon,
     Search as SearchIcon,
+    Terminal,
     TerminalOutlined,
     VerticalSplit as PlacementIcon,
 } from "@mui/icons-material";
@@ -21,6 +22,7 @@ import {type FolderAlias} from "../../../gen/host/v1/host_pb.ts";
 import {useAliasAddDialogState} from "./add-alias-dialog.tsx";
 import {useSidebarActions} from "../hooks/sidebar-actions.ts";
 import {YamlIcon} from "./file-icon.tsx";
+import {useHostShellWsUrl} from "../../../lib/api.ts";
 
 // Shared style for the compact 40x40 rail buttons.
 const railBtnSx = {
@@ -39,7 +41,7 @@ const ActionSidebar = () => {
     const {isTerminalOpen, toggle: terminalToggle} = useTerminalAction(state => state);
     const {aliases} = useAlias();
     const nav = useNavigate()
-    const {alias: activeAlias, host} = useFileComponents()
+    const {alias: activeAlias, host, filename} = useFileComponents()
     const openD = useAliasAddDialogState(state => state.setOpen)
 
     const placement = useToolbarPlacement(state => state.placement)
@@ -50,6 +52,17 @@ const ActionSidebar = () => {
     const toggleCompact = useCompactMode(state => state.toggle)
     const {reload, showSearch, showFileAdd, showDockyaml} = useSidebarActions()
     const onSide = placement === 'side'
+
+    const createShellUrl = useHostShellWsUrl()
+    const execParams = useContainerExec(state => state.execParams)
+
+    // shell on the current host, in the open compose file's folder when a
+    // file is being edited, otherwise in the runner user's home
+    const openHostShell = () => {
+        const dir = filename ? filename.split('/').slice(0, -1).pop() : ''
+        const title = dir ? `${dir} (shell)` : `${host} (shell)`
+        execParams(`shell:${host}/${filename || 'home'}`, title, createShellUrl(filename || undefined), true)
+    }
 
     const handleAliasClick = (alias: FolderAlias) => {
         nav(`/${host}/files/${alias.alias}`)
@@ -234,6 +247,23 @@ const ActionSidebar = () => {
                             sx={{...railBtnSx, color: onSide ? 'primary.main' : 'rgba(255,255,255,0.5)'}}
                         >
                             <PlacementIcon sx={{fontSize: 18}}/>
+                        </IconButton>
+                    </Tooltip>
+
+                    <Tooltip
+                        title={filename ? `Host shell (${filename.split('/').slice(0, -1).pop()})` : "Host shell (home)"}
+                        placement="right"
+                    >
+                        <IconButton
+                            onClick={openHostShell}
+                            sx={{
+                                color: 'rgba(255,255,255,0.5)',
+                                borderRadius: 0,
+                                width: '100%',
+                                '&:hover': {color: 'white'}
+                            }}
+                        >
+                            <Terminal fontSize="medium"/>
                         </IconButton>
                     </Tooltip>
 

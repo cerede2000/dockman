@@ -440,6 +440,7 @@ export interface HostStatsView {
     cpuPercent: number;
     memUsed: number;
     memTotal: number;
+    cpus: number;
     cpuHistory: number[];
     memHistory: number[];
 }
@@ -476,6 +477,7 @@ export function useHostStats(enabled: boolean): HostStatsView | null {
                 cpuPercent: val.cpuPercent,
                 memUsed,
                 memTotal,
+                cpus: val.cpus,
                 cpuHistory: h.cpu,
                 memHistory: h.mem,
             });

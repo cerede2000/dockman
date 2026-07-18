@@ -48,6 +48,15 @@ export function makeID(length: number = 15): string {
 export function createTab(wsUrl: string, title: string, interactive: boolean) {
     let ws: WebSocket | undefined;
 
+    // host shells are PTY-backed: keystrokes go out as text frames, while
+    // size updates travel as binary JSON so they can't collide with input
+    const isHostShell = wsUrl.includes('/docker/shell')
+    const sendDims = (term: Terminal) => {
+        if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(new TextEncoder().encode(JSON.stringify({cols: term.cols, rows: term.rows})))
+        }
+    }
+
     const tab: TabTerminal = {
         id: makeID(),
         title: title,
@@ -59,6 +68,9 @@ export function createTab(wsUrl: string, title: string, interactive: boolean) {
 
                 ws.onopen = () => {
                     term.focus();
+                    if (isHostShell) {
+                        sendDims(term)
+                    }
                 };
 
                 ws.onmessage = (event) => {
@@ -84,6 +96,10 @@ export function createTab(wsUrl: string, title: string, interactive: boolean) {
                         ws?.send(data);
                     }
                 });
+
+                if (isHostShell) {
+                    term.onResize(() => sendDims(term));
+                }
             } catch (e: unknown) {
                 // @ts-expect-error: dumbass language
                 writeTermErr(term, e.toString());
