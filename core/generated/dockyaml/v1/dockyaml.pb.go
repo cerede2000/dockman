@@ -276,8 +276,11 @@ type DockmanYaml struct {
 	ComposePage                *ComposeConfig         `protobuf:"bytes,11,opt,name=composePage,proto3" json:"composePage,omitempty"`
 	EditorPage                 *EditorConfig          `protobuf:"bytes,12,opt,name=editorPage,proto3" json:"editorPage,omitempty"`
 	MonitorPage                *MonitorConfig         `protobuf:"bytes,13,opt,name=monitorPage,proto3" json:"monitorPage,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// view opened when landing on a host: files (default), monitor, stats,
+	// containers, images, volumes, networks or cleaner
+	DefaultView   string `protobuf:"bytes,14,opt,name=defaultView,proto3" json:"defaultView,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DockmanYaml) Reset() {
@@ -399,6 +402,13 @@ func (x *DockmanYaml) GetMonitorPage() *MonitorConfig {
 		return x.MonitorPage
 	}
 	return nil
+}
+
+func (x *DockmanYaml) GetDefaultView() string {
+	if x != nil {
+		return x.DefaultView
+	}
+	return ""
 }
 
 type MonitorConfig struct {
@@ -824,7 +834,7 @@ const file_dockyaml_v1_dockyaml_proto_rawDesc = "" +
 	"\bcontents\x18\x01 \x01(\fR\bcontents\"\x10\n" +
 	"\x0eGetYamlRequest\"?\n" +
 	"\x0fGetYamlResponse\x12,\n" +
-	"\x04dock\x18\x01 \x01(\v2\x18.dockyaml.v1.DockmanYamlR\x04dock\"\xad\x06\n" +
+	"\x04dock\x18\x01 \x01(\v2\x18.dockyaml.v1.DockmanYamlR\x04dock\"\xcf\x06\n" +
 	"\vDockmanYaml\x12K\n" +
 	"\vcustomTools\x18\t \x03(\v2).dockyaml.v1.DockmanYaml.CustomToolsEntryR\vcustomTools\x12,\n" +
 	"\x11useComposeFolders\x18\x01 \x01(\bR\x11useComposeFolders\x12>\n" +
@@ -841,7 +851,8 @@ const file_dockyaml_v1_dockyaml_proto_rawDesc = "" +
 	"\n" +
 	"editorPage\x18\f \x01(\v2\x19.dockyaml.v1.EditorConfigR\n" +
 	"editorPage\x12<\n" +
-	"\vmonitorPage\x18\r \x01(\v2\x1a.dockyaml.v1.MonitorConfigR\vmonitorPage\x1a>\n" +
+	"\vmonitorPage\x18\r \x01(\v2\x1a.dockyaml.v1.MonitorConfigR\vmonitorPage\x12 \n" +
+	"\vdefaultView\x18\x0e \x01(\tR\vdefaultView\x1a>\n" +
 	"\x10CustomToolsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"-\n" +
