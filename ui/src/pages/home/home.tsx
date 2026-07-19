@@ -14,7 +14,6 @@ import {
     StatsIcon,
     VolumeIcon
 } from "../compose/components/file-icon.tsx";
-import {useTabsStore} from "../../context/tab-context.tsx";
 import {useHostStore} from "../compose/state/files.ts";
 
 const MAIN_SIDEBAR_WIDTH = 72;
@@ -28,13 +27,11 @@ export function RootLayout() {
     const navigate = useNavigate();
     const location = useLocation();
     const {logout} = useAuth();
-    const {lastOpened} = useTabsStore();
-
     const host = useHostFromUrl()
     const setHost = useHostStore(state => state.setHost)
     useEffect(() => {
         setHost(host)
-    }, [host]);
+    }, [host, setHost]);
 
     const handleLogout = () => {
         logout();
@@ -50,7 +47,7 @@ export function RootLayout() {
         {title: 'Volumes', path: `/${host}/volumes`, icon: VolumeIcon},
         {title: 'Networks', path: `/${host}/networks`, icon: NetworkIcon},
         {title: 'Cleaner', path: `/${host}/cleaner`, icon: () => <FolderDelete sx={{color: 'greenyellow'}}/>},
-    ], [lastOpened, host, navigate]);
+    ], [host]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {

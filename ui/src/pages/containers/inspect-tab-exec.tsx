@@ -25,7 +25,6 @@ import {FitAddon} from "@xterm/addon-fit";
 import {createTab} from "../compose/state/terminal.tsx";
 import {useContainerExecWsUrl} from "../../lib/api.ts";
 import AppTerminal from "../compose/components/logs-terminal.tsx";
-import {useHostStore} from "../compose/state/files.ts";
 import {Close} from "@mui/icons-material";
 
 const commandOptions = ["/bin/sh", "/bin/bash", "sh", "bash", "zsh"];
@@ -33,7 +32,6 @@ const debugImageOptions = ["nixery.dev/shell/fish", "nixery.dev/shell/bash", "ni
 
 const InspectTabExec = ({containerID}: { containerID: string; }) => {
     const {showError} = useSnackbar();
-    const selectedHost = useHostStore(state => state.host)
     const fitAddonRef = useRef<FitAddon>(new FitAddon());
 
     const [selectedCmd, setSelectedCmd] = useState<string>('/bin/sh');
@@ -56,7 +54,7 @@ const InspectTabExec = ({containerID}: { containerID: string; }) => {
     const setupExec = useCallback(() => {
         const url = createExecUrl(containerID, selectedCmd, debuggerImage)
         return createTab(url, `Exec: ${containerID}`, true)
-    }, [containerID, debuggerImage, selectedCmd, selectedHost]);
+    }, [containerID, createExecUrl, debuggerImage, selectedCmd]);
 
     const containerShortId = containerID.slice(0, 12);
 

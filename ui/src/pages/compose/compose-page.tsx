@@ -60,7 +60,7 @@ export const ComposePage = () => {
     useEffect(() => {
         const fullPath = location.pathname + location.search + location.hash;
         setLast(fullPath)
-    }, [location.pathname, location.search, location.hash]);
+    }, [location.pathname, location.search, location.hash, setLast]);
 
     const {aliases, isLoading} = useAlias();
     const {host, alias} = useFileComponents();
@@ -122,13 +122,13 @@ export const ComposePageInner = () => {
     const setAlias = useAliasStore(state => state.setAlias)
     useEffect(() => {
         setAlias(alias)
-    }, [alias]);
+    }, [alias, setAlias]);
 
     const clearTabs = useTerminalTabs(state => state.clearAll)
     const host = useHostStore(state => state.host)
     useEffect(() => {
         clearTabs()
-    }, [host]);
+    }, [clearTabs, host]);
 
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerWidth, setContainerWidth] = useState(1200);

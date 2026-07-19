@@ -191,7 +191,7 @@ function MonitorPage() {
         setSelectedStacks([]);
         setExpanded(viewMemoryFor(host).expanded);
         scrollRestored.current = false;
-    }, [host]);
+    }, [clearTabs, host]);
 
     const createExecUrl = useContainerExecWsUrl();
     const execContainer = useContainerExec(state => state.execParams);
