@@ -301,7 +301,7 @@ const FolderItemDisplay = ({entry, depthIndex}: {
             </ListItemButton>
 
             <Collapse in={folderOpen} timeout={125} unmountOnExit>
-                <List disablePadding sx={{pl: 4, minWidth: '100%', width: 'max-content'}}>
+                <List disablePadding sx={{pl: 4, width: '100%', boxSizing: 'content-box'}}>
                     {!entry.isFetched && isFetchingMore ? (
                         <Box sx={{pl: 2, py: 1}}>
                             <CircularProgress size={16}/>
