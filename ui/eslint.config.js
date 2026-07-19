@@ -18,7 +18,13 @@ export default tseslint.config(
       'react-refresh': reactRefresh,
     },
     rules: {
-      ...reactHooks.configs.recommended.rules,
+      // React Hooks 7 adds compiler-oriented rules to its recommended preset.
+      // Keep the historical checks here; enable the new rules in dedicated
+      // refactoring batches so a tooling upgrade cannot change runtime code.
+      'react-hooks/rules-of-hooks':
+        reactHooks.configs.recommended.rules['react-hooks/rules-of-hooks'],
+      'react-hooks/exhaustive-deps':
+        reactHooks.configs.recommended.rules['react-hooks/exhaustive-deps'],
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },
