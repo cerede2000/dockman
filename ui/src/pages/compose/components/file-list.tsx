@@ -211,10 +211,19 @@ export function FileList() {
 
 const scrollSx = {
     overflowY: 'auto',
-    overflowX: 'hidden',
+    overflowX: 'auto',
     scrollbarGutter: 'stable',
-    '&::-webkit-scrollbar': {width: '6px'},
+    '&::-webkit-scrollbar': {width: '6px', height: '6px'},
     '&::-webkit-scrollbar-thumb': {backgroundColor: 'rgba(255,255,255,0.1)'},
+} as const;
+
+// Keep the tree at least as wide as its viewport, but let deeply indented
+// descendants and long filenames establish a larger intrinsic width. The
+// surrounding scroll area can then expose that width horizontally instead of
+// squeezing nested rows until their labels overlap or disappear.
+const treeListSx = {
+    minWidth: '100%',
+    width: 'max-content',
 } as const;
 
 const FileListInner = () => {
@@ -301,11 +310,11 @@ const FileListInner = () => {
         return (
             <Box sx={{display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0}}>
                 <Box ref={autoScrollPinned} sx={{flexShrink: 0, maxHeight: '45%', ...scrollSx}}>
-                    <List>{renderRange(0, pinnedCount)}</List>
+                    <List sx={treeListSx}>{renderRange(0, pinnedCount)}</List>
                 </Box>
                 <Divider sx={{borderBottomWidth: 2, borderColor: 'divider'}}/>
                 <Box ref={autoScrollMain} sx={{flexGrow: 1, minHeight: 0, ...scrollSx}}>
-                    <List>{renderRange(pinnedCount, files.length)}</List>
+                    <List sx={treeListSx}>{renderRange(pinnedCount, files.length)}</List>
                 </Box>
             </Box>
         )
@@ -314,7 +323,7 @@ const FileListInner = () => {
     // Default: a single scroll area with a visual separator after the pinned run.
     return (
         <Box ref={autoScrollMain} sx={{flexGrow: 1, minHeight: 0, height: '100%', ...scrollSx}}>
-            <List>
+            <List sx={treeListSx}>
                 {renderRange(0, pinnedCount)}
                 {hasPinned && hasRest && (
                     <Divider component="div" sx={{my: 0.5, borderBottomWidth: 2, borderColor: 'divider'}}/>
