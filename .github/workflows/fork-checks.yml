@@ -16,9 +16,8 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branch or ref to check (e.g. fix/auth-context)'
-        required: true
-        default: integration
+        description: 'Optional branch or ref to check (defaults to the workflow ref)'
+        required: false
         type: string
       test_path:
         description: 'Go package path passed to `go test` (owned/passing packages)'
