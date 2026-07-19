@@ -276,13 +276,15 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                 </ListItemIcon>
 
                 <ListItemText
+                    sx={{flexGrow: 1, flexShrink: 0, minWidth: 'max-content'}}
                     primary={displayName}
                     secondary={isComposeFolder ? getEntryDisplayName(entry.isComposeFolder) : ""}
                     slotProps={{
                         primary: {
                             sx: {
                                 fontSize: '0.85rem',
-                                fontWeight: 400
+                                fontWeight: 400,
+                                whiteSpace: 'nowrap',
                             }
                         }
                     }}
@@ -405,9 +407,10 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
                 </ListItemIcon>
 
                 <ListItemText
+                    sx={{flexGrow: 1, flexShrink: 0, minWidth: 'max-content'}}
                     primary={displayName}
                     slotProps={{
-                        primary: {sx: {fontSize: '0.85rem'}}
+                        primary: {sx: {fontSize: '0.85rem', whiteSpace: 'nowrap'}}
                     }}
                 />
 

@@ -211,10 +211,13 @@ export function FileList() {
 
 const scrollSx = {
     overflowY: 'auto',
-    overflowX: 'auto',
+    // Keep the horizontal rail present: unlike overlay scrollbars, this makes
+    // the available horizontal navigation explicit as soon as the tree opens.
+    overflowX: 'scroll',
     scrollbarGutter: 'stable',
-    '&::-webkit-scrollbar': {width: '6px', height: '6px'},
-    '&::-webkit-scrollbar-thumb': {backgroundColor: 'rgba(255,255,255,0.1)'},
+    '&::-webkit-scrollbar': {width: '8px', height: '8px'},
+    '&::-webkit-scrollbar-track': {backgroundColor: 'rgba(255,255,255,0.1)'},
+    '&::-webkit-scrollbar-thumb': {backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: '4px'},
 } as const;
 
 // Keep the tree at least as wide as its viewport, but let deeply indented
