@@ -296,8 +296,8 @@ const FileTabBar = ({track}: { track: number }) => {
     const compact = useCompactMode(state => state.enabled)
     const tabMinHeight = compact ? 34 : undefined
 
-    const contextTabs = useTabsStore(state => state.contextTabs)[contextKey] ?? {0: new Set(), 1: new Set()}
-    const tabs = contextTabs[track] ?? new Set()
+    const contextTabs = useTabsStore(state => state.contextTabs)[contextKey]
+    const tabs = useMemo(() => contextTabs?.[track] ?? new Set<string>(), [contextTabs, track])
     const activeTab = useTabsStore(state => state.lastOpened[track])
 
     useEffect(() => {

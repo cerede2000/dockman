@@ -45,7 +45,7 @@ export function FileList() {
 
     const showFileAdd = useCallback(() => {
         fileCreate(`${alias}`)
-    }, [alias]);
+    }, [alias, fileCreate]);
 
     const editUrl = useEditorUrl()
 

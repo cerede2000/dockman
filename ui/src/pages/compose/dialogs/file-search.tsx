@@ -67,6 +67,7 @@ function FileSearch() {
     const [activeIndex, setActiveIndex] = useState<number>(-1)
 
     const debouncedSearchQuery = useDebounce(searchQuery, 200)
+    const debouncedSearchQueryRef = useRef(debouncedSearchQuery)
     const ws = useRef<WebSocket | null>(null)
     const listRef = useRef<HTMLUListElement>(null)
 
@@ -79,7 +80,7 @@ function FileSearch() {
             socket = new WebSocket(getWSUrl(`${base}/file/search/${activeAlias}`))
             socket.onopen = () => {
                 setError(null)
-                if (debouncedSearchQuery) socket?.send(debouncedSearchQuery)
+                if (debouncedSearchQueryRef.current) socket?.send(debouncedSearchQueryRef.current)
             }
             socket.onmessage = (ev) => {
                 const data = JSON.parse(ev.data)
@@ -98,6 +99,7 @@ function FileSearch() {
     }, [isOpen, activeAlias, host])
 
     useEffect(() => {
+        debouncedSearchQueryRef.current = debouncedSearchQuery
         if (ws.current?.readyState === WebSocket.OPEN) {
             ws.current.send(debouncedSearchQuery)
         }

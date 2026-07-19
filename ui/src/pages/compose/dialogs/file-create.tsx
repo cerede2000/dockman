@@ -359,13 +359,14 @@ const TemplateCreate = ({rootPath, onClose}: {
     const [formVars, setFormVars] = useState<{ [key: string]: string }>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
 
-    const runner = useRPCRunner(() => fileService.getTmpls({
+    const templateRunner = useRPCRunner(() => fileService.getTmpls({
         alias: rootPath,
     }));
+    const loadTemplates = templateRunner.runner;
 
     useEffect(() => {
-        runner.runner().then();
-    }, [rootPath]);
+        loadTemplates().then();
+    }, [rootPath, loadTemplates]);
 
     const handleSelectTemplate = (tmpl: Template) => {
         setSelectedTmpl(tmpl);
@@ -390,7 +391,7 @@ const TemplateCreate = ({rootPath, onClose}: {
         await listFiles("", [])
     };
 
-    if (runner.loading) {
+    if (templateRunner.loading) {
         return (
             <Stack
                 sx={{
@@ -407,12 +408,12 @@ const TemplateCreate = ({rootPath, onClose}: {
         );
     }
 
-    if (runner.err) {
+    if (templateRunner.err) {
         return (
             <Box sx={{py: 4}}>
                 <Alert severity="error" variant="outlined" sx={{borderRadius: 2}}>
-                    {runner.err}
-                    <Button size="small" color="inherit" sx={{ml: 2, fontWeight: 700}} onClick={() => runner.runner()}>
+                    {templateRunner.err}
+                    <Button size="small" color="inherit" sx={{ml: 2, fontWeight: 700}} onClick={() => loadTemplates()}>
                         Retry
                     </Button>
                 </Alert>
@@ -420,7 +421,7 @@ const TemplateCreate = ({rootPath, onClose}: {
         );
     }
 
-    if (!runner.val?.templs || runner.val.templs.length === 0) {
+    if (!templateRunner.val?.templs || templateRunner.val.templs.length === 0) {
         return (
             <Paper
                 variant="outlined"
@@ -521,7 +522,7 @@ const TemplateCreate = ({rootPath, onClose}: {
             </Typography>
             <Box sx={{maxHeight: '400px', overflowY: 'auto', ...scrollbarStyles, px: 0.5}}>
                 <Stack spacing={1.5}>
-                    {runner.val.templs.map((tmpl, idx) => (
+                    {templateRunner.val.templs.map((tmpl, idx) => (
                         <Paper
                             key={idx}
                             variant="outlined"

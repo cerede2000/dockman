@@ -30,25 +30,24 @@ function StorageInuse({refetch}: { refetch: boolean }) {
     const cleaner = useHostClient(CleanerService);
     const {showError} = useSnackbar();
 
-    const spaceStatusRpc = useRPCRunner(() => cleaner.spaceStatus({}));
+    const {runner, val, loading, err} = useRPCRunner(() => cleaner.spaceStatus({}));
 
-    async function fetchStorage() {
-        await spaceStatusRpc.runner();
-        if (spaceStatusRpc.err) showError(spaceStatusRpc.err);
-    }
-
-    const refetcher = useCallback(async () => {
-        await fetchStorage();
-    }, [refetch]);
+    const fetchStorage = useCallback(async () => {
+        await runner();
+    }, [runner]);
 
     useEffect(() => {
-        refetcher().then();
-    }, [refetcher]);
+        if (err) showError(err);
+    }, [err, showError]);
+
+    useEffect(() => {
+        fetchStorage().then();
+    }, [fetchStorage, refetch]);
 
     return (
         <Paper variant="elevation" sx={{borderRadius: 3}}>
             <Box sx={{p: 3, flexGrow: 1, overflow: 'auto', ...scrollbarStyles}}>
-                {(spaceStatusRpc.loading || !spaceStatusRpc.val) ? (
+                {(loading || !val) ? (
                     <Box
                         sx={{
                             display: "flex",
@@ -72,23 +71,23 @@ function StorageInuse({refetch}: { refetch: boolean }) {
                         <Grid container spacing={3}>
                             <Grid size={{xs: 12, sm: 6, md: 4, lg: 2.4}}>
                                 <SpaceStateDisplay icon={<Inventory2Outlined/>} onClean={fetchStorage}
-                                                   title="Containers" stat={spaceStatusRpc.val.Containers}/>
+                                                   title="Containers" stat={val.Containers}/>
                             </Grid>
                             <Grid size={{xs: 12, sm: 6, md: 4, lg: 2.4}}>
                                 <SpaceStateDisplay icon={<ImageOutlined/>} onClean={fetchStorage} title="Images"
-                                                   stat={spaceStatusRpc.val.Images}/>
+                                                   stat={val.Images}/>
                             </Grid>
                             <Grid size={{xs: 12, sm: 6, md: 4, lg: 2.4}}>
                                 <SpaceStateDisplay icon={<FolderSpecialOutlined/>} onClean={fetchStorage}
-                                                   title="Volumes" stat={spaceStatusRpc.val.Volumes}/>
+                                                   title="Volumes" stat={val.Volumes}/>
                             </Grid>
                             <Grid size={{xs: 12, sm: 6, md: 4, lg: 2.4}}>
                                 <SpaceStateDisplay icon={<StorageOutlined/>} onClean={fetchStorage} title="BuildCache"
-                                                   stat={spaceStatusRpc.val.BuildCache}/>
+                                                   stat={val.BuildCache}/>
                             </Grid>
                             <Grid size={{xs: 12, sm: 6, md: 4, lg: 2.4}}>
                                 <SpaceStateDisplay icon={<LanOutlined/>} onClean={fetchStorage} title="Networks"
-                                                   stat={spaceStatusRpc.val.Network}/>
+                                                   stat={val.Network}/>
                             </Grid>
                         </Grid>
                     </Fade>

@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useCallback, useEffect, useState} from 'react';
 import {
     Box,
     Button,
@@ -34,7 +34,7 @@ function TabDockerHosts() {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [selectedHost, setSelectedHost] = useState<Host | null>(null);
 
-    const loadHosts = async () => {
+    const loadHosts = useCallback(async () => {
         setLoading(true);
         setErr("");
 
@@ -46,11 +46,11 @@ function TabDockerHosts() {
         }
 
         setLoading(false);
-    };
+    }, [hostClient]);
 
     useEffect(() => {
         loadHosts().then();
-    }, []);
+    }, [loadHosts]);
 
     const handleToggle = async (host: Host, val: boolean) => {
         const {err} = await callRPC(() => hostClient.toggleClient({name: host.name, enable: val}))

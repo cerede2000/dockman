@@ -434,7 +434,7 @@ export function useDockerStats(selectedPage?: string) {
         return () => {
             cancelled = true;
         };
-    }, [selectedHost, dockerService, selectedPage]);
+    }, [applyRows, selectedHost, dockerService, selectedPage]);
 
     const handleSortChange = useCallback((newField: SORT_FIELD, newOrderBy: ORDER) => {
         userSorted.current = true
