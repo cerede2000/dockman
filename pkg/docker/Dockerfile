@@ -61,12 +61,14 @@ ARG COMPOSE_VERSION
 # The module source is authenticated by the public Go checksum database.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    mkdir -p /out && \
-    GOBIN=/out CGO_ENABLED=0 go install \
+    go mod download "github.com/docker/compose/v5@${COMPOSE_VERSION}" && \
+    cp -R "/go/pkg/mod/github.com/docker/compose/v5@${COMPOSE_VERSION}" /compose-source && \
+    cd /compose-source && \
+    CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags "-s -w -X github.com/docker/compose/v5/internal.Version=${COMPOSE_VERSION}" \
-      "github.com/docker/compose/v5/cmd@${COMPOSE_VERSION}" && \
-    mv /out/cmd /out/docker-compose && \
+      -o /out/docker-compose \
+      ./cmd && \
     /out/docker-compose version
 
 FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
