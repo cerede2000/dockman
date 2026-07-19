@@ -6,7 +6,7 @@ import {useUploadProgress} from "../hooks/upload-progress.ts";
 import {FileService, type FsEntry} from '../gen/files/v1/files_pb.ts';
 import {useTabs} from "./tab-context.tsx";
 import {useEditorUrl} from "../lib/editor.ts";
-import {useHostStore, useOpenFiles} from "../pages/compose/state/files.ts";
+import {useOpenFiles} from "../pages/compose/state/files.ts";
 import {useFileComponents} from "../pages/compose/state/terminal.tsx";
 
 // btoa only accepts Latin1, so a path with accents, curly quotes or any other
@@ -59,7 +59,6 @@ function FilesProvider({children}: { children: ReactNode }) {
     const [files, setFiles] = useState<FsEntry[]>([])
     const [isLoading, setIsLoading] = useState(true)
 
-    const host = useHostStore(state => state.host)
     // don't use alias store since its dependent on the React lifecycle
     // const alias = useAliasStore(state => state.alias)
     const {alias} = useFileComponents()
@@ -95,7 +94,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         setIsLoading(false)
-    }, [alias, host, client]);
+    }, [alias, client, showError]);
 
     const closeFolder = useOpenFiles(state => state.delete)
     const fileUrl = useEditorUrl()
@@ -116,7 +115,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         await fetchFiles()
-    }, [client, fetchFiles, host, navigate])
+    }, [client, fetchFiles, fileUrl, navigate, showError, showSuccess])
 
     const copyFile = useCallback(async (srcFilename: string, destFilename: string, isDir: boolean) => {
         const {err} = await callRPC(() => client.copy({
@@ -140,7 +139,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         await fetchFiles()
-    }, [])
+    }, [client, fetchFiles, fileUrl, navigate, showError, showSuccess])
 
 
     const deleteFile = async (
