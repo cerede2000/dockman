@@ -14,6 +14,10 @@ FROM node:${NODE_VERSION}-alpine3.24@${NODE_IMAGE_DIGEST} AS front
 
 WORKDIR /frontend
 
+# Electron is a desktop-only development dependency. The container build only
+# compiles the web frontend, so avoid downloading an unused platform binary.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
 COPY ui/package.json ui/package-lock.json ./
 
 RUN --mount=type=cache,target=/root/.npm \
