@@ -1,7 +1,6 @@
-import React, {type ReactElement, useEffect, useMemo, useState} from 'react';
+import React, {type ReactElement, useCallback, useEffect, useMemo, useState} from 'react';
 import {useNavigate, useSearchParams} from 'react-router-dom';
 import {Box, Button, CircularProgress, Fade, Tab, Tabs, Tooltip} from '@mui/material';
-import {useFileComponents} from "../state/terminal.tsx";
 import {callRPC, useHostClient} from "../../../lib/api.ts";
 import {isComposeFile, stackDefaultTab, useEditorUrl} from "../../../lib/editor.ts";
 import {useConfig} from "../../../hooks/config.ts";
@@ -58,33 +57,32 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
     const recursiveOpen = useOpenFiles(state => state.recursiveOpen)
     const compact = useCompactMode(state => state.enabled)
     const tabMinHeight = compact ? '34px' : '48px'
-    const {alias: activeAlias} = useFileComponents()
+
+    const checkExists = useCallback(async () => {
+        setIsLoading(true);
+        setFileError("");
+
+        const {err} = await callRPC(() => fileService.exists({
+            filename: filename,
+        }))
+        if (err) {
+            console.error("API error checking file existence:", err);
+            setFileError(`An API error occurred: ${err}`);
+        }
+        setIsLoading(false);
+        recursiveOpen(filename)
+    }, [fileService, filename, recursiveOpen]);
 
     useEffect(() => {
-        const checkExists = async () => {
-            setIsLoading(true);
-            setFileError("");
-
-            const {err} = await callRPC(() => fileService.exists({
-                filename: filename,
-            }))
-            if (err) {
-                console.error("API error checking file existence:", err);
-                setFileError(`An API error occurred: ${err}`);
-            }
-            setIsLoading(false);
-            recursiveOpen(filename)
-        }
-
         checkExists().then()
-    }, [filename, fileService, activeAlias]);
+    }, [checkExists]);
 
     const editorUrl = useEditorUrl()
 
-    const changeTab = (tabId: string) => {
+    const changeTab = useCallback((tabId: string) => {
         const url = editorUrl(filename, parseInt(tabId), track)
         navigate(url);
-    };
+    }, [editorUrl, filename, navigate, track]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -111,7 +109,7 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [filename, navigate]);
+    }, [changeTab, filename]);
 
     const [saveStatus, setSaveStatus] = useState<SaveState>('idle')
 
