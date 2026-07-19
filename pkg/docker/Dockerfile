@@ -72,6 +72,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod edit \
       -require="golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
       -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" && \
+    go mod tidy && \
     CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags "-s -w -X github.com/docker/compose/v5/internal.Version=${COMPOSE_VERSION}" \
