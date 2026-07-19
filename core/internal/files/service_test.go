@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"os"
@@ -13,6 +14,33 @@ import (
 	"github.com/RA341/dockman/internal/host/filesystem"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSaveUsesCreateCompatibleWriteMode(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	srv := New(func(host, alias string) (filesystem.FileSystem, error) {
+		require.Equal(t, "remote", host)
+		require.Equal(t, "compose", alias)
+		return filesystem.NewLocal(root), nil
+	}, nil)
+
+	// Editor saves use create=false. The destination should still be opened
+	// with CREATE so SFTP servers that require WRITE|CREATE|TRUNC accept it.
+	err := srv.Save("compose/new-file.yml", "remote", false, bytes.NewBufferString("services: {}\n"))
+	require.NoError(t, err)
+
+	contents, err := os.ReadFile(filepath.Join(root, "new-file.yml"))
+	require.NoError(t, err)
+	require.Equal(t, "services: {}\n", string(contents))
+
+	err = srv.Save("compose/new-file.yml", "remote", false, bytes.NewBufferString("services:\n  app: {}\n"))
+	require.NoError(t, err)
+
+	contents, err = os.ReadFile(filepath.Join(root, "new-file.yml"))
+	require.NoError(t, err)
+	require.Equal(t, "services:\n  app: {}\n", string(contents))
+}
 
 func TestList(t *testing.T) {
 	// todo

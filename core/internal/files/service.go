@@ -398,27 +398,34 @@ func (s *Service) GetTemplates(fPath string, hostname string) ([]Template, error
 	return tmpls, nil
 }
 
-func (s *Service) Save(filename, hostname string, create bool, source io.Reader) error {
+func (s *Service) Save(filename, hostname string, _ bool, source io.Reader) error {
 	sfCli, filename, _, err := s.LoadFs(filename, hostname)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve destination: %w", err)
 	}
 
-	// Saving never reads from the destination handle. Requesting read access as
-	// well can make otherwise writable files fail on stricter SFTP servers.
-	flag := os.O_WRONLY | os.O_TRUNC
-	if create {
-		flag |= os.O_CREATE
-	}
+	// pkg/sftp recommends WRITE|CREATE|TRUNC for write-only compatibility.
+	// Several SFTP servers reject WRITE|TRUNC with "permission denied", even
+	// when the destination already exists and is writable. O_CREATE does not
+	// replace an existing file; it only makes the open request portable and
+	// recreates a file that disappeared between loading and saving.
+	flag := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 
 	dest, err := sfCli.OpenFile(filename, flag, os.ModePerm)
 	if err != nil {
-		return err
+		return fmt.Errorf("open destination: %w", err)
 	}
-	defer fileutil.Close(dest)
 
-	_, err = io.Copy(dest, source)
-	return err
+	_, copyErr := io.Copy(dest, source)
+	closeErr := dest.Close()
+	if copyErr != nil {
+		return fmt.Errorf("write destination: %w", copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close destination: %w", closeErr)
+	}
+
+	return nil
 }
 
 func (s *Service) getFileContents(filename, hostname string) ([]byte, error) {

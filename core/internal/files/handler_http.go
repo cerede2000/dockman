@@ -128,8 +128,19 @@ func (h *FileHandler) saveFile(w http.ResponseWriter, r *http.Request) {
 
 		if err = h.srv.Save(string(decodedFileName), getHost, createFile, part); err != nil {
 			_ = part.Close()
-			log.Error().Err(err).Msg("Error saving file")
-			http.Error(w, "Error saving file", http.StatusInternalServerError)
+			log.Error().Err(err).
+				Str("host", getHost).
+				Str("path", string(decodedFileName)).
+				Bool("create", createFile).
+				Msg("Error saving file")
+			switch {
+			case errors.Is(err, fs.ErrPermission):
+				http.Error(w, "permission denied while saving file", http.StatusForbidden)
+			case errors.Is(err, fs.ErrNotExist):
+				http.Error(w, "file path not found", http.StatusNotFound)
+			default:
+				http.Error(w, "Error saving file", http.StatusInternalServerError)
+			}
 			return
 		}
 		_ = part.Close()
