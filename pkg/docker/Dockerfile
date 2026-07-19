@@ -4,6 +4,8 @@ ARG NODE_VERSION=24.18.0
 ARG GO_VERSION=1.26.5
 ARG ALPINE_VERSION=3.24.1
 ARG COMPOSE_VERSION=v5.3.1
+ARG COMPOSE_X_CRYPTO_VERSION=v0.54.0
+ARG COMPOSE_X_TEXT_VERSION=v0.40.0
 ARG NODE_IMAGE_DIGEST=sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 ARG GO_IMAGE_DIGEST=sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
 ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
@@ -56,14 +58,20 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS compose_cli_builder
 
 ARG COMPOSE_VERSION
+ARG COMPOSE_X_CRYPTO_VERSION
+ARG COMPOSE_X_TEXT_VERSION
 
-# Rebuild the exact upstream Compose release with the patched Go toolchain.
-# The module source is authenticated by the public Go checksum database.
+# Rebuild the upstream Compose release with the patched Go toolchain and
+# explicit compatible security updates. Modules are authenticated by sum.golang.org.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go mod download "github.com/docker/compose/v5@${COMPOSE_VERSION}" && \
     cp -R "/go/pkg/mod/github.com/docker/compose/v5@${COMPOSE_VERSION}" /compose-source && \
+    chmod -R u+w /compose-source && \
     cd /compose-source && \
+    go mod edit \
+      -require="golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
+      -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" && \
     CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags "-s -w -X github.com/docker/compose/v5/internal.Version=${COMPOSE_VERSION}" \
@@ -93,6 +101,8 @@ ARG NODE_VERSION
 ARG GO_VERSION
 ARG ALPINE_VERSION
 ARG COMPOSE_VERSION
+ARG COMPOSE_X_CRYPTO_VERSION
+ARG COMPOSE_X_TEXT_VERSION
 ARG NODE_IMAGE_DIGEST
 ARG GO_IMAGE_DIGEST
 ARG ALPINE_IMAGE_DIGEST
@@ -108,6 +118,8 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.go="${GO_VERSION}" \
       dev.dockman.build.alpine="${ALPINE_VERSION}" \
       dev.dockman.build.compose="${COMPOSE_VERSION}" \
+      dev.dockman.build.compose-x-crypto="${COMPOSE_X_CRYPTO_VERSION}" \
+      dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
       dev.dockman.build.node-digest="${NODE_IMAGE_DIGEST}" \
       dev.dockman.build.go-digest="${GO_IMAGE_DIGEST}" \
       dev.dockman.build.alpine-digest="${ALPINE_IMAGE_DIGEST}"
