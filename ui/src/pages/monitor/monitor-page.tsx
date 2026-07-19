@@ -150,7 +150,7 @@ function sumSeries(series: number[][]): number[] {
 function MonitorPage() {
     const dockerService = useHostClient(DockerService);
     const {containers, loading, fetchContainers} = useDockerContainers();
-    const {history, containers: statContainers, aggregates} = useDockerStats("");
+    const {history, containers: statContainers, aggregates, resetContainerStats} = useDockerStats("");
     const hostStats = useHostStats(true);
     const {showSuccess, showError} = useSnackbar();
     const {search, setSearch, searchInputRef} = useSearch();
@@ -177,7 +177,6 @@ function MonitorPage() {
     const [staleRows, setStaleRows] = useState<Record<string, {
         action: RowAction,
         before: string,
-        at: number,
     }>>({});
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const scrollRestored = useRef(false);
@@ -200,6 +199,8 @@ function MonitorPage() {
         clearTabs();
         setSelectedContainers([]);
         setSelectedStacks([]);
+        setRowBusy({});
+        setStaleRows({});
         setExpanded(viewMemoryFor(host).expanded);
         scrollRestored.current = false;
     }, [clearTabs, host]);
@@ -234,7 +235,11 @@ function MonitorPage() {
             if (c.servicePath) group.servicePath = c.servicePath;
             // a row frozen by a lifecycle action renders pending metrics
             // instead of the stream's stale pre-action sample
-            group.rows = [...group.rows, {info: c, stats: staleRows[c.name] ? undefined : statsByName.get(c.name)}];
+            const exposesMetrics = ['running', 'restarting', 'paused'].includes(c.state);
+            group.rows = [...group.rows, {
+                info: c,
+                stats: staleRows[c.name] || !exposesMetrics ? undefined : statsByName.get(c.name),
+            }];
             byStack.set(key, group);
         }
 
@@ -367,8 +372,9 @@ function MonitorPage() {
 
     // drop a frozen row as soon as the UI has fresh evidence of the new
     // state: a moved startedAt for start/restart, the resting state for
-    // stop/pause/unpause, the row vanishing, or a 15s safety timeout (the
-    // uptime tick re-runs this effect, so timeouts need no timers)
+    // stop/pause/unpause, or the row vanishing. There is intentionally no
+    // timeout: an old uptime must never reappear merely because a refresh is
+    // slow; the row stays pending until fresh daemon evidence arrives.
     useEffect(() => {
         const names = Object.keys(staleRows);
         if (names.length === 0) return;
@@ -387,13 +393,13 @@ function MonitorPage() {
                         : m.action === 'pause'
                             ? listed?.state === 'paused'
                             : listed?.state === 'running'; // unpause: startedAt never moves
-            if (settled || listed === undefined || Date.now() - m.at > 15_000) {
+            if (settled || listed === undefined) {
                 delete next[name];
                 changed = true;
             }
         }
         if (changed) setStaleRows(next);
-    }, [staleRows, containers, statsByName, now]);
+    }, [staleRows, containers, statsByName]);
 
     async function containerAction(action: Exclude<RowAction, 'update'>, rpcName: ContainerActionRpc, message: string, ids: string[]) {
         const named = (containers?.list ?? []).filter(c => ids.includes(c.id));
@@ -408,10 +414,13 @@ function MonitorPage() {
             setStaleRows(prev => {
                 const next = {...prev};
                 for (const c of named) {
-                    next[c.name] = {action, before: statsByName.get(c.name)?.startedAt ?? '', at: Date.now()};
+                    next[c.name] = {action, before: statsByName.get(c.name)?.startedAt ?? ''};
                 }
                 return next;
             });
+        }
+        if (action === 'start' || action === 'stop' || action === 'restart') {
+            resetContainerStats(named.map(c => c.name));
         }
         try {
             const {err} = await callRPC(() => dockerService[rpcName]({containerIds: ids}));
@@ -614,6 +623,7 @@ function MonitorPage() {
             disabled: selectedContainers.length === 0,
             handler: () => containerAction('remove', 'containerRemove', 'removed', selectedContainers),
             tooltip: '',
+            confirm: `Remove ${selectedContainers.length} selected container${selectedContainers.length > 1 ? 's' : ''}?`,
         },
     ];
 

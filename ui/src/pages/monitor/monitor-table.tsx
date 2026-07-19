@@ -443,7 +443,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
     } = props;
     const c = row.info;
     const s = row.stats;
-    const hist = history.get(c.name);
+    const hist = s ? history.get(c.name) : undefined;
     const isRunning = c.state === 'running';
     const isPaused = c.state === 'paused';
     const isActive = ['running', 'restarting', 'paused'].includes(c.state);
@@ -638,7 +638,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     <Typography sx={{fontSize: '0.78rem', color: t.text, mb: 0.75}}>
                         Remove <b>{c.name}</b>?
                     </Typography>
-                    <Stack direction="row" spacing={0.75} justifyContent="flex-end">
+                    <Stack direction="row" spacing={0.75} sx={{justifyContent: 'flex-end'}}>
                         <Button size="small" onClick={() => setConfirmEl(null)}
                                 sx={{textTransform: 'none', color: t.textDim, minWidth: 0}}>
                             Cancel
