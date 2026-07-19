@@ -80,13 +80,13 @@ jobs:
       packages: write
     steps:
       - name: Checkout target ref
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Resolve source metadata
         id: source
@@ -95,14 +95,14 @@ jobs:
           echo "build_date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (${{ matrix.arch }})
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: pkg/docker/Dockerfile
@@ -121,15 +121,26 @@ jobs:
             BUILD_DATE=${{ steps.source.outputs.build_date }}
             BRANCH=${{ needs.prepare.outputs.ref }}
 
+      - name: Scan pushed image (${{ matrix.arch }})
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          format: table
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
   manifest:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -144,3 +155,14 @@ jobs:
             "$IMAGE:$TAG-arm64"
           echo "### Image \`$IMAGE:$TAG\`" >> "$GITHUB_STEP_SUMMARY"
           docker buildx imagetools inspect "$IMAGE:$TAG"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+
+      - name: Sign multi-arch image
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: cosign sign --yes "$IMAGE:$TAG"

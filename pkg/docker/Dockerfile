@@ -3,9 +3,12 @@
 ARG NODE_VERSION=24.18.0
 ARG GO_VERSION=1.26.5
 ARG ALPINE_VERSION=3.24.1
-ARG COMPOSE_VERSION=v5.1.4
+ARG COMPOSE_VERSION=v5.3.1
+ARG NODE_IMAGE_DIGEST=sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+ARG GO_IMAGE_DIGEST=sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
-FROM node:${NODE_VERSION}-alpine3.24 AS front
+FROM node:${NODE_VERSION}-alpine3.24@${NODE_IMAGE_DIGEST} AS front
 
 WORKDIR /frontend
 
@@ -18,7 +21,7 @@ COPY ui/ ./
 
 RUN npm run build
 
-FROM golang:${GO_VERSION}-alpine3.24 AS back
+FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS back
 
 WORKDIR /build
 
@@ -50,7 +53,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/dockman \
       ./cmd/docker
 
-FROM alpine:${ALPINE_VERSION} AS compose_cli_downloader
+FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS compose_cli_downloader
 
 WORKDIR /download
 
@@ -74,7 +77,7 @@ RUN case "${TARGETARCH}" in \
     mv "./docker-compose-linux-${compose_arch}" ./docker-compose && \
     chmod +x ./docker-compose
 
-FROM alpine:${ALPINE_VERSION} AS runtime
+FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
 
 # docker-cli powers the run-a-docker-command feature on the local host
 # (remote hosts run it over ssh); it also works through DOCKER_HOST/socketproxy.
@@ -96,6 +99,9 @@ ARG NODE_VERSION
 ARG GO_VERSION
 ARG ALPINE_VERSION
 ARG COMPOSE_VERSION
+ARG NODE_IMAGE_DIGEST
+ARG GO_IMAGE_DIGEST
+ARG ALPINE_IMAGE_DIGEST
 
 LABEL org.opencontainers.image.title="Dockman" \
       org.opencontainers.image.description="Docker management UI built from the Dockman integration fork" \
@@ -107,7 +113,10 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.node="${NODE_VERSION}" \
       dev.dockman.build.go="${GO_VERSION}" \
       dev.dockman.build.alpine="${ALPINE_VERSION}" \
-      dev.dockman.build.compose="${COMPOSE_VERSION}"
+      dev.dockman.build.compose="${COMPOSE_VERSION}" \
+      dev.dockman.build.node-digest="${NODE_IMAGE_DIGEST}" \
+      dev.dockman.build.go-digest="${GO_IMAGE_DIGEST}" \
+      dev.dockman.build.alpine-digest="${ALPINE_IMAGE_DIGEST}"
 
 WORKDIR /app
 

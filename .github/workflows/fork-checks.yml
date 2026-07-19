@@ -36,22 +36,22 @@ jobs:
     defaults:
       run:
         working-directory: core
-    env:
-      # Upstream go.mod is not fully tidy against a whole-module `./...` build
-      # (the Docker image only compiles one target). Allow the module graph to
-      # be resolved on the fly so checks don't fail on pre-existing tidiness.
-      GOFLAGS: -mod=mod
     steps:
       - name: Checkout target ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.inputs.ref || github.ref_name }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: core/go.mod
           cache-dependency-path: core/go.sum
+
+      - name: Verify module graph
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
       # Scope to library code (./internal, ./pkg). The cmd/* main packages use
       # //go:embed dist and need the frontend built first, which is out of scope
@@ -93,3 +93,45 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test ${{ github.event.inputs.test_path || './internal/auth/...' }}
+
+      - name: Build and test Docker target
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go test ./cmd/docker
+          go build -trimpath -buildvcs=false -o "${RUNNER_TEMP}/dockman" ./cmd/docker
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+
+      - name: Check reachable Go vulnerabilities
+        working-directory: .
+        run: bash scripts/check-govuln.sh
+
+  frontend:
+    name: Frontend audit / build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=low
+
+      - name: Build frontend
+        run: npm run build
