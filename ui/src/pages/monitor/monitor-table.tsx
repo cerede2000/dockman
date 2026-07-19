@@ -448,6 +448,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
     const isPaused = c.state === 'paused';
     const isActive = ['running', 'restarting', 'paused'].includes(c.state);
     const busy = rowBusy[c.id];
+    const stackBusy = c.servicePath !== '' && (props.runningStacks[c.servicePath] ?? false);
     // deleting is destructive: a small popover above the button asks first
     const [confirmEl, setConfirmEl] = useState<HTMLElement | null>(null);
     const spinner = <CircularProgress size={14} sx={{color: t.textDim}}/>;
@@ -475,7 +476,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 <Checkbox
                     size="small"
                     checked={isChecked}
-                    disabled={selectedStacks.length > 0}
+                    disabled={selectedStacks.length > 0 || stackBusy}
                     onChange={e => onToggleContainers([c.id], e.target.checked)}
                     sx={{color: t.textDim, p: 0.5}}
                 />
@@ -560,7 +561,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
             <TableCell align="right" sx={{...bodyCell, whiteSpace: 'nowrap'}}>
                 <Tooltip title={isActive ? 'Stop' : 'Start'} arrow>
                     <span>
-                        <IconButton size="small" disabled={!!busy}
+                        <IconButton size="small" disabled={!!busy || stackBusy}
                                     onClick={() => onRowAction(row, isActive ? 'stop' : 'start')}
                                     sx={{color: isActive ? '#ef5350' : '#66bb6a', '&.Mui-disabled': disabledIcon}}>
                             {busy === 'start' || busy === 'stop' ? spinner
@@ -570,7 +571,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 </Tooltip>
                 <Tooltip title="Restart" arrow>
                     <span>
-                        <IconButton size="small" disabled={!!busy}
+                        <IconButton size="small" disabled={!!busy || stackBusy}
                                     onClick={() => onRowAction(row, 'restart')}
                                     sx={{color: '#4db6ac', '&.Mui-disabled': disabledIcon}}>
                             {busy === 'restart' ? spinner : <RestartAlt sx={{fontSize: 16}}/>}
@@ -579,7 +580,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 </Tooltip>
                 <Tooltip title={isPaused ? 'Unpause' : 'Pause'} arrow>
                     <span>
-                        <IconButton size="small" disabled={(!isRunning && !isPaused) || !!busy}
+                        <IconButton size="small" disabled={(!isRunning && !isPaused) || !!busy || stackBusy}
                                     onClick={() => onRowAction(row, isPaused ? 'unpause' : 'pause')}
                                     sx={{color: isPaused ? '#ffb74d' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
                             {busy === 'pause' || busy === 'unpause' ? spinner : <Pause sx={{fontSize: 16}}/>}
@@ -590,7 +591,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     ? 'Update in progress…'
                     : c.updateAvailable ? `Update image (${c.updateAvailable} available)` : 'Update image'} arrow>
                     <span>
-                        <IconButton size="small" disabled={updRun === 'running' || !!busy}
+                        <IconButton size="small" disabled={updRun === 'running' || !!busy || stackBusy}
                                     onClick={() => onRowAction(row, 'update')}
                                     sx={{color: c.updateAvailable ? '#4db6ac' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
                             {updRun === 'running' ? spinner : <Update sx={{fontSize: 16}}/>}
@@ -610,7 +611,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 )}
                 <Tooltip title="Remove" arrow>
                     <span>
-                        <IconButton size="small" disabled={!!busy}
+                        <IconButton size="small" disabled={!!busy || stackBusy}
                                     onClick={e => setConfirmEl(e.currentTarget)}
                                     sx={{color: t.textDim, '&:hover': {color: '#ef5350'}, '&.Mui-disabled': disabledIcon}}>
                             {busy === 'remove' ? spinner : <Delete sx={{fontSize: 16}}/>}
@@ -644,6 +645,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                             Cancel
                         </Button>
                         <Button size="small" variant="contained" color="error"
+                                disabled={stackBusy}
                                 onClick={() => {
                                     setConfirmEl(null);
                                     onRowAction(row, 'remove');

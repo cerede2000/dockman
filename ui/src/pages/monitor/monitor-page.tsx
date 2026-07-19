@@ -473,6 +473,10 @@ function MonitorPage() {
     };
 
     const handleRowAction = (row: MonitorRow, action: RowAction) => {
+        if (row.info.servicePath && runningStacks[row.info.servicePath]) {
+            showError(`Stack ${row.info.stackName}: wait for the current stack action to finish`);
+            return;
+        }
         if (action === 'update') {
             startContainerUpdate(row.info.id, row.info.name);
             return;
@@ -492,6 +496,13 @@ function MonitorPage() {
 
     const runStack = (stackName: string, servicePath: string, action: StackAction) => {
         const {rpc, message} = stackRpc[action];
+        // A stack operation owns all its member containers until it settles.
+        // Drop any pre-existing container selection so the bulk toolbar cannot
+        // issue a conflicting command while Compose is changing the stack.
+        const memberIDs = new Set((containers?.list ?? [])
+            .filter(c => c.servicePath === servicePath)
+            .map(c => c.id));
+        setSelectedContainers(prev => prev.filter(id => !memberIDs.has(id)));
         runAction(servicePath, dockerService[rpc], action, [], (error) => {
             if (error) showError(`Stack ${stackName}: ${action} failed — ${error}`);
             else showSuccess(`Stack ${stackName} ${message}`);
@@ -573,41 +584,43 @@ function MonitorPage() {
     };
 
     const stacksMode = selectedStacks.length > 0;
+    const selectedContainersBlocked = (containers?.list ?? []).some(c =>
+        selectedContainers.includes(c.id) && c.servicePath !== '' && runningStacks[c.servicePath]);
 
     const containerBulkActions = [
         {
             action: 'start', buttonText: 'Start', icon: <PlayArrow/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: () => containerAction('start', 'containerStart', 'started', selectedContainers),
             tooltip: '',
         },
         {
             action: 'stop', buttonText: 'Stop', icon: <Stop/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: () => containerAction('stop', 'containerStop', 'stopped', selectedContainers),
             tooltip: '',
         },
         {
             action: 'restart', buttonText: 'Restart', icon: <RestartAlt/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: () => containerAction('restart', 'containerRestart', 'restarted', selectedContainers),
             tooltip: '',
         },
         {
             action: 'pause', buttonText: 'Pause', icon: <Pause/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: () => containerAction('pause', 'containerPause', 'paused', selectedContainers),
             tooltip: '',
         },
         {
             action: 'unpause', buttonText: 'Unpause', icon: <PlayCircleOutlined/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: () => containerAction('unpause', 'containerUnpause', 'unpaused', selectedContainers),
             tooltip: '',
         },
         {
             action: 'update', buttonText: 'Update', icon: <Update/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: async () => {
                 const list = containers?.list ?? [];
                 for (const id of selectedContainers) {
@@ -620,7 +633,7 @@ function MonitorPage() {
         },
         {
             action: 'remove', buttonText: 'Remove', icon: <Delete/>,
-            disabled: selectedContainers.length === 0,
+            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
             handler: () => containerAction('remove', 'containerRemove', 'removed', selectedContainers),
             tooltip: '',
             confirm: `Remove ${selectedContainers.length} selected container${selectedContainers.length > 1 ? 's' : ''}?`,

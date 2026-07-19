@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	contSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/internal/docker/debug"
@@ -37,8 +38,48 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /logs/{contId}", h.containerLogs)
 	subMux.HandleFunc("GET /shell", h.hostShell)
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
+	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 
 	return subMux
+}
+
+// restartDockman asks the local daemon to restart this container. The daemon
+// performs the full stop/start operation, so it keeps going after Dockman's
+// process exits. A short delay lets the accepted response reach the browser
+// before the connection is interrupted.
+func (h *HandlerHttp) restartDockman(w http.ResponseWriter, r *http.Request) {
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if host != contSrv.LocalClient {
+		http.Error(w, "restart is only supported on the local host", http.StatusBadRequest)
+		return
+	}
+
+	dkSrv, err := h.srv(host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("error getting docker service: %v", err), http.StatusBadRequest)
+		return
+	}
+	cli := dkSrv.Container.Cli()
+	self, err := findSelfContainer(r.Context(), cli)
+	if err != nil {
+		log.Error().Err(err).Msg("dockman self-restart failed to locate its container")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("Dockman restart scheduled."))
+
+	go func(containerID string) {
+		time.Sleep(time.Second)
+		if _, restartErr := cli.ContainerRestart(context.Background(), containerID, client.ContainerRestartOptions{}); restartErr != nil {
+			log.Error().Err(restartErr).Str("container", containerID).Msg("dockman self-restart failed")
+		}
+	}(self.ID)
 }
 
 // updateDockman triggers a manual self-update of the Dockman container on the
