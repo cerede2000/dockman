@@ -211,22 +211,8 @@ export function FileList() {
 
 const scrollSx = {
     overflowY: 'auto',
-    // Keep the horizontal rail present: unlike overlay scrollbars, this makes
-    // the available horizontal navigation explicit as soon as the tree opens.
-    overflowX: 'scroll',
+    overflowX: 'auto',
     scrollbarGutter: 'stable',
-    '&::-webkit-scrollbar': {width: '8px', height: '8px'},
-    '&::-webkit-scrollbar-track': {backgroundColor: 'rgba(255,255,255,0.1)'},
-    '&::-webkit-scrollbar-thumb': {backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: '4px'},
-} as const;
-
-// Keep the tree at least as wide as its viewport, but let deeply indented
-// descendants and long filenames establish a larger intrinsic width. The
-// surrounding scroll area can then expose that width horizontally instead of
-// squeezing nested rows until their labels overlap or disappear.
-const treeListSx = {
-    minWidth: '100%',
-    width: '100%',
 } as const;
 
 const FileListInner = () => {
@@ -313,11 +299,11 @@ const FileListInner = () => {
         return (
             <Box sx={{display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0}}>
                 <Box ref={autoScrollPinned} sx={{flexShrink: 0, maxHeight: '45%', ...scrollSx}}>
-                    <List sx={treeListSx}>{renderRange(0, pinnedCount)}</List>
+                    <List>{renderRange(0, pinnedCount)}</List>
                 </Box>
                 <Divider sx={{borderBottomWidth: 2, borderColor: 'divider'}}/>
                 <Box ref={autoScrollMain} sx={{flexGrow: 1, minHeight: 0, ...scrollSx}}>
-                    <List sx={treeListSx}>{renderRange(pinnedCount, files.length)}</List>
+                    <List>{renderRange(pinnedCount, files.length)}</List>
                 </Box>
             </Box>
         )
@@ -326,7 +312,7 @@ const FileListInner = () => {
     // Default: a single scroll area with a visual separator after the pinned run.
     return (
         <Box ref={autoScrollMain} sx={{flexGrow: 1, minHeight: 0, height: '100%', ...scrollSx}}>
-            <List sx={treeListSx}>
+            <List>
                 {renderRange(0, pinnedCount)}
                 {hasPinned && hasRest && (
                     <Divider component="div" sx={{my: 0.5, borderBottomWidth: 2, borderColor: 'divider'}}/>

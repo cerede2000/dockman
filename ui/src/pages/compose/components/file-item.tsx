@@ -201,7 +201,7 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
 
     useEffect(() => {
         if (folderOpen && !entry.isFetched) {
-            fetchMore().then()
+            void fetchMore()
         }
     }, [entry.isFetched, fetchMore, folderOpen])
 
@@ -309,7 +309,7 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
             </ListItemButton>
 
             <Collapse in={folderOpen} timeout={125} unmountOnExit>
-                <List disablePadding sx={{width: '100%'}}>
+                <List disablePadding>
                     {!entry.isFetched && isFetchingMore ? (
                         <Box sx={{pl: 2 + (depth + 1) * 4, py: 1}}>
                             <CircularProgress size={16}/>

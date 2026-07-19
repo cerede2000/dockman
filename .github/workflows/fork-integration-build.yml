@@ -25,9 +25,8 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branch or ref to build (e.g. fix/auth-context)'
-        required: true
-        default: integration
+        description: 'Optional branch or ref to build (defaults to the workflow ref)'
+        required: false
         type: string
       tag:
         description: 'Optional image tag override (defaults to sanitized ref)'
