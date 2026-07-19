@@ -15,20 +15,20 @@ import {useCompactMode, useOpenFiles} from "../state/files.ts";
 import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {indicatorMap, type SaveState} from "../hooks/status-hook.tsx";
 
-export enum TabType {
+enum TabType {
     // noinspection JSUnusedGlobalSymbols
     EDITOR,
     DEPLOY,
     STATS,
 }
 
-export function parseTabType(input: string | null): TabType {
+function parseTabType(input: string | null): TabType {
     const tabValueInt = parseInt(input ?? '0', 10)
     const isValidTab = TabType[tabValueInt] !== undefined
     return isValidTab ? tabValueInt : TabType.EDITOR
 }
 
-export interface TabDetails {
+interface TabDetails {
     label: string;
     component: React.ReactElement;
     shortcut: React.ReactElement;

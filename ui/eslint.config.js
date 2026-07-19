@@ -27,7 +27,35 @@ export default tseslint.config(
         reactHooks.configs.recommended.rules['react-hooks/exhaustive-deps'],
       'react-refresh/only-export-components': [
         'warn',
-        { allowConstantExport: true },
+        {
+          allowConstantExport: true,
+          // These stable hooks, stores and helpers intentionally share modules
+          // with their providers or views. Keep the rule active for every new
+          // mixed export instead of disabling it for entire directories.
+          allowExportNames: [
+            'FilesContext',
+            'HostContext',
+            'TabsContext',
+            'formatDockyaml',
+            'getContextKey',
+            'getDir',
+            'getEntryDisplayName',
+            'getExt',
+            'getHost',
+            'useAlias',
+            'useAliasAddDialogState',
+            'useFileCreate',
+            'useFileDelete',
+            'useFileDnD',
+            'useFileRename',
+            'useFileSearch',
+            'useFiles',
+            'useHostFromUrl',
+            'useHostManager',
+            'useTabs',
+            'useTabsStore',
+          ],
+        },
       ],
     },
   },
