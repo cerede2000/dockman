@@ -29,7 +29,9 @@ export default function PageHeader({icon, title, count, extra, host, right, comp
                       sx={{fontWeight: 600, color: 'text.secondary'}}/>
             )}
             {host && (
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" sx={{
+                    color: "text.secondary"
+                }}>
                     on <code style={{fontWeight: 'bold'}}>{host}</code>
                 </Typography>
             )}

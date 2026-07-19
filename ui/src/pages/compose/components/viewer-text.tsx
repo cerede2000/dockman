@@ -10,7 +10,7 @@ import {ShortcutFormatter} from "./shortcut-formatter.tsx";
 import {TabDeploy} from "../tab-deploy.tsx";
 import {TabStat} from "../tab-stats.tsx";
 import CenteredMessage from "../../../components/centered-message.tsx";
-import {ErrorOutline} from "@mui/icons-material";
+import {ErrorOutlined} from "@mui/icons-material";
 import {useCompactMode, useOpenFiles} from "../state/files.ts";
 import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {indicatorMap, type SaveState} from "../hooks/status-hook.tsx";
@@ -175,7 +175,7 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
     if (fileError) {
         return (
             <CenteredMessage
-                icon={<ErrorOutline color="error" sx={{fontSize: 60}}/>}
+                icon={<ErrorOutlined color="error" sx={{fontSize: 60}}/>}
                 title={`Unable to load file: ${filename}`}
                 message={fileError}
             />

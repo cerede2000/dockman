@@ -147,10 +147,18 @@ function StateTile({counts}: { counts: StateCounts | null }) {
             {counts ? (
                 <Stack spacing={0.75}>
                     {rows.map((row, i) => (
-                        <Stack key={i} direction="row" spacing={1.5} alignItems="center">
+                        <Stack key={i} direction="row" spacing={1.5} sx={{
+                            alignItems: "center"
+                        }}>
                             {row.map(e => (
                                 <Tooltip key={e.title} title={e.title} arrow placement="top">
-                                    <Stack direction="row" spacing={0.25} alignItems="center" sx={{color: e.color}}>
+                                    <Stack
+                                        direction="row"
+                                        spacing={0.25}
+                                        sx={{
+                                            alignItems: "center",
+                                            color: e.color
+                                        }}>
                                         <Box sx={{display: 'flex', '& svg': {fontSize: 15}}}>{e.icon}</Box>
                                         <Typography sx={{fontFamily: t.mono, fontWeight: 700, fontSize: '0.85rem', lineHeight: 1}}>
                                             {e.count}
@@ -175,7 +183,14 @@ function StateTile({counts}: { counts: StateCounts | null }) {
 
 function TileLabel({icon, label}: { icon: ReactNode, label: string }) {
     return (
-        <Stack direction="row" spacing={0.75} alignItems="center" sx={{mb: 0.25, color: t.textDim}}>
+        <Stack
+            direction="row"
+            spacing={0.75}
+            sx={{
+                alignItems: "center",
+                mb: 0.25,
+                color: t.textDim
+            }}>
             <Box sx={{display: 'flex', '& svg': {fontSize: 14}}}>{icon}</Box>
             <Typography variant="overline" noWrap
                         sx={{fontWeight: 700, lineHeight: 1, letterSpacing: '0.08em', fontSize: '0.62rem'}}>
@@ -198,7 +213,13 @@ function CompactTile({icon, label, value, sub, tooltip, grow = true}: {
     const body = (
         <Box sx={{flex: grow ? '1 1 0' : '0 0 auto', minWidth: 0, alignSelf: 'center', width: grow ? undefined : 'auto'}}>
             <TileLabel icon={icon} label={label}/>
-            <Stack direction="row" spacing={1} alignItems="baseline" sx={{minWidth: 0}}>
+            <Stack
+                direction="row"
+                spacing={1}
+                sx={{
+                    alignItems: "baseline",
+                    minWidth: 0
+                }}>
                 <Typography noWrap sx={{
                     fontFamily: t.mono,
                     fontWeight: 700,
@@ -237,7 +258,13 @@ function ChartTile({icon, label, value, valueColor, sub, data, color}: {
     return (
         <Box sx={{flex: '1.5 1 0', minWidth: 0}}>
             <TileLabel icon={icon} label={label}/>
-            <Stack direction="row" spacing={1.5} alignItems="center" sx={{minWidth: 0}}>
+            <Stack
+                direction="row"
+                spacing={1.5}
+                sx={{
+                    alignItems: "center",
+                    minWidth: 0
+                }}>
                 <Box sx={{flexShrink: 0, width: 134, overflow: 'hidden'}}>
                     <Typography noWrap sx={{
                         fontFamily: t.mono,

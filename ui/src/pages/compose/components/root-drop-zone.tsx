@@ -80,7 +80,9 @@ export function RootDropZone() {
             }}
         >
             <MoveToRootIcon sx={{fontSize: 18}}/>
-            <Typography variant="caption" fontWeight={600} noWrap>
+            <Typography variant="caption" noWrap sx={{
+                fontWeight: 600
+            }}>
                 Move to {alias || 'root'}
             </Typography>
         </Box>

@@ -265,7 +265,9 @@ function NameCell({stat}: { stat: ContainerStats }) {
             <Typography variant="body2" sx={{fontWeight: 600, color: t.text}} noWrap>
                 {stat.name}
             </Typography>
-            <Stack direction="row" spacing={0.5} alignItems="center">
+            <Stack direction="row" spacing={0.5} sx={{
+                alignItems: "center"
+            }}>
                 <Typography variant="caption" sx={{fontFamily: t.mono, color: t.textDim}}>
                     {stat.id.substring(0, 12)}
                 </Typography>
@@ -489,7 +491,9 @@ function RestartButton({containerId, name}: { containerId: string; name: string 
                     <Typography variant="body2" sx={{mb: 1.5}}>
                         Restart <b>{name}</b>?
                     </Typography>
-                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                    <Stack direction="row" spacing={1} sx={{
+                        justifyContent: "flex-end"
+                    }}>
                         <Button size="small" onClick={() => setAnchorEl(null)}>Cancel</Button>
                         <Button size="small" variant="contained" color="warning" onClick={doRestart}>
                             Restart

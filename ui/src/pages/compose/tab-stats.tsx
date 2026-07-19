@@ -55,18 +55,18 @@ export function TabStat({selectedPage = "", variant = 'tab'}: StackStatsProps) {
                         size="small"
                         sx={{fontWeight: 700, color: 'primary.main'}}
                     />
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography variant="caption" sx={{
+                        color: "text.secondary"
+                    }}>
                         on <code style={{fontWeight: 'bold'}}>{host}</code>
                     </Typography>
                     <Box sx={{flexGrow: 1}}/>
                     <SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>
                 </Box>
             )}
-
             <Box sx={{flexShrink: 0}}>
                 <AggregateStats aggregates={aggregates} hostStats={hostStats}/>
             </Box>
-
             <Box sx={{flexGrow: 1, minHeight: 0}}>
                 <ContainerStatTable
                     loading={loading}

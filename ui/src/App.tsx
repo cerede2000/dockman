@@ -194,11 +194,17 @@ function HostGuard() {
                 height: '100vh',
             }}>
                 <CircularProgress size={40} thickness={5}/>
-                <Typography variant="body2" sx={{mt: 2, fontWeight: 700}} color="text.secondary">
+                <Typography
+                    variant="body2"
+                    sx={{
+                        color: "text.secondary",
+                        mt: 2,
+                        fontWeight: 700
+                    }}>
                     Loading hosts...
                 </Typography>
             </Box>
-        )
+        );
     }
 
     const emptyHostList = !availableHosts || availableHosts.length === 0;
@@ -265,7 +271,12 @@ const EmptyHost = ({hostname}: {
 
                     {isInvalid ? (
                         <Box sx={{mb: 3}}>
-                            <Typography variant="body2" color="text.secondary" sx={{mb: 2}}>
+                            <Typography
+                                variant="body2"
+                                sx={{
+                                    color: "text.secondary",
+                                    mb: 2
+                                }}>
                                 The hostname provided does not match any configured hosts.
                             </Typography>
                             <Typography
@@ -285,7 +296,13 @@ const EmptyHost = ({hostname}: {
                             </Typography>
                         </Box>
                     ) : (
-                        <Typography variant="body2" color="text.secondary" sx={{mb: 4, maxWidth: 350}}>
+                        <Typography
+                            variant="body2"
+                            sx={{
+                                color: "text.secondary",
+                                mb: 4,
+                                maxWidth: 350
+                            }}>
                             It looks like you haven't added any Docker Hosts yet.
                             Configure your first node to start managing containers.
                         </Typography>
@@ -332,7 +349,9 @@ const EmptyHost = ({hostname}: {
                         >
                             {availableHosts.map((f) => (
                                 <MenuItem key={f} value={f}>
-                                    <Stack direction="row" spacing={1} alignItems="center">
+                                    <Stack direction="row" spacing={1} sx={{
+                                        alignItems: "center"
+                                    }}>
                                         <FolderIcon sx={{fontSize: 18, color: 'text.disabled'}}/>
                                         <Typography variant="body2" sx={{fontWeight: 600}}>
                                             {f}
@@ -346,9 +365,12 @@ const EmptyHost = ({hostname}: {
                     {/* Footer Link */}
                     <Typography
                         variant="caption"
-                        color="text.disabled"
-                        sx={{mt: 4, display: 'block', textAlign: 'center'}}
-                    >
+                        sx={{
+                            color: "text.disabled",
+                            mt: 4,
+                            display: 'block',
+                            textAlign: 'center'
+                        }}>
                         Need help? Check the <MuiLink href="https://dockman.radn.dev/" target="_blank"
                                                       color="inherit"
                                                       sx={{fontWeight: 700}}>Documentation</MuiLink>

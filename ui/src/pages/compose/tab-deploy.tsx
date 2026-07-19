@@ -98,7 +98,9 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
     if (!selectedPage) {
         return (
             <Box sx={{display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%'}}>
-                <Typography variant="h5" color="text.secondary">Select a deployment</Typography>
+                <Typography variant="h5" sx={{
+                    color: "text.secondary"
+                }}>Select a deployment</Typography>
             </Box>
         );
     }
@@ -117,7 +119,13 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                 flexDirection: 'column',
                 overflow: 'hidden'
             }}>
-                <Stack direction="row" alignItems="center" spacing={2} sx={{mb: 1}}>
+                <Stack
+                    direction="row"
+                    spacing={2}
+                    sx={{
+                        alignItems: "center",
+                        mb: 1
+                    }}>
                     <ComposeActionHeaders
                         selectedServices={selectedServices}
                         fetchContainers={fetchContainers}
@@ -162,7 +170,6 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                     />
                 </Box>
             </Box>
-
             <Dialog open={composeErrorDialog.dialog} onClose={closeErrorDialog}>
                 <DialogTitle>Error</DialogTitle>
                 <DialogContent>
@@ -172,7 +179,6 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                     <Button onClick={closeErrorDialog} color="primary">Close</Button>
                 </DialogActions>
             </Dialog>
-
             <Dialog open={showExecDialog} onClose={closeExecDialog}>
                 <DialogTitle>Choose exec entrypoint</DialogTitle>
                 <DialogContent sx={{overflow: 'visible'}}>
@@ -189,9 +195,13 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                                 variant="outlined"
                                 size="small"
                                 slotProps={{
-                                    inputLabel: {style: {color: '#aaa'}},
+                                    ...params.slotProps,
+                                    inputLabel: {
+                                        ...params.slotProps.inputLabel,
+                                        style: {color: '#aaa'}
+                                    },
                                     input: {
-                                        ...params.InputProps,
+                                        ...params.slotProps.input,
                                         style: {color: '#fff', backgroundColor: '#333'}
                                     }
                                 }}
@@ -216,9 +226,13 @@ export function TabDeploy({selectedPage}: DeployPageProps) {
                                     variant="outlined"
                                     size="small"
                                     slotProps={{
-                                        inputLabel: {style: {color: '#aaa'}},
+                                        ...params.slotProps,
+                                        inputLabel: {
+                                            ...params.slotProps.inputLabel,
+                                            style: {color: '#aaa'}
+                                        },
                                         input: {
-                                            ...params.InputProps,
+                                            ...params.slotProps.input,
                                             style: {color: '#fff', backgroundColor: '#333'}
                                         }
                                     }}

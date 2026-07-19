@@ -5,7 +5,7 @@ import {
     Delete,
     Pause,
     PlayArrow,
-    PlayCircleOutline,
+    PlayCircleOutlined,
     RestartAlt,
     SpaceDashboardOutlined,
     Stop,
@@ -512,7 +512,7 @@ function MonitorPage() {
             tooltip: '',
         },
         {
-            action: 'unpause', buttonText: 'Unpause', icon: <PlayCircleOutline/>,
+            action: 'unpause', buttonText: 'Unpause', icon: <PlayCircleOutlined/>,
             disabled: selectedContainers.length === 0,
             handler: () => containerAction('unpause', 'containerUnpause', 'unpaused', selectedContainers),
             tooltip: '',

@@ -25,7 +25,9 @@ function ActionButtons({actions, variant = 'outlined', iconOnly = false}: Action
     const {buttonAction, activeAction} = useButtonAction()
 
     return (
-        <Stack direction="row" spacing={iconOnly ? 0.5 : 1} alignItems="center">
+        <Stack direction="row" spacing={iconOnly ? 0.5 : 1} sx={{
+            alignItems: "center"
+        }}>
             {actions.map((action) => (
                 <Tooltip key={action.action}
                          title={iconOnly

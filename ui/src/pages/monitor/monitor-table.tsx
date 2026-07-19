@@ -284,7 +284,13 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                 </Tooltip>
             </TableCell>
             <TableCell colSpan={3} sx={{...bodyCell, py: 0.25}}>
-                <Stack direction="row" spacing={0.75} alignItems="center" sx={{userSelect: 'none'}}>
+                <Stack
+                    direction="row"
+                    spacing={0.75}
+                    sx={{
+                        alignItems: "center",
+                        userSelect: 'none'
+                    }}>
                     <IconButton size="small" sx={{color: t.textDim, p: 0.25}}>
                         {isExpanded ? <ExpandLess sx={{fontSize: 17}}/> : <ExpandMore sx={{fontSize: 17}}/>}
                     </IconButton>
@@ -466,7 +472,9 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 />
             </TableCell>
             <TableCell sx={{...bodyCell, maxWidth: 240, pl: 2.5}}>
-                <Stack direction="row" spacing={0.5} alignItems="center">
+                <Stack direction="row" spacing={0.5} sx={{
+                    alignItems: "center"
+                }}>
                     <Typography noWrap sx={{fontWeight: 600, fontSize: '0.82rem'}}>
                         {c.name}
                     </Typography>
@@ -505,7 +513,9 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     <Typography sx={{fontFamily: t.mono, fontSize: '0.72rem', color: t.textDim}}>–</Typography>
                 ) : (
                     // one entry per line, ports then hostnames
-                    <Stack spacing={0.4} alignItems="flex-start">
+                    (<Stack spacing={0.4} sx={{
+                        alignItems: "flex-start"
+                    }}>
                         {portsList.map((p, i) => (
                             <Box key={`p${i}`} component="span"
                                  sx={{
@@ -535,7 +545,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                                 </Tooltip>
                             </Box>
                         ))}
-                    </Stack>
+                    </Stack>)
                 )}
             </TableCell>
             <TableCell align="right" sx={{...bodyCell, whiteSpace: 'nowrap'}}>
@@ -624,7 +634,9 @@ function StateCell({state, health}: { state: string, health: string }) {
 
     return (
         <TableCell sx={bodyCell}>
-            <Stack direction="row" spacing={0.5} alignItems="center">
+            <Stack direction="row" spacing={0.5} sx={{
+                alignItems: "center"
+            }}>
                 <Tooltip title={state} arrow>
                     <Box sx={{display: 'flex', color: visual.color, '& svg': {fontSize: 17}}}>
                         {visual.icon}

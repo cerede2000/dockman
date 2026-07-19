@@ -166,7 +166,9 @@ const ImagesLoading = () => {
             flex: 1
         }}>
             <CircularProgress sx={{mr: 2}}/>
-            <Typography variant="body1" color="text.secondary">
+            <Typography variant="body1" sx={{
+                color: "text.secondary"
+            }}>
                 Loading images...
             </Typography>
         </Box>
@@ -191,12 +193,12 @@ const ImagesEmpty = ({searchTerm}: { searchTerm: string }) => {
                 mb: 2,
                 mx: 'auto'
             }}/>
-
             <Typography variant="h6" sx={{mb: 1}}>
                 {searchTerm ? 'No images found' : 'No images available'}
             </Typography>
-
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2" sx={{
+                color: "text.secondary"
+            }}>
                 {searchTerm ? (
                     'Try adjusting your search criteria.'
                 ) : (

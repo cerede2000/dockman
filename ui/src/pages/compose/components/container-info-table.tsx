@@ -119,10 +119,14 @@ export function ContainerTable(
             ),
             cell: (c) => (
                 <TableCell>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
+                    <Stack direction="row" spacing={1.5} sx={{
+                        alignItems: "center"
+                    }}>
                         <Box sx={{minWidth: 0}}>
                             <Typography variant="body2" sx={{fontWeight: 700, lineHeight: 1.2}}>{c.name}</Typography>
-                            <Stack direction="row" spacing={0.5} alignItems="center">
+                            <Stack direction="row" spacing={0.5} sx={{
+                                alignItems: "center"
+                            }}>
                                 <Typography variant="caption" sx={{
                                     fontFamily: 'monospace',
                                     color: 'text.secondary',
@@ -239,7 +243,9 @@ export function ContainerTable(
             ),
             cell: (c) => (
                 <TableCell>
-                    <Stack direction="row" alignItems="center" spacing={1}>
+                    <Stack direction="row" spacing={1} sx={{
+                        alignItems: "center"
+                    }}>
                         <Link
                             href={getImageHomePageUrl(c.imageName)}
                             target="_blank"
@@ -295,12 +301,16 @@ export function ContainerTable(
             cell: (c) => (
                 <TableCell>
                     {c.IPAddress ?
-                        <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Stack direction="row" spacing={0.5} sx={{
+                            alignItems: "center"
+                        }}>
                             <Box sx={{display: 'flex', flexWrap: 'wrap', gap: 0.5}}>
                                 {formatIPAddr(c.IPAddress)}
                             </Box>
                         </Stack>
-                        : <Typography variant="caption" color="text.disabled">—</Typography>
+                        : <Typography variant="caption" sx={{
+                        color: "text.disabled"
+                    }}>—</Typography>
                     }
                 </TableCell>
             )
@@ -457,7 +467,11 @@ const StatusChip = ({status, health}: { status: string; health: string }) => {
 };
 
 const formatPorts = (ports: Port[]) => {
-    if (!ports?.length) return <Typography variant="caption" color="text.disabled">—</Typography>;
+    if (!ports?.length) return (
+        <Typography variant="caption" sx={{
+            color: "text.disabled"
+        }}>—</Typography>
+    );
     return ports
         // .sort((a, b) => a.public - b.public)
         .map((p, i) => (
@@ -480,7 +494,11 @@ const formatPorts = (ports: Port[]) => {
 };
 
 const formatIPAddr = (addrs: string[]) => {
-    if (!addrs?.length) return <Typography variant="caption" color="text.disabled">—</Typography>;
+    if (!addrs?.length) return (
+        <Typography variant="caption" sx={{
+            color: "text.disabled"
+        }}>—</Typography>
+    );
 
     return addrs.map((addr, i) => (
         <Box

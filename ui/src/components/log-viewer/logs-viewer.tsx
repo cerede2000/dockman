@@ -439,7 +439,14 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
     return (
         <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, bgcolor: theme.bg}}>
             {/* toolbar */}
-            <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={toolbarRowSx}>
+            <Stack
+                direction="row"
+                spacing={0.5}
+                useFlexGap
+                sx={[{
+                    alignItems: "center",
+                    flexWrap: "wrap"
+                }, ...(Array.isArray(toolbarRowSx) ? toolbarRowSx : [toolbarRowSx])]}>
                 <TextField
                     size="small"
                     placeholder="Search logs..."
@@ -580,7 +587,13 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                 </Tooltip>
 
                 <Tooltip title={lastError ? `Last error: ${lastError}` : ""}>
-                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ml: 0.5}}>
+                    <Stack
+                        direction="row"
+                        spacing={0.75}
+                        sx={{
+                            alignItems: "center",
+                            ml: 0.5
+                        }}>
                         <Box sx={{width: 8, height: 8, borderRadius: '50%', bgcolor: statusMeta.color}}/>
                         <Typography variant="caption" sx={{color: 'text.secondary'}}>
                             {statusMeta.label} · {displayed.length}
@@ -588,10 +601,15 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                     </Stack>
                 </Tooltip>
             </Stack>
-
             {/* merged view: container chips */}
             {isMerged && (
-                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={toolbarRowSx}>
+                <Stack
+                    direction="row"
+                    spacing={0.5}
+                    useFlexGap
+                    sx={[{
+                        flexWrap: "wrap"
+                    }, ...(Array.isArray(toolbarRowSx) ? toolbarRowSx : [toolbarRowSx])]}>
                     {containers.map((c, idx) => {
                         const enabled = !disabledIds.has(c.id);
                         return (
@@ -615,7 +633,6 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                     })}
                 </Stack>
             )}
-
             {/* log lines */}
             <Box
                 ref={scrollRef}
@@ -672,7 +689,6 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                     ))
                 )}
             </Box>
-
             {/* time range popover */}
             <Popover
                 open={rangeAnchor !== null}
@@ -700,7 +716,9 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                         slotProps={{inputLabel: {shrink: true}}}
                         helperText="Setting an upper bound stops following"
                     />
-                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                    <Stack direction="row" spacing={1} sx={{
+                        justifyContent: "flex-end"
+                    }}>
                         <Chip size="small" label="Clear" onClick={clearRange} variant="outlined"/>
                         <Chip size="small" label="Apply" onClick={applyRange} color="primary"/>
                     </Stack>

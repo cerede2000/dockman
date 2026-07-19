@@ -23,7 +23,7 @@ import {
 import {ArrowBack, ContentCopy} from "@mui/icons-material";
 import StorageIcon from "@mui/icons-material/Storage";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutlined";
 import {formatBytes} from "../../lib/editor.ts";
 import {formatDate} from "../../lib/api.ts";
 
@@ -95,7 +95,6 @@ const VolumesInspect = () => {
                     <RefreshIcon/>
                 </IconButton>
             </Box>
-
             <Box sx={{p: 3, flexGrow: 1, overflow: 'auto', position: 'relative'}}>
                 {loading && (
                     <Box sx={{
@@ -103,7 +102,9 @@ const VolumesInspect = () => {
                         justifyContent: 'center', height: '100%', gap: 2
                     }}>
                         <CircularProgress size={40} thickness={4}/>
-                        <Typography variant="h6" color="text.secondary">Loading...</Typography>
+                        <Typography variant="h6" sx={{
+                            color: "text.secondary"
+                        }}>Loading...</Typography>
                     </Box>
                 )}
 
@@ -134,11 +135,18 @@ const VolumesInspect = () => {
                     <Stack spacing={3}>
                         {/* Summary Header */}
                         <Box>
-                            <Typography variant="h5" fontWeight="bold" gutterBottom>
+                            <Typography variant="h5" gutterBottom sx={{
+                                fontWeight: "bold"
+                            }}>
                                 {inspect.vol.name || "Unnamed Volume"}
                             </Typography>
                             <Box sx={{display: 'flex', alignItems: 'center', gap: 1}}>
-                                <Typography variant="body1" color="text.secondary" sx={{fontFamily: 'monospace'}}>
+                                <Typography
+                                    variant="body1"
+                                    sx={{
+                                        color: "text.secondary",
+                                        fontFamily: 'monospace'
+                                    }}>
                                     {inspect.vol.mountPoint || 'N/A'}
                                 </Typography>
                                 {inspect.vol.mountPoint && (
@@ -247,7 +255,9 @@ const VolumesInspect = () => {
                                 </TableContainer>
                             ) : (
                                 <Box sx={{p: 3, textAlign: 'center', bgcolor: 'background.default', borderRadius: 1}}>
-                                    <Typography variant="body1" color="text.secondary">
+                                    <Typography variant="body1" sx={{
+                                        color: "text.secondary"
+                                    }}>
                                         No containers are using this volume
                                     </Typography>
                                 </Box>
@@ -262,7 +272,13 @@ const VolumesInspect = () => {
 
 const Detail = ({label, children}: { label: string; children: ReactNode }) => (
     <Box>
-        <Typography variant="body2" color="text.secondary" sx={{fontSize: '0.9rem', mb: 0.5}}>
+        <Typography
+            variant="body2"
+            sx={{
+                color: "text.secondary",
+                fontSize: '0.9rem',
+                mb: 0.5
+            }}>
             {label}
         </Typography>
         {children}

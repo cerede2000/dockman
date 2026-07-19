@@ -376,9 +376,13 @@ function LogsEmpty() {
                 color: 'rgba(255,255,255,0.3)'
             }}
         >
-            <Stack spacing={2} alignItems="center">
+            <Stack spacing={2} sx={{
+                alignItems: "center"
+            }}>
                 <TerminalRounded sx={{fontSize: 40}} color="inherit"/>
-                <Typography variant="body2" color="inherit" align="center">
+                <Typography variant="body2" align="center" sx={{
+                    color: "inherit"
+                }}>
                     No active terminals selected
                 </Typography>
             </Stack>

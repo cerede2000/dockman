@@ -76,7 +76,13 @@ export const ComposePage = () => {
                 height: '100vh',
             }}>
                 <CircularProgress size={40} thickness={5}/>
-                <Typography variant="body2" sx={{mt: 2, fontWeight: 700}} color="text.secondary">
+                <Typography
+                    variant="body2"
+                    sx={{
+                        color: "text.secondary",
+                        mt: 2,
+                        fontWeight: 700
+                    }}>
                     Loading aliases...
                 </Typography>
             </Box>

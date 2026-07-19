@@ -117,7 +117,9 @@ export function FileList() {
                         opacity: 0.9,
                         '&:hover': {opacity: 1}
                     }}>
-                        <Typography variant={placement === 'side' ? 'body2' : 'subtitle1'} fontWeight="bold" noWrap>
+                        <Typography variant={placement === 'side' ? 'body2' : 'subtitle1'} noWrap sx={{
+                            fontWeight: "bold"
+                        }}>
                             {alias}
                         </Typography>
                     </Box>
@@ -204,7 +206,7 @@ export function FileList() {
                 )}
             </Box>
         </>
-    )
+    );
 }
 
 const scrollSx = {
@@ -268,10 +270,16 @@ const FileListInner = () => {
 
     if (isLoading && files.length < 1) {
         return (
-            <Box display="flex" justifyContent="center" alignItems="center" height="100%">
+            <Box
+                sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    height: "100%"
+                }}>
                 <CircularProgress/>
             </Box>
-        )
+        );
     }
 
     // Pinned entries are always sorted first, so they form a contiguous prefix;

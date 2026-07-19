@@ -15,19 +15,27 @@ interface UseSaveStatusReturn {
 export const indicatorMap: Record<SaveState, { color: string, component: ReactNode }> = {
     typing: {
         color: "primary.main",
-        component: <Typography variant="button" color="primary.main">Typing</Typography>
+        component: <Typography variant="button" sx={{
+            color: "primary.main"
+        }}>Typing</Typography>
     },
     saving: {
         color: "info.main",
-        component: <Typography variant="button" color="info.main">Saving</Typography>
+        component: <Typography variant="button" sx={{
+            color: "info.main"
+        }}>Saving</Typography>
     },
     success: {
         color: "success.main",
-        component: <Typography variant="button" color="success.main">Saved</Typography>
+        component: <Typography variant="button" sx={{
+            color: "success.main"
+        }}>Saved</Typography>
     },
     error: {
         color: "error.main",
-        component: <Typography variant="button" color="error.main">Save Failed</Typography>
+        component: <Typography variant="button" sx={{
+            color: "error.main"
+        }}>Save Failed</Typography>
     },
     idle: {
         color: "primary.secondary",

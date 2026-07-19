@@ -49,10 +49,22 @@ function StorageInuse({refetch}: { refetch: boolean }) {
         <Paper variant="elevation" sx={{borderRadius: 3}}>
             <Box sx={{p: 3, flexGrow: 1, overflow: 'auto', ...scrollbarStyles}}>
                 {(spaceStatusRpc.loading || !spaceStatusRpc.val) ? (
-                    <Box display="flex" flexDirection="column" justifyContent="center" alignItems="center" height="60vh"
-                         gap={2}>
+                    <Box
+                        sx={{
+                            display: "flex",
+                            flexDirection: "column",
+                            justifyContent: "center",
+                            alignItems: "center",
+                            height: "60vh",
+                            gap: 2
+                        }}>
                         <CircularProgress size={32} thickness={5}/>
-                        <Typography variant="body2" color="text.secondary" sx={{fontWeight: 600}}>Calculating disk
+                        <Typography
+                            variant="body2"
+                            sx={{
+                                color: "text.secondary",
+                                fontWeight: 600
+                            }}>Calculating disk
                             usage...</Typography>
                     </Box>
                 ) : (
@@ -116,8 +128,15 @@ const SpaceStateDisplay = ({stat, title, icon, onClean}: {
             transition: 'all 0.2s', '&:hover': {borderColor: 'primary.main', boxShadow: '0 4px 12px rgba(0,0,0,0.05)'}
         }}>
             <Stack spacing={2}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                    <Stack direction="row" spacing={1} alignItems="center">
+                <Stack
+                    direction="row"
+                    sx={{
+                        justifyContent: "space-between",
+                        alignItems: "center"
+                    }}>
+                    <Stack direction="row" spacing={1} sx={{
+                        alignItems: "center"
+                    }}>
                         <Box sx={{color: 'text.disabled', display: 'flex'}}>{icon}</Box>
                         <Typography variant="subtitle2"
                                     sx={{fontWeight: 400, textTransform: 'uppercase', letterSpacing: '0.05em'}}>
@@ -134,8 +153,13 @@ const SpaceStateDisplay = ({stat, title, icon, onClean}: {
                 </Stack>
 
                 <Box sx={{py: 1}}>
-                    <Typography variant="caption" color="text.disabled"
-                                sx={{fontWeight: 700, textTransform: 'uppercase'}}>
+                    <Typography
+                        variant="caption"
+                        sx={{
+                            color: "text.disabled",
+                            fontWeight: 700,
+                            textTransform: 'uppercase'
+                        }}>
                         Reclaimable
                     </Typography>
                     <Typography variant="h5" sx={{
@@ -174,8 +198,13 @@ const SpaceStateDisplay = ({stat, title, icon, onClean}: {
 
 const StatInfo = ({label, value, mono = false}: { label: string, value: string, mono?: boolean }) => (
     <Grid size={{xs: 6}}>
-        <Typography variant="caption" color="text.disabled"
-                    sx={{fontWeight: 700, display: 'block'}}>{label}</Typography>
+        <Typography
+            variant="caption"
+            sx={{
+                color: "text.disabled",
+                fontWeight: 700,
+                display: 'block'
+            }}>{label}</Typography>
         <Typography variant="body2" sx={{fontWeight: 700, fontFamily: mono ? 'monospace' : 'inherit'}}>
             {value}
         </Typography>

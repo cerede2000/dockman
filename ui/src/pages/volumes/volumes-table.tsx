@@ -95,7 +95,9 @@ export const VolumeTable = ({
             ),
             cell: (volume) => (
                 <TableCell>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
+                    <Stack direction="row" spacing={1.5} sx={{
+                        alignItems: "center"
+                    }}>
                         <Box sx={{minWidth: 0, display: 'flex', alignItems: 'center', gap: 0.5}}>
                             <Typography variant="body2" sx={{
                                 fontWeight: 500,
@@ -180,14 +182,18 @@ export const VolumeTable = ({
             cell: (volume) => (
                 <TableCell>
                     {volume.composeProjectName ? (
-                        <Stack direction="row" spacing={1} alignItems="center">
+                        <Stack direction="row" spacing={1} sx={{
+                            alignItems: "center"
+                        }}>
                             <ComposeLink
                                 servicePath={volume.composePath}
                                 stackName={volume.composeProjectName}
                             />
                         </Stack>
                     ) : (
-                        <Typography variant="caption" color="text.disabled">—</Typography>
+                        <Typography variant="caption" sx={{
+                            color: "text.disabled"
+                        }}>—</Typography>
                     )}
                 </TableCell>
             )
@@ -222,7 +228,9 @@ export const VolumeTable = ({
             ),
             cell: (volume) => (
                 <TableCell>
-                    <Stack direction="row" spacing={1} alignItems="center">
+                    <Stack direction="row" spacing={1} sx={{
+                        alignItems: "center"
+                    }}>
                         <FolderIcon sx={{fontSize: 14, color: 'text.disabled'}}/>
                         <Typography variant="caption"
                                     sx={{fontFamily: 'monospace', color: 'text.secondary', wordBreak: 'break-all'}}>
@@ -250,7 +258,13 @@ export const VolumeTable = ({
             ),
             cell: (volume) => (
                 <TableCell>
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{color: 'text.secondary'}}>
+                    <Stack
+                        direction="row"
+                        spacing={1}
+                        sx={{
+                            alignItems: "center",
+                            color: 'text.secondary'
+                        }}>
                         <CalendarIcon sx={{fontSize: 14}}/>
                         <Typography variant="body2" sx={{whiteSpace: 'nowrap'}}>
                             {formatDate(volume.createdAt)}

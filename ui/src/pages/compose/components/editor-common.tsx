@@ -2,7 +2,7 @@ import {MonacoEditor} from "./editor.tsx";
 import {useEffect, useState} from "react";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {Alert, AlertTitle, Box, Button, CircularProgress, Link, Typography} from '@mui/material';
-import {ErrorOutline, WarningAmber} from '@mui/icons-material';
+import {ErrorOutlined, WarningAmber} from '@mui/icons-material';
 import {type SaveState, useSaveStatus} from "../hooks/status-hook.tsx";
 import {ErrFileNotSupported} from "../../../context/file-context.tsx";
 
@@ -76,7 +76,9 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile}: TextEdit
                 gap: 2
             }}>
                 <CircularProgress size={40}/>
-                <Typography variant="body2" color="text.secondary">Loading {filename}...</Typography>
+                <Typography variant="body2" sx={{
+                    color: "text.secondary"
+                }}>Loading {filename}...</Typography>
             </Box>
         );
     }
@@ -115,7 +117,7 @@ const NormalErrView = ({err, retry}: { err: string, retry: () => void }) => {
         <Alert
             severity="error"
             variant="outlined"
-            icon={<ErrorOutline/>}
+            icon={<ErrorOutlined/>}
             sx={{borderRadius: 2, bgcolor: 'background.paper'}}
         >
             <AlertTitle sx={{fontWeight: 700}}>
@@ -153,7 +155,12 @@ const BinaryErrView = ({err}: { err: string }) => {
                 Dockman has determined that this is not a valid text file. To prevent accidental
                 corruption, editing binary files is not allowed.
             </Typography>
-            <Typography variant="caption" color="text.secondary" display="block">
+            <Typography
+                variant="caption"
+                sx={{
+                    color: "text.secondary",
+                    display: "block"
+                }}>
                 If you believe this file should be editable,{' '}
                 <Link
                     href="https://github.com/ra341/dockman/issues"
@@ -175,7 +182,7 @@ const BinaryErrView = ({err}: { err: string }) => {
                 {err}
             </Box>
         </Alert>
-    )
+    );
 }
 
 export default EditorCommon;

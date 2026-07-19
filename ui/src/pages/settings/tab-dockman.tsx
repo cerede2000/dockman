@@ -42,7 +42,12 @@ export default function TabDockman() {
                 p: 3,
             }}>
                 <Typography variant="h6" gutterBottom>Update Dockman</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{mb: 2}}>
+                <Typography
+                    variant="body2"
+                    sx={{
+                        color: "text.secondary",
+                        mb: 2
+                    }}>
                     Pulls the latest Dockman image and recreates the container through a
                     short-lived helper. Dockman restarts and is briefly unavailable; your
                     compose configuration is reused as-is.
