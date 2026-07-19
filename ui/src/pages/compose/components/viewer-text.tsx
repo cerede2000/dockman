@@ -163,7 +163,6 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
         // }
 
         return map;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [filename]);
 
     const currentTab = selectedTab ?? 'editor';

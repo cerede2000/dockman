@@ -31,4 +31,12 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Protobuf output owns its blanket eslint-disable directive. Do not make
+    // generated files noisy when the current rule set happens not to need it.
+    files: ['src/gen/**/*.ts'],
+    linterOptions: {
+      reportUnusedDisableDirectives: 'off',
+    },
+  },
 )
