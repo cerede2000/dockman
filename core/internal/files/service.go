@@ -404,7 +404,9 @@ func (s *Service) Save(filename, hostname string, create bool, source io.Reader)
 		return err
 	}
 
-	flag := os.O_RDWR | os.O_TRUNC
+	// Saving never reads from the destination handle. Requesting read access as
+	// well can make otherwise writable files fail on stricter SFTP servers.
+	flag := os.O_WRONLY | os.O_TRUNC
 	if create {
 		flag |= os.O_CREATE
 	}

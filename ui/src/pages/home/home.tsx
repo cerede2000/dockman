@@ -5,7 +5,7 @@ import {Link as RouterLink, Outlet, useLocation, useNavigate, useParams} from 'r
 import HostSelectDropdown from "./host-selector.tsx";
 import {useAuth} from "../../hooks/auth.ts";
 import {ShortcutFormatter} from "../compose/components/shortcut-formatter.tsx";
-import React, {useEffect, useMemo} from "react";
+import React, {useEffect, useMemo, useRef} from "react";
 import {
     ContainerIcon,
     DockerFolderIcon,
@@ -14,7 +14,9 @@ import {
     StatsIcon,
     VolumeIcon
 } from "../compose/components/file-icon.tsx";
-import {useHostStore} from "../compose/state/files.ts";
+import {useHostStore, useLastOpened} from "../compose/state/files.ts";
+import {useTabsStore} from "../../context/tab-context.tsx";
+import {useTerminalTabs} from "../compose/state/terminal.tsx";
 
 const MAIN_SIDEBAR_WIDTH = 72;
 
@@ -29,9 +31,19 @@ export function RootLayout() {
     const {logout} = useAuth();
     const host = useHostFromUrl()
     const setHost = useHostStore(state => state.setHost)
+    const resetTabs = useTabsStore(state => state.reset)
+    const clearTerminalTabs = useTerminalTabs(state => state.clearAll)
+    const clearLastOpened = useLastOpened(state => state.clear)
+    const previousHost = useRef(host)
     useEffect(() => {
+        if (previousHost.current !== host) {
+            resetTabs()
+            clearTerminalTabs()
+            clearLastOpened()
+            previousHost.current = host
+        }
         setHost(host)
-    }, [host, setHost]);
+    }, [clearLastOpened, clearTerminalTabs, host, resetTabs, setHost]);
 
     const handleLogout = () => {
         logout();

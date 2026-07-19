@@ -12,11 +12,14 @@ import {useFileComponents} from "../pages/compose/state/terminal.tsx";
 // btoa only accepts Latin1, so a path with accents, curly quotes or any other
 // non-Latin1 character throws. Encode the UTF-8 bytes instead; the backend
 // base64-decodes this straight back to the raw UTF-8 path bytes.
-function encodePathToBase64(path: string): string {
+function encodePathForMultipart(path: string): string {
     const bytes = new TextEncoder().encode(path);
     let binary = '';
     bytes.forEach((b) => (binary += String.fromCharCode(b)));
-    return btoa(binary);
+    return btoa(binary)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
 }
 
 export interface FilesContextType {
@@ -194,7 +197,9 @@ function FilesProvider({children}: { children: ReactNode }) {
         return new Promise<string>((resolve) => {
             try {
                 const formData = new FormData();
-                formData.append('contents', fileBlob, encodePathToBase64(fullPath));
+                // A multipart filename is normalized as a filesystem name by
+                // Go. URL-safe Base64 avoids '/' being treated as a separator.
+                formData.append('contents', fileBlob, encodePathForMultipart(fullPath));
 
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', url, true);

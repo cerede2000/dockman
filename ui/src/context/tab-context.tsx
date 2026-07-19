@@ -29,6 +29,7 @@ interface EditorState {
     load: (filename: string) => TabDetails | undefined;
     reorder: (filename: string, targetIndex: number, track?: number) => void;
     clear: (track?: number) => void;
+    reset: () => void;
 }
 
 export const getContextKey = () => {
@@ -203,6 +204,14 @@ export const useTabsStore = create<EditorState>()(
 
                 state.contextTabs[key][track] = new Set();
                 state.lastOpened[track] = '';
+            });
+        },
+
+        reset: () => {
+            set((state) => {
+                state.allTabs = {};
+                state.contextTabs = {};
+                state.lastOpened = {0: '', 1: ''};
             });
         },
 

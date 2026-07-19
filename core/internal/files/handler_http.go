@@ -119,7 +119,7 @@ func (h *FileHandler) saveFile(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		decodedFileName, err := b64.StdEncoding.DecodeString(part.FileName())
+		decodedFileName, err := decodeUploadFilename(part.FileName())
 		if err != nil {
 			_ = part.Close()
 			http.Error(w, "Error converting file name from base64", http.StatusBadRequest)
@@ -137,6 +137,16 @@ func (h *FileHandler) saveFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "no file provided in form", http.StatusBadRequest)
+}
+
+func decodeUploadFilename(encoded string) ([]byte, error) {
+	decoded, err := b64.RawURLEncoding.DecodeString(encoded)
+	if err == nil {
+		return decoded, nil
+	}
+
+	// Accept uploads from older frontends during rolling upgrades.
+	return b64.StdEncoding.DecodeString(encoded)
 }
 
 var upgrader = websocket.Upgrader{

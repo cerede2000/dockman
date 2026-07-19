@@ -1,5 +1,5 @@
 import {type JSX, useEffect, useMemo, useRef, useState} from 'react';
-import {Navigate, Outlet, useLocation, useNavigate} from 'react-router-dom';
+import {Navigate, Outlet, useLocation, useNavigate, useParams} from 'react-router-dom';
 import {Box, CircularProgress, IconButton, Tab, Tabs, Tooltip, Typography} from '@mui/material';
 import {FileList} from "./components/file-list.tsx";
 import {ClearAll, Close} from '@mui/icons-material';
@@ -10,21 +10,23 @@ import FileIcon, {getExt} from "./components/file-icon.tsx";
 import ViewerSqlite from "./components/viewer-sqlite.tsx";
 import ViewerText from "./components/viewer-text.tsx";
 import ViewerDockyaml, {formatDockyaml} from "./components/viewer-dockyml.tsx";
-import {useFileComponents, useTerminalTabs} from "./state/terminal.tsx";
+import {useFileComponents} from "./state/terminal.tsx";
 import {TabsProvider, useTabs, useTabsStore} from "../../context/tab-context.tsx";
 import FilesProvider from "../../context/file-context.tsx";
 import FileSearch from "./dialogs/file-search.tsx";
 import FileCreate from "./dialogs/file-create.tsx";
 import FileDelete from "./dialogs/file-delete.tsx";
 import FileRename from "./dialogs/file-rename.tsx";
-import {useAliasStore, useCompactMode, useHostStore, useLastOpened} from "./state/files.ts";
+import {useAliasStore, useCompactMode, useLastOpened} from "./state/files.ts";
 import AliasProvider, {useAlias} from "../../context/alias-context.tsx";
 import AliasDialog from "./components/add-alias-dialog.tsx";
 import useResizeBar from "./hooks/resize-hook.ts";
 
 export function FilesLayout() {
+    const {host = 'local'} = useParams<{ host: string }>()
+
     return (
-        <AliasProvider>
+        <AliasProvider key={host}>
             <TabsProvider>
                 <Outlet/>
             </TabsProvider>
@@ -35,10 +37,14 @@ export function FilesLayout() {
 function FileIndexRedirect() {
     const lastUrl = useLastOpened(state => state.lastEditorUrl)
     const {aliases} = useAlias()
+    const {host = 'local'} = useParams<{ host: string }>()
 
-    const path = lastUrl
+    const lastUrlHost = lastUrl.split('/')[1]
+    const path = lastUrl && lastUrlHost === host
         ? lastUrl
-        : aliases.at(0)?.alias ?? '';
+        : aliases.at(0)?.alias
+            ? `/${host}/files/${aliases[0].alias}`
+            : '';
 
     console.log("last path", path, aliases.at(0)?.alias)
 
@@ -123,12 +129,6 @@ export const ComposePageInner = () => {
     useEffect(() => {
         setAlias(alias)
     }, [alias, setAlias]);
-
-    const clearTabs = useTerminalTabs(state => state.clearAll)
-    const host = useHostStore(state => state.host)
-    useEffect(() => {
-        clearTabs()
-    }, [clearTabs, host]);
 
     const containerRef = useRef<HTMLDivElement>(null);
     const [containerWidth, setContainerWidth] = useState(1200);
