@@ -1,6 +1,7 @@
 import {create} from 'zustand'
 import type {Terminal} from "@xterm/xterm";
 import {useLocation, useParams} from "react-router-dom";
+import {debugLog, debugWarn} from "../../../lib/debug.ts";
 
 export const useFileComponents = (): { host: string; alias: string; filename: string; splitFilename: string | null } => {
     const params = useParams()
@@ -30,7 +31,6 @@ export const useFileComponents = (): { host: string; alias: string; filename: st
 }
 
 const writeTermErr = (term: Terminal, err: string) => {
-    console.error("Error", err);
     term.write('\r\n\x1b[31m*** Error ***\n');
     term.write(`${err}\x1b[0m\r`);
 }
@@ -83,8 +83,7 @@ export function createTab(wsUrl: string, title: string, interactive: boolean) {
 
                 ws.onclose = () => {
                     term.write('\r\n\x1b[31m*** Connection Closed ***\x1b[0m\r\n');
-                    console.log(`Closing connection`)
-                    // onClose?.()
+                    debugLog("Terminal connection closed")
                 };
 
                 ws.onerror = (err) => {
@@ -241,7 +240,7 @@ export const useTerminalTabs = create<{
         updateTab: (id, term) => {
             const tab = get().tabs.get(id)
             if (!tab) {
-                console.warn(`Unable to update: No tab with id found ${id}`)
+                debugWarn("Unable to update terminal: tab not found", id)
                 return
             }
 

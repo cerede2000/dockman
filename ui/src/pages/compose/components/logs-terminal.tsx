@@ -3,6 +3,7 @@ import {type ITerminalInitOnlyOptions, type ITerminalOptions, Terminal} from "@x
 import {FitAddon} from "@xterm/addon-fit";
 import {Box} from "@mui/material";
 import type {TabTerminal} from "../state/terminal.tsx";
+import {debugWarn} from "../../../lib/debug.ts";
 
 const terminalConfig: ITerminalOptions & ITerminalInitOnlyOptions = {
     theme: {
@@ -48,7 +49,7 @@ const AppTerminal = ({fit, interactive, onTerminal, isActive, onClose}: AppTermi
             try {
                 fit.current.fit();
             } catch (e) {
-                console.warn("Resize error", e);
+                debugWarn("Terminal resize failed", e);
             }
         });
 
