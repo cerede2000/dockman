@@ -128,16 +128,18 @@ export const FileItem = ({entry, index}: { entry: FsEntry; index: number }) => {
                 <FolderItemDisplay
                     entry={entry}
                     depthIndex={[index]}
+                    depth={0}
                 /> :
-                <FileItemDisplay entry={entry}/>
+                <FileItemDisplay entry={entry} depth={0}/>
             }
         </>
     )
 };
 
-const FolderItemDisplay = ({entry, depthIndex}: {
+const FolderItemDisplay = ({entry, depthIndex, depth}: {
     entry: FsEntry,
     depthIndex: number[],
+    depth: number,
 }) => {
     const openFiles = useOpenFiles(state => state.openFiles)
     const toggle = useOpenFiles(state => state.toggle)
@@ -255,6 +257,10 @@ const FolderItemDisplay = ({entry, depthIndex}: {
 
                 sx={{
                     py: compact ? 0.25 : 1.25,
+                    pl: 2 + depth * 4,
+                    minWidth: '100%',
+                    width: 'max-content',
+                    whiteSpace: 'nowrap',
                     backgroundColor: isDragOver ? 'action.hover' : 'transparent',
                     outline: isDragOver ? '1px dashed primary.main' : 'none',
                     outlineOffset: '-2px',
@@ -301,9 +307,9 @@ const FolderItemDisplay = ({entry, depthIndex}: {
             </ListItemButton>
 
             <Collapse in={folderOpen} timeout={125} unmountOnExit>
-                <List disablePadding sx={{pl: 4, width: '100%', boxSizing: 'content-box'}}>
+                <List disablePadding sx={{width: '100%'}}>
                     {!entry.isFetched && isFetchingMore ? (
-                        <Box sx={{pl: 2, py: 1}}>
+                        <Box sx={{pl: 2 + (depth + 1) * 4, py: 1}}>
                             <CircularProgress size={16}/>
                         </Box>
                     ) : (
@@ -314,8 +320,9 @@ const FolderItemDisplay = ({entry, depthIndex}: {
                                     <FolderItemDisplay
                                         key={child.filename}
                                         entry={child}
-                                        depthIndex={[...depthIndex, index]}/> :
-                                    <FileItemDisplay key={child.filename} entry={child}/>
+                                        depthIndex={[...depthIndex, index]}
+                                        depth={depth + 1}/> :
+                                    <FileItemDisplay key={child.filename} entry={child} depth={depth + 1}/>
                             ))
                     )}
                 </List>
@@ -337,7 +344,7 @@ const FolderItemDisplay = ({entry, depthIndex}: {
     )
 }
 
-const FileItemDisplay = ({entry}: { entry: FsEntry }) => {
+const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
     const filename = entry.filename
 
     const {isDragOver, dndProps} = useFileDnD(entry);
@@ -380,6 +387,10 @@ const FileItemDisplay = ({entry}: { entry: FsEntry }) => {
                 {...dndProps}
                 sx={{
                     py: compact ? 0.25 : undefined,
+                    pl: 2 + depth * 4,
+                    minWidth: '100%',
+                    width: 'max-content',
+                    whiteSpace: 'nowrap',
                     backgroundColor: isDragOver ? 'action.hover' : 'transparent',
                     borderLeft: isDragOver ? '3px solid primary.main' : '3px solid transparent',
                 }}

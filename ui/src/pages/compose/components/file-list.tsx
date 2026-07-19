@@ -223,7 +223,7 @@ const scrollSx = {
 // squeezing nested rows until their labels overlap or disappear.
 const treeListSx = {
     minWidth: '100%',
-    width: 'max-content',
+    width: '100%',
 } as const;
 
 const FileListInner = () => {
