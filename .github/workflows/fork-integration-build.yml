@@ -80,27 +80,35 @@ jobs:
       packages: write
     steps:
       - name: Checkout target ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Resolve source metadata
+        id: source
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push (${{ matrix.arch }})
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: pkg/docker/Dockerfile
           push: true
+          sbom: true
+          provenance: mode=max
           platforms: ${{ matrix.platform }}
           tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
@@ -109,7 +117,8 @@ jobs:
             type=registry,ref=${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.tag }}
-            COMMIT_INFO=${{ github.sha }}
+            COMMIT_INFO=${{ steps.source.outputs.commit }}
+            BUILD_DATE=${{ steps.source.outputs.build_date }}
             BRANCH=${{ needs.prepare.outputs.ref }}
 
   manifest:
@@ -120,7 +129,7 @@ jobs:
       packages: write
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
