@@ -46,7 +46,7 @@ export function EditorCommitList({selectedFile, selectedCommit, chooseCommit}: C
             setCommits(val?.commits ?? [])
         }
         setLoading(false)
-    }, [gitClient, selectedFile])
+    }, [gitClient, selectedFile, showError])
 
     useEffect(() => {
         fetchCommitCallback().then()

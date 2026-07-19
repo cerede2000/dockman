@@ -31,7 +31,7 @@ export function useDockerCompose(composeFile: string) {
         }
 
         setContainers(val?.list || [])
-    }, [composeFile, dockerService])
+    }, [composeFile, dockerService, showWarning])
 
     useEffect(() => {
         setLoading(true)

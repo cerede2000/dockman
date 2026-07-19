@@ -2,14 +2,12 @@ import {useCallback, useEffect, useState} from 'react'
 import {callRPC, useHostClient} from '../lib/api.ts'
 import {DockerService, type ListResponse} from '../gen/docker/v1/docker_pb.ts'
 import {useSnackbar} from "./snackbar.ts"
-import {useHostStore} from "../pages/compose/state/files.ts";
 import {useDockerEvents} from "./docker-events.ts";
 import {FAST_POLL_MS, IDLE_POLL_MS, isSettling} from "./container-freshness.ts";
 
 export function useDockerContainers() {
     const dockerService = useHostClient(DockerService)
     const {showWarning} = useSnackbar()
-    const selectedHost = useHostStore(state => state.host)
     // container lifecycle events drive the refresh; polling is a safety net
     const eventBump = useDockerEvents()
 
@@ -26,7 +24,7 @@ export function useDockerContainers() {
         }
 
         setContainers(val)
-    }, [dockerService, selectedHost])
+    }, [dockerService, showWarning])
 
     const refreshContainers = useCallback(() => {
         fetchContainers().finally(() => setLoading(false))

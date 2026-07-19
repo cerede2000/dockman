@@ -48,7 +48,7 @@ function HostAliasManager({hostname, hostId}: { hostname: string, hostId: number
         if (err) showError(err);
         else setAliases(val?.aliases || []);
         setLoading(false);
-    }, [hostname]);
+    }, [hostManager, hostname, showError]);
 
     useEffect(() => {
         fetchAliases().then();

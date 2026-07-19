@@ -45,7 +45,7 @@ export function AuthPage() {
         }
 
         getConfig().then()
-    }, []);
+    }, [authClient, showError]);
 
     const handleLoginSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
