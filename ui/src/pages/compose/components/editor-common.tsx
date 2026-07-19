@@ -1,5 +1,5 @@
 import {MonacoEditor} from "./editor.tsx";
-import {useEffect, useState} from "react";
+import {useCallback, useEffect, useRef, useState} from "react";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {Alert, AlertTitle, Box, Button, CircularProgress, Link, Typography} from '@mui/material';
 import {ErrorOutlined, WarningAmber} from '@mui/icons-material';
@@ -21,18 +21,18 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile}: TextEdit
     const [contents, setContents] = useState<string>("");
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState("");
+    const loadRequest = useRef(0);
 
     const {status, handleContentChange} = useSaveStatus(500, filename);
 
-    const refreshFile = async () => {
-        await getFile(filename)
-    }
-
-    const loadFile = async () => {
+    const loadFile = useCallback(async () => {
+        const request = ++loadRequest.current;
         setErr("")
         setLoading(true)
 
         const {contents, err} = await getFile(filename)
+        if (request !== loadRequest.current) return;
+
         if (err) {
             setErr(err)
         } else {
@@ -40,9 +40,9 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile}: TextEdit
         }
 
         setLoading(false);
-    };
+    }, [filename, getFile]);
 
-    const saveContents = async (newContent: string): Promise<SaveState> => {
+    const saveContents = useCallback(async (newContent: string): Promise<SaveState> => {
         const err = await saveFile(filename, newContent);
         if (err) {
             showError(`Could not save contents: ${err}`);
@@ -50,20 +50,20 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile}: TextEdit
         } else {
             return 'success'
         }
-    };
+    }, [filename, saveFile, showError]);
 
     useEffect(() => {
         setFileSaveStatus(status)
-    }, [status]);
+    }, [setFileSaveStatus, status]);
 
     useEffect(() => {
         loadFile().then();
-    }, []);
+    }, [loadFile]);
 
-    const onContentChange = (value: string | undefined) => {
-        if (!value) return;
+    const onContentChange = useCallback((value: string | undefined) => {
+        if (value === undefined) return;
         handleContentChange(value, saveContents)
-    }
+    }, [handleContentChange, saveContents])
 
     if (loading) {
         return (
@@ -91,7 +91,7 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile}: TextEdit
                         <BinaryErrView err={err}/> :
                         <NormalErrView
                             err={err}
-                            retry={refreshFile}
+                            retry={loadFile}
                         />
                 }
             </Box>

@@ -177,7 +177,7 @@ function FilesProvider({children}: { children: ReactNode }) {
 
     const getUrl = useHostUrl()
 
-    function uploadFile(
+    const uploadFile = useCallback(function (
         fullPath: string,
         content: File | string,
         isNew: boolean = false,
@@ -227,7 +227,7 @@ function FilesProvider({children}: { children: ReactNode }) {
                 resolve("Network error");
             }
         });
-    }
+    }, [getUrl])
 
     const uploadFilesFromPC = async (targetDir: string, files: File[]) => {
         const cleanDir = targetDir.endsWith('/') ? targetDir.slice(0, -1) : targetDir;
@@ -271,7 +271,7 @@ function FilesProvider({children}: { children: ReactNode }) {
     };
 
 
-    async function downloadFile(
+    const downloadFile = useCallback(async function (
         filename: string,
         shouldDownload: boolean = false
     ): Promise<{ file: string; err: string }> {
@@ -312,7 +312,7 @@ function FilesProvider({children}: { children: ReactNode }) {
             console.error(`Error: ${(error as Error).toString()}`);
             return {file: "", err: (error as Error).toString()};
         }
-    }
+    }, [getUrl])
 
     useEffect(() => {
         fetchFiles().then()

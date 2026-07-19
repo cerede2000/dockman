@@ -123,30 +123,33 @@ export function MonacoEditor(
         model.pushStackElement();
         model.setValue(fileContent);
 
-        model.onDidChangeContent(() => {
+        const contentSubscription = model.onDidChangeContent(() => {
             handleEditorChange(model.getValue());
         });
 
         const tab = useTabsStore.getState().allTabs[selectedFile];
-        if (!tab) return;
-        const {row, col} = tab;
+        if (tab) {
+            const {row, col} = tab;
 
-        // Clamp row/column to model size
-        const lineNumber = Math.min(row, model.getLineCount());
-        const column = Math.min(col, model.getLineMaxColumn(lineNumber));
+            // Clamp row/column to model size
+            const lineNumber = Math.min(row, model.getLineCount());
+            const column = Math.min(col, model.getLineMaxColumn(lineNumber));
 
-        editorRef.current.setPosition({lineNumber, column});
-        const padding = 5;
-        editorRef.current.revealRangeInCenter({
-            startLineNumber: Math.max(1, lineNumber - padding),
-            startColumn: 1,
-            endLineNumber: lineNumber + padding,
-            endColumn: 1,
-        });
+            editorRef.current.setPosition({lineNumber, column});
+            const padding = 5;
+            editorRef.current.revealRangeInCenter({
+                startLineNumber: Math.max(1, lineNumber - padding),
+                startColumn: 1,
+                endLineNumber: lineNumber + padding,
+                endColumn: 1,
+            });
+        }
+
+        return () => contentSubscription.dispose();
         // do not add tabs as dependencies
         // it will mess with the editor typing
         // resetting cursor position when the tab
-    }, [fileContent, selectedFile, mounted]);
+    }, [editorGen, fileContent, handleEditorChange, mounted, selectedFile]);
 
     return (
         <Editor

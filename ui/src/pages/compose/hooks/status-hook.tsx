@@ -49,6 +49,18 @@ export function useSaveStatus(debounceMs: number = 500, filename: string): UseSa
 
     useEffect(() => {
         setStatus('idle');
+
+        if (debounceTimeout.current) {
+            clearTimeout(debounceTimeout.current);
+            debounceTimeout.current = null;
+        }
+
+        return () => {
+            if (debounceTimeout.current) {
+                clearTimeout(debounceTimeout.current);
+                debounceTimeout.current = null;
+            }
+        };
     }, [filename]);
 
     const handleContentChange = useCallback<SaveCallback>((value, onSave) => {
