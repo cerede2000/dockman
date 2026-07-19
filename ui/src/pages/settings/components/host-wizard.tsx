@@ -256,7 +256,7 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
     );
 }
 
-export const SectionHeader = ({icon, title}: { icon: any, title: string }) => (
+export const SectionHeader = ({icon, title}: { icon: React.ReactElement<{ sx?: object }>, title: string }) => (
     <Stack
         direction="row"
         spacing={1}

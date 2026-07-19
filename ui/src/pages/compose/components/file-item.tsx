@@ -165,7 +165,7 @@ const FolderItemDisplay = ({entry, depthIndex}: {
 
     const closeComposeStatus = useComposeFileState(state => state.delete)
 
-    const handleToggle = (_e: React.MouseEvent) => {
+    const handleToggle = () => {
         // If it's a link, we want the navigation to happen,
         // but we ALSO want to toggle the folder visibility.
         toggle(entry.filename);

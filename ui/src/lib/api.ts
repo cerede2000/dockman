@@ -47,7 +47,7 @@ export function useContainerLogsWsUrl() {
 export function useContainerExecWsUrl() {
     const getBase = useHostUrl()
     return useCallback((containerId: string, entrypoint: string, debuggerImage?: string) => {
-        let params: Record<string, string> = {
+        const params: Record<string, string> = {
             "cmd": entrypoint,
         }
         if (debuggerImage) {
@@ -217,4 +217,3 @@ export function formatDate(timestamp: bigint | number | string) {
         minute: '2-digit'
     });
 }
-

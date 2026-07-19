@@ -45,6 +45,9 @@ import {
 } from './monitor-table.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 
+type ContainerActionRpc = 'containerStart' | 'containerStop' | 'containerRestart' | 'containerPause'
+    | 'containerUnpause' | 'containerRemove';
+
 // per-host view memory: expand/collapse choices and scroll offset survive
 // navigating away and back (module-level on purpose — state resets with the
 // component, this must not)
@@ -349,8 +352,7 @@ function MonitorPage() {
 
     // ---- container actions -------------------------------------------------
 
-    async function containerAction(name: string, rpcName: keyof typeof dockerService, message: string, ids: string[]) {
-        // @ts-ignore dynamic rpc dispatch, same pattern as the containers view
+    async function containerAction(name: string, rpcName: ContainerActionRpc, message: string, ids: string[]) {
         const {err} = await callRPC(() => dockerService[rpcName]({containerIds: ids}));
         if (err) showError(`Failed to ${name} containers: ${err}`);
         else showSuccess(`Successfully ${message} ${ids.length > 1 ? `${ids.length} containers` : 'container'}`);
@@ -358,7 +360,7 @@ function MonitorPage() {
         await fetchContainers();
     }
 
-    const rowRpc: Record<Exclude<RowAction, 'update'>, { rpc: keyof typeof dockerService, message: string }> = {
+    const rowRpc: Record<Exclude<RowAction, 'update'>, { rpc: ContainerActionRpc, message: string }> = {
         start: {rpc: 'containerStart', message: 'started'},
         stop: {rpc: 'containerStop', message: 'stopped'},
         restart: {rpc: 'containerRestart', message: 'restarted'},

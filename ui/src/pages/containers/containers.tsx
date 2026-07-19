@@ -21,6 +21,8 @@ import {useNavigate} from "react-router-dom";
 import {useHostStore} from "../compose/state/files.ts";
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
 
+type ContainerActionRpc = 'containerStart' | 'containerStop' | 'containerRestart' | 'containerRemove';
+
 function ContainersPage() {
     const dockerService = useHostClient(DockerService);
     const {containers, loading, refreshContainers, fetchContainers} = useDockerContainers();
@@ -79,8 +81,7 @@ function ContainersPage() {
         },
     ];
 
-    async function handleContainerAction(name: string, rpcName: keyof typeof dockerService, message: string) {
-        // @ts-ignore
+    async function handleContainerAction(name: string, rpcName: ContainerActionRpc, message: string) {
         const {err} = await callRPC(() => dockerService[rpcName]({containerIds: selectedContainers}));
         if (err) showError(`Failed to ${name} Containers: ${err}`);
         else showSuccess(`Successfully ${message} containers`);

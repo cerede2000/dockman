@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react'
+import React, {type ReactNode, useEffect, useState} from 'react'
 import {
     Box,
     Checkbox,
@@ -297,7 +297,7 @@ export function ContainerTable(
         },
         IP: {
             getValue: (c) => c.IPAddress.length,
-            header: (_) => <TableCell sx={headerStyles}>ADDRESS</TableCell>,
+            header: () => <TableCell sx={headerStyles}>ADDRESS</TableCell>,
             cell: (c) => (
                 <TableCell>
                     {c.IPAddress ?
@@ -399,7 +399,7 @@ const headerStyles = {
     zIndex: 2,
 };
 
-const ActionBtn = ({icon, title, onClick}: { icon: any, title: string, onClick: () => void }) => (
+const ActionBtn = ({icon, title, onClick}: { icon: ReactNode, title: string, onClick: () => void }) => (
     <Tooltip title={title} arrow>
         <IconButton
             size="small"

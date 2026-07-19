@@ -1,5 +1,5 @@
 import {useHostClient, useRPCRunner} from "../../lib/api.ts";
-import {type ReactElement, type ReactNode, useEffect} from "react";
+import {type ElementType, type ReactElement, type ReactNode, useEffect} from "react";
 
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
 import {
@@ -548,7 +548,7 @@ const SectionHeader = ({icon, title}: { icon: ReactNode, title: string }) => (
 );
 
 const DetailRow = ({icon: Icon, label, value, mono}: {
-    icon?: any, label: string, value?: string | ReactElement, mono?: boolean
+    icon?: ElementType, label: string, value?: string | ReactElement, mono?: boolean
 }) => (
     <Box>
         <Typography

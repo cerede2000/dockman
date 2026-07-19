@@ -45,7 +45,7 @@ export const indicatorMap: Record<SaveState, { color: string, component: ReactNo
 
 export function useSaveStatus(debounceMs: number = 500, filename: string): UseSaveStatusReturn {
     const [status, setStatus] = useState<SaveState>('idle');
-    const debounceTimeout = useRef<null | number>(null);
+    const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
         setStatus('idle');
@@ -58,7 +58,6 @@ export function useSaveStatus(debounceMs: number = 500, filename: string): UseSa
             clearTimeout(debounceTimeout.current);
         }
 
-        // @ts-ignore TODO why is this err
         debounceTimeout.current = setTimeout(async () => {
             setStatus('saving');
             const state = await onSave(value)

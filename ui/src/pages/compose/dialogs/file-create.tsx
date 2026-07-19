@@ -145,7 +145,7 @@ function FileCreate({initialName = ""}: { initialName?: string }) {
         const trimmedName = name.trim();
         if (!trimmedName) return;
 
-        let finalPath = rootPath ? `${rootPath.replace(/\/$/, '')}/${trimmedName}` : trimmedName;
+        const finalPath = rootPath ? `${rootPath.replace(/\/$/, '')}/${trimmedName}` : trimmedName;
         const selectedPreset = FILE_PRESETS[selectedPresetIndex].type;
 
         try {
