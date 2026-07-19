@@ -49,14 +49,14 @@ export function FileList() {
 
     const editUrl = useEditorUrl()
 
-    function showDockyaml() {
+    const showDockyaml = useCallback(() => {
         nav(editUrl(formatDockyaml(alias, host)))
-    }
+    }, [alias, editUrl, host, nav])
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if ((event.altKey) && event.key === 'r') {
-                listFiles("", []).then()
+                void listFiles("", [])
             }
             if ((event.altKey) && event.key === 's') {
                 event.preventDefault()
@@ -75,8 +75,7 @@ export function FileList() {
         return () => {
             window.removeEventListener('keydown', handleKeyDown)
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+    }, [listFiles, showDockyaml, showFileAdd, showSearch])
 
     const {panelSize, panelRef, handleMouseDown, isResizing} = useResizeBar('right')
 
