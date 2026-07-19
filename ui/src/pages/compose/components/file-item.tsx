@@ -11,7 +11,7 @@ import {
     MenuItem, Tooltip
 } from "@mui/material";
 import {useLocation, useNavigate} from 'react-router-dom'
-import React, {type MouseEvent, useEffect, useState} from 'react'
+import React, {type MouseEvent, useCallback, useEffect, useRef, useState} from 'react'
 import {ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
 import {Link as RouterLink} from "react-router";
 import FileIcon, {DockerFolderIcon} from "./file-icon.tsx";
@@ -177,22 +177,31 @@ const FolderItemDisplay = ({entry, depthIndex}: {
             // folder's own stack status so its dot stays visible while collapsed.
             closeComposeStatus(entry.filename, entry.isComposeFolder)
         }
-    }, [folderOpen]);
+    }, [closeComposeStatus, entry.filename, entry.isComposeFolder, folderOpen]);
 
     const [isFetchingMore, setIsFetchingMore] = useState(false)
+    const fetchingMore = useRef(false)
+    const depthPath = depthIndex.join(',')
 
-    const fetchMore = async () => {
+    const fetchMore = useCallback(async () => {
+        if (entry.isFetched || fetchingMore.current) return
+
+        fetchingMore.current = true
         setIsFetchingMore(true)
-        if (entry.isFetched) return
-        await listFiles(name, depthIndex)
-        setIsFetchingMore(false)
-    }
+        try {
+            const currentDepthIndex = depthPath.split(',').map(Number)
+            await listFiles(name, currentDepthIndex)
+        } finally {
+            fetchingMore.current = false
+            setIsFetchingMore(false)
+        }
+    }, [depthPath, entry.isFetched, listFiles, name])
 
     useEffect(() => {
-        if (folderOpen && !entry.isFetched && !isFetchingMore) {
+        if (folderOpen && !entry.isFetched) {
             fetchMore().then()
         }
-    }, [folderOpen, entry.isFetched])
+    }, [entry.isFetched, fetchMore, folderOpen])
 
     const {contextMenu, closeCtxMenu, contextActions, handleContextMenu} = useFileMenuCtx(entry)
 
@@ -208,7 +217,7 @@ const FolderItemDisplay = ({entry, depthIndex}: {
         if (entry.isComposeFolder) {
             trackComposeStatus(entry.isComposeFolder);
         }
-    }, [entry.isComposeFolder]);
+    }, [entry.isComposeFolder, trackComposeStatus]);
 
     const navigate = useNavigate()
     const createFileUrl = useEditorUrl()
@@ -343,7 +352,7 @@ const FileItemDisplay = ({entry}: { entry: FsEntry }) => {
         if (isComposeFile(filename)) {
             trackComposeStatus(filename);
         }
-    }, [filename]);
+    }, [filename, trackComposeStatus]);
 
     const navigate = useNavigate()
     const createFileUrl = useEditorUrl()
