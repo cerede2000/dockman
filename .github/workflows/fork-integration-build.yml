@@ -121,10 +121,35 @@ jobs:
             BUILD_DATE=${{ steps.source.outputs.build_date }}
             BRANCH=${{ needs.prepare.outputs.ref }}
 
-      - name: Scan pushed image (${{ matrix.arch }})
+      - name: Report all vulnerabilities (${{ matrix.arch }})
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          version: v0.72.0
+          format: json
+          output: trivy-${{ matrix.arch }}.json
+          vuln-type: os,library
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+          scanners: vuln
+        env:
+          TRIVY_PLATFORM: ${{ matrix.platform }}
+
+      - name: Upload vulnerability report (${{ matrix.arch }})
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-${{ matrix.arch }}
+          path: trivy-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Gate fixable high and critical vulnerabilities (${{ matrix.arch }})
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          version: v0.72.0
           format: table
           vuln-type: os,library
           severity: CRITICAL,HIGH
