@@ -265,8 +265,7 @@ export function useDockerStats(selectedPage?: string) {
     // is sort-agnostic so this never restarts a cycle
     useEffect(() => {
         applyRows(sortRows(rowsRef.current, sortField, sortOrder));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sortField, sortOrder]);
+    }, [applyRows, sortField, sortOrder]);
 
     useEffect(() => {
         let isCancelled = false;
@@ -373,8 +372,7 @@ export function useDockerStats(selectedPage?: string) {
             if (timer !== null) clearTimeout(timer);
             if (flushTimer !== null) clearTimeout(flushTimer);
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedHost, dockerService, selectedPage, refreshInterval]);
+    }, [applyRows, selectedHost, dockerService, selectedPage, refreshInterval, showError]);
 
     useEffect(() => {
         // clear containers on host change (history clears itself, keyed by host)
@@ -385,8 +383,7 @@ export function useDockerStats(selectedPage?: string) {
         gotStats.current = false;
         // re-apply the configured default for the newly selected host
         userSorted.current = false;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedHost]);
+    }, [applyRows, selectedHost]);
 
     // Instant first paint: seed the rows from the (immediate) container list
     // while the first stats reads sample in the daemon; metrics cells render
