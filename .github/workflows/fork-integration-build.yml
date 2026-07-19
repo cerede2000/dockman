@@ -122,7 +122,7 @@ jobs:
             BRANCH=${{ needs.prepare.outputs.ref }}
 
       - name: Scan pushed image (${{ matrix.arch }})
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
           format: table
@@ -130,6 +130,10 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+          scanners: vuln
+          trivyignores: .trivyignore.yaml
+        env:
+          TRIVY_PLATFORM: ${{ matrix.platform }}
 
   manifest:
     needs: [prepare, build]

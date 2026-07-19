@@ -53,29 +53,21 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/dockman \
       ./cmd/docker
 
-FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS compose_cli_downloader
-
-WORKDIR /download
-
-RUN apk --no-cache add curl ca-certificates
+FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS compose_cli_builder
 
 ARG COMPOSE_VERSION
-ARG TARGETARCH
 
-RUN case "${TARGETARCH}" in \
-      amd64) compose_arch="x86_64" ;; \
-      arm64) compose_arch="aarch64" ;; \
-      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac && \
-    curl --fail --show-error --location \
-      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" \
-      --output "./docker-compose-linux-${compose_arch}" && \
-    curl --fail --show-error --location \
-      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/checksums.txt" \
-      --output ./checksums.txt && \
-    grep "docker-compose-linux-${compose_arch}$" ./checksums.txt | sha256sum -c - && \
-    mv "./docker-compose-linux-${compose_arch}" ./docker-compose && \
-    chmod +x ./docker-compose
+# Rebuild the exact upstream Compose release with the patched Go toolchain.
+# The module source is authenticated by the public Go checksum database.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out && \
+    GOBIN=/out CGO_ENABLED=0 go install \
+      -trimpath \
+      -ldflags "-s -w -X github.com/docker/compose/v5/internal.Version=${COMPOSE_VERSION}" \
+      "github.com/docker/compose/v5/cmd@${COMPOSE_VERSION}" && \
+    mv /out/cmd /out/docker-compose && \
+    /out/docker-compose version
 
 FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
 
@@ -86,7 +78,7 @@ RUN apk add --no-cache tzdata su-exec docker-cli
 COPY pkg/docker/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-COPY --from=compose_cli_downloader /download/docker-compose /usr/local/bin/docker-compose
+COPY --from=compose_cli_builder /out/docker-compose /usr/local/bin/docker-compose
 
 # identify dockman containers
 LABEL dockman.container=true
