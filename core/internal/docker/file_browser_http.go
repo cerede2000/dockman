@@ -573,8 +573,6 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 	valid := make([]bool, len(names))
 	jobs := make(chan int)
 	var workers sync.WaitGroup
-	var firstErr error
-	var errorOnce sync.Once
 	workerCount := min(12, max(1, len(names)))
 	for range workerCount {
 		workers.Add(1)
@@ -587,7 +585,12 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 				}
 				result, statErr := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: path.Join(requested, name)})
 				if statErr != nil {
-					errorOnce.Do(func() { firstErr = fmt.Errorf("stat %q: %w", name, statErr) })
+					// /proc and /dev are inherently racy: entries can vanish,
+					// be broken symlinks, or be unsupported by Docker's archive
+					// stat endpoint. Preserve the name without failing the whole
+					// directory; a refresh may resolve it on the next pass.
+					entries[index] = unavailableBrowserEntry(name)
+					valid[index] = true
 					continue
 				}
 				stat := result.Stat
@@ -613,9 +616,6 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 	}
 	close(jobs)
 	workers.Wait()
-	if firstErr != nil {
-		return nil, firstErr
-	}
 	outputEntries := make([]browserEntry, 0, len(entries))
 	for index, entry := range entries {
 		if valid[index] {
@@ -626,6 +626,10 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 		Path    string         `json:"path"`
 		Entries []browserEntry `json:"entries"`
 	}{Path: requested, Entries: outputEntries})
+}
+
+func unavailableBrowserEntry(name string) browserEntry {
+	return browserEntry{Name: name, Type: "other", Size: -1, Mode: "---", Permissions: "??????????"}
 }
 
 func archiveFileList(ctx context.Context, target browserTarget, requested string) ([]byte, error) {

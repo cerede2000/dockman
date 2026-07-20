@@ -81,6 +81,13 @@ func TestHelperDestinationsPreferRequestedWritableMount(t *testing.T) {
 	}
 }
 
+func TestUnavailableBrowserEntryKeepsNameWithoutInventingMetadata(t *testing.T) {
+	entry := unavailableBrowserEntry("ptmx")
+	if entry.Name != "ptmx" || entry.Type != "other" || entry.Size != -1 || entry.Modified != "" || entry.UID != nil || entry.GID != nil {
+		t.Fatalf("unexpected unavailable entry: %#v", entry)
+	}
+}
+
 func TestTarToZipPreservesFile(t *testing.T) {
 	var source bytes.Buffer
 	tw := tar.NewWriter(&source)

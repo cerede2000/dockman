@@ -35,11 +35,15 @@ type EditDialog = null | {kind: 'new-file' | 'new-folder' | 'rename'; entry?: Fi
 const joinPath = (directory: string, name: string) => `${directory === '/' ? '' : directory}/${name}`;
 const parentPath = (value: string) => value === '/' ? '/' : value.slice(0, value.lastIndexOf('/')) || '/';
 const formatSize = (value: number, directory: boolean) => {
-    if (directory) return '—';
+    if (directory || value < 0) return '—';
     if (value < 1024) return `${value} B`;
     const units = ['KB', 'MB', 'GB', 'TB']; let size = value / 1024; let unit = 0;
     while (size >= 1024 && unit < units.length - 1) {size /= 1024; unit += 1;}
     return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unit]}`;
+};
+const formatModified = (value: string) => {
+    const timestamp = Date.parse(value);
+    return Number.isNaN(timestamp) ? '—' : new Date(timestamp).toLocaleString();
 };
 
 async function responseError(response: Response): Promise<string> {
@@ -235,7 +239,7 @@ export default function ContainerFileBrowser({kind, target, active = true}: {kin
                     <TableCell sx={{fontFamily: t.mono, fontSize: '0.72rem'}}>{entry.mode} <Typography component="span" sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.67rem'}}>{entry.permissions}</Typography>
                         <Typography component="div" sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.64rem'}}>UID:GID {entry.uid == null || entry.gid == null ? '—' : `${entry.uid}:${entry.gid}`}</Typography>
                     </TableCell>
-                    <TableCell sx={{fontFamily: t.mono, color: t.textDim, fontSize: '0.7rem'}}>{new Date(entry.modified).toLocaleString()}</TableCell>
+                    <TableCell sx={{fontFamily: t.mono, color: t.textDim, fontSize: '0.7rem'}}>{formatModified(entry.modified)}</TableCell>
                     <TableCell align="right"><Stack className="file-actions" direction="row" spacing={0} sx={{justifyContent: 'flex-end', transition: 'opacity .15s'}}>
                         <Tooltip title={writeTooltip('Rename')}><span><IconButton size="small" disabled={writeBlocked} onClick={event => {event.currentTarget.blur(); setActionSuppressed(entry.name); openEdit({kind: 'rename', entry});}}><DriveFileRenameOutline fontSize="small"/></IconButton></span></Tooltip>
                         <Tooltip title={writeTooltip('Change permissions')}><span><IconButton size="small" disabled={writeBlocked} onClick={event => {event.currentTarget.blur(); setActionSuppressed(entry.name); setPermissions(entry);}}><SecurityOutlined fontSize="small"/></IconButton></span></Tooltip>
