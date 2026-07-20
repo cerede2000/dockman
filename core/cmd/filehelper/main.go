@@ -52,6 +52,8 @@ func main() {
 
 	commandArgs := args[3:]
 	switch args[2] {
+	case "probe":
+		requireArgs(commandArgs, 0)
 	case "list":
 		requireArgs(commandArgs, 1)
 		err = list(root, commandArgs[0])
@@ -78,6 +80,9 @@ func main() {
 	case "chmod":
 		requireArgs(commandArgs, 3)
 		err = chmod(root, commandArgs[0], commandArgs[1], commandArgs[2] == "true")
+	case "chown":
+		requireArgs(commandArgs, 4)
+		err = chown(root, commandArgs[0], commandArgs[1], commandArgs[2], commandArgs[3] == "true")
 	default:
 		fatal("unsupported operation")
 	}
@@ -166,6 +171,24 @@ func chmod(root *os.Root, rawPath, rawMode string, recursive bool) error {
 			return nil
 		}
 		return root.Chmod(current, mode)
+	})
+}
+
+func chown(root *os.Root, rawPath, rawUID, rawGID string, recursive bool) error {
+	uid, uidErr := strconv.Atoi(rawUID)
+	gid, gidErr := strconv.Atoi(rawGID)
+	if uidErr != nil || gidErr != nil || uid < 0 || gid < 0 || uint64(uid) > uint64(^uint32(0)-1) || uint64(gid) > uint64(^uint32(0)-1) {
+		return fmt.Errorf("invalid uid/gid %q:%q", rawUID, rawGID)
+	}
+	name := clean(rawPath)
+	if !recursive {
+		return root.Lchown(name, uid, gid)
+	}
+	return fs.WalkDir(root.FS(), name, func(current string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return root.Lchown(current, uid, gid)
 	})
 }
 

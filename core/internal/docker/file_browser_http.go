@@ -36,15 +36,16 @@ const (
 )
 
 type browserTarget struct {
-	cli         *client.Client
-	containerID string
-	root        string
-	helperPath  string
-	unlink      bool
-	native      bool
-	readOnly    bool
-	defaultUser string
-	cleanup     func()
+	cli          *client.Client
+	containerID  string
+	root         string
+	helperPath   string
+	unlink       bool
+	native       bool
+	readOnly     bool
+	rootReadOnly bool
+	defaultUser  string
+	cleanup      func()
 }
 
 type browserAction struct {
@@ -52,22 +53,23 @@ type browserAction struct {
 	Path      string `json:"path"`
 	NewPath   string `json:"newPath"`
 	Mode      string `json:"mode"`
+	UID       *int   `json:"uid"`
+	GID       *int   `json:"gid"`
 	Recursive bool   `json:"recursive"`
 }
 
 func (h *HandlerHttp) containerFilesList(w http.ResponseWriter, r *http.Request) {
-	target, err := h.prepareBrowserTarget(r, false, true)
-	if err != nil {
-		writeBrowserError(w, err)
-		return
-	}
-	defer target.cleanup()
-
 	requested, err := cleanBrowserPath(r.URL.Query().Get("path"))
 	if err != nil {
 		writeBrowserError(w, err)
 		return
 	}
+	target, err := h.prepareBrowserTarget(r, false, true, requested)
+	if err != nil {
+		writeBrowserError(w, err)
+		return
+	}
+	defer target.cleanup()
 	var stdout []byte
 	if target.native {
 		stdout, err = nativeFileList(r.Context(), target, requested)
@@ -84,6 +86,7 @@ func (h *HandlerHttp) containerFilesList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	response["readOnly"] = target.readOnly
+	response["rootReadOnly"] = target.rootReadOnly
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -115,12 +118,22 @@ func (h *HandlerHttp) containerFilesAction(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		args = append(args, input.Mode, strconv.FormatBool(input.Recursive))
+	case "chown":
+		if input.UID == nil || input.GID == nil || !validUnixID(*input.UID) || !validUnixID(*input.GID) {
+			writeBrowserError(w, fmt.Errorf("uid and gid must be integers between 0 and 4294967294"))
+			return
+		}
+		args = append(args, strconv.Itoa(*input.UID), strconv.Itoa(*input.GID), strconv.FormatBool(input.Recursive))
 	default:
 		writeBrowserError(w, fmt.Errorf("unsupported file action"))
 		return
 	}
 
-	target, err := h.prepareBrowserTarget(r, true, true)
+	paths := []string{requested}
+	if input.Action == "rename" {
+		paths = append(paths, args[2])
+	}
+	target, err := h.prepareBrowserTarget(r, true, true, paths...)
 	if err != nil {
 		writeBrowserError(w, err)
 		return
@@ -154,7 +167,7 @@ func (h *HandlerHttp) containerFilesUpload(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "upload Content-Length is required", http.StatusLengthRequired)
 		return
 	}
-	target, err := h.prepareBrowserTarget(r, true, false)
+	target, err := h.prepareBrowserTarget(r, true, false, path.Join(directory, filename))
 	if err != nil {
 		writeBrowserError(w, err)
 		return
@@ -199,7 +212,7 @@ func (h *HandlerHttp) containerFilesDownload(w http.ResponseWriter, r *http.Requ
 		writeBrowserError(w, err)
 		return
 	}
-	target, err := h.prepareBrowserTarget(r, false, false)
+	target, err := h.prepareBrowserTarget(r, false, false, requested)
 	if err != nil {
 		writeBrowserError(w, err)
 		return
@@ -249,7 +262,7 @@ func (h *HandlerHttp) containerFilesDownload(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper bool) (browserTarget, error) {
+func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper bool, requestedPaths ...string) (browserTarget, error) {
 	host, err := hostMid.GetHost(r.Context())
 	if err != nil {
 		return browserTarget{}, err
@@ -270,15 +283,35 @@ func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper
 		if inspect.Container.State == nil || !inspect.Container.State.Running {
 			return browserTarget{}, fmt.Errorf("container must be running to browse files")
 		}
-		readOnly := inspect.Container.HostConfig != nil && inspect.Container.HostConfig.ReadonlyRootfs
+		rootReadOnly := inspect.Container.HostConfig != nil && inspect.Container.HostConfig.ReadonlyRootfs
+		requested := "/"
+		if len(requestedPaths) > 0 {
+			requested = requestedPaths[0]
+		}
+		readOnly := containerPathReadOnly(rootReadOnly, inspect.Container.Mounts, requested)
+		if writable {
+			for _, candidate := range requestedPaths {
+				if containerPathReadOnly(rootReadOnly, inspect.Container.Mounts, candidate) {
+					return browserTarget{}, fmt.Errorf("path %q is on a read-only container filesystem or mount", candidate)
+				}
+			}
+		}
 		defaultUser := ""
 		if inspect.Container.Config != nil {
 			defaultUser = inspect.Container.Config.User
 		}
-		target := browserTarget{cli: dkSrv.Container.Cli(), containerID: id, root: "/", native: readOnly, readOnly: readOnly, defaultUser: defaultUser, cleanup: func() {}}
+		target := browserTarget{cli: dkSrv.Container.Cli(), containerID: id, root: "/", native: readOnly, readOnly: readOnly, rootReadOnly: rootReadOnly, defaultUser: defaultUser, cleanup: func() {}}
 		if needHelper && !readOnly {
-			target.helperPath, err = installFileHelper(r.Context(), dkSrv.Container.Cli(), id, inspect.Container.Image)
-			target.unlink = true
+			target.helperPath, err = installFileHelper(r.Context(), dkSrv.Container.Cli(), id, inspect.Container.Image, rootReadOnly, inspect.Container.Mounts, requested)
+			if err == nil {
+				target.unlink = true
+			} else {
+				// Keep browsing useful for unusual mount namespaces, noexec
+				// filesystems and immutable images. Reads can still use native
+				// tools or the bounded Docker archive fallback.
+				target.native = true
+				err = nil
+			}
 		}
 		return target, err
 	}
@@ -332,20 +365,86 @@ func createVolumeBrowserTarget(ctx context.Context, cli *client.Client, volumeNa
 	return browserTarget{cli: cli, containerID: created.ID, root: volumeRoot, helperPath: remote, cleanup: cleanup}, nil
 }
 
-func installFileHelper(ctx context.Context, cli *client.Client, containerID, imageID string) (string, error) {
+func installFileHelper(ctx context.Context, cli *client.Client, containerID, imageID string, rootReadOnly bool, mounts []container.MountPoint, requested string) (string, error) {
 	local, err := fileHelperBinary(ctx, cli, imageID)
 	if err != nil {
 		return "", err
 	}
 	name := ".dockman-file-helper-" + randomSuffix()
 	var lastErr error
-	for _, destination := range []string{"/tmp", "/run", "/"} {
-		if err = copyHelper(ctx, cli, containerID, local, destination, name); err == nil {
-			return path.Join(destination, name), nil
+	for _, destination := range helperDestinations(rootReadOnly, mounts, requested) {
+		remote := path.Join(destination, name)
+		if err = copyHelper(ctx, cli, containerID, local, destination, name); err != nil {
+			lastErr = err
+			continue
+		}
+		// CopyToContainer can write behind a tmpfs/bind mount and report
+		// success even though a process in the container cannot see the file.
+		// A real exec also rejects noexec mounts before we select the path.
+		_, err = runContainerCommandAsUser(ctx, browserTarget{cli: cli, containerID: containerID}, []string{remote, "--root", "/", "probe"}, "0")
+		if err == nil {
+			return remote, nil
 		}
 		lastErr = err
 	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no writable helper destination is visible in the container")
+	}
 	return "", fmt.Errorf("container filesystem cannot host the temporary browser helper (including read-only or unavailable temporary directories): %w", lastErr)
+}
+
+func helperDestinations(rootReadOnly bool, mounts []container.MountPoint, requested string) []string {
+	var candidates []string
+	if mounted := effectiveContainerMount(mounts, requested); rootReadOnly && mounted != nil && mounted.RW {
+		candidates = append(candidates, path.Clean(mounted.Destination))
+	}
+	for _, candidate := range []string{"/tmp", "/run", "/"} {
+		if !containerPathReadOnly(rootReadOnly, mounts, candidate) {
+			candidates = append(candidates, candidate)
+		}
+	}
+	seen := make(map[string]bool, len(candidates))
+	unique := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "." || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		unique = append(unique, candidate)
+	}
+	return unique
+}
+
+func validUnixID(value int) bool {
+	return value >= 0 && uint64(value) <= uint64(^uint32(0)-1)
+}
+
+func containerPathReadOnly(rootReadOnly bool, mounts []container.MountPoint, requested string) bool {
+	mounted := effectiveContainerMount(mounts, requested)
+	if mounted != nil {
+		return !mounted.RW
+	}
+	return rootReadOnly
+}
+
+func effectiveContainerMount(mounts []container.MountPoint, requested string) *container.MountPoint {
+	requested = path.Clean("/" + strings.TrimPrefix(requested, "/"))
+	best := -1
+	bestLength := -1
+	for index := range mounts {
+		if strings.TrimSpace(mounts[index].Destination) == "" {
+			continue
+		}
+		destination := path.Clean("/" + strings.TrimPrefix(mounts[index].Destination, "/"))
+		inside := destination == "/" || requested == destination || strings.HasPrefix(requested, destination+"/")
+		if inside && len(destination) > bestLength {
+			best, bestLength = index, len(destination)
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	return &mounts[best]
 }
 
 func localHelperBase(ctx context.Context, cli *client.Client, images []imageTypes.Summary) (string, string, error) {
@@ -433,15 +532,15 @@ func (h *HandlerHttp) runFileHelper(ctx context.Context, target browserTarget, c
 }
 
 type browserEntry struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Size        int64  `json:"size"`
-	Mode        string `json:"mode"`
-	Permissions string `json:"permissions"`
-	Modified    string `json:"modified"`
-	UID         uint32 `json:"uid"`
-	GID         uint32 `json:"gid"`
-	LinkTarget  string `json:"linkTarget,omitempty"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Size        int64   `json:"size"`
+	Mode        string  `json:"mode"`
+	Permissions string  `json:"permissions"`
+	Modified    string  `json:"modified"`
+	UID         *uint32 `json:"uid"`
+	GID         *uint32 `json:"gid"`
+	LinkTarget  string  `json:"linkTarget,omitempty"`
 }
 
 func nativeFileList(ctx context.Context, target browserTarget, requested string) ([]byte, error) {
@@ -589,9 +688,10 @@ func parseArchiveFileList(source io.Reader, requested string) ([]byte, error) {
 		case !mode.IsRegular():
 			kind = "other"
 		}
+		uid, gid := uint32(max(header.Uid, 0)), uint32(max(header.Gid, 0))
 		entries[child] = browserEntry{
 			Name: child, Type: kind, Size: header.Size, Mode: fmt.Sprintf("%03o", mode.Perm()), Permissions: mode.String(),
-			Modified: header.ModTime.UTC().Format(time.RFC3339Nano), UID: uint32(max(header.Uid, 0)), GID: uint32(max(header.Gid, 0)), LinkTarget: header.Linkname,
+			Modified: header.ModTime.UTC().Format(time.RFC3339Nano), UID: &uid, GID: &gid, LinkTarget: header.Linkname,
 		}
 	}
 	if limited.N <= 0 {
@@ -624,6 +724,14 @@ func nativeFileAction(ctx context.Context, target browserTarget, input browserAc
 		command, args = "rm", []string{"-rf", requested}
 	case "chmod":
 		command, args = "chmod", []string{input.Mode, requested}
+		if input.Recursive {
+			args = append([]string{"-R"}, args...)
+		}
+	case "chown":
+		if input.UID == nil || input.GID == nil {
+			return fmt.Errorf("uid and gid are required")
+		}
+		command, args = "chown", []string{fmt.Sprintf("%d:%d", *input.UID, *input.GID), requested}
 		if input.Recursive {
 			args = append([]string{"-R"}, args...)
 		}

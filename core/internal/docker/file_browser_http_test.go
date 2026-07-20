@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+
+	"github.com/moby/moby/api/types/container"
 )
 
 func TestCleanBrowserPathRejectsTraversal(t *testing.T) {
@@ -31,6 +33,51 @@ func TestCleanBrowserNameRejectsPaths(t *testing.T) {
 	}
 	if actual, err := cleanBrowserName("compose.yml"); err != nil || actual != "compose.yml" {
 		t.Fatalf("cleanBrowserName returned %q, %v", actual, err)
+	}
+}
+
+func TestContainerPathReadOnlyUsesMostSpecificMount(t *testing.T) {
+	mounts := []container.MountPoint{
+		{Destination: "/config", RW: true},
+		{Destination: "/config/secrets", RW: false},
+	}
+	for _, test := range []struct {
+		path     string
+		readOnly bool
+	}{
+		{path: "/", readOnly: true},
+		{path: "/etc", readOnly: true},
+		{path: "/config", readOnly: false},
+		{path: "/config/app/file.yml", readOnly: false},
+		{path: "/configuration", readOnly: true},
+		{path: "/config/secrets/token", readOnly: true},
+	} {
+		if actual := containerPathReadOnly(true, mounts, test.path); actual != test.readOnly {
+			t.Errorf("containerPathReadOnly(%q) = %v; want %v", test.path, actual, test.readOnly)
+		}
+	}
+}
+
+func TestContainerPathReadOnlyHonorsReadOnlyMountOnWritableRoot(t *testing.T) {
+	mounts := []container.MountPoint{{Destination: "/immutable", RW: false}}
+	if containerPathReadOnly(false, mounts, "/var/lib") {
+		t.Fatal("writable root path reported read-only")
+	}
+	if !containerPathReadOnly(false, mounts, "/immutable/data") {
+		t.Fatal("read-only mount path reported writable")
+	}
+}
+
+func TestHelperDestinationsPreferRequestedWritableMount(t *testing.T) {
+	mounts := []container.MountPoint{{Destination: "/config", RW: true}, {Destination: "/cache", RW: true}}
+	actual := helperDestinations(true, mounts, "/config/app")
+	if len(actual) != 1 || actual[0] != "/config" {
+		t.Fatalf("helper destinations = %#v; want requested mount first", actual)
+	}
+	for _, destination := range actual {
+		if destination == "/tmp" || destination == "/run" || destination == "/" {
+			t.Fatalf("helper destinations include read-only root path %q: %#v", destination, actual)
+		}
 	}
 }
 
