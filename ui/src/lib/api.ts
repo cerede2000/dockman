@@ -47,7 +47,7 @@ export function useContainerLogsWsUrl() {
 
 export function useContainerExecWsUrl() {
     const getBase = useHostUrl()
-    return useCallback((containerId: string, entrypoint: string, debuggerImage?: string) => {
+    return useCallback((containerId: string, entrypoint: string, debuggerImage?: string, user?: string) => {
         const params: Record<string, string> = {
             "cmd": entrypoint,
         }
@@ -55,10 +55,16 @@ export function useContainerExecWsUrl() {
             params["debug"] = "true"
             params["image"] = debuggerImage
         }
+        if (user) params["user"] = user
 
         const urlParam = new URLSearchParams(params)
         return getWSUrl(getBase(`/docker/exec/${containerId}?${urlParam.toString()}`))
     }, [getBase]);
+}
+
+export function useContainerExecOptionsUrl() {
+    const getBase = useHostUrl()
+    return useCallback((containerId: string) => getBase(`/docker/exec/${containerId}/options`), [getBase])
 }
 
 // interactive shell on the host itself (dockman container locally, ssh

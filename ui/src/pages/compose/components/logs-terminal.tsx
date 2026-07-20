@@ -7,7 +7,7 @@ import {debugWarn} from "../../../lib/debug.ts";
 
 const terminalConfig: ITerminalOptions & ITerminalInitOnlyOptions = {
     theme: {
-        background: '#1E1E1E',
+        background: '#09090b',
         foreground: '#CCCCCC'
     },
     // theme: {background: '#1E1E1E', foreground: '#CCCCCC'},
@@ -30,9 +30,10 @@ const scrollbarStyles = `
 type AppTerminalProps = TabTerminal & {
     fit?: RefObject<FitAddon>;
     isActive: boolean;
+    fontSize?: number;
 };
 
-const AppTerminal = ({fit, interactive, onTerminal, isActive, onClose}: AppTerminalProps) => {
+const AppTerminal = ({fit, interactive, onTerminal, isActive, onClose, fontSize}: AppTerminalProps) => {
     const terminalRef = useRef<HTMLDivElement>(null);
     const xtermRef = useRef<Terminal | null>(null);
 
@@ -107,6 +108,16 @@ const AppTerminal = ({fit, interactive, onTerminal, isActive, onClose}: AppTermi
         };
     }, [fit, interactive, onClose, onTerminal]);
 
+    useEffect(() => {
+        if (!fontSize || !xtermRef.current) return;
+        xtermRef.current.options.fontSize = fontSize;
+        try {
+            fit?.current.fit();
+        } catch (e) {
+            debugWarn("Terminal font resize failed", e);
+        }
+    }, [fit, fontSize]);
+
 
     return (
         <Box
@@ -117,7 +128,7 @@ const AppTerminal = ({fit, interactive, onTerminal, isActive, onClose}: AppTermi
                 height: '100%',
                 overflow: 'hidden',
                 position: 'relative',
-                bgcolor: '#1E1E1E',
+                bgcolor: '#09090b',
                 '& .xterm': {
                     height: '100%',
                     padding: '1px'

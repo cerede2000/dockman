@@ -2,10 +2,13 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	contSrv "github.com/RA341/dockman/internal/docker/container"
@@ -34,6 +37,7 @@ func NewHandlerHttp(srv ServiceProvider) http.Handler {
 
 func (h *HandlerHttp) register() http.Handler {
 	subMux := http.NewServeMux()
+	subMux.HandleFunc("GET /exec/{contId}/options", h.containerExecOptions)
 	subMux.HandleFunc("GET /exec/{contId}", h.containerExec)
 	subMux.HandleFunc("GET /logs/{contId}", h.containerLogs)
 	subMux.HandleFunc("GET /shell", h.hostShell)
@@ -41,6 +45,43 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 
 	return subMux
+}
+
+var execShellCandidates = []string{
+	"/bin/sh", "/bin/bash", "/bin/ash", "/bin/zsh", "/bin/fish",
+	"/usr/bin/bash", "/usr/bin/zsh", "/usr/bin/fish", "/usr/local/bin/bash",
+}
+
+func (h *HandlerHttp) containerExecOptions(w http.ResponseWriter, r *http.Request) {
+	dkSrv, contID, err := getContainerIdAndService(r, h)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	available := make([]bool, len(execShellCandidates))
+	var wg sync.WaitGroup
+	for index, shell := range execShellCandidates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, statErr := dkSrv.Container.Cli().ContainerStatPath(r.Context(), contID, client.ContainerStatPathOptions{Path: shell})
+			available[index] = statErr == nil
+		}()
+	}
+	wg.Wait()
+	shells := make([]string, 0, len(execShellCandidates))
+	for index, shell := range execShellCandidates {
+		if available[index] {
+			shells = append(shells, shell)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(struct {
+		Shells []string `json:"shells"`
+	}{Shells: shells}); err != nil {
+		log.Debug().Err(err).Msg("could not encode container exec options")
+	}
 }
 
 // restartDockman asks the local daemon to restart this container. The daemon
@@ -133,6 +174,7 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query()
 	execCmd := getExecCmd(query, ws)
+	execUser := strings.TrimSpace(query.Get("user"))
 
 	ctx := r.Context()
 	var resp client.HijackedResponse
@@ -154,7 +196,7 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 		}
 		defer cleanup()
 	} else {
-		resp, err = dkSrv.Container.ContainerExec(ctx, contId, execCmd)
+		resp, err = dkSrv.Container.ContainerExec(ctx, contId, execCmd, execUser)
 		if err != nil {
 			wsu.WErr(ws, err)
 			return
@@ -179,6 +221,9 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 		wsu.WInf(ws, fmt.Sprintf("Debug Image: %s", debuggerImage))
 	}
 	wsu.WInf(ws, fmt.Sprintf("Entrypoint: %s", execCmd))
+	if execUser != "" {
+		wsu.WInf(ws, fmt.Sprintf("User: %s", execUser))
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

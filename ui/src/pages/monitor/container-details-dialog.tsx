@@ -4,15 +4,16 @@ import {
     TableContainer, TableHead, TableRow, Tabs, TextField, Tooltip, Typography,
 } from '@mui/material';
 import {
-    Check, Close, Code, ContentCopy, Delete, Dns, FavoriteBorder, InfoOutlined, LabelOutlined, Lan,
+    Check, Close, Code, ContentCopy, Delete, DeleteSweep, Dns, FavoriteBorder, InfoOutlined, LabelOutlined, Lan,
     Memory, Pause, PlayArrow, Refresh, RestartAlt, Security as SecurityIcon, Stop, Storage,
-    Subject, Terminal, Tune, Update, Visibility, VisibilityOff,
+    Subject, Terminal, Tune, Update, Visibility, VisibilityOff, PlayCircleOutlined,
 } from '@mui/icons-material';
 import {type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {FitAddon} from '@xterm/addon-fit';
+import type {Terminal as XTerm} from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {DockerService, type Network} from '../../gen/docker/v1/docker_pb.ts';
-import {callRPC, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
+import {callRPC, useContainerExecOptionsUrl, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useCopyButton} from '../../hooks/copy.ts';
 import LogsViewer from '../../components/log-viewer/logs-viewer.tsx';
@@ -79,9 +80,10 @@ const fmtDuration = (value: unknown) => {
     return `${ns}ns`;
 };
 
-function Section({title, children}: {title: string, children: ReactNode}) {
-    return <Paper variant="outlined" sx={{p: 1.35, borderColor: t.border, bgcolor: t.panel, borderRadius: 1.5}}>
-        <Typography sx={{fontWeight: 800, mb: 0.85, fontSize: '0.82rem', letterSpacing: '0.02em'}}>{title}</Typography>{children}
+function Section({title, children, fill = false}: {title: string, children: ReactNode, fill?: boolean}) {
+    return <Paper variant="outlined" sx={{p: 1.35, borderColor: t.border, bgcolor: t.panel, borderRadius: 1.5,
+        ...(fill ? {height: '100%', minHeight: 0, boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'hidden'} : {})}}>
+        <Typography sx={{fontWeight: 800, mb: 0.85, fontSize: '0.82rem', letterSpacing: '0.02em', flexShrink: 0}}>{title}</Typography>{children}
     </Paper>;
 }
 
@@ -101,7 +103,7 @@ function StringChips({values, empty = 'None'}: {values: string[], empty?: string
     </Stack>;
 }
 
-function KeyValueTable({value, maskSecrets = false}: {value: unknown, maskSecrets?: boolean}) {
+function KeyValueTable({value, maskSecrets = false, scrollable = false}: {value: unknown, maskSecrets?: boolean, scrollable?: boolean}) {
     const [revealed, setRevealed] = useState(false);
     const entries = useMemo(() => {
         if (Array.isArray(value)) return value.map(v => {
@@ -111,10 +113,10 @@ function KeyValueTable({value, maskSecrets = false}: {value: unknown, maskSecret
         return Object.entries(asObject(value)).sort(([a], [b]) => a.localeCompare(b));
     }, [value]);
     const sensitive = (key: string) => /pass|token|secret|credential|private|api.?key|cookie|auth/i.test(key);
-    return <Stack spacing={1}>
+    return <Stack spacing={1} sx={scrollable ? {flex: 1, minHeight: 0, overflow: 'hidden'} : undefined}>
         {maskSecrets && <Box><Button size="small" startIcon={revealed ? <VisibilityOff/> : <Visibility/>}
             onClick={() => setRevealed(v => !v)}>{revealed ? 'Mask sensitive values' : 'Reveal sensitive values'}</Button></Box>}
-        <TableContainer><Table size="small" sx={{'& .MuiTableCell-root': {py: 0.55, px: 1, fontSize: '0.73rem'}}}><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Value</TableCell></TableRow></TableHead>
+        <TableContainer sx={scrollable ? {flex: 1, minHeight: 0, overflow: 'auto', ...scrollbarStyles} : undefined}><Table size="small" stickyHeader={scrollable} sx={{'& .MuiTableCell-root': {py: 0.55, px: 1, fontSize: '0.73rem'}}}><TableHead><TableRow><TableCell>Name</TableCell><TableCell>Value</TableCell></TableRow></TableHead>
             <TableBody>{entries.map(([key, val]) => <TableRow key={String(key)} hover>
                 <TableCell sx={{fontFamily: t.mono, width: '32%', overflowWrap: 'anywhere'}}>{String(key)}</TableCell>
                 <TableCell sx={{fontFamily: t.mono, overflowWrap: 'anywhere'}}>
@@ -274,11 +276,11 @@ function Processes({active, containerID, onCount}: {active: boolean, containerID
         setTitles(top?.Titles ?? []); setRows(next); onCount(err ? null : next.length);
     }, [client, containerID, onCount]);
     useEffect(() => { if (!active) return; void refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id); }, [active, refresh]);
-    return <Section title="Running processes">
-        <Box sx={{display: 'flex', justifyContent: 'space-between', mb: 1}}><Chip size="small" label={`${rows.length} active`}/>
+    return <Section title="Running processes" fill>
+        <Box sx={{display: 'flex', justifyContent: 'space-between', mb: 1, flexShrink: 0}}><Chip size="small" label={`${rows.length} active`}/>
             <Button size="small" startIcon={loading ? <CircularProgress size={14}/> : <Refresh/>} onClick={refresh} disabled={loading}>Refresh</Button></Box>
         {error && <Alert severity="error">{error}</Alert>}
-        <TableContainer><Table size="small" stickyHeader sx={{'& .MuiTableCell-root': {py: 0.55, px: 1, fontSize: '0.72rem'}}}><TableHead><TableRow>{titles.map(v => <TableCell key={v}>{v}</TableCell>)}</TableRow></TableHead>
+        <TableContainer sx={{flex: 1, minHeight: 0, overflow: 'auto', ...scrollbarStyles}}><Table size="small" stickyHeader sx={{'& .MuiTableCell-root': {py: 0.55, px: 1, fontSize: '0.72rem'}}}><TableHead><TableRow>{titles.map(v => <TableCell key={v}>{v}</TableCell>)}</TableRow></TableHead>
             <TableBody>{rows.map((r, i) => <TableRow key={i} hover>{r.map((v, j) => <TableCell key={j} sx={{fontFamily: t.mono, whiteSpace: 'nowrap'}}>{v}</TableCell>)}</TableRow>)}</TableBody>
         </Table></TableContainer>
     </Section>;
@@ -334,30 +336,96 @@ function Networks({containerID, inspect, onChanged}: {containerID: string, inspe
 
 function ExecTerminal({active, containerID, running}: {active: boolean, containerID: string, running: boolean}) {
     const createExecUrl = useContainerExecWsUrl();
+    const createOptionsUrl = useContainerExecOptionsUrl();
     const fitAddon = useRef(new FitAddon());
-    const [command, setCommand] = useState('/bin/sh');
+    const xterm = useRef<XTerm | null>(null);
+    const [shells, setShells] = useState<string[] | null>(null);
+    const [shellError, setShellError] = useState('');
+    const [shell, setShell] = useState('');
+    const [userChoice, setUserChoice] = useState('context');
+    const [otherUser, setOtherUser] = useState('');
+    const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('dockman-exec-fontsize')) || 12);
     const [connected, setConnected] = useState(false);
-    useEffect(() => setConnected(false), [containerID]);
+    const {handleCopy, copiedId} = useCopyButton();
+    useEffect(() => {setConnected(false); setShells(null); setShell(''); setShellError('');}, [containerID]);
+    useEffect(() => {
+        if (!active || !running) return;
+        const controller = new AbortController();
+        setShells(null); setShellError('');
+        fetch(createOptionsUrl(containerID), {signal: controller.signal})
+            .then(async response => {
+                if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+                return response.json() as Promise<{shells?: string[]}>;
+            })
+            .then(result => {
+                const available = result.shells ?? [];
+                setShells(available);
+                setShell(current => available.includes(current) ? current : available[0] ?? '');
+            })
+            .catch(error => {if (error instanceof Error && error.name !== 'AbortError') {setShellError(error.message); setShells([]);}});
+        return () => controller.abort();
+    }, [active, containerID, createOptionsUrl, running]);
+    const execUser = userChoice === 'context' ? '' : userChoice === 'other' ? otherUser.trim() : userChoice;
     const terminal = useMemo(() => connected
-        ? createTab(createExecUrl(containerID, command.trim() || '/bin/sh'), `Exec: ${containerID.slice(0, 12)}`, true)
-        : null, [command, connected, containerID, createExecUrl]);
+        ? createTab(createExecUrl(containerID, shell, undefined, execUser), `Exec: ${containerID.slice(0, 12)}`, true)
+        : null, [connected, containerID, createExecUrl, execUser, shell]);
+    const controlledTerminal = useMemo(() => terminal ? {
+        ...terminal,
+        onTerminal: (term: XTerm) => {xterm.current = term; terminal.onTerminal(term);},
+        onClose: () => {xterm.current = null; terminal.onClose();},
+    } : null, [terminal]);
+    const copyTerminal = () => {
+        const term = xterm.current;
+        if (!term) return;
+        const selected = term.getSelection();
+        const lines: string[] = [];
+        if (!selected) {
+            const buffer = term.buffer.active;
+            for (let i = 0; i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+        }
+        handleCopy(selected || lines.join('\n').replace(/\n+$/, ''));
+    };
+    const changeFontSize = (value: number) => {localStorage.setItem('dockman-exec-fontsize', String(value)); setFontSize(value);};
     if (!running) return <Alert severity="info">Start or unpause the container to open an interactive terminal.</Alert>;
-    return <Paper variant="outlined" sx={{height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: '#1e1e1e', borderColor: t.border}}>
-        <Stack direction="row" spacing={0.75} sx={{px: 1, py: 0.65, alignItems: 'center', flexShrink: 0, borderBottom: `1px solid ${t.border}`, bgcolor: '#111318'}}>
+    return <Paper variant="outlined" sx={{height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: '#09090b', borderColor: t.border}}>
+        <Stack direction="row" useFlexGap spacing={0.65} sx={{px: 1, py: 0.6, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0, borderBottom: `1px solid ${t.border}`, bgcolor: '#111318'}}>
             <Terminal sx={{fontSize: 17, color: '#7dd3fc'}}/>
             <Typography sx={{fontSize: '0.73rem', fontWeight: 800, whiteSpace: 'nowrap'}}>{containerID.slice(0, 12)}</Typography>
-            <TextField size="small" value={command} disabled={connected} onChange={event => setCommand(event.target.value)}
-                aria-label="Command to execute" placeholder="/bin/sh" sx={{width: 190, '& .MuiInputBase-root': {height: 28, fontFamily: t.mono, fontSize: '0.7rem'}}}/>
+            {shells === null ? <CircularProgress size={16}/> : shells.length > 0 && <TextField select size="small" value={shell} disabled={connected}
+                onChange={event => setShell(event.target.value)} aria-label="Shell" slotProps={{select: {native: true}}}
+                sx={{width: 135, '& .MuiInputBase-root': {height: 28, fontFamily: t.mono, fontSize: '0.68rem'}}}>
+                {shells.map(value => <option key={value} value={value}>{value}</option>)}
+            </TextField>}
+            <TextField select size="small" value={userChoice} disabled={connected} onChange={event => setUserChoice(event.target.value)}
+                aria-label="Exec user" slotProps={{select: {native: true}}}
+                sx={{width: 145, '& .MuiInputBase-root': {height: 28, fontSize: '0.68rem'}}}>
+                <option value="context">Container context</option><option value="root">root</option>
+                <option value="nobody">nobody</option><option value="other">Other…</option>
+            </TextField>
+            {userChoice === 'other' && <TextField size="small" value={otherUser} disabled={connected} onChange={event => setOtherUser(event.target.value)}
+                aria-label="Custom exec user" placeholder="UID or user" sx={{width: 115, '& .MuiInputBase-root': {height: 28, fontFamily: t.mono, fontSize: '0.68rem'}}}/>}
+            <TextField select size="small" value={fontSize} onChange={event => changeFontSize(Number(event.target.value))}
+                aria-label="Terminal font size" slotProps={{select: {native: true}}}
+                sx={{width: 70, '& .MuiInputBase-root': {height: 28, fontSize: '0.68rem'}}}>
+                {[10, 12, 14, 16].map(value => <option key={value} value={value}>{value}px</option>)}
+            </TextField>
             <Button size="small" variant={connected ? 'outlined' : 'contained'} color={connected ? 'error' : 'primary'}
+                disabled={!connected && (!shell || (userChoice === 'other' && !otherUser.trim()))}
                 onClick={() => setConnected(value => !value)} sx={{minHeight: 27, py: 0, textTransform: 'none'}}>
                 {connected ? 'Disconnect' : 'Connect'}
             </Button>
+            <Tooltip title="Clear terminal"><span><IconButton size="small" disabled={!connected} onClick={() => xterm.current?.clear()}><DeleteSweep sx={{fontSize: 18}}/></IconButton></span></Tooltip>
+            <Tooltip title={copiedId ? 'Copied!' : 'Copy selection or terminal'}><span><IconButton size="small" disabled={!connected} onClick={copyTerminal}>
+                {copiedId ? <Check sx={{fontSize: 18, color: '#66bb6a'}}/> : <ContentCopy sx={{fontSize: 18}}/>}
+            </IconButton></span></Tooltip>
             <Typography sx={{ml: 'auto !important', color: connected ? '#81c784' : t.textDim, fontSize: '0.66rem'}}>
                 {connected ? 'Interactive session' : 'Disconnected'}
             </Typography>
         </Stack>
+        {shellError && <Alert severity="error" sx={{borderRadius: 0, py: 0}}>{shellError}</Alert>}
+        {shells?.length === 0 && <Alert severity="warning" sx={{borderRadius: 0}}>Exec is unavailable: no supported shell was found in this container.</Alert>}
         <Box sx={{flex: 1, minHeight: 0, overflow: 'hidden'}}>
-            {terminal ? <AppTerminal {...terminal} isActive={active} fit={fitAddon}/>
+            {controlledTerminal ? <AppTerminal {...controlledTerminal} isActive={active} fit={fitAddon} fontSize={fontSize}/>
                 : <Box sx={{height: '100%', display: 'grid', placeItems: 'center'}}><Typography sx={{color: t.textDim, fontSize: '0.75rem'}}>Choose a shell and connect.</Typography></Box>}
         </Box>
     </Paper>;
@@ -365,7 +433,7 @@ function ExecTerminal({active, containerID, running}: {active: boolean, containe
 
 function Mounts({inspect}: {inspect: JsonObject}) {
     const mounts = asArray(inspect.Mounts).map(asObject);
-    return <Section title="Bind mounts, volumes & tmpfs"><TableContainer><Table size="small" sx={{'& .MuiTableCell-root': {py: 0.55, px: 0.8, fontSize: '0.7rem'}}}><TableHead><TableRow>
+    return <Section title="Bind mounts, volumes & tmpfs" fill><TableContainer sx={{flex: 1, minHeight: 0, overflow: 'auto', ...scrollbarStyles}}><Table size="small" stickyHeader sx={{'& .MuiTableCell-root': {py: 0.55, px: 0.8, fontSize: '0.7rem'}}}><TableHead><TableRow>
         {['Type', 'Name', 'Source', 'Destination', 'Driver', 'Mode', 'RW', 'Propagation'].map(v => <TableCell key={v}>{v}</TableCell>)}
     </TableRow></TableHead><TableBody>{mounts.map((m, i) => <TableRow key={i} hover>
         {[m.Type, m.Name, m.Source, m.Destination, m.Driver, m.Mode, m.RW, m.Propagation].map((v, j) => <TableCell key={j} sx={{fontFamily: t.mono, overflowWrap: 'anywhere'}}>{text(v)}</TableCell>)}
@@ -496,6 +564,7 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
     const state = row.info.state; const active = ['running', 'restarting', 'paused'].includes(state); const paused = state === 'paused';
     const processAvailable = state === 'running' || state === 'paused';
     const locked = !!busy || stackBusy;
+    const fixedContent = ['logs', 'exec', 'processes', 'mounts', 'environment', 'labels'].includes(tab);
     return <Dialog open={open} onClose={onClose} maxWidth={false} fullWidth
         slotProps={{
             backdrop: {sx: {bgcolor: 'rgba(0,0,0,0.68)', backdropFilter: 'blur(4px)'}},
@@ -517,7 +586,7 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
                     <Tooltip title="Restart"><span><IconButton disabled={locked} onClick={() => onAction(row, 'restart')}>{busy === 'restart' ? <CircularProgress size={18}/> : <RestartAlt/>}</IconButton></span></Tooltip>
                     <Tooltip title={paused ? 'Unpause' : 'Pause'}><span><IconButton disabled={locked || (!active && !paused)}
                         onClick={() => onAction(row, paused ? 'unpause' : 'pause')}
-                        sx={{color: paused ? '#66bb6a' : '#ffb74d'}}>{paused ? <PlayArrow/> : <Pause/>}</IconButton></span></Tooltip>
+                        sx={{color: paused ? '#66bb6a' : '#ffb74d'}}>{paused ? <PlayCircleOutlined/> : <Pause/>}</IconButton></span></Tooltip>
                     <Tooltip title="Update"><span><IconButton disabled={locked || updateRun === 'running'} onClick={() => onAction(row, 'update')}><Update/></IconButton></span></Tooltip>
                     <Tooltip title="Remove"><span><IconButton color="error" disabled={locked} onClick={event => setRemoveAnchor(event.currentTarget)}><Delete/></IconButton></span></Tooltip>
                     <Tooltip title="Refresh details"><span><IconButton disabled={loading} onClick={load}>{loading ? <CircularProgress size={18}/> : <Refresh/>}</IconButton></span></Tooltip>
@@ -539,19 +608,19 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
             </Box>
             <Box sx={{flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
                 {error && <Alert severity="error" sx={{m: 1, mb: 0, flexShrink: 0}}>{error}</Alert>}
-                <Box sx={{flex: 1, minHeight: 0, overflow: tab === 'logs' || tab === 'exec' ? 'hidden' : 'auto', p: tab === 'logs' || tab === 'exec' ? 0 : 1.4,
+                <Box sx={{flex: 1, minHeight: 0, overflow: fixedContent ? 'hidden' : 'auto', p: tab === 'logs' || tab === 'exec' ? 0 : 1.4,
                     userSelect: 'text', cursor: tab === 'logs' || tab === 'exec' ? 'default' : 'text', ...scrollbarStyles}}>
                 {loading && !raw ? <Box sx={{display: 'grid', placeItems: 'center', height: '100%'}}><CircularProgress/></Box> : <>
                     <Box hidden={tab !== 'overview'}><Overview row={row} inspect={inspect} history={history} processCount={processCount} onUpdate={() => onAction(row, 'update')} updateRun={updateRun}/></Box>
                     <Box hidden={tab !== 'logs'} sx={{height: '100%', minHeight: 0, overflow: 'hidden'}}><LogsViewer containers={[{id: row.info.id, name: row.info.name}]} isActive={tab === 'logs'}/></Box>
                     <Box hidden={tab !== 'exec'} sx={{height: '100%', minHeight: 0, overflow: 'hidden'}}><ExecTerminal active={tab === 'exec'} containerID={row.info.id} running={state === 'running'}/></Box>
-                    <Box hidden={tab !== 'processes'}>{processAvailable
+                    <Box hidden={tab !== 'processes'} sx={{height: '100%', minHeight: 0}}>{processAvailable
                         ? <Processes active={tab === 'processes'} containerID={row.info.id} onCount={setProcessCount}/>
                         : <Alert severity="info">Start the container to inspect its running processes.</Alert>}</Box>
                     <Box hidden={tab !== 'networks'}><Networks containerID={row.info.id} inspect={inspect} onChanged={load}/></Box>
-                    <Box hidden={tab !== 'mounts'}><Mounts inspect={inspect}/></Box>
-                    <Box hidden={tab !== 'environment'}><Section title="Environment variables"><KeyValueTable value={field(inspect.Config, 'Env')} maskSecrets/></Section></Box>
-                    <Box hidden={tab !== 'labels'}><Section title="Labels"><KeyValueTable value={field(inspect.Config, 'Labels')}/></Section></Box>
+                    <Box hidden={tab !== 'mounts'} sx={{height: '100%', minHeight: 0}}><Mounts inspect={inspect}/></Box>
+                    <Box hidden={tab !== 'environment'} sx={{height: '100%', minHeight: 0}}><Section title="Environment variables" fill><KeyValueTable value={field(inspect.Config, 'Env')} maskSecrets scrollable/></Section></Box>
+                    <Box hidden={tab !== 'labels'} sx={{height: '100%', minHeight: 0}}><Section title="Labels" fill><KeyValueTable value={field(inspect.Config, 'Labels')} scrollable/></Section></Box>
                     <Box hidden={tab !== 'security'}><Security inspect={inspect}/></Box>
                     <Box hidden={tab !== 'resources'}><Resources inspect={inspect}/></Box>
                     <Box hidden={tab !== 'health'}><Health inspect={inspect}/></Box>

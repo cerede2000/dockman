@@ -33,6 +33,7 @@ import {
     InfoOutlined,
     Pause,
     PlayArrow,
+    PlayCircleOutlined,
     ReceiptLong,
     RestartAlt,
     RocketLaunch,
@@ -197,7 +198,7 @@ export function MonitorTable(props: MonitorTableProps) {
             <Table size="small" stickyHeader>
                 <TableHead>
                     <TableRow>
-                        <TableCell padding="checkbox" sx={headCell}>
+                        <TableCell padding="checkbox" sx={{...headCell, width: 40, minWidth: 40, maxWidth: 40, px: 0.5}}>
                             <Tooltip title="Select all stacks" arrow>
                                 <span>
                                     <Checkbox
@@ -211,7 +212,7 @@ export function MonitorTable(props: MonitorTableProps) {
                                 </span>
                             </Tooltip>
                         </TableCell>
-                        <TableCell aria-label="Container details" sx={{...headCell, width: 34, p: 0}}/>
+                        <TableCell aria-label="Container details" sx={{...headCell, width: 32, minWidth: 32, maxWidth: 32, p: 0}}/>
                         <TableCell sx={headCell}>{sortableHead('name', 'NAME')}</TableCell>
                         <TableCell sx={headCell}>STATE</TableCell>
                         <TableCell sx={headCell}>{sortableHead('uptime', 'UPTIME')}</TableCell>
@@ -275,7 +276,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
         <TableRow onClick={() => onToggleExpand(group.stack)}
                   sx={{bgcolor: t.header, cursor: 'pointer'}}>
             <TableCell padding="checkbox" onClick={e => e.stopPropagation()}
-                       sx={{...bodyCell, borderLeft: '3px solid #4db6ac', cursor: 'default'}}>
+                       sx={{...bodyCell, borderLeft: '3px solid #4db6ac', cursor: 'default', width: 40, minWidth: 40, maxWidth: 40, px: 0.5}}>
                 <Tooltip title={isStack && hasFile ? "Select stack" : "Select containers"} arrow>
                     <span>
                         <Checkbox
@@ -291,7 +292,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                     </span>
                 </Tooltip>
             </TableCell>
-            <TableCell sx={{...bodyCell, p: 0}}/>
+            <TableCell sx={{...bodyCell, width: 32, minWidth: 32, maxWidth: 32, p: 0}}/>
             <TableCell colSpan={3} sx={{...bodyCell, py: 0.25}}>
                 <Stack
                     direction="row"
@@ -476,7 +477,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
 
     return (
         <TableRow hover sx={{'&:hover': {bgcolor: t.rowHover}}}>
-            <TableCell padding="checkbox" sx={{...bodyCell, borderLeft: '3px solid rgba(77,182,172,0.25)'}}>
+            <TableCell padding="checkbox" sx={{...bodyCell, borderLeft: '3px solid rgba(77,182,172,0.25)', width: 40, minWidth: 40, maxWidth: 40, px: 0.5}}>
                 <Checkbox
                     size="small"
                     checked={isChecked}
@@ -485,7 +486,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     sx={{color: t.textDim, p: 0.5}}
                 />
             </TableCell>
-            <TableCell sx={{...bodyCell, width: 34, p: 0}}>
+            <TableCell sx={{...bodyCell, width: 32, minWidth: 32, maxWidth: 32, p: 0}}>
                 <Tooltip title="Details" arrow>
                     <IconButton size="small" onClick={() => onRowDetails(row)}
                                 sx={{color: '#64b5f6', '&:hover': {color: '#90caf9'}}}>
@@ -493,7 +494,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     </IconButton>
                 </Tooltip>
             </TableCell>
-            <TableCell sx={{...bodyCell, maxWidth: 240, pl: 2.5}}>
+            <TableCell sx={{...bodyCell, maxWidth: 240, pl: 0.75}}>
                 <Stack direction="row" spacing={0.5} sx={{
                     alignItems: "center"
                 }}>
@@ -596,7 +597,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                                     onClick={() => onRowAction(row, isPaused ? 'unpause' : 'pause')}
                                     sx={{color: isPaused ? '#66bb6a' : '#ffb74d', '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
                             {busy === 'pause' || busy === 'unpause' ? spinner
-                                : isPaused ? <PlayArrow sx={{fontSize: 16}}/> : <Pause sx={{fontSize: 16}}/>}
+                                : isPaused ? <PlayCircleOutlined sx={{fontSize: 17}}/> : <Pause sx={{fontSize: 16}}/>}
                         </IconButton>
                     </span>
                 </Tooltip>
