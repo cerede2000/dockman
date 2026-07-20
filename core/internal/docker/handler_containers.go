@@ -3,6 +3,7 @@ package docker
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -187,6 +188,15 @@ func (h *Handler) ContainerInspect(ctx context.Context, req *connect.Request[v1.
 		ExposedPorts: exposedPorts,
 	}
 
+	// Keep the typed legacy fields above for existing consumers, and expose
+	// the complete daemon response for the details view.  Marshaling the
+	// embedded API value (rather than hand-copying fields) also makes Dockman
+	// forward-compatible with inspect fields added by newer daemon APIs.
+	rawInspect, err := json.MarshalIndent(inspect, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode container inspect: %w", err)
+	}
+
 	return connect.NewResponse(&v1.ContainerInspectMessage{
 		ID:        inspect.ID,
 		Name:      inspect.Name,
@@ -196,6 +206,7 @@ func (h *Handler) ContainerInspect(ctx context.Context, req *connect.Request[v1.
 		Image:     inspect.Image,
 		HostsPath: inspect.HostsPath,
 		Mounts:    mounts,
+		RawJson:   string(rawInspect),
 	}), nil
 }
 

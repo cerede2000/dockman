@@ -44,6 +44,7 @@ import {
     type StackStats,
 } from './monitor-table.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
+import ContainerDetailsDialog from './container-details-dialog.tsx';
 
 type ContainerActionRpc = 'containerStart' | 'containerStop' | 'containerRestart' | 'containerPause'
     | 'containerUnpause' | 'containerRemove';
@@ -171,6 +172,7 @@ function MonitorPage() {
     // container id → lifecycle action in flight: the row's buttons lock and
     // the clicked one spins until the RPC and the list refetch settle
     const [rowBusy, setRowBusy] = useState<Record<string, RowAction>>({});
+    const [detailsContainerID, setDetailsContainerID] = useState('');
     // container name → pre-action snapshot: the stats stream keeps serving
     // the pre-action sample for a cycle or two, so these rows render pending
     // metrics ('–') until fresh evidence arrives (see the pruning effect)
@@ -200,6 +202,7 @@ function MonitorPage() {
         setSelectedContainers([]);
         setSelectedStacks([]);
         setRowBusy({});
+        setDetailsContainerID('');
         setStaleRows({});
         setExpanded(viewMemoryFor(host).expanded);
         scrollRestored.current = false;
@@ -269,6 +272,16 @@ function MonitorPage() {
                 return a.stack.localeCompare(b.stack);
             });
     }, [containers, statsByName, history, search, sortField, sortOrder, staleRows]);
+
+    // Resolve the dialog row from the unfiltered container list so an open
+    // details view is not accidentally closed by changing the monitor search.
+    const detailsRow: MonitorRow | null = useMemo(() => {
+        if (!detailsContainerID) return null;
+        const info = (containers?.list ?? []).find(c => c.id === detailsContainerID);
+        if (!info) return null;
+        const exposesMetrics = ['running', 'restarting', 'paused'].includes(info.state);
+        return {info, stats: staleRows[info.name] || !exposesMetrics ? undefined : statsByName.get(info.name)};
+    }, [detailsContainerID, containers, staleRows, statsByName]);
 
     // a live search opens every matching stack so the hits are visible;
     // the user's own expand/collapse choices come back once it clears
@@ -801,6 +814,7 @@ function MonitorPage() {
                                     rowBusy={rowBusy}
                                     onRowLogs={handleRowLogs}
                                     onRowExec={handleRowExec}
+                                    onRowDetails={(row) => setDetailsContainerID(row.info.id)}
                                     onStackAction={handleStackAction}
                                     onStackRedeploy={handleStackRedeploy}
                                     onStackLogs={handleStackLogs}
@@ -811,6 +825,17 @@ function MonitorPage() {
                     )}
                 </Paper>
             </Box>
+
+            <ContainerDetailsDialog
+                open={detailsContainerID !== ''}
+                row={detailsRow}
+                history={detailsRow ? history.get(detailsRow.info.name) : undefined}
+                busy={detailsRow ? rowBusy[detailsRow.info.id] : undefined}
+                stackBusy={!!(detailsRow?.info.servicePath && runningStacks[detailsRow.info.servicePath])}
+                updateRun={detailsRow ? updateRuns[detailsRow.info.name] : undefined}
+                onClose={() => setDetailsContainerID('')}
+                onAction={handleRowAction}
+            />
 
             <LogsPanel/>
         </Box>

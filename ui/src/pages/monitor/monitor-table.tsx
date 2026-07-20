@@ -30,6 +30,7 @@ import {
     EditNote,
     ExpandLess,
     ExpandMore,
+    InfoOutlined,
     Pause,
     PlayArrow,
     ReceiptLong,
@@ -124,6 +125,7 @@ interface MonitorTableProps {
     rowBusy: Record<string, RowAction>;
     onRowLogs: (row: MonitorRow) => void;
     onRowExec: (row: MonitorRow) => void;
+    onRowDetails: (row: MonitorRow) => void;
     onStackAction: (group: StackGroup, action: StackAction) => void;
     onStackRedeploy: (group: StackGroup, opts: RedeployOptions) => void;
     onStackLogs: (group: StackGroup) => void;
@@ -439,7 +441,7 @@ function RedeployMenuButton({disabled, onPick}: {
 function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
     const {
         row, history, selectedContainers, selectedStacks, onToggleContainers,
-        now, onRowAction, rowBusy, onRowLogs, onRowExec, updateRuns, onUpdateOutput,
+        now, onRowAction, rowBusy, onRowLogs, onRowExec, onRowDetails, updateRuns, onUpdateOutput,
     } = props;
     const c = row.info;
     const s = row.stats;
@@ -559,6 +561,12 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 )}
             </TableCell>
             <TableCell align="right" sx={{...bodyCell, whiteSpace: 'nowrap'}}>
+                <Tooltip title="Details" arrow>
+                    <IconButton size="small" onClick={() => onRowDetails(row)}
+                                sx={{color: '#64b5f6', '&:hover': {color: '#90caf9'}}}>
+                        <InfoOutlined sx={{fontSize: 17}}/>
+                    </IconButton>
+                </Tooltip>
                 <Tooltip title={isActive ? 'Stop' : 'Start'} arrow>
                     <span>
                         <IconButton size="small" disabled={!!busy || stackBusy}
