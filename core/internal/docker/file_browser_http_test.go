@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"io"
 	"testing"
 )
@@ -66,5 +67,48 @@ func TestTarToZipPreservesFile(t *testing.T) {
 	actual, err := io.ReadAll(file)
 	if err != nil || !bytes.Equal(actual, content) {
 		t.Fatalf("ZIP content = %q, %v", actual, err)
+	}
+}
+
+func TestParseArchiveFileListReturnsImmediateChildren(t *testing.T) {
+	var source bytes.Buffer
+	tw := tar.NewWriter(&source)
+	for _, header := range []*tar.Header{
+		{Name: "app", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "app/config.yml", Typeflag: tar.TypeReg, Mode: 0o640, Size: 3},
+		{Name: "app/data", Typeflag: tar.TypeDir, Mode: 0o750},
+		{Name: "app/data/nested.txt", Typeflag: tar.TypeReg, Mode: 0o600, Size: 6},
+	} {
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if header.Size > 0 {
+			if _, err := tw.Write(make([]byte, header.Size)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := parseArchiveFileList(&source, "/config/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Entries []browserEntry `json:"entries"`
+	}
+	if err = json.Unmarshal(encoded, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Entries) != 2 {
+		t.Fatalf("got %#v; want two immediate children", response.Entries)
+	}
+	names := map[string]bool{}
+	for _, entry := range response.Entries {
+		names[entry.Name] = true
+	}
+	if !names["config.yml"] || !names["data"] || names["nested.txt"] {
+		t.Fatalf("unexpected immediate children: %#v", response.Entries)
 	}
 }

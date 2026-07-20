@@ -31,6 +31,7 @@ import (
 const (
 	fileHelperLabel = "dockman.file-browser.helper"
 	volumeRoot      = "/volume"
+	archiveListMax  = 128 << 20
 )
 
 type browserTarget struct {
@@ -436,7 +437,11 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 	} else {
 		output, listErr := runNativeCommand(ctx, target, "ls", "-A1", requested)
 		if listErr != nil {
-			return nil, fmt.Errorf("read-only compatibility mode needs find or ls in the container: %w", errors.Join(err, listErr))
+			archive, archiveErr := archiveFileList(ctx, target, requested)
+			if archiveErr == nil {
+				return archive, nil
+			}
+			return nil, fmt.Errorf("unable to list the directory with container tools or the bounded Docker archive fallback: %w", errors.Join(err, listErr, archiveErr))
 		}
 		for _, value := range strings.Split(strings.TrimSuffix(string(output), "\n"), "\n") {
 			if value != "" {
@@ -475,6 +480,84 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 	}{Path: requested, Entries: entries})
 }
 
+func archiveFileList(ctx context.Context, target browserTarget, requested string) ([]byte, error) {
+	result, err := target.cli.CopyFromContainer(ctx, target.containerID, client.CopyFromContainerOptions{SourcePath: requested})
+	if err != nil {
+		return nil, err
+	}
+	defer result.Content.Close()
+	return parseArchiveFileList(result.Content, requested)
+}
+
+func parseArchiveFileList(source io.Reader, requested string) ([]byte, error) {
+	limited := &io.LimitedReader{R: source, N: archiveListMax + 1}
+	reader := tar.NewReader(limited)
+	entries := make(map[string]browserEntry)
+	rootPrefix := ""
+	first := true
+	for {
+		header, nextErr := reader.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			if limited.N <= 0 {
+				return nil, fmt.Errorf("directory archive exceeds the %d MiB safe listing limit", archiveListMax>>20)
+			}
+			return nil, nextErr
+		}
+		name := strings.TrimPrefix(path.Clean("/"+header.Name), "/")
+		if first {
+			first = false
+			if name == "." || name == path.Base(requested) {
+				if name != "." {
+					rootPrefix = name + "/"
+				}
+				continue
+			}
+		}
+		name = strings.TrimPrefix(name, rootPrefix)
+		if name == "" || name == "." {
+			continue
+		}
+		child, remainder, _ := strings.Cut(name, "/")
+		if child == "" || child == "." {
+			continue
+		}
+		if remainder != "" {
+			if _, exists := entries[child]; !exists {
+				entries[child] = browserEntry{Name: child, Type: "directory", Mode: "---", Permissions: "d---------", Modified: header.ModTime.UTC().Format(time.RFC3339Nano)}
+			}
+			continue
+		}
+		mode := header.FileInfo().Mode()
+		kind := "file"
+		switch {
+		case mode.IsDir():
+			kind = "directory"
+		case mode&os.ModeSymlink != 0:
+			kind = "symlink"
+		case !mode.IsRegular():
+			kind = "other"
+		}
+		entries[child] = browserEntry{
+			Name: child, Type: kind, Size: header.Size, Mode: fmt.Sprintf("%03o", mode.Perm()), Permissions: mode.String(),
+			Modified: header.ModTime.UTC().Format(time.RFC3339Nano), UID: uint32(max(header.Uid, 0)), GID: uint32(max(header.Gid, 0)), LinkTarget: header.Linkname,
+		}
+	}
+	if limited.N <= 0 {
+		return nil, fmt.Errorf("directory archive exceeds the %d MiB safe listing limit", archiveListMax>>20)
+	}
+	output := make([]browserEntry, 0, len(entries))
+	for _, entry := range entries {
+		output = append(output, entry)
+	}
+	return json.Marshal(struct {
+		Path    string         `json:"path"`
+		Entries []browserEntry `json:"entries"`
+	}{Path: requested, Entries: output})
+}
+
 func nativeFileAction(ctx context.Context, target browserTarget, input browserAction, requested string, helperArgs []string) error {
 	var command string
 	var args []string
@@ -509,7 +592,7 @@ func nativeFileUpload(ctx context.Context, target browserTarget, directory, file
 	}
 	cmd := append(commands[0], "of="+path.Join(directory, filename))
 	created, err := target.cli.ExecCreate(ctx, target.containerID, client.ExecCreateOptions{
-		User: "0", AttachStdin: true, AttachStdout: true, AttachStderr: true, Cmd: cmd,
+		User: "", AttachStdin: true, AttachStdout: true, AttachStderr: true, Cmd: cmd,
 	})
 	if err != nil {
 		return err
@@ -571,7 +654,19 @@ func nativeCommandCandidates(ctx context.Context, target browserTarget, name str
 }
 
 func runContainerCommand(ctx context.Context, target browserTarget, command []string) ([]byte, error) {
-	created, err := target.cli.ExecCreate(ctx, target.containerID, client.ExecCreateOptions{User: "0", AttachStdout: true, AttachStderr: true, Cmd: command})
+	output, err := runContainerCommandAsUser(ctx, target, command, "")
+	if err == nil {
+		return output, nil
+	}
+	rootOutput, rootErr := runContainerCommandAsUser(ctx, target, command, "0")
+	if rootErr == nil {
+		return rootOutput, nil
+	}
+	return nil, errors.Join(err, rootErr)
+}
+
+func runContainerCommandAsUser(ctx context.Context, target browserTarget, command []string, user string) ([]byte, error) {
+	created, err := target.cli.ExecCreate(ctx, target.containerID, client.ExecCreateOptions{User: user, AttachStdout: true, AttachStderr: true, Cmd: command})
 	if err != nil {
 		return nil, err
 	}

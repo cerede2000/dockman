@@ -90,6 +90,7 @@ export default function ContainerFileBrowser({kind, target, active = true}: {kin
     const [edit, setEdit] = useState<EditDialog>(null); const [editValue, setEditValue] = useState('');
     const [permissions, setPermissions] = useState<FileEntry | null>(null); const [deleting, setDeleting] = useState<FileEntry | null>(null);
     const [archiveMenu, setArchiveMenu] = useState<{anchor: HTMLElement; path: string} | null>(null);
+    const [actionSuppressed, setActionSuppressed] = useState<string | null>(null);
     const base = useMemo(() => `/docker/files/${kind}/${encodeURIComponent(target)}`, [kind, target]);
     const endpoint = useCallback((action: string, params?: Record<string, string>) => {
         const query = new URLSearchParams(params); return hostUrl(`${base}/${action}${query.size ? `?${query}` : ''}`);
@@ -140,6 +141,15 @@ export default function ContainerFileBrowser({kind, target, active = true}: {kin
         }
         if (uploadRef.current) uploadRef.current.value = ''; await load();
     };
+    const download = (filePath: string, format?: 'tar' | 'zip') => {
+        const anchor = document.createElement('a');
+        anchor.href = endpoint('download', {path: filePath, ...(format ? {format} : {})});
+        anchor.download = '';
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+    };
     const breadcrumbs = directory.split('/').filter(Boolean);
     return <Paper variant="outlined" sx={{height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: t.panel, borderColor: t.border}}>
         <Stack direction="row" sx={{alignItems: 'center', gap: 0.4, px: 1, py: 0.75, flexShrink: 0, borderBottom: `1px solid ${t.border}`}}>
@@ -164,22 +174,26 @@ export default function ContainerFileBrowser({kind, target, active = true}: {kin
                     <TableCell sx={{width: 150}}><SortLabel label="Permissions" column="mode" sort={sort} ascending={ascending} onSort={onSort}/></TableCell>
                     <TableCell sx={{width: 180}}><SortLabel label="Modified" column="modified" sort={sort} ascending={ascending} onSort={onSort}/></TableCell>
                     <TableCell align="right" sx={{width: 150, fontWeight: 800, fontSize: '0.72rem'}}>Actions</TableCell></TableRow></TableHead>
-                <TableBody>{shown.map(entry => {const fullPath = joinPath(directory, entry.name); return <TableRow key={entry.name} hover sx={{'& .file-actions': {opacity: 0}, '&:hover .file-actions, &:focus-within .file-actions': {opacity: 1}}}>
-                    <TableCell><Button color="inherit" disabled={entry.type !== 'directory'} onClick={() => entry.type === 'directory' && setDirectory(fullPath)}
-                        startIcon={entry.type === 'directory' ? <FolderOutlined color="primary"/> : <InsertDriveFileOutlined sx={{color: '#90caf9'}}/>}
-                        sx={{textTransform: 'none', justifyContent: 'flex-start', maxWidth: '100%', minWidth: 0, fontWeight: 650, '& .MuiButton-startIcon': {flexShrink: 0}}}>
-                        <Typography noWrap sx={{fontSize: '0.78rem'}} title={entry.linkTarget ? `${entry.name} → ${entry.linkTarget}` : entry.name}>{entry.name}</Typography></Button></TableCell>
+                <TableBody>{shown.map(entry => {const fullPath = joinPath(directory, entry.name); const folder = entry.type === 'directory'; return <TableRow key={entry.name} hover
+                    onMouseLeave={() => setActionSuppressed(current => current === entry.name ? null : current)}
+                    sx={{'& .file-actions': {opacity: 0}, '&:hover .file-actions': {opacity: actionSuppressed === entry.name ? 0 : 1}}}>
+                    <TableCell onClick={() => folder && setDirectory(fullPath)} sx={{cursor: folder ? 'pointer' : 'default', userSelect: 'text'}}>
+                        <Stack direction="row" spacing={1} sx={{alignItems: 'center', minWidth: 0, width: '100%'}}>
+                            {folder ? <FolderOutlined color="primary"/> : <InsertDriveFileOutlined sx={{color: '#90caf9'}}/>}
+                            <Typography noWrap sx={{fontSize: '0.79rem', fontWeight: folder ? 700 : 500, color: t.text, minWidth: 0}}
+                                title={entry.linkTarget ? `${entry.name} → ${entry.linkTarget}` : entry.name}>{entry.name}</Typography>
+                        </Stack>
+                    </TableCell>
                     <TableCell sx={{fontFamily: t.mono, color: t.textDim, fontSize: '0.72rem'}}>{formatSize(entry.size, entry.type === 'directory')}</TableCell>
                     <TableCell sx={{fontFamily: t.mono, fontSize: '0.72rem'}}>{entry.mode} <Typography component="span" sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.67rem'}}>{entry.permissions}</Typography></TableCell>
                     <TableCell sx={{fontFamily: t.mono, color: t.textDim, fontSize: '0.7rem'}}>{new Date(entry.modified).toLocaleString()}</TableCell>
                     <TableCell align="right"><Stack className="file-actions" direction="row" spacing={0} sx={{justifyContent: 'flex-end', transition: 'opacity .15s'}}>
-                        <Tooltip title="Rename"><IconButton size="small" onClick={() => openEdit({kind: 'rename', entry})}><DriveFileRenameOutline fontSize="small"/></IconButton></Tooltip>
-                        <Tooltip title="Change permissions"><IconButton size="small" onClick={() => setPermissions(entry)}><SecurityOutlined fontSize="small"/></IconButton></Tooltip>
+                        <Tooltip title="Rename"><IconButton size="small" onClick={event => {event.currentTarget.blur(); setActionSuppressed(entry.name); openEdit({kind: 'rename', entry});}}><DriveFileRenameOutline fontSize="small"/></IconButton></Tooltip>
+                        <Tooltip title="Change permissions"><IconButton size="small" onClick={event => {event.currentTarget.blur(); setActionSuppressed(entry.name); setPermissions(entry);}}><SecurityOutlined fontSize="small"/></IconButton></Tooltip>
                         <Tooltip title={entry.type === 'directory' ? 'Download folder' : 'Download'}><IconButton size="small"
-                            component={entry.type === 'directory' ? 'button' : 'a'} href={entry.type === 'directory' ? undefined : endpoint('download', {path: fullPath})}
-                            onClick={entry.type === 'directory' ? (event: MouseEvent<HTMLButtonElement>) => setArchiveMenu({anchor: event.currentTarget, path: fullPath}) : undefined}>
+                            onClick={(event: MouseEvent<HTMLButtonElement>) => {event.currentTarget.blur(); setActionSuppressed(entry.name); if (folder) setArchiveMenu({anchor: event.currentTarget, path: fullPath}); else download(fullPath);}}>
                             {entry.type === 'directory' ? <ArchiveOutlined fontSize="small"/> : <DownloadOutlined fontSize="small"/>}</IconButton></Tooltip>
-                        <Tooltip title="Delete"><IconButton size="small" color="error" onClick={() => setDeleting(entry)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
+                        <Tooltip title="Delete"><IconButton size="small" color="error" onClick={event => {event.currentTarget.blur(); setActionSuppressed(entry.name); setDeleting(entry);}}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
                     </Stack></TableCell>
                 </TableRow>;})}</TableBody>
             </Table>
@@ -187,8 +201,8 @@ export default function ContainerFileBrowser({kind, target, active = true}: {kin
         </TableContainer>
         <Menu open={archiveMenu !== null} anchorEl={archiveMenu?.anchor} onClose={() => setArchiveMenu(null)}
             slotProps={{paper: {sx: {bgcolor: t.panel, border: `1px solid ${t.border}`, minWidth: 150}}}}>
-            <MenuItem component="a" href={archiveMenu ? endpoint('download', {path: archiveMenu.path, format: 'tar'}) : undefined} onClick={() => setArchiveMenu(null)}>Download TAR</MenuItem>
-            <MenuItem component="a" href={archiveMenu ? endpoint('download', {path: archiveMenu.path, format: 'zip'}) : undefined} onClick={() => setArchiveMenu(null)}>Download ZIP</MenuItem>
+            <MenuItem onClick={() => {if (archiveMenu) download(archiveMenu.path, 'tar'); setArchiveMenu(null);}}>Download TAR</MenuItem>
+            <MenuItem onClick={() => {if (archiveMenu) download(archiveMenu.path, 'zip'); setArchiveMenu(null);}}>Download ZIP</MenuItem>
         </Menu>
         <Dialog open={edit !== null} onClose={() => setEdit(null)} maxWidth="xs" fullWidth slotProps={{paper: {sx: {bgcolor: t.panel, border: `1px solid ${t.border}`}}}}>
             <DialogTitle>{edit?.kind === 'rename' ? 'Rename' : edit?.kind === 'new-file' ? 'New file' : 'New folder'}</DialogTitle>
