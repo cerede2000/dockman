@@ -39,6 +39,7 @@ type browserTarget struct {
 	root        string
 	helperPath  string
 	unlink      bool
+	native      bool
 	cleanup     func()
 }
 
@@ -63,7 +64,12 @@ func (h *HandlerHttp) containerFilesList(w http.ResponseWriter, r *http.Request)
 		writeBrowserError(w, err)
 		return
 	}
-	stdout, err := h.runFileHelper(r.Context(), target, "list", requested)
+	var stdout []byte
+	if target.native {
+		stdout, err = nativeFileList(r.Context(), target, requested)
+	} else {
+		stdout, err = h.runFileHelper(r.Context(), target, "list", requested)
+	}
 	if err != nil {
 		writeBrowserError(w, err)
 		return
@@ -110,7 +116,12 @@ func (h *HandlerHttp) containerFilesAction(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer target.cleanup()
-	if _, err = h.runFileHelper(r.Context(), target, args...); err != nil {
+	if target.native {
+		err = nativeFileAction(r.Context(), target, input, requested, args)
+	} else {
+		_, err = h.runFileHelper(r.Context(), target, args...)
+	}
+	if err != nil {
 		writeBrowserError(w, err)
 		return
 	}
@@ -139,6 +150,14 @@ func (h *HandlerHttp) containerFilesUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer target.cleanup()
+	if target.native {
+		if err = nativeFileUpload(r.Context(), target, targetPath(target.root, directory), filename, r.Body, r.ContentLength); err != nil {
+			writeBrowserError(w, fmt.Errorf("upload failed: %w", err))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
@@ -241,8 +260,9 @@ func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper
 		if inspect.Container.State == nil || !inspect.Container.State.Running {
 			return browserTarget{}, fmt.Errorf("container must be running to browse files")
 		}
-		target := browserTarget{cli: dkSrv.Container.Cli(), containerID: id, root: "/", cleanup: func() {}}
-		if needHelper {
+		readOnly := inspect.Container.HostConfig != nil && inspect.Container.HostConfig.ReadonlyRootfs
+		target := browserTarget{cli: dkSrv.Container.Cli(), containerID: id, root: "/", native: readOnly, cleanup: func() {}}
+		if needHelper && !readOnly {
 			target.helperPath, err = installFileHelper(r.Context(), dkSrv.Container.Cli(), id, inspect.Container.Image)
 			target.unlink = true
 		}
@@ -275,7 +295,7 @@ func createVolumeBrowserTarget(ctx context.Context, cli *client.Client, volumeNa
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name:       name,
 		Config:     &container.Config{Image: imageID, User: "0", Entrypoint: []string{remote}, Cmd: []string{"hold"}, Labels: map[string]string{fileHelperLabel: "true", dockmanContainerLabel: "false"}},
-		HostConfig: &container.HostConfig{AutoRemove: false, ReadonlyRootfs: true, NetworkMode: "none", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: volumeName, Target: volumeRoot, ReadOnly: !writable}}},
+		HostConfig: &container.HostConfig{AutoRemove: false, NetworkMode: "none", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: volumeName, Target: volumeRoot, ReadOnly: !writable}}},
 	})
 	if err != nil {
 		return browserTarget{}, err
@@ -387,6 +407,187 @@ func (h *HandlerHttp) runFileHelper(ctx context.Context, target browserTarget, c
 	}
 	if inspected.ExitCode != 0 {
 		return nil, fmt.Errorf("file operation failed: %s", strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+type browserEntry struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Size        int64  `json:"size"`
+	Mode        string `json:"mode"`
+	Permissions string `json:"permissions"`
+	Modified    string `json:"modified"`
+	UID         uint32 `json:"uid"`
+	GID         uint32 `json:"gid"`
+	LinkTarget  string `json:"linkTarget,omitempty"`
+}
+
+func nativeFileList(ctx context.Context, target browserTarget, requested string) ([]byte, error) {
+	var names []string
+	if output, err := runNativeCommand(ctx, target, "find", requested, "-mindepth", "1", "-maxdepth", "1", "-print0"); err == nil {
+		for _, raw := range bytes.Split(output, []byte{0}) {
+			value := string(raw)
+			if value == "" {
+				continue
+			}
+			names = append(names, path.Base(value))
+		}
+	} else {
+		output, listErr := runNativeCommand(ctx, target, "ls", "-A1", requested)
+		if listErr != nil {
+			return nil, fmt.Errorf("read-only compatibility mode needs find or ls in the container: %w", errors.Join(err, listErr))
+		}
+		for _, value := range strings.Split(strings.TrimSuffix(string(output), "\n"), "\n") {
+			if value != "" {
+				names = append(names, value)
+			}
+		}
+	}
+
+	entries := make([]browserEntry, 0, len(names))
+	for _, name := range names {
+		if name == "." || name == ".." || strings.Contains(name, "/") {
+			continue
+		}
+		result, err := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: path.Join(requested, name)})
+		if err != nil {
+			return nil, fmt.Errorf("stat %q: %w", name, err)
+		}
+		stat := result.Stat
+		kind := "file"
+		switch {
+		case stat.Mode.IsDir():
+			kind = "directory"
+		case stat.Mode&os.ModeSymlink != 0:
+			kind = "symlink"
+		case !stat.Mode.IsRegular():
+			kind = "other"
+		}
+		entries = append(entries, browserEntry{
+			Name: name, Type: kind, Size: stat.Size, Mode: fmt.Sprintf("%03o", stat.Mode.Perm()),
+			Permissions: stat.Mode.String(), Modified: stat.Mtime.UTC().Format(time.RFC3339Nano), LinkTarget: stat.LinkTarget,
+		})
+	}
+	return json.Marshal(struct {
+		Path    string         `json:"path"`
+		Entries []browserEntry `json:"entries"`
+	}{Path: requested, Entries: entries})
+}
+
+func nativeFileAction(ctx context.Context, target browserTarget, input browserAction, requested string, helperArgs []string) error {
+	var command string
+	var args []string
+	switch input.Action {
+	case "create-file":
+		command, args = "touch", []string{requested}
+	case "create-folder":
+		command, args = "mkdir", []string{requested}
+	case "rename":
+		command, args = "mv", []string{requested, helperArgs[2]}
+	case "delete":
+		if requested == "/" {
+			return fmt.Errorf("refusing to delete the browser root")
+		}
+		command, args = "rm", []string{"-rf", requested}
+	case "chmod":
+		command, args = "chmod", []string{input.Mode, requested}
+		if input.Recursive {
+			args = append([]string{"-R"}, args...)
+		}
+	default:
+		return fmt.Errorf("unsupported file action")
+	}
+	_, err := runNativeCommand(ctx, target, command, args...)
+	return err
+}
+
+func nativeFileUpload(ctx context.Context, target browserTarget, directory, filename string, content io.Reader, size int64) error {
+	commands := nativeCommandCandidates(ctx, target, "dd")
+	if len(commands) == 0 {
+		return fmt.Errorf("read-only compatibility mode needs dd in the container to upload into writable mounts")
+	}
+	cmd := append(commands[0], "of="+path.Join(directory, filename))
+	created, err := target.cli.ExecCreate(ctx, target.containerID, client.ExecCreateOptions{
+		User: "0", AttachStdin: true, AttachStdout: true, AttachStderr: true, Cmd: cmd,
+	})
+	if err != nil {
+		return err
+	}
+	attached, err := target.cli.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return err
+	}
+	defer attached.Close()
+	var stderr bytes.Buffer
+	readDone := make(chan error, 1)
+	go func() {
+		_, copyErr := stdcopy.StdCopy(io.Discard, &stderr, attached.Reader)
+		readDone <- copyErr
+	}()
+	_, writeErr := io.CopyN(attached.Conn, content, size)
+	closeErr := attached.CloseWrite()
+	readErr := <-readDone
+	inspected, inspectErr := target.cli.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
+	if err = errors.Join(writeErr, closeErr, readErr, inspectErr); err != nil {
+		return err
+	}
+	if inspected.ExitCode != 0 {
+		return fmt.Errorf("file operation failed: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func runNativeCommand(ctx context.Context, target browserTarget, name string, args ...string) ([]byte, error) {
+	commands := nativeCommandCandidates(ctx, target, name)
+	if len(commands) == 0 {
+		return nil, fmt.Errorf("%s is not available in the container", name)
+	}
+	var failures []error
+	for _, prefix := range commands {
+		output, err := runContainerCommand(ctx, target, append(prefix, args...))
+		if err == nil {
+			return output, nil
+		}
+		failures = append(failures, err)
+	}
+	return nil, errors.Join(failures...)
+}
+
+func nativeCommandCandidates(ctx context.Context, target browserTarget, name string) [][]string {
+	paths := []string{"/bin/" + name, "/usr/bin/" + name, "/usr/sbin/" + name, "/sbin/" + name}
+	commands := make([][]string, 0, len(paths)+2)
+	for _, candidate := range paths {
+		if _, err := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: candidate}); err == nil {
+			commands = append(commands, []string{candidate})
+		}
+	}
+	for _, busybox := range []string{"/bin/busybox", "/usr/bin/busybox"} {
+		if _, err := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: busybox}); err == nil {
+			commands = append(commands, []string{busybox, name})
+		}
+	}
+	return commands
+}
+
+func runContainerCommand(ctx context.Context, target browserTarget, command []string) ([]byte, error) {
+	created, err := target.cli.ExecCreate(ctx, target.containerID, client.ExecCreateOptions{User: "0", AttachStdout: true, AttachStderr: true, Cmd: command})
+	if err != nil {
+		return nil, err
+	}
+	attached, err := target.cli.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer attached.Close()
+	var stdout, stderr bytes.Buffer
+	_, copyErr := stdcopy.StdCopy(&stdout, &stderr, attached.Reader)
+	inspected, inspectErr := target.cli.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
+	if err = errors.Join(copyErr, inspectErr); err != nil {
+		return nil, err
+	}
+	if inspected.ExitCode != 0 {
+		return nil, fmt.Errorf("%s: %s", strings.Join(command, " "), strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }

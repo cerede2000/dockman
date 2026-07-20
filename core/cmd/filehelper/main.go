@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path"
 	"strconv"
 	"strings"
@@ -31,7 +32,10 @@ type entry struct {
 func main() {
 	args := os.Args[1:]
 	if len(args) == 1 && args[0] == "hold" {
-		select {}
+		stopping := make(chan os.Signal, 1)
+		signal.Notify(stopping, syscall.SIGINT, syscall.SIGTERM)
+		<-stopping
+		return
 	}
 	if len(args) > 0 && args[0] == "--unlink" {
 		_ = os.Remove(os.Args[0])
@@ -91,7 +95,11 @@ func clean(value string) string {
 			fatal("parent traversal is not allowed")
 		}
 	}
-	return strings.TrimPrefix(path.Clean("/"+value), "/")
+	cleaned := strings.TrimPrefix(path.Clean("/"+value), "/")
+	if cleaned == "" {
+		return "."
+	}
+	return cleaned
 }
 
 func list(root *os.Root, raw string) error {
