@@ -17,7 +17,6 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import "@xterm/xterm/css/xterm.css";
 import PageHeader, {RefreshButton} from '../../components/page-header.tsx';
-import SearchBar from '../../components/search-bar.tsx';
 import useSearch from '../../hooks/search.ts';
 import ActionButtons from '../../components/action-buttons.tsx';
 import scrollbarStyles from '../../components/scrollbar-style.tsx';
@@ -231,7 +230,9 @@ function MonitorPage() {
     const groups: StackGroup[] = useMemo(() => {
         const query = search.trim().toLowerCase();
         const list = (containers?.list ?? []).filter(c => {
-            const matchesSearch = !query || [c.name, c.imageName, c.stackName, c.serviceName]
+            // This search lives in the NAME column, so only values displayed
+            // there participate (container/service and stack names).
+            const matchesSearch = !query || [c.name, c.stackName, c.serviceName]
                 .some(f => f.toLowerCase().includes(query));
             if (!matchesSearch) return false;
             if (stateFilters.length === 0) return true;
@@ -762,9 +763,7 @@ function MonitorPage() {
                     <Divider sx={{borderColor: t.border}}/>
 
                     <Box sx={{px: 1.5, py: 0.75, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1}}>
-                        <Box sx={{flex: '0 1 220px', maxWidth: 220, '& .MuiTextField-root': {width: '100%', minWidth: '0 !important'}}}>
-                            <SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>
-                        </Box>
+                        <ActionButtons iconOnly actions={stacksMode ? stackBulkActions : containerBulkActions}/>
 
                         {stateFilters.map(filter => <Chip
                             key={filter}
@@ -775,11 +774,6 @@ function MonitorPage() {
                             sx={{height: 27, color: t.text, borderColor: t.border, fontWeight: 700, textTransform: 'none'}}
                         />)}
 
-                        <Box sx={{flexGrow: 1}}/>
-
-                        <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
-
-                        <ActionButtons iconOnly actions={stacksMode ? stackBulkActions : containerBulkActions}/>
                         <RefreshButton iconOnly onClick={handleRefresh} loading={refreshing}/>
                         <Tooltip title={allExpanded ? 'Collapse all' : 'Expand all'}>
                             <Button
@@ -849,6 +843,9 @@ function MonitorPage() {
                                     sortField={sortField}
                                     sortOrder={sortOrder}
                                     onSortChange={handleSortChange}
+                                    nameSearch={search}
+                                    onNameSearchChange={setSearch}
+                                    nameSearchInputRef={searchInputRef}
                                     scrollRef={scrollRef}
                                     onScroll={(top) => {
                                         viewMemoryFor(host).scroll = top;

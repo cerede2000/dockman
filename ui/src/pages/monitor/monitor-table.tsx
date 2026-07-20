@@ -9,6 +9,7 @@ import {
     ListItemText,
     Menu,
     MenuItem,
+    InputBase,
     Popover,
     Stack,
     Table,
@@ -37,6 +38,7 @@ import {
     ReceiptLong,
     RestartAlt,
     RocketLaunch,
+    Search,
     Stop,
     Subject,
     Terminal,
@@ -106,6 +108,9 @@ interface MonitorTableProps {
     sortField: MonitorSortField | null;
     sortOrder: 'asc' | 'desc';
     onSortChange: (field: MonitorSortField) => void;
+    nameSearch: string;
+    onNameSearchChange: (value: string) => void;
+    nameSearchInputRef: Ref<HTMLInputElement>;
     // scroll position persistence across navigations
     scrollRef: Ref<HTMLDivElement>;
     onScroll: (top: number) => void;
@@ -164,7 +169,11 @@ const stateVisual: Record<string, { icon: ReactNode, color: string }> = {
 };
 
 export function MonitorTable(props: MonitorTableProps) {
-    const {groups, selectedStacks, selectedContainers, onToggleAllStacks, sortField, sortOrder, onSortChange, scrollRef, onScroll} = props;
+    const {
+        groups, selectedStacks, selectedContainers, onToggleAllStacks,
+        sortField, sortOrder, onSortChange, nameSearch,
+        onNameSearchChange, nameSearchInputRef, scrollRef, onScroll,
+    } = props;
 
     const sortLabelSx = {
         color: `${t.textDim} !important`,
@@ -213,7 +222,40 @@ export function MonitorTable(props: MonitorTableProps) {
                             </Tooltip>
                         </TableCell>
                         <TableCell aria-label="Container details" sx={{...headCell, width: 32, minWidth: 32, maxWidth: 32, p: 0}}/>
-                        <TableCell sx={headCell}>{sortableHead('name', 'NAME')}</TableCell>
+                        <TableCell sx={{...headCell, minWidth: 245}}>
+                            <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}>
+                                {sortableHead('name', 'NAME')}
+                                <Box sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    width: 132,
+                                    height: 25,
+                                    px: 0.65,
+                                    border: `1px solid ${nameSearch ? t.cpuLine : t.border}`,
+                                    borderRadius: 1,
+                                    bgcolor: 'rgba(255,255,255,0.035)',
+                                    transition: 'border-color 120ms ease',
+                                    '&:focus-within': {borderColor: t.cpuLine},
+                                }}>
+                                    <Search sx={{fontSize: 15, mr: 0.5, color: nameSearch ? t.cpuLine : t.textDim}}/>
+                                    <InputBase
+                                        inputRef={nameSearchInputRef}
+                                        value={nameSearch}
+                                        onChange={event => onNameSearchChange(event.target.value)}
+                                        placeholder="Filter name"
+                                        inputProps={{'aria-label': 'Filter by container or stack name'}}
+                                        sx={{
+                                            minWidth: 0,
+                                            flex: 1,
+                                            color: t.text,
+                                            fontSize: '0.72rem',
+                                            '& input': {p: 0},
+                                            '& input::placeholder': {color: t.textDim, opacity: 0.8},
+                                        }}
+                                    />
+                                </Box>
+                            </Stack>
+                        </TableCell>
                         <TableCell sx={headCell}>STATE</TableCell>
                         <TableCell sx={headCell}>{sortableHead('uptime', 'UPTIME')}</TableCell>
                         <TableCell sx={{...headCell, minWidth: 130}}>{sortableHead('cpu', 'CPU')}</TableCell>
