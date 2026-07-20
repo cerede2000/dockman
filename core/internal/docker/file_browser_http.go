@@ -17,6 +17,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	hostMid "github.com/RA341/dockman/internal/host/middleware"
@@ -41,6 +42,8 @@ type browserTarget struct {
 	helperPath  string
 	unlink      bool
 	native      bool
+	readOnly    bool
+	defaultUser string
 	cleanup     func()
 }
 
@@ -75,8 +78,14 @@ func (h *HandlerHttp) containerFilesList(w http.ResponseWriter, r *http.Request)
 		writeBrowserError(w, err)
 		return
 	}
+	var response map[string]any
+	if err = json.Unmarshal(stdout, &response); err != nil {
+		writeBrowserError(w, fmt.Errorf("invalid file listing response: %w", err))
+		return
+	}
+	response["readOnly"] = target.readOnly
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(stdout)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (h *HandlerHttp) containerFilesAction(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +271,11 @@ func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper
 			return browserTarget{}, fmt.Errorf("container must be running to browse files")
 		}
 		readOnly := inspect.Container.HostConfig != nil && inspect.Container.HostConfig.ReadonlyRootfs
-		target := browserTarget{cli: dkSrv.Container.Cli(), containerID: id, root: "/", native: readOnly, cleanup: func() {}}
+		defaultUser := ""
+		if inspect.Container.Config != nil {
+			defaultUser = inspect.Container.Config.User
+		}
+		target := browserTarget{cli: dkSrv.Container.Cli(), containerID: id, root: "/", native: readOnly, readOnly: readOnly, defaultUser: defaultUser, cleanup: func() {}}
 		if needHelper && !readOnly {
 			target.helperPath, err = installFileHelper(r.Context(), dkSrv.Container.Cli(), id, inspect.Container.Image)
 			target.unlink = true
@@ -407,7 +420,14 @@ func (h *HandlerHttp) runFileHelper(ctx context.Context, target browserTarget, c
 		return nil, err
 	}
 	if inspected.ExitCode != 0 {
-		return nil, fmt.Errorf("file operation failed: %s", strings.TrimSpace(stderr.String()))
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if detail == "" {
+			detail = fmt.Sprintf("helper exited with code %d", inspected.ExitCode)
+		}
+		return nil, fmt.Errorf("file operation failed: %s", detail)
 	}
 	return stdout.Bytes(), nil
 }
@@ -450,34 +470,63 @@ func nativeFileList(ctx context.Context, target browserTarget, requested string)
 		}
 	}
 
-	entries := make([]browserEntry, 0, len(names))
-	for _, name := range names {
-		if name == "." || name == ".." || strings.Contains(name, "/") {
-			continue
+	entries := make([]browserEntry, len(names))
+	valid := make([]bool, len(names))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	var firstErr error
+	var errorOnce sync.Once
+	workerCount := min(12, max(1, len(names)))
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				name := names[index]
+				if name == "." || name == ".." || strings.Contains(name, "/") {
+					continue
+				}
+				result, statErr := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: path.Join(requested, name)})
+				if statErr != nil {
+					errorOnce.Do(func() { firstErr = fmt.Errorf("stat %q: %w", name, statErr) })
+					continue
+				}
+				stat := result.Stat
+				kind := "file"
+				switch {
+				case stat.Mode.IsDir():
+					kind = "directory"
+				case stat.Mode&os.ModeSymlink != 0:
+					kind = "symlink"
+				case !stat.Mode.IsRegular():
+					kind = "other"
+				}
+				entries[index] = browserEntry{
+					Name: name, Type: kind, Size: stat.Size, Mode: fmt.Sprintf("%03o", stat.Mode.Perm()),
+					Permissions: stat.Mode.String(), Modified: stat.Mtime.UTC().Format(time.RFC3339Nano), LinkTarget: stat.LinkTarget,
+				}
+				valid[index] = true
+			}
+		}()
+	}
+	for index := range names {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	outputEntries := make([]browserEntry, 0, len(entries))
+	for index, entry := range entries {
+		if valid[index] {
+			outputEntries = append(outputEntries, entry)
 		}
-		result, err := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: path.Join(requested, name)})
-		if err != nil {
-			return nil, fmt.Errorf("stat %q: %w", name, err)
-		}
-		stat := result.Stat
-		kind := "file"
-		switch {
-		case stat.Mode.IsDir():
-			kind = "directory"
-		case stat.Mode&os.ModeSymlink != 0:
-			kind = "symlink"
-		case !stat.Mode.IsRegular():
-			kind = "other"
-		}
-		entries = append(entries, browserEntry{
-			Name: name, Type: kind, Size: stat.Size, Mode: fmt.Sprintf("%03o", stat.Mode.Perm()),
-			Permissions: stat.Mode.String(), Modified: stat.Mtime.UTC().Format(time.RFC3339Nano), LinkTarget: stat.LinkTarget,
-		})
 	}
 	return json.Marshal(struct {
 		Path    string         `json:"path"`
 		Entries []browserEntry `json:"entries"`
-	}{Path: requested, Entries: entries})
+	}{Path: requested, Entries: outputEntries})
 }
 
 func archiveFileList(ctx context.Context, target browserTarget, requested string) ([]byte, error) {
@@ -634,7 +683,7 @@ func runNativeCommand(ctx context.Context, target browserTarget, name string, ar
 		}
 		failures = append(failures, err)
 	}
-	return nil, errors.Join(failures...)
+	return nil, fmt.Errorf("%s failed with %d available executable(s): %w", name, len(commands), failures[0])
 }
 
 func nativeCommandCandidates(ctx context.Context, target browserTarget, name string) [][]string {
@@ -658,9 +707,16 @@ func runContainerCommand(ctx context.Context, target browserTarget, command []st
 	if err == nil {
 		return output, nil
 	}
+	configuredUser := strings.TrimSpace(strings.Split(target.defaultUser, ":")[0])
+	if configuredUser == "" || configuredUser == "0" || strings.EqualFold(configuredUser, "root") {
+		return nil, err
+	}
 	rootOutput, rootErr := runContainerCommandAsUser(ctx, target, command, "0")
 	if rootErr == nil {
 		return rootOutput, nil
+	}
+	if err.Error() == rootErr.Error() {
+		return nil, err
 	}
 	return nil, errors.Join(err, rootErr)
 }
