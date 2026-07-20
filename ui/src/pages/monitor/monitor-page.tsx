@@ -28,7 +28,7 @@ import {callRPC, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useHostStore} from '../compose/state/files.ts';
 import {DockerService} from '../../gen/docker/v1/docker_pb.ts';
-import AggregateStats from '../compose/components/container-stat-chart.tsx';
+import AggregateStats, {type ContainerStateFilter} from '../compose/components/container-stat-chart.tsx';
 import {LogsPanel} from '../compose/components/logs-panel.tsx';
 import {useContainerExec, useLogsPanel, useTerminalTabs} from '../compose/state/terminal.tsx';
 import {useComposeAction} from '../compose/state/compose.tsx';
@@ -169,6 +169,7 @@ function MonitorPage() {
     const [expanded, setExpanded] = useState<Record<string, boolean>>(() => viewMemoryFor(host).expanded);
     const [sortField, setSortField] = useState<MonitorSortField | null>(null);
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+    const [stateFilters, setStateFilters] = useState<ContainerStateFilter[]>([]);
     const [now, setNow] = useState(() => Date.now());
     // container id → lifecycle action in flight: the row's buttons lock and
     // the clicked one spins until the RPC and the list refetch settle
@@ -205,6 +206,7 @@ function MonitorPage() {
         setRowBusy({});
         setDetailsContainerID('');
         setStaleRows({});
+        setStateFilters([]);
         setExpanded(viewMemoryFor(host).expanded);
         scrollRestored.current = false;
     }, [clearTabs, host]);
@@ -228,9 +230,21 @@ function MonitorPage() {
 
     const groups: StackGroup[] = useMemo(() => {
         const query = search.trim().toLowerCase();
-        const list = (containers?.list ?? []).filter(c =>
-            !query || [c.name, c.imageName, c.stackName, c.serviceName].some(f => f.toLowerCase().includes(query))
-        );
+        const list = (containers?.list ?? []).filter(c => {
+            const matchesSearch = !query || [c.name, c.imageName, c.stackName, c.serviceName]
+                .some(f => f.toLowerCase().includes(query));
+            if (!matchesSearch) return false;
+            if (stateFilters.length === 0) return true;
+            return stateFilters.some(filter => {
+                switch (filter) {
+                    case 'running': return c.state === 'running';
+                    case 'paused': return c.state === 'paused';
+                    case 'restarting': return c.state === 'restarting';
+                    case 'unhealthy': return c.state === 'running' && c.health === 'unhealthy';
+                    case 'stopped': return !['running', 'paused', 'restarting'].includes(c.state);
+                }
+            });
+        });
 
         const byStack = new Map<string, StackGroup>();
         for (const c of list) {
@@ -272,7 +286,7 @@ function MonitorPage() {
                 }
                 return a.stack.localeCompare(b.stack);
             });
-    }, [containers, statsByName, history, search, sortField, sortOrder, staleRows]);
+    }, [containers, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows]);
 
     // Resolve the dialog row from the unfiltered container list so an open
     // details view is not accidentally closed by changing the monitor search.
@@ -287,11 +301,11 @@ function MonitorPage() {
     // a live search opens every matching stack so the hits are visible;
     // the user's own expand/collapse choices come back once it clears
     const effectiveExpanded = useMemo(() => {
-        if (!search.trim()) return expanded;
+        if (!search.trim() && stateFilters.length === 0) return expanded;
         const all: Record<string, boolean> = {};
         for (const g of groups) all[g.stack] = true;
         return all;
-    }, [search, expanded, groups]);
+    }, [search, stateFilters, expanded, groups]);
 
     const total = containers?.list.length ?? 0;
 
@@ -322,6 +336,22 @@ function MonitorPage() {
         }
         return counts;
     }, [containers]);
+    useEffect(() => {
+        setStateFilters(current => current.filter(filter => stateCounts[filter] > 0));
+    }, [stateCounts]);
+    const changeStateFilter = (filter: ContainerStateFilter | null, additive = false) => {
+        setStateFilters(current => {
+            if (filter === null) return [];
+            if (!additive) return [filter];
+            return current.includes(filter)
+                ? current.filter(value => value !== filter)
+                : [...current, filter];
+        });
+        // Never leave hidden rows selected: bulk actions must only target
+        // containers the operator can currently see.
+        setSelectedContainers([]);
+        setSelectedStacks([]);
+    };
     // last (or current) action outcome per compose file, for the busy
     // spinner and the last-action output button on stack rows
     const stackRuns = useMemo(() => {
@@ -724,14 +754,28 @@ function MonitorPage() {
                     }}
                 >
                     <AggregateStats aggregates={aggregates} hostStats={hostStats}
-                                    states={containers ? stateCounts : null} bare/>
+                                    states={containers ? stateCounts : null}
+                                    stateFilters={stateFilters}
+                                    onStateFilterChange={changeStateFilter}
+                                    bare/>
 
                     <Divider sx={{borderColor: t.border}}/>
 
-                    <Box sx={{px: 1.5, py: 0.75, display: 'flex', alignItems: 'center', gap: 1.5}}>
-                        <Box sx={{flex: 1, maxWidth: 270}}>
+                    <Box sx={{px: 1.5, py: 0.75, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1}}>
+                        <Box sx={{flex: '0 1 220px', maxWidth: 220, '& .MuiTextField-root': {width: '100%', minWidth: '0 !important'}}}>
                             <SearchBar search={search} setSearch={setSearch} inputRef={searchInputRef}/>
                         </Box>
+
+                        {stateFilters.map(filter => <Chip
+                            key={filter}
+                            size="small"
+                            variant="outlined"
+                            label={`${filter[0].toUpperCase()}${filter.slice(1)} · ${stateCounts[filter]}`}
+                            onDelete={() => changeStateFilter(filter, true)}
+                            sx={{height: 27, color: t.text, borderColor: t.border, fontWeight: 700, textTransform: 'none'}}
+                        />)}
+
+                        <Box sx={{flexGrow: 1}}/>
 
                         <Divider orientation="vertical" flexItem sx={{mx: 0.5, borderColor: t.border}}/>
 
