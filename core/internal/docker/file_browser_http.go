@@ -340,9 +340,19 @@ func createVolumeBrowserTarget(ctx context.Context, cli *client.Client, volumeNa
 	name := "dockman-file-browser-" + random
 	remote := "/.dockman-file-helper"
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Name:       name,
-		Config:     &container.Config{Image: imageID, User: "0", Entrypoint: []string{remote}, Cmd: []string{"hold"}, Labels: map[string]string{fileHelperLabel: "true", dockmanContainerLabel: "false"}},
-		HostConfig: &container.HostConfig{AutoRemove: false, NetworkMode: "none", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: volumeName, Target: volumeRoot, ReadOnly: !writable}}},
+		Name:   name,
+		Config: &container.Config{Image: imageID, User: "0", Entrypoint: []string{remote}, Cmd: []string{"hold"}, Labels: map[string]string{fileHelperLabel: "true", dockmanContainerLabel: "false"}},
+		HostConfig: &container.HostConfig{
+			AutoRemove:  false,
+			NetworkMode: "none",
+			CapDrop:     []string{"ALL"},
+			// The helper only receives the filesystem capabilities required to
+			// browse and manage files owned by arbitrary volume UIDs. It has no
+			// network, device, namespace or Docker administration capability.
+			CapAdd:      []string{"CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER"},
+			SecurityOpt: []string{"no-new-privileges:true"},
+			Mounts:      []mount.Mount{{Type: mount.TypeVolume, Source: volumeName, Target: volumeRoot, ReadOnly: !writable}},
+		},
 	})
 	if err != nil {
 		return browserTarget{}, err

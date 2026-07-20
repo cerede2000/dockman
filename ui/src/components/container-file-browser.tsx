@@ -161,7 +161,8 @@ export default function ContainerFileBrowser({kind, target, active = true}: {kin
     }), [ascending, entries, hidden, sort]);
     const onSort = (column: SortKey) => {if (sort === column) setAscending(value => !value); else {setSort(column); setAscending(true);}};
     const writeBlocked = readOnly || loading;
-    const writeTooltip = (label: string) => loading ? 'Loading directory' : readOnly ? 'Container filesystem is read-only' : label;
+    const writeTooltip = (label: string) => loading ? 'Loading directory'
+        : readOnly ? `${kind === 'volume' ? 'Volume' : 'Container filesystem'} is read-only` : label;
     const action = async (body: Record<string, unknown>, success: string) => {
         try {
             const response = await fetch(endpoint('action'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
