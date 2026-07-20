@@ -876,6 +876,7 @@ function MonitorPage() {
             <ContainerDetailsDialog
                 open={detailsContainerID !== ''}
                 row={detailsRow}
+                containers={containers?.list ?? []}
                 history={detailsRow ? history.get(detailsRow.info.name) : undefined}
                 busy={detailsRow ? rowBusy[detailsRow.info.id] : undefined}
                 stackBusy={!!(detailsRow?.info.servicePath && runningStacks[detailsRow.info.servicePath])}

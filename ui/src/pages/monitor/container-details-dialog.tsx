@@ -12,7 +12,7 @@ import {type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useR
 import {FitAddon} from '@xterm/addon-fit';
 import type {Terminal as XTerm} from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import {DockerService, type Network} from '../../gen/docker/v1/docker_pb.ts';
+import {DockerService, type ContainerList, type Network} from '../../gen/docker/v1/docker_pb.ts';
 import {callRPC, useContainerExecOptionsUrl, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useCopyButton} from '../../hooks/copy.ts';
@@ -32,6 +32,7 @@ type TabID = 'overview' | 'logs' | 'exec' | 'processes' | 'networks' | 'mounts' 
 interface Props {
     open: boolean;
     row: MonitorRow | null;
+    containers: ContainerList[];
     history?: {cpu: number[]; mem: number[]};
     busy?: RowAction;
     stackBusy: boolean;
@@ -286,7 +287,20 @@ function Processes({active, containerID, onCount}: {active: boolean, containerID
     </Section>;
 }
 
-function Networks({containerID, inspect, onChanged}: {containerID: string, inspect: JsonObject, onChanged: () => void}) {
+function friendlyNetworkMode(value: unknown, containers: ContainerList[]): string {
+    const mode = text(value, '');
+    const match = /^container:(.+)$/.exec(mode);
+    if (!match) return mode || '–';
+
+    const reference = match[1];
+    const target = containers.find(container =>
+        container.id === reference || container.id.startsWith(reference) || reference.startsWith(container.id));
+    return target ? `container:${target.name}` : mode;
+}
+
+function Networks({containerID, containers, inspect, onChanged}: {
+    containerID: string, containers: ContainerList[], inspect: JsonObject, onChanged: () => void,
+}) {
     const client = useHostClient(DockerService); const {showError, showSuccess} = useSnackbar();
     const [networks, setNetworks] = useState<Network[]>([]); const [busy, setBusy] = useState('');
     const [confirm, setConfirm] = useState<{network: Network, action: 'connect' | 'disconnect'} | null>(null);
@@ -305,7 +319,7 @@ function Networks({containerID, inspect, onChanged}: {containerID: string, inspe
     };
     return <Stack spacing={1.25}>
         <Section title="Network configuration"><Details rows={[
-            ['Mode', host.NetworkMode], ['DNS', list(host.Dns).join(', ')], ['DNS search', list(host.DnsSearch).join(', ')],
+            ['Mode', friendlyNetworkMode(host.NetworkMode, containers)], ['DNS', list(host.Dns).join(', ')], ['DNS search', list(host.DnsSearch).join(', ')],
             ['DNS options', list(host.DnsOptions).join(', ')], ['Sandbox ID', settings.SandboxID], ['Sandbox key', settings.SandboxKey],
         ]}/></Section>
         <Section title="Mounted networks"><Stack spacing={0.75}>
@@ -540,7 +554,7 @@ function JsonInspect({raw}: {raw: string}) {
     </Paper>;
 }
 
-export default function ContainerDetailsDialog({open, row, history, busy, stackBusy, updateRun, onClose, onAction}: Props) {
+export default function ContainerDetailsDialog({open, row, containers, history, busy, stackBusy, updateRun, onClose, onAction}: Props) {
     const client = useHostClient(DockerService); const [tab, setTab] = useState<TabID>('overview');
     const [raw, setRaw] = useState(''); const [inspect, setInspect] = useState<JsonObject>({});
     const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [processCount, setProcessCount] = useState<number | null>(null);
@@ -617,7 +631,7 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
                     <Box hidden={tab !== 'processes'} sx={{height: '100%', minHeight: 0}}>{processAvailable
                         ? <Processes active={tab === 'processes'} containerID={row.info.id} onCount={setProcessCount}/>
                         : <Alert severity="info">Start the container to inspect its running processes.</Alert>}</Box>
-                    <Box hidden={tab !== 'networks'}><Networks containerID={row.info.id} inspect={inspect} onChanged={load}/></Box>
+                    <Box hidden={tab !== 'networks'}><Networks containerID={row.info.id} containers={containers} inspect={inspect} onChanged={load}/></Box>
                     <Box hidden={tab !== 'mounts'} sx={{height: '100%', minHeight: 0}}><Mounts inspect={inspect}/></Box>
                     <Box hidden={tab !== 'environment'} sx={{height: '100%', minHeight: 0}}><Section title="Environment variables" fill><KeyValueTable value={field(inspect.Config, 'Env')} maskSecrets scrollable/></Section></Box>
                     <Box hidden={tab !== 'labels'} sx={{height: '100%', minHeight: 0}}><Section title="Labels" fill><KeyValueTable value={field(inspect.Config, 'Labels')} scrollable/></Section></Box>
