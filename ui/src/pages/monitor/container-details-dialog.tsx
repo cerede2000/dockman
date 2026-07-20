@@ -4,7 +4,7 @@ import {
     TableContainer, TableHead, TableRow, Tabs, Tooltip, Typography,
 } from '@mui/material';
 import {
-    Close, Code, Delete, Dns, FavoriteBorder, InfoOutlined, LabelOutlined, Lan,
+    Check, Close, Code, ContentCopy, Delete, Dns, FavoriteBorder, InfoOutlined, LabelOutlined, Lan,
     Memory, Pause, PlayArrow, Refresh, RestartAlt, Security as SecurityIcon, Stop, Storage,
     Subject, Terminal, Tune, Update, Visibility, VisibilityOff,
 } from '@mui/icons-material';
@@ -12,6 +12,7 @@ import {type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useS
 import {DockerService, type Network} from '../../gen/docker/v1/docker_pb.ts';
 import {callRPC, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
+import {useCopyButton} from '../../hooks/copy.ts';
 import LogsViewer from '../../components/log-viewer/logs-viewer.tsx';
 import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes} from '../../lib/editor.ts';
@@ -323,6 +324,57 @@ function Health({inspect}: {inspect: JsonObject}) {
     </Paper>)}{logs.length === 0 && <Typography color="text.secondary">No healthcheck log</Typography>}</Stack></Section></Stack>;
 }
 
+function highlightJsonLine(line: string): ReactNode[] {
+    const tokens: ReactNode[] = [];
+    const pattern = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false|null)\b/g;
+    let cursor = 0;
+    let key = 0;
+    for (const match of line.matchAll(pattern)) {
+        const start = match.index ?? 0;
+        if (start > cursor) tokens.push(line.slice(cursor, start));
+        if (match[1]) {
+            tokens.push(<span key={key++} style={{color: match[2] ? '#7dd3fc' : '#a5d6a7'}}>{match[1]}</span>);
+            if (match[2]) tokens.push(<span key={key++} style={{color: '#94a3b8'}}>{match[2]}</span>);
+        } else if (match[3]) {
+            tokens.push(<span key={key++} style={{color: '#fbbf24'}}>{match[3]}</span>);
+        } else {
+            tokens.push(<span key={key++} style={{color: match[4] === 'null' ? '#f87171' : '#c4b5fd'}}>{match[4]}</span>);
+        }
+        cursor = start + match[0].length;
+    }
+    if (cursor < line.length) tokens.push(line.slice(cursor));
+    return tokens;
+}
+
+function JsonInspect({raw}: {raw: string}) {
+    const {handleCopy, copiedId} = useCopyButton();
+    const formatted = useMemo(() => {
+        try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+    }, [raw]);
+    const lines = useMemo(() => formatted.split('\n'), [formatted]);
+    return <Paper variant="outlined" sx={{height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: '#09090b', borderColor: t.border}}>
+        <Stack direction="row" spacing={1} sx={{px: 1.25, py: 0.7, alignItems: 'center', flexShrink: 0, borderBottom: `1px solid ${t.border}`, bgcolor: '#111318'}}>
+            <Code sx={{fontSize: 17, color: '#7dd3fc'}}/><Typography sx={{fontSize: '0.75rem', fontWeight: 800}}>Docker inspect</Typography>
+            <Chip label="JSON" size="small" sx={{height: 20, fontFamily: t.mono, fontSize: '0.62rem'}}/>
+            <Typography sx={{ml: 'auto !important', color: t.textDim, fontSize: '0.66rem'}}>{lines.length} lines</Typography>
+            <Button size="small" onClick={() => handleCopy(formatted)}
+                startIcon={copiedId === formatted ? <Check sx={{fontSize: 15}}/> : <ContentCopy sx={{fontSize: 15}}/>}
+                color={copiedId === formatted ? 'success' : 'inherit'} sx={{minHeight: 26, py: 0, fontSize: '0.68rem', textTransform: 'none'}}>
+                {copiedId === formatted ? 'Copied' : 'Copy'}
+            </Button>
+        </Stack>
+        <Box sx={{flex: 1, minHeight: 0, overflow: 'auto', py: 0.65, fontFamily: t.mono, fontSize: '0.72rem', lineHeight: 1.55,
+            color: '#cbd5e1', userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text', ...scrollbarStyles}}>
+            {lines.map((line, index) => <Box key={index} sx={{display: 'grid', gridTemplateColumns: '48px minmax(max-content, 1fr)', minHeight: '1.55em',
+                '&:hover': {bgcolor: 'rgba(255,255,255,0.035)'}}}>
+                <Box component="span" sx={{pr: 1.2, textAlign: 'right', color: '#4b5563', borderRight: '1px solid rgba(255,255,255,0.08)',
+                    userSelect: 'none', WebkitUserSelect: 'none'}}>{index + 1}</Box>
+                <Box component="code" sx={{pl: 1.25, pr: 2, whiteSpace: 'pre', font: 'inherit', color: 'inherit'}}>{highlightJsonLine(line)}</Box>
+            </Box>)}
+        </Box>
+    </Paper>;
+}
+
 export default function ContainerDetailsDialog({open, row, history, busy, stackBusy, updateRun, onClose, onAction}: Props) {
     const client = useHostClient(DockerService); const [tab, setTab] = useState<TabID>('overview');
     const [raw, setRaw] = useState(''); const [inspect, setInspect] = useState<JsonObject>({});
@@ -403,7 +455,7 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
                     <Box hidden={tab !== 'security'}><Security inspect={inspect}/></Box>
                     <Box hidden={tab !== 'resources'}><Resources inspect={inspect}/></Box>
                     <Box hidden={tab !== 'health'}><Health inspect={inspect}/></Box>
-                    <Box hidden={tab !== 'inspect'} sx={{height: '100%'}}><Paper variant="outlined" component="pre" sx={{m: 0, p: 1.5, height: '100%', boxSizing: 'border-box', overflow: 'auto', fontFamily: t.mono, fontSize: '0.72rem', whiteSpace: 'pre', bgcolor: '#09090b', userSelect: 'text', cursor: 'text', ...scrollbarStyles}}>{raw}</Paper></Box>
+                    <Box hidden={tab !== 'inspect'} sx={{height: '100%'}}><JsonInspect raw={raw}/></Box>
                 </>}
                 </Box>
             </Box>
