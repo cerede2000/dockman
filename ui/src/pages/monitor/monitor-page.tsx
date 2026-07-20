@@ -45,6 +45,7 @@ import {
 } from './monitor-table.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import ContainerDetailsDialog from './container-details-dialog.tsx';
+import ExecLaunchPopover, {type ExecLaunch} from './exec-launch-popover.tsx';
 
 type ContainerActionRpc = 'containerStart' | 'containerStop' | 'containerRestart' | 'containerPause'
     | 'containerUnpause' | 'containerRemove';
@@ -567,11 +568,16 @@ function MonitorPage() {
             `${group.stack || 'standalone'}: stack logs`,
             group.rows.map(r => ({id: r.info.id, name: r.info.name})));
 
-    const handleRowExec = (row: MonitorRow) =>
+    const [execLaunch, setExecLaunch] = useState<ExecLaunch | null>(null);
+    const handleRowExec = (row: MonitorRow, anchor: HTMLElement) => setExecLaunch({row, anchor});
+    const connectRowExec = (row: MonitorRow, shell: string, user: string) => {
         execContainer(`exec:${host}/monitor#${row.info.id}`,
             `${row.info.stackName ? `${row.info.stackName}/` : ''}${row.info.name} (exec)`,
-            createExecUrl(row.info.id, '/bin/sh'),
-            true);
+            createExecUrl(row.info.id, shell, undefined, user),
+            true,
+            {containerID: row.info.id, shell, user});
+        setExecLaunch(null);
+    };
 
     // ?tab=0 pins the EDITOR tab regardless of the compose.defaultTab setting
     const handleStackEdit = (group: StackGroup) =>
@@ -835,6 +841,12 @@ function MonitorPage() {
                 updateRun={detailsRow ? updateRuns[detailsRow.info.name] : undefined}
                 onClose={() => setDetailsContainerID('')}
                 onAction={handleRowAction}
+            />
+
+            <ExecLaunchPopover
+                launch={execLaunch}
+                onClose={() => setExecLaunch(null)}
+                onConnect={connectRowExec}
             />
 
             <LogsPanel/>

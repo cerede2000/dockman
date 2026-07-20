@@ -125,7 +125,7 @@ interface MonitorTableProps {
     // and spins the one that launched the action
     rowBusy: Record<string, RowAction>;
     onRowLogs: (row: MonitorRow) => void;
-    onRowExec: (row: MonitorRow) => void;
+    onRowExec: (row: MonitorRow, anchor: HTMLElement) => void;
     onRowDetails: (row: MonitorRow) => void;
     onStackAction: (group: StackGroup, action: StackAction) => void;
     onStackRedeploy: (group: StackGroup, opts: RedeployOptions) => void;
@@ -678,7 +678,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 <Tooltip title="Exec" arrow>
                     <span>
                         <IconButton size="small" disabled={!isRunning}
-                                    onClick={() => onRowExec(row)}
+                                    onClick={event => onRowExec(row, event.currentTarget)}
                                     sx={{color: t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
                             <Terminal sx={{fontSize: 16}}/>
                         </IconButton>

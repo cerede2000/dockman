@@ -120,9 +120,10 @@ export const useContainerExec = create<{
         title: string,
         wsUrl: string,
         interactive: boolean,
+        execSession?: ExecSession,
     ) => void
 }>(() => ({
-    execParams: (key, title, wsUrl, interactive) => {
+    execParams: (key, title, wsUrl, interactive, execSession) => {
         useTerminalAction.getState().open()
 
         const tabsStore = useTerminalTabs.getState()
@@ -132,7 +133,7 @@ export const useContainerExec = create<{
             return
         }
 
-        tabsStore.addTab(key, createTab(wsUrl, title, interactive))
+        tabsStore.addTab(key, {...createTab(wsUrl, title, interactive), execSession})
     },
 }))
 
@@ -166,6 +167,12 @@ export const useLogsPanel = create<{
 }))
 
 
+export interface ExecSession {
+    containerID: string;
+    shell: string;
+    user: string;
+}
+
 export interface TabTerminal {
     id: string;
     title: string;
@@ -174,6 +181,9 @@ export interface TabTerminal {
     interactive: boolean;
     // when set, the tab hosts the structured log viewer instead of a terminal
     logsContainers?: { id: string; name?: string }[];
+    // identifies an interactive container exec so the bottom panel can use
+    // the same controls and presentation as the details dialog
+    execSession?: ExecSession;
 }
 
 const FLOAT_MODE_KEY = 'dockman-panel-float';

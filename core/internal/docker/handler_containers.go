@@ -313,9 +313,9 @@ func (h *Handler) HostStats(ctx context.Context, _ *connect.Request[v1.Empty]) (
 	}), nil
 }
 
-// ContainerStatsStream emits each container's stats as soon as its read
-// completes (the daemon needs ~1s per container to build a sample), so the
-// client paints progressively instead of waiting for the slowest container.
+// ContainerStatsStream emits each container's stats as soon as its one-shot
+// read completes, so the client paints progressively instead of waiting for
+// the slowest container.
 // No server-side sort: order is arrival order, the client sorts.
 func (h *Handler) ContainerStatsStream(ctx context.Context, req *connect.Request[v1.StatsRequest], stream *connect.ServerStream[v1.ContainerStats]) error {
 	file := req.Msg.GetFile()
@@ -343,7 +343,7 @@ func (h *Handler) ContainerStatsStream(ctx context.Context, req *connect.Request
 
 	// paint-first: emit each container's identity immediately (metrics
 	// pending) so every view fills in the time of a container listing; the
-	// real stats replace the rows as each ~1s read completes
+	// real stats replace the rows as each one-shot read completes
 	for _, ct := range containers {
 		if err := stream.Send(ToRPCStat(contSrv.IdentityStats(ct))); err != nil {
 			return err
