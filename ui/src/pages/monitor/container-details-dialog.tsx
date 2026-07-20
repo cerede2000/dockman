@@ -437,7 +437,7 @@ function ExecTerminal({active, containerID, running}: {active: boolean, containe
             </Typography>
         </Stack>
         {shellError && <Alert severity="error" sx={{borderRadius: 0, py: 0}}>{shellError}</Alert>}
-        {shells?.length === 0 && <Alert severity="warning" sx={{borderRadius: 0}}>Exec is unavailable: no supported shell was found in this container.</Alert>}
+        {shells?.length === 0 && !shellError && <Alert severity="warning" sx={{borderRadius: 0}}>Exec is unavailable: no supported shell was found in this container.</Alert>}
         <Box sx={{flex: 1, minHeight: 0, overflow: 'hidden'}}>
             {controlledTerminal ? <AppTerminal {...controlledTerminal} isActive={active} fit={fitAddon} fontSize={fontSize}/>
                 : <Box sx={{height: '100%', display: 'grid', placeItems: 'center'}}><Typography sx={{color: t.textDim, fontSize: '0.75rem'}}>Choose a shell and connect.</Typography></Box>}

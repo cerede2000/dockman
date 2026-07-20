@@ -57,7 +57,7 @@ func TestRestartDockmanUsesDaemonAfterAcceptedResponse(t *testing.T) {
 	handler := NewHandlerHttp(func(host string) (*Service, error) {
 		require.Equal(t, contSrv.LocalClient, host)
 		return dkSrv, nil
-	})
+	}, false)
 
 	req := httptest.NewRequest(http.MethodPost, "/restart/dockman", nil)
 	req = req.WithContext(hostMid.SetHost(context.Background(), contSrv.LocalClient))
@@ -83,7 +83,7 @@ func TestRestartDockmanRejectsRemoteHost(t *testing.T) {
 	handler := NewHandlerHttp(func(string) (*Service, error) {
 		t.Fatal("service provider must not be called for a remote host")
 		return nil, nil
-	})
+	}, false)
 	req := httptest.NewRequest(http.MethodPost, "/restart/dockman", nil)
 	req = req.WithContext(hostMid.SetHost(context.Background(), "remote"))
 	res := httptest.NewRecorder()

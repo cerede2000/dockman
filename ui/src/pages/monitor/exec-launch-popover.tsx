@@ -71,11 +71,14 @@ export default function ExecLaunchPopover({launch, onClose, onConnect}: {
                 <Typography noWrap sx={{fontSize: '0.78rem', fontWeight: 800}}>{launch.row.info.name}</Typography>
             </Stack>
             {shells === null ? <Box sx={{height: 96, display: 'grid', placeItems: 'center'}}><CircularProgress size={20}/></Box>
-                : shells.length === 0 ? <Stack spacing={0.45} sx={{px: 2, py: 1.8, alignItems: 'center', textAlign: 'center'}}>
+                : error ? <Stack spacing={0.45} sx={{px: 2, py: 1.8, alignItems: 'center', textAlign: 'center'}}>
+                    <Typography sx={{fontSize: 22, lineHeight: 1, color: '#fbbf24'}}>!</Typography>
+                    <Typography sx={{fontSize: '0.78rem', fontWeight: 800, color: '#fbbf24'}}>Exec unavailable</Typography>
+                    <Alert severity="warning" sx={{width: '100%', py: 0, '& .MuiAlert-message': {fontSize: '0.68rem'}}}>{error}</Alert>
+                </Stack> : shells.length === 0 ? <Stack spacing={0.45} sx={{px: 2, py: 1.8, alignItems: 'center', textAlign: 'center'}}>
                     <Typography sx={{fontSize: 22, lineHeight: 1, color: '#fbbf24'}}>!</Typography>
                     <Typography sx={{fontSize: '0.78rem', fontWeight: 800, color: '#fbbf24'}}>No shell available</Typography>
                     <Typography sx={{fontSize: '0.7rem', color: t.textDim}}>This container has no supported shell installed.</Typography>
-                    {error && <Alert severity="error" sx={{width: '100%', py: 0}}>{error}</Alert>}
                 </Stack> : <Stack spacing={0.65} sx={{p: 1.25}}>
                     <Typography sx={{fontSize: '0.68rem', fontWeight: 700, color: t.textDim}}>Shell</Typography>
                     <TextField select value={shell} onChange={event => setShell(event.target.value)} sx={fieldSx}>

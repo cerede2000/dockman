@@ -27,11 +27,12 @@ var upgrader = websocket.Upgrader{
 }
 
 type HandlerHttp struct {
-	srv ServiceProvider
+	srv           ServiceProvider
+	allowSelfExec bool
 }
 
-func NewHandlerHttp(srv ServiceProvider) http.Handler {
-	hand := &HandlerHttp{srv: srv}
+func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool) http.Handler {
+	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec}
 	return hand.register()
 }
 
@@ -56,6 +57,10 @@ func (h *HandlerHttp) containerExecOptions(w http.ResponseWriter, r *http.Reques
 	dkSrv, contID, err := getContainerIdAndService(r, h)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err = h.checkExecAllowed(r.Context(), dkSrv, contID); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -159,6 +164,10 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 	dkSrv, contId, err := getContainerIdAndService(r, h)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err = h.checkExecAllowed(r.Context(), dkSrv, contId); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
@@ -265,6 +274,24 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Debug().Str("container", contId).Msg("exec done")
+}
+
+// checkExecAllowed enforces the policy before both shell discovery and the
+// WebSocket upgrade. Keeping the authoritative check here means hiding or
+// re-enabling a UI control can never bypass the server-side boundary.
+func (h *HandlerHttp) checkExecAllowed(ctx context.Context, dkSrv *Service, containerID string) error {
+	if h.allowSelfExec {
+		return nil
+	}
+
+	inspect, err := dkSrv.Container.Cli().ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("unable to verify exec target: %w", err)
+	}
+	if inspect.Container.Config != nil && inspect.Container.Config.Labels[dockmanContainerLabel] == "true" {
+		return fmt.Errorf("exec into Dockman is disabled by policy; set DOCKMAN_ALLOW_SELF_EXEC=true and recreate Dockman to enable it temporarily")
+	}
+	return nil
 }
 
 func (h *HandlerHttp) containerLogs(w http.ResponseWriter, r *http.Request) {

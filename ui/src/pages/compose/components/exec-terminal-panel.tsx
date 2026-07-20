@@ -127,7 +127,7 @@ export default function ExecTerminalPanel({tab, isActive}: {tab: TabTerminal; is
             </Typography>
         </Stack>
         {shellError && <Alert severity="error" sx={{borderRadius: 0, py: 0}}>{shellError}</Alert>}
-        {shells?.length === 0 && <Alert severity="warning" sx={{borderRadius: 0, py: 0}}>No supported shell is available.</Alert>}
+        {shells?.length === 0 && !shellError && <Alert severity="warning" sx={{borderRadius: 0, py: 0}}>No supported shell is available.</Alert>}
         <Box sx={{flex: 1, minHeight: 0, overflow: 'hidden', bgcolor: '#09090b'}}>
             {controlled ? <AppTerminal {...controlled} fit={fit} isActive={isActive} fontSize={fontSize}/>
                 : <Box sx={{height: '100%', display: 'grid', placeItems: 'center'}}><Typography sx={{color: 'rgba(255,255,255,0.45)', fontSize: '0.72rem'}}>Choose a shell and connect.</Typography></Box>}
