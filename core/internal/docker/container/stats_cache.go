@@ -260,7 +260,7 @@ func summaryHealth(info container.Summary) string {
 }
 
 func summaryIPs(info container.Summary) []string {
-	var ips []string
+	ips := TraefikHosts(info.Labels)
 	for _, netConf := range info.NetworkSettings.Networks {
 		ip := netConf.IPAddress.String()
 		if ip != "invalid IP" && ip != "" {
@@ -269,5 +269,5 @@ func summaryIPs(info container.Summary) []string {
 	}
 	// map iteration order is random; keep the column stable between polls
 	slices.Sort(ips)
-	return ips
+	return slices.Compact(ips)
 }

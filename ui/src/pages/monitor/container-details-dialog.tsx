@@ -1,16 +1,18 @@
 import {
     Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
-    DialogTitle, Divider, IconButton, Paper, Stack, Tab, Table, TableBody, TableCell,
-    TableContainer, TableHead, TableRow, Tabs, Tooltip, Typography,
+    DialogTitle, Divider, IconButton, Paper, Popover, Stack, Tab, Table, TableBody, TableCell,
+    TableContainer, TableHead, TableRow, Tabs, TextField, Tooltip, Typography,
 } from '@mui/material';
 import {
     Check, Close, Code, ContentCopy, Delete, Dns, FavoriteBorder, InfoOutlined, LabelOutlined, Lan,
     Memory, Pause, PlayArrow, Refresh, RestartAlt, Security as SecurityIcon, Stop, Storage,
     Subject, Terminal, Tune, Update, Visibility, VisibilityOff,
 } from '@mui/icons-material';
-import {type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useState} from 'react';
+import {type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {FitAddon} from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 import {DockerService, type Network} from '../../gen/docker/v1/docker_pb.ts';
-import {callRPC, useHostClient} from '../../lib/api.ts';
+import {callRPC, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useCopyButton} from '../../hooks/copy.ts';
 import LogsViewer from '../../components/log-viewer/logs-viewer.tsx';
@@ -18,10 +20,12 @@ import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes} from '../../lib/editor.ts';
 import scrollbarStyles from '../../components/scrollbar-style.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
+import AppTerminal from '../compose/components/logs-terminal.tsx';
+import {createTab} from '../compose/state/terminal.tsx';
 import type {MonitorRow, RowAction} from './monitor-table.tsx';
 
 type JsonObject = Record<string, unknown>;
-type TabID = 'overview' | 'logs' | 'processes' | 'networks' | 'mounts' | 'environment'
+type TabID = 'overview' | 'logs' | 'exec' | 'processes' | 'networks' | 'mounts' | 'environment'
     | 'labels' | 'security' | 'resources' | 'health' | 'inspect';
 
 interface Props {
@@ -37,6 +41,7 @@ interface Props {
 
 const tabs: {id: TabID, label: string, icon: ReactElement}[] = [
     {id: 'overview', label: 'Overview', icon: <InfoOutlined/>}, {id: 'logs', label: 'Logs', icon: <Subject/>},
+    {id: 'exec', label: 'Exec', icon: <Terminal/>},
     {id: 'processes', label: 'Processes', icon: <Terminal/>}, {id: 'networks', label: 'Networks', icon: <Lan/>},
     {id: 'mounts', label: 'Mounts', icon: <Storage/>}, {id: 'environment', label: 'Environment', icon: <Tune/>},
     {id: 'labels', label: 'Labels', icon: <LabelOutlined/>}, {id: 'security', label: 'Security', icon: <SecurityIcon/>},
@@ -129,6 +134,68 @@ function MetricCard({label, value, sub, data, color}: {label: string, value: str
     </Box>;
 }
 
+function traefikEndpoints(labels: JsonObject, addresses: string[]): string[] {
+    const endpoints = new Set(addresses
+        .map(value => value.trim().toLowerCase())
+        .filter(value => /[a-z]/i.test(value) && value.includes('.') && !value.includes(':')));
+    const explicitlyDisabled = Object.entries(labels).some(([key, value]) =>
+        key.toLowerCase() === 'traefik.enable' && text(value, '').trim().toLowerCase() === 'false');
+    if (explicitlyDisabled) return [...endpoints].sort((a, b) => a.localeCompare(b));
+    const hostFunction = /\bHost(?:SNI(?:Regexp)?|Regexp)?\s*\(([^)]*)\)/gi;
+    const quotedValue = /[`"']([^`"']+)[`"']/g;
+    for (const [key, raw] of Object.entries(labels)) {
+        if (!/^traefik\.(?:http|tcp|udp)\.routers\..+\.rule$/i.test(key)) continue;
+        for (const call of text(raw, '').matchAll(hostFunction)) {
+            for (const match of call[1].matchAll(quotedValue)) {
+                const endpoint = match[1].trim().replace(/\.$/, '').toLowerCase();
+                if (endpoint && endpoint !== '*') endpoints.add(endpoint);
+            }
+        }
+    }
+    return [...endpoints].sort((a, b) => a.localeCompare(b));
+}
+
+function Dependencies({raw}: {raw: unknown}) {
+    const dependencies = text(raw, '').split(',').map(value => value.trim()).filter(Boolean).map(value => {
+        const parts = value.split(':');
+        return {
+            service: parts[0] || value,
+            condition: parts[1]?.replace(/^service_/, '').replaceAll('_', ' ') || 'started',
+            restart: parts[2] === 'true',
+        };
+    });
+    if (dependencies.length === 0) return <Typography color="text.secondary" sx={{fontSize: '0.73rem'}}>None</Typography>;
+    return <Stack direction="row" useFlexGap spacing={0.65} sx={{flexWrap: 'wrap'}}>
+        {dependencies.map(dep => <Chip key={`${dep.service}:${dep.condition}:${dep.restart}`} size="small"
+            label={`${dep.service} · ${dep.condition} · restart propagation: ${dep.restart ? 'yes' : 'no'}`}
+            color={dep.restart ? 'info' : 'default'} sx={{fontFamily: t.mono, fontSize: '0.68rem'}}/>)}
+    </Stack>;
+}
+
+function PortsView({value}: {value: unknown}) {
+    const ports = Object.entries(asObject(value)).sort(([a], [b]) => a.localeCompare(b, undefined, {numeric: true}));
+    if (ports.length === 0) return <Typography color="text.secondary" sx={{fontSize: '0.73rem'}}>None</Typography>;
+    return <TableContainer><Table size="small" sx={{'& .MuiTableCell-root': {py: 0.45, px: 0.8, fontSize: '0.72rem'}}}>
+        <TableHead><TableRow><TableCell>Container port</TableCell><TableCell>Published on host</TableCell></TableRow></TableHead>
+        <TableBody>{ports.map(([containerPort, raw]) => {
+            const bindings = asArray(raw).map(asObject);
+            return <TableRow key={containerPort} hover>
+                <TableCell sx={{width: '30%', fontFamily: t.mono, fontWeight: 700}}>{containerPort}</TableCell>
+                <TableCell><Stack direction="row" useFlexGap spacing={0.55} sx={{flexWrap: 'wrap'}}>
+                    {bindings.length === 0
+                        ? <Chip size="small" label="Exposed only" variant="outlined" sx={{height: 22, fontSize: '0.66rem'}}/>
+                        : bindings.map((binding, index) => {
+                            const ip = text(binding.HostIp, '') || 'all interfaces';
+                            const port = text(binding.HostPort, 'dynamic');
+                            return <Chip key={`${ip}:${port}:${index}`} size="small" label={`${ip}:${port}`}
+                                sx={{height: 22, fontFamily: t.mono, fontSize: '0.66rem'}}/>;
+                        })}
+                </Stack></TableCell>
+            </TableRow>;
+        })}</TableBody>
+    </Table></TableContainer>;
+}
+
 function Overview({row, inspect, history, processCount, onUpdate, updateRun}: {
     row: MonitorRow, inspect: JsonObject, history?: {cpu: number[]; mem: number[]}, processCount: number | null,
     onUpdate: () => void, updateRun?: 'running' | 'failed' | 'done',
@@ -138,40 +205,9 @@ function Overview({row, inspect, history, processCount, onUpdate, updateRun}: {
     const endpoints = asObject(network.Networks); const stats = row.stats;
     const restartPolicy = asObject(host.RestartPolicy);
     const labels = asObject(config.Labels);
-    const depends = text(field(labels, 'com.docker.compose.depends_on'), '');
     const portBindings = asObject(host.PortBindings);
-    const dns = new Set(row.info.IPAddress.filter(v => /[a-z]/i.test(v) && v.includes('.') && !v.includes(':')));
-    for (const [key, value] of Object.entries(labels)) {
-        if (!key.startsWith('traefik.http.routers.') || !key.endsWith('.rule')) continue;
-        for (const match of text(value, '').matchAll(/Host(?:Regexp)?\((.*?)\)/g)) {
-            for (const domain of match[1].matchAll(/[`"']([^`"',\s]+)[`"']+/g)) dns.add(domain[1]);
-        }
-    }
+    const dns = traefikEndpoints(labels, row.info.IPAddress);
     return <Stack spacing={1.25}>
-        <Box sx={{display: 'grid', gridTemplateColumns: {xs: '1fr', lg: '1fr 1fr'}, gap: 1.25}}>
-            <Section title="Container">
-                <Details rows={[
-                    ['State', state.Status ?? row.info.state], ['Running / paused / restarting', `${text(state.Running)} / ${text(state.Paused)} / ${text(state.Restarting)}`],
-                    ['Health', field(state.Health, 'Status') ?? row.info.health], ['OOM killed', state.OOMKilled], ['State error', state.Error],
-                    ['Stack', row.info.stackName || 'Standalone'], ['Restart policy', `${text(restartPolicy.Name, 'no')} (${text(restartPolicy.MaximumRetryCount, '0')})`],
-                    ['ID', inspect.Id ?? row.info.id], ['Created', fmtDate(inspect.Created)], ['Started', fmtDate(state.StartedAt)],
-                    ['Platform', inspect.Platform], ['Exit code', state.ExitCode], ['Restart count', inspect.RestartCount ?? stats?.restartCount],
-                ]}/>
-            </Section>
-            <Section title="Runtime">
-                <Details rows={[
-                    ['Image', config.Image ?? row.info.imageName], ['Command', list(config.Cmd).join(' ')],
-                    ['Entrypoint', list(config.Entrypoint).join(' ')], ['Path / args', `${text(inspect.Path, '')} ${list(inspect.Args).join(' ')}`.trim()],
-                    ['Depends on', depends], ['Working directory', config.WorkingDir], ['Processes', processCount],
-                ]}/>
-                <Stack direction="row" spacing={1} sx={{mt: 0.8, alignItems: 'center'}}>
-                    <Chip size="small" color={row.info.updateAvailable ? 'warning' : 'success'}
-                        label={row.info.updateAvailable ? `Update available: ${row.info.updateAvailable}` : 'Image up to date'}/>
-                    <Button size="small" variant="outlined" startIcon={updateRun === 'running' ? <CircularProgress size={14}/> : <Update/>}
-                        disabled={updateRun === 'running'} onClick={onUpdate}>Update</Button>
-                </Stack>
-            </Section>
-        </Box>
         <Paper variant="outlined" sx={{px: 1.5, py: 1, borderColor: t.border, bgcolor: t.panel, borderRadius: 1.5}}>
             <Stack direction="row" useFlexGap spacing={1.5} divider={<Divider orientation="vertical" flexItem sx={{borderColor: t.border}}/>}
                 sx={{alignItems: 'stretch', flexWrap: 'wrap'}}>
@@ -186,18 +222,44 @@ function Overview({row, inspect, history, processCount, onUpdate, updateRun}: {
             </Stack>
         </Paper>
         <Box sx={{display: 'grid', gridTemplateColumns: {xs: '1fr', lg: '1fr 1fr'}, gap: 1.25}}>
+            <Section title="Container">
+                <Details rows={[
+                    ['State', state.Status ?? row.info.state], ['Running / paused / restarting', `${text(state.Running)} / ${text(state.Paused)} / ${text(state.Restarting)}`],
+                    ['Health', field(state.Health, 'Status') ?? row.info.health], ['OOM killed', state.OOMKilled], ['State error', state.Error],
+                    ['Stack', row.info.stackName || 'Standalone'], ['Restart policy', `${text(restartPolicy.Name, 'no')} (${text(restartPolicy.MaximumRetryCount, '0')})`],
+                    ['ID', inspect.Id ?? row.info.id], ['Created', fmtDate(inspect.Created)], ['Started', fmtDate(state.StartedAt)],
+                    ['Platform', inspect.Platform], ['Exit code', state.ExitCode], ['Restart count', inspect.RestartCount ?? stats?.restartCount],
+                ]}/>
+            </Section>
+            <Section title="Runtime">
+                <Details rows={[
+                    ['Image', config.Image ?? row.info.imageName], ['Image SHA', inspect.Image], ['Command', list(config.Cmd).join(' ')],
+                    ['Entrypoint', list(config.Entrypoint).join(' ')], ['Path / args', `${text(inspect.Path, '')} ${list(inspect.Args).join(' ')}`.trim()],
+                    ['Working directory', config.WorkingDir], ['Processes', processCount],
+                ]}/>
+                <Typography sx={{color: t.textDim, fontSize: '0.72rem', mt: 0.65, mb: 0.4}}>Depends on</Typography>
+                <Dependencies raw={field(labels, 'com.docker.compose.depends_on')}/>
+                <Stack direction="row" spacing={1} sx={{mt: 0.8, alignItems: 'center'}}>
+                    <Chip size="small" color={row.info.updateAvailable ? 'warning' : 'success'}
+                        label={row.info.updateAvailable ? `Update available: ${row.info.updateAvailable}` : 'Image up to date'}/>
+                    <Button size="small" variant="outlined" startIcon={updateRun === 'running' ? <CircularProgress size={14}/> : <Update/>}
+                        disabled={updateRun === 'running'} onClick={onUpdate}>Update</Button>
+                </Stack>
+            </Section>
+        </Box>
+        <Box sx={{display: 'grid', gridTemplateColumns: {xs: '1fr', lg: '1fr 1fr'}, gap: 1.25}}>
             <Section title="Addresses & endpoints">
-                {dns.size > 0 && <Stack direction="row" useFlexGap spacing={0.65} sx={{flexWrap: 'wrap', mb: 0.8}}>
-                    {[...dns].map(domain => <Chip key={domain} size="small" icon={<Dns/>} label={domain}
+                {dns.length > 0 && <Stack direction="row" useFlexGap spacing={0.65} sx={{flexWrap: 'wrap', mb: 0.8}}>
+                    {dns.map(domain => <Chip key={domain} size="small" icon={<Dns/>} label={domain}
                         sx={{fontFamily: t.mono, userSelect: 'text'}}/>)}
                 </Stack>}
                 <Details rows={Object.entries(endpoints).flatMap(([name, raw]) => {
                     const ep = asObject(raw); return [
                         [`${name} IP`, ep.IPAddress], [`${name} endpoint`, ep.EndpointID], [`${name} gateway`, ep.Gateway],
                     ] as [string, unknown][];
-                }).concat([["DNS endpoints", [...dns].join(', ')]])}/>
+                }).concat([["Traefik endpoints", dns.join(', ')]])}/>
             </Section>
-            <Section title="Ports"><KeyValueTable value={Object.keys(portBindings).length ? portBindings : network.Ports}/></Section>
+            <Section title="Ports"><PortsView value={Object.keys(portBindings).length ? portBindings : network.Ports}/></Section>
         </Box>
     </Stack>;
 }
@@ -254,16 +316,51 @@ function Networks({containerID, inspect, onChanged}: {containerID: string, inspe
                 </Stack></Paper>;
             })}{Object.keys(mounted).length === 0 && <Typography color="text.secondary">No mounted network</Typography>}
         </Stack></Section>
-        <Section title="Available networks"><Stack direction="row" useFlexGap spacing={1} sx={{flexWrap: 'wrap'}}>
-            {networks.filter(n => !(n.name in mounted)).map(n => <Button key={n.id} variant="outlined" size="small" disabled={!!busy || n.name === 'host' || n.name === 'none'}
-                onClick={() => setConfirm({network: n, action: 'connect'})}>{n.name} · {n.driver}</Button>)}
+        <Section title="Available networks"><Stack direction="row" useFlexGap spacing={0.6} sx={{flexWrap: 'wrap'}}>
+            {networks.filter(n => !(n.name in mounted)).sort((a, b) => a.name.localeCompare(b.name)).map(n =>
+                <Tooltip key={n.id} title={`${n.driver} driver`} arrow><span><Button variant="outlined" size="small"
+                    disabled={!!busy || n.name === 'host' || n.name === 'none'} onClick={() => setConfirm({network: n, action: 'connect'})}
+                    sx={{minHeight: 25, px: 0.8, py: 0.15, borderRadius: 1, textTransform: 'none', fontFamily: t.mono, fontSize: '0.68rem'}}>
+                    {n.name}<Typography component="span" sx={{ml: 0.55, color: t.textDim, fontSize: '0.62rem'}}>· {n.driver}</Typography>
+                </Button></span></Tooltip>)}
         </Stack></Section>
-        <Section title="Mapped & exposed ports"><KeyValueTable value={settings.Ports ?? host.PortBindings}/></Section>
+        <Section title="Mapped & exposed ports"><PortsView value={settings.Ports ?? host.PortBindings}/></Section>
         <Dialog open={confirm !== null} onClose={() => setConfirm(null)}><DialogTitle>{confirm?.action === 'connect' ? 'Connect network?' : 'Disconnect network?'}</DialogTitle>
             <DialogContent><Typography>{confirm?.network.name} · {confirm?.network.driver}</Typography></DialogContent>
             <DialogActions><Button onClick={() => setConfirm(null)}>Cancel</Button><Button variant="contained" color={confirm?.action === 'disconnect' ? 'error' : 'primary'} onClick={run}>Confirm</Button></DialogActions>
         </Dialog>
     </Stack>;
+}
+
+function ExecTerminal({active, containerID, running}: {active: boolean, containerID: string, running: boolean}) {
+    const createExecUrl = useContainerExecWsUrl();
+    const fitAddon = useRef(new FitAddon());
+    const [command, setCommand] = useState('/bin/sh');
+    const [connected, setConnected] = useState(false);
+    useEffect(() => setConnected(false), [containerID]);
+    const terminal = useMemo(() => connected
+        ? createTab(createExecUrl(containerID, command.trim() || '/bin/sh'), `Exec: ${containerID.slice(0, 12)}`, true)
+        : null, [command, connected, containerID, createExecUrl]);
+    if (!running) return <Alert severity="info">Start or unpause the container to open an interactive terminal.</Alert>;
+    return <Paper variant="outlined" sx={{height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: '#1e1e1e', borderColor: t.border}}>
+        <Stack direction="row" spacing={0.75} sx={{px: 1, py: 0.65, alignItems: 'center', flexShrink: 0, borderBottom: `1px solid ${t.border}`, bgcolor: '#111318'}}>
+            <Terminal sx={{fontSize: 17, color: '#7dd3fc'}}/>
+            <Typography sx={{fontSize: '0.73rem', fontWeight: 800, whiteSpace: 'nowrap'}}>{containerID.slice(0, 12)}</Typography>
+            <TextField size="small" value={command} disabled={connected} onChange={event => setCommand(event.target.value)}
+                aria-label="Command to execute" placeholder="/bin/sh" sx={{width: 190, '& .MuiInputBase-root': {height: 28, fontFamily: t.mono, fontSize: '0.7rem'}}}/>
+            <Button size="small" variant={connected ? 'outlined' : 'contained'} color={connected ? 'error' : 'primary'}
+                onClick={() => setConnected(value => !value)} sx={{minHeight: 27, py: 0, textTransform: 'none'}}>
+                {connected ? 'Disconnect' : 'Connect'}
+            </Button>
+            <Typography sx={{ml: 'auto !important', color: connected ? '#81c784' : t.textDim, fontSize: '0.66rem'}}>
+                {connected ? 'Interactive session' : 'Disconnected'}
+            </Typography>
+        </Stack>
+        <Box sx={{flex: 1, minHeight: 0, overflow: 'hidden'}}>
+            {terminal ? <AppTerminal {...terminal} isActive={active} fit={fitAddon}/>
+                : <Box sx={{height: '100%', display: 'grid', placeItems: 'center'}}><Typography sx={{color: t.textDim, fontSize: '0.75rem'}}>Choose a shell and connect.</Typography></Box>}
+        </Box>
+    </Paper>;
 }
 
 function Mounts({inspect}: {inspect: JsonObject}) {
@@ -379,7 +476,7 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
     const client = useHostClient(DockerService); const [tab, setTab] = useState<TabID>('overview');
     const [raw, setRaw] = useState(''); const [inspect, setInspect] = useState<JsonObject>({});
     const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [processCount, setProcessCount] = useState<number | null>(null);
-    const [removeConfirm, setRemoveConfirm] = useState(false);
+    const [removeAnchor, setRemoveAnchor] = useState<HTMLElement | null>(null);
     const containerID = row?.info.id ?? '';
     const containerState = row?.info.state ?? '';
     const load = useCallback(async () => {
@@ -418,9 +515,11 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
                     <Tooltip title={active ? 'Stop' : 'Start'}><span><IconButton disabled={locked} onClick={() => onAction(row, active ? 'stop' : 'start')}>
                         {busy === 'start' || busy === 'stop' ? <CircularProgress size={18}/> : active ? <Stop/> : <PlayArrow/>}</IconButton></span></Tooltip>
                     <Tooltip title="Restart"><span><IconButton disabled={locked} onClick={() => onAction(row, 'restart')}>{busy === 'restart' ? <CircularProgress size={18}/> : <RestartAlt/>}</IconButton></span></Tooltip>
-                    <Tooltip title={paused ? 'Unpause' : 'Pause'}><span><IconButton disabled={locked || (!active && !paused)} onClick={() => onAction(row, paused ? 'unpause' : 'pause')}><Pause/></IconButton></span></Tooltip>
+                    <Tooltip title={paused ? 'Unpause' : 'Pause'}><span><IconButton disabled={locked || (!active && !paused)}
+                        onClick={() => onAction(row, paused ? 'unpause' : 'pause')}
+                        sx={{color: paused ? '#66bb6a' : '#ffb74d'}}>{paused ? <PlayArrow/> : <Pause/>}</IconButton></span></Tooltip>
                     <Tooltip title="Update"><span><IconButton disabled={locked || updateRun === 'running'} onClick={() => onAction(row, 'update')}><Update/></IconButton></span></Tooltip>
-                    <Tooltip title="Remove"><span><IconButton color="error" disabled={locked} onClick={() => setRemoveConfirm(true)}><Delete/></IconButton></span></Tooltip>
+                    <Tooltip title="Remove"><span><IconButton color="error" disabled={locked} onClick={event => setRemoveAnchor(event.currentTarget)}><Delete/></IconButton></span></Tooltip>
                     <Tooltip title="Refresh details"><span><IconButton disabled={loading} onClick={load}>{loading ? <CircularProgress size={18}/> : <Refresh/>}</IconButton></span></Tooltip>
                     <Button size="small" variant={tab === 'inspect' ? 'contained' : 'outlined'} startIcon={<InfoOutlined/>}
                         onClick={() => setTab('inspect')} sx={{display: {xs: 'none', md: 'inline-flex'}}}>Inspect</Button>
@@ -440,11 +539,12 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
             </Box>
             <Box sx={{flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
                 {error && <Alert severity="error" sx={{m: 1, mb: 0, flexShrink: 0}}>{error}</Alert>}
-                <Box sx={{flex: 1, minHeight: 0, overflow: tab === 'logs' ? 'hidden' : 'auto', p: tab === 'logs' ? 0 : 1.4,
-                    userSelect: 'text', cursor: tab === 'logs' ? 'default' : 'text', ...scrollbarStyles}}>
+                <Box sx={{flex: 1, minHeight: 0, overflow: tab === 'logs' || tab === 'exec' ? 'hidden' : 'auto', p: tab === 'logs' || tab === 'exec' ? 0 : 1.4,
+                    userSelect: 'text', cursor: tab === 'logs' || tab === 'exec' ? 'default' : 'text', ...scrollbarStyles}}>
                 {loading && !raw ? <Box sx={{display: 'grid', placeItems: 'center', height: '100%'}}><CircularProgress/></Box> : <>
                     <Box hidden={tab !== 'overview'}><Overview row={row} inspect={inspect} history={history} processCount={processCount} onUpdate={() => onAction(row, 'update')} updateRun={updateRun}/></Box>
                     <Box hidden={tab !== 'logs'} sx={{height: '100%', minHeight: 0, overflow: 'hidden'}}><LogsViewer containers={[{id: row.info.id, name: row.info.name}]} isActive={tab === 'logs'}/></Box>
+                    <Box hidden={tab !== 'exec'} sx={{height: '100%', minHeight: 0, overflow: 'hidden'}}><ExecTerminal active={tab === 'exec'} containerID={row.info.id} running={state === 'running'}/></Box>
                     <Box hidden={tab !== 'processes'}>{processAvailable
                         ? <Processes active={tab === 'processes'} containerID={row.info.id} onCount={setProcessCount}/>
                         : <Alert severity="info">Start the container to inspect its running processes.</Alert>}</Box>
@@ -461,12 +561,15 @@ export default function ContainerDetailsDialog({open, row, history, busy, stackB
             </Box>
         </Box>
         </Box>
-        <Dialog open={removeConfirm} onClose={() => setRemoveConfirm(false)}>
-            <DialogTitle>Remove container?</DialogTitle>
-            <DialogContent><Typography>This permanently removes <b>{row.info.name}</b>.</Typography></DialogContent>
-            <DialogActions><Button onClick={() => setRemoveConfirm(false)}>Cancel</Button>
-                <Button variant="contained" color="error" onClick={() => {setRemoveConfirm(false); onAction(row, 'remove');}}>Remove</Button>
-            </DialogActions>
-        </Dialog>
+        <Popover open={removeAnchor !== null} anchorEl={removeAnchor} onClose={() => setRemoveAnchor(null)}
+            anchorOrigin={{vertical: 'top', horizontal: 'center'}} transformOrigin={{vertical: 'bottom', horizontal: 'center'}}
+            slotProps={{paper: {sx: {bgcolor: t.header, border: `1px solid ${t.border}`, borderRadius: 1.5, px: 1.25, py: 1, maxWidth: 260}}}}>
+            <Typography sx={{fontSize: '0.78rem', color: t.text, mb: 0.75}}>Remove <b>{row.info.name}</b>?</Typography>
+            <Stack direction="row" spacing={0.75} sx={{justifyContent: 'flex-end'}}>
+                <Button size="small" onClick={() => setRemoveAnchor(null)} sx={{textTransform: 'none', color: t.textDim, minWidth: 0}}>Cancel</Button>
+                <Button size="small" variant="contained" color="error" onClick={() => {setRemoveAnchor(null); onAction(row, 'remove');}}
+                    sx={{textTransform: 'none', fontWeight: 700}}>Remove</Button>
+            </Stack>
+        </Popover>
     </Dialog>;
 }

@@ -211,6 +211,7 @@ export function MonitorTable(props: MonitorTableProps) {
                                 </span>
                             </Tooltip>
                         </TableCell>
+                        <TableCell aria-label="Container details" sx={{...headCell, width: 34, p: 0}}/>
                         <TableCell sx={headCell}>{sortableHead('name', 'NAME')}</TableCell>
                         <TableCell sx={headCell}>STATE</TableCell>
                         <TableCell sx={headCell}>{sortableHead('uptime', 'UPTIME')}</TableCell>
@@ -290,6 +291,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup }) {
                     </span>
                 </Tooltip>
             </TableCell>
+            <TableCell sx={{...bodyCell, p: 0}}/>
             <TableCell colSpan={3} sx={{...bodyCell, py: 0.25}}>
                 <Stack
                     direction="row"
@@ -483,6 +485,14 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     sx={{color: t.textDim, p: 0.5}}
                 />
             </TableCell>
+            <TableCell sx={{...bodyCell, width: 34, p: 0}}>
+                <Tooltip title="Details" arrow>
+                    <IconButton size="small" onClick={() => onRowDetails(row)}
+                                sx={{color: '#64b5f6', '&:hover': {color: '#90caf9'}}}>
+                        <InfoOutlined sx={{fontSize: 17}}/>
+                    </IconButton>
+                </Tooltip>
+            </TableCell>
             <TableCell sx={{...bodyCell, maxWidth: 240, pl: 2.5}}>
                 <Stack direction="row" spacing={0.5} sx={{
                     alignItems: "center"
@@ -561,12 +571,6 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                 )}
             </TableCell>
             <TableCell align="right" sx={{...bodyCell, whiteSpace: 'nowrap'}}>
-                <Tooltip title="Details" arrow>
-                    <IconButton size="small" onClick={() => onRowDetails(row)}
-                                sx={{color: '#64b5f6', '&:hover': {color: '#90caf9'}}}>
-                        <InfoOutlined sx={{fontSize: 17}}/>
-                    </IconButton>
-                </Tooltip>
                 <Tooltip title={isActive ? 'Stop' : 'Start'} arrow>
                     <span>
                         <IconButton size="small" disabled={!!busy || stackBusy}
@@ -590,8 +594,9 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow }) {
                     <span>
                         <IconButton size="small" disabled={(!isRunning && !isPaused) || !!busy || stackBusy}
                                     onClick={() => onRowAction(row, isPaused ? 'unpause' : 'pause')}
-                                    sx={{color: isPaused ? '#ffb74d' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
-                            {busy === 'pause' || busy === 'unpause' ? spinner : <Pause sx={{fontSize: 16}}/>}
+                                    sx={{color: isPaused ? '#66bb6a' : '#ffb74d', '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
+                            {busy === 'pause' || busy === 'unpause' ? spinner
+                                : isPaused ? <PlayArrow sx={{fontSize: 16}}/> : <Pause sx={{fontSize: 16}}/>}
                         </IconButton>
                     </span>
                 </Tooltip>

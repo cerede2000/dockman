@@ -9,7 +9,6 @@ import (
 	"maps"
 	"net/netip"
 	"os"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -609,33 +608,5 @@ func extractIPAddr(stack container.Summary) (hosts []string) {
 }
 
 func extractTraefikLabel(labels map[string]string) (hosts []string) {
-	val, ok := labels["traefik.enable"]
-	if !(ok && val == "true") {
-		return hosts
-	}
-
-	// looks for the Host() or HostRegexp() functions
-	// It captures everything inside the parenthesis
-	hostRegex := regexp.MustCompile(`Host(?:Regexp)?\((.*?)\)`)
-	// This regex identifies the actual domain names inside the quotes/backticks
-	domainRegex := regexp.MustCompile(`[` + "`" + `"]([^` + "`" + `",\s]+)[` + "`" + `"]`)
-	for key, value := range labels {
-		if strings.HasPrefix(key, "traefik.http.routers.") && strings.HasSuffix(key, ".rule") {
-			// Find all Host(...) or HostRegexp(...) occurrences in the rule
-			matches := hostRegex.FindAllStringSubmatch(value, -1)
-			for _, match := range matches {
-				if len(match) > 1 {
-					// (Handles comma separated: Host(`a.com`, `b.com`))
-					domains := domainRegex.FindAllStringSubmatch(match[1], -1)
-					for _, d := range domains {
-						if len(d) > 1 {
-							hosts = append(hosts, d[1])
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return hosts
+	return contSrv.TraefikHosts(labels)
 }
