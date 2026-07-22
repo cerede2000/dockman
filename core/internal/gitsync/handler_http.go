@@ -33,11 +33,120 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /repositories/{id}/push", h.pushRepository)
 	mux.HandleFunc("GET /repositories/{id}/operations", h.repositoryOperations)
 	mux.HandleFunc("DELETE /repositories/{id}", h.deleteRepository)
+	mux.HandleFunc("GET /stack-targets", h.listStackTargets)
+	mux.HandleFunc("GET /bindings", h.listBindings)
+	mux.HandleFunc("POST /bindings", h.createBinding)
+	mux.HandleFunc("DELETE /bindings/{id}", h.deleteBinding)
+	mux.HandleFunc("POST /bindings/{id}/preview/{direction}", h.previewBinding)
+	mux.HandleFunc("POST /bindings/{id}/export", h.exportBinding)
+	mux.HandleFunc("POST /bindings/{id}/import", h.importBinding)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) listStackTargets(w http.ResponseWriter, _ *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	rows, err := h.service.ListStackTargets()
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) listBindings(w http.ResponseWriter, _ *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	rows, err := h.service.ListBindings()
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) createBinding(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.CreateBinding(input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, row)
+}
+
+func (h *HTTPHandler) deleteBinding(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	if err := h.service.DeleteBinding(r.PathValue("id")); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPHandler) previewBinding(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	input, ok := decodeOptionalTransferInput(w, r)
+	if !ok {
+		return
+	}
+	preview, err := h.service.PreviewBinding(r.PathValue("id"), r.PathValue("direction"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (h *HTTPHandler) exportBinding(w http.ResponseWriter, r *http.Request) {
+	h.bindingTransfer(w, r, h.service.ExportBinding)
+}
+
+func (h *HTTPHandler) importBinding(w http.ResponseWriter, r *http.Request) {
+	h.bindingTransfer(w, r, h.service.ImportBinding)
+}
+
+func (h *HTTPHandler) bindingTransfer(w http.ResponseWriter, r *http.Request, action func(context.Context, string, TransferInput) (TransferResult, error)) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	input, ok := decodeOptionalTransferInput(w, r)
+	if !ok {
+		return
+	}
+	result, err := action(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func decodeOptionalTransferInput(w http.ResponseWriter, r *http.Request) (TransferInput, bool) {
+	var input TransferInput
+	err := decodeJSON(r, &input)
+	if err != nil && !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return input, false
+	}
+	return input, true
 }
 
 func (h *HTTPHandler) listRepositories(w http.ResponseWriter, _ *http.Request) {
@@ -149,8 +258,9 @@ func (h *HTTPHandler) deleteRepository(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":                 h.service.Enabled(),
-		"phase":                   "manual_repository_sync",
+		"phase":                   "manual_stack_sync",
 		"repositorySyncAvailable": h.service.Enabled(),
+		"stackSyncAvailable":      h.service.Enabled(),
 	})
 }
 

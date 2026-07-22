@@ -21,6 +21,7 @@ import (
 	"github.com/RA341/dockman/internal/files"
 	"github.com/RA341/dockman/internal/gitsync"
 	"github.com/RA341/dockman/internal/host"
+	"github.com/RA341/dockman/internal/host/filesystem"
 	hostMiddleware "github.com/RA341/dockman/internal/host/middleware"
 	"github.com/RA341/dockman/internal/info"
 	"github.com/RA341/dockman/internal/ssh"
@@ -158,6 +159,14 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		}
 	}
 	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, filepath.Join(conf.ConfigDir, "git", "repositories"))
+	gitSyncSrv.ConfigureStackAccess(
+		func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
+			stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)
+			return stackFS, relpath, loadErr
+		},
+		hostManager.ListConnected,
+		filepath.Join(conf.ConfigDir, "git", "backups"),
+	)
 	if interrupted, recoverErr := gitSyncSrv.RecoverInterruptedOperations(); recoverErr != nil {
 		log.Fatal().Err(recoverErr).Msg("unable to recover interrupted Git operations")
 	} else if interrupted > 0 {

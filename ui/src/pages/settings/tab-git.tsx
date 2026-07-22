@@ -6,8 +6,8 @@ import {
     TextField, Tooltip, Typography,
 } from "@mui/material";
 import {
-    Add, CloudDownloadOutlined, CloudUploadOutlined, DeleteOutlined, EditOutlined,
-    FolderOpenOutlined, HistoryOutlined, KeyOutlined, RefreshOutlined, SyncOutlined,
+    Add, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
+    FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SyncOutlined,
 } from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
@@ -19,6 +19,7 @@ interface GitFeatureStatus {
     enabled: boolean;
     phase: string;
     repositorySyncAvailable: boolean;
+    stackSyncAvailable: boolean;
 }
 
 interface Credential {
@@ -83,6 +84,23 @@ interface RepositoryForm {
     private: boolean;
 }
 
+interface StackTarget { host: string; path: string; composePaths: string[]; }
+interface Binding {
+    id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
+    subPath: string; composePaths: string[]; enabled: boolean;
+}
+interface PreviewEntry {
+    path: string; status: "add" | "modify" | "skipped_sensitive"; sourceSha?: string;
+    targetSha?: string; size?: number; sensitive?: boolean;
+}
+interface TransferPreview {
+    bindingId: string; direction: TransferDirection; entries: PreviewEntry[]; changed: number;
+    unchanged: number; skipped: number; deletionMode: string;
+    previewToken: string;
+}
+interface TransferResult { preview: TransferPreview; commitSha?: string; backup?: string; message: string; }
+type TransferDirection = "stack_to_repository" | "repository_to_stack";
+
 const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
 };
@@ -142,6 +160,17 @@ export default function TabGit() {
     const [deleteRepository, setDeleteRepository] = useState<Repository | null>(null);
     const [historyRepository, setHistoryRepository] = useState<Repository | null>(null);
     const [operations, setOperations] = useState<Operation[]>([]);
+    const [bindings, setBindings] = useState<Binding[]>([]);
+    const [stackTargets, setStackTargets] = useState<StackTarget[]>([]);
+    const [bindingDialogOpen, setBindingDialogOpen] = useState(false);
+    const [bindingForm, setBindingForm] = useState({repositoryId: "", host: "", stackPath: "", subPath: "."});
+    const [transferBinding, setTransferBinding] = useState<Binding | null>(null);
+    const [transferDirection, setTransferDirection] = useState<TransferDirection>("stack_to_repository");
+    const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
+    const [includeSensitive, setIncludeSensitive] = useState(false);
+    const [sensitiveConfirmation, setSensitiveConfirmation] = useState("");
+    const [commitMessage, setCommitMessage] = useState("");
+    const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
 
     const loadRepositoryStatuses = useCallback(async (rows: Repository[]) => {
         const pairs = await Promise.all(rows.filter((row) => row.workspacePresent).map(async (row) => {
@@ -162,13 +191,18 @@ export default function TabGit() {
             if (!nextFeature.enabled) {
                 setCredentials([]);
                 setRepositories([]);
+                setBindings([]);
+                setStackTargets([]);
                 return;
             }
-            const [nextCredentials, nextRepositories] = await Promise.all([
+            const [nextCredentials, nextRepositories, nextBindings, nextTargets] = await Promise.all([
                 api<Credential[]>("/credentials"), api<Repository[]>("/repositories"),
+                api<Binding[]>("/bindings"), api<StackTarget[]>("/stack-targets"),
             ]);
             setCredentials(nextCredentials);
             setRepositories(nextRepositories);
+            setBindings(nextBindings);
+            setStackTargets(nextTargets);
             await loadRepositoryStatuses(nextRepositories);
         } catch (error) {
             showError(`Unable to load Git settings: ${(error as Error).message}`);
@@ -318,6 +352,70 @@ export default function TabGit() {
         }
     };
 
+    const openBindingCreate = () => {
+        const first = stackTargets[0];
+        setBindingForm({repositoryId: repositories[0]?.id || "", host: first?.host || "", stackPath: first?.path || "", subPath: "."});
+        setBindingDialogOpen(true);
+    };
+
+    const saveBinding = async () => {
+        setBusy("binding-save");
+        try {
+            await api<Binding>("/bindings", {method: "POST", body: JSON.stringify(bindingForm)});
+            showSuccess("Stack linked to the Git repository.");
+            setBindingDialogOpen(false);
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+        } finally { setBusy(null); }
+    };
+
+    const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false) => {
+        if (!sensitive) {
+            setIncludeSensitive(false); setSensitiveConfirmation(""); setCommitMessage("");
+        }
+        setBusy(`preview-${binding.id}`);
+        try {
+            const confirmation = sensitive ? sensitiveConfirmation : "";
+            const preview = await api<TransferPreview>(`/bindings/${binding.id}/preview/${direction}`, {
+                method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
+            });
+            setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview);
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
+    };
+
+    const closeTransfer = () => {
+        setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
+        setSensitiveConfirmation(""); setCommitMessage("");
+    };
+
+    const runTransfer = async () => {
+        if (!transferBinding) return;
+        const action = transferDirection === "stack_to_repository" ? "export" : "import";
+        setBusy(`transfer-${transferBinding.id}`);
+        try {
+            const result = await api<TransferResult>(`/bindings/${transferBinding.id}/${action}`, {
+                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage, previewToken: transferPreview?.previewToken}),
+            });
+            showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
+            closeTransfer();
+            await load();
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
+    };
+
+    const confirmDeleteBinding = async () => {
+        if (!deleteBinding) return;
+        setBusy(`binding-delete-${deleteBinding.id}`);
+        try {
+            await api<void>(`/bindings/${deleteBinding.id}`, {method: "DELETE"});
+            showSuccess("Stack link removed. No stack or repository file was deleted.");
+            setDeleteBinding(null); await load();
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
+    };
+
     if (loading && !feature) return <Box sx={{display: "grid", placeItems: "center", p: 6}}><CircularProgress/></Box>;
 
     if (feature && !feature.enabled) {
@@ -332,7 +430,7 @@ export default function TabGit() {
     return <Box sx={{maxWidth: 1200, mx: "auto", p: {xs: 1, md: 3}}}>
         <Stack spacing={3}>
             <Alert severity="info" variant="outlined">
-                This lot manages isolated Git workspaces and manual synchronization only. It never changes, deploys, or restarts a Dockman compose stack.
+                Git synchronization is manual and non-destructive: files missing from the source are never deleted. Import creates a backup and never deploys or restarts the stack.
             </Alert>
 
             <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
@@ -386,6 +484,32 @@ export default function TabGit() {
             <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
                 <Stack direction={{xs: "column", md: "row"}} sx={{p: 2.25, justifyContent: "space-between", gap: 2}}>
                     <Box>
+                        <Typography variant="h6">Stack links</Typography>
+                        <Typography variant="body2" color="text.secondary">Link one host stack folder to one repository folder, preview differences, then transfer explicitly.</Typography>
+                    </Box>
+                    <Button variant="contained" startIcon={<LinkOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openBindingCreate}>Link stack</Button>
+                </Stack>
+                <TableContainer><Table size="small">
+                    <TableHead><TableRow><TableCell>Stack</TableCell><TableCell>Repository folder</TableCell><TableCell>Compose</TableCell><TableCell align="right">Manual transfer</TableCell></TableRow></TableHead>
+                    <TableBody>
+                        {bindings.length === 0 && <TableRow><TableCell colSpan={4} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
+                        {bindings.map((binding) => <TableRow key={binding.id} hover>
+                            <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Host: {binding.host}</Typography></TableCell>
+                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography></TableCell>
+                            <TableCell>{binding.composePaths.length ? binding.composePaths.map((path) => <Chip key={path} size="small" variant="outlined" label={path} sx={{mr: .5}}/>) : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
+                            <TableCell align="right" sx={{whiteSpace: "nowrap"}}>
+                                <Tooltip title="Preview stack → Git"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "stack_to_repository")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                <Tooltip title="Preview Git → stack"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "repository_to_stack")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                <Tooltip title="Remove link"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteBinding(binding)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
+                            </TableCell>
+                        </TableRow>)}
+                    </TableBody>
+                </Table></TableContainer>
+            </Paper>
+
+            <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
+                <Stack direction={{xs: "column", md: "row"}} sx={{p: 2.25, justifyContent: "space-between", gap: 2}}>
+                    <Box>
                         <Typography variant="h6">Git credentials</Typography>
                         <Typography variant="body2" color="text.secondary">Secrets are encrypted at rest and are never returned by the API.</Typography>
                     </Box>
@@ -408,6 +532,53 @@ export default function TabGit() {
                 </Table></TableContainer>
             </Paper>
         </Stack>
+
+        <Dialog open={bindingDialogOpen} onClose={() => busy === null && setBindingDialogOpen(false)} fullWidth maxWidth="sm">
+            <DialogTitle>Link a stack to Git</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <FormControl><InputLabel>Repository</InputLabel><Select label="Repository" value={bindingForm.repositoryId} onChange={(event) => setBindingForm({...bindingForm, repositoryId: event.target.value})}>
+                    {repositories.map((repository) => <MenuItem key={repository.id} value={repository.id}>{repository.name}</MenuItem>)}
+                </Select></FormControl>
+                {stackTargets.length > 0 && <FormControl><InputLabel>Detected stack</InputLabel><Select label="Detected stack" value={stackTargets.some((target) => `${target.host}\n${target.path}` === `${bindingForm.host}\n${bindingForm.stackPath}`) ? `${bindingForm.host}\n${bindingForm.stackPath}` : ""} onChange={(event) => {
+                    const target = stackTargets.find((item) => `${item.host}\n${item.path}` === event.target.value);
+                    if (target) setBindingForm({...bindingForm, host: target.host, stackPath: target.path});
+                }}><MenuItem value=""><em>Custom path</em></MenuItem>{stackTargets.map((target) => <MenuItem key={`${target.host}-${target.path}`} value={`${target.host}\n${target.path}`}>{target.host} — {target.path}</MenuItem>)}</Select></FormControl>}
+                <Stack direction={{xs: "column", sm: "row"}} spacing={2}><TextField fullWidth label="Host" value={bindingForm.host} onChange={(event) => setBindingForm({...bindingForm, host: event.target.value})} required/><TextField fullWidth label="Stack path" value={bindingForm.stackPath} onChange={(event) => setBindingForm({...bindingForm, stackPath: event.target.value})} placeholder="compose/my-stack" required/></Stack>
+                <TextField label="Repository subfolder" value={bindingForm.subPath} onChange={(event) => setBindingForm({...bindingForm, subPath: event.target.value})} placeholder="stacks/my-stack" helperText="Use . for the repository root. Absolute paths and .git are refused." required/>
+                <Alert severity="info">The link alone copies nothing. You will preview and confirm each direction afterward.</Alert>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setBindingDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBinding()} disabled={busy !== null || !bindingForm.repositoryId || !bindingForm.host.trim() || !bindingForm.stackPath.trim() || !bindingForm.subPath.trim()}>{busy === "binding-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Link</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={transferBinding !== null} onClose={() => busy === null && closeTransfer()} fullWidth maxWidth="md">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><CompareArrowsOutlined/>{transferDirection === "stack_to_repository" ? "Export stack to Git" : "Import Git into stack"}</DialogTitle>
+            <DialogContent dividers><Stack spacing={2}>
+                <Alert severity={transferDirection === "stack_to_repository" ? "info" : "warning"}>
+                    {transferDirection === "stack_to_repository" ? "Changed stack files will be committed and pushed. Remote-only files are preserved." : "Changed repository files will be copied into the stack after a backup. Stack deployment is never triggered."}
+                </Alert>
+                <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
+                    <Chip label={`${transferPreview?.changed || 0} changed`} color={transferPreview?.changed ? "warning" : "success"}/>
+                    <Chip label={`${transferPreview?.skipped || 0} sensitive skipped`} variant="outlined"/>
+                    <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
+                </Stack>
+                <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell></TableRow></TableHead><TableBody>
+                    {!transferPreview?.entries.length && <TableRow><TableCell colSpan={3} align="center" sx={{py: 4, color: "text.secondary"}}>No difference.</TableCell></TableRow>}
+                    {transferPreview?.entries.map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status === "skipped_sensitive" ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : `${entry.size} B`}</TableCell></TableRow>)}
+                </TableBody></Table></TableContainer>
+                <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
+                    const checked = event.target.checked;
+                    setIncludeSensitive(checked); setSensitiveConfirmation("");
+                    if (!checked && transferBinding) void previewTransfer(transferBinding, transferDirection, false);
+                }}/>} label="Include sensitive files for this transfer only"/>
+                {includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TextField label='Type "INCLUDE SENSITIVE FILES"' value={sensitiveConfirmation} onChange={(event) => setSensitiveConfirmation(event.target.value)} onBlur={() => transferBinding && sensitiveConfirmation === "INCLUDE SENSITIVE FILES" && void previewTransfer(transferBinding, transferDirection, true)} fullWidth/></>}
+                {transferDirection === "stack_to_repository" && <TextField label="Commit message (optional)" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button><Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || transferPreview.changed === 0 || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferDirection === "stack_to_repository" ? "Commit and push" : "Backup and import"}</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={deleteBinding !== null} onClose={() => busy === null && setDeleteBinding(null)} maxWidth="xs" fullWidth>
+            <DialogTitle>Remove stack link?</DialogTitle><DialogContent><Typography>Unlink <strong>{deleteBinding?.stackPath}</strong> from <strong>{deleteBinding?.repositoryName}</strong>? No file or Git history will be deleted.</Typography></DialogContent><DialogActions><Button onClick={() => setDeleteBinding(null)} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" onClick={() => void confirmDeleteBinding()} disabled={busy !== null}>Remove link</Button></DialogActions>
+        </Dialog>
 
         <Dialog open={repositoryDialogOpen} onClose={() => busy === null && setRepositoryDialogOpen(false)} fullWidth maxWidth="sm">
             <DialogTitle>Add Git repository</DialogTitle>

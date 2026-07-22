@@ -80,6 +80,31 @@ func (s *Store) RepositoryHasBindings(id string) (bool, error) {
 	return count > 0, err
 }
 
+func (s *Store) ListBindings() ([]StackBinding, error) {
+	var rows []StackBinding
+	err := s.db.Order("host COLLATE NOCASE ASC, stack_path COLLATE NOCASE ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) GetBinding(id string) (StackBinding, error) {
+	var row StackBinding
+	err := s.db.Where("uuid = ?", id).First(&row).Error
+	return row, err
+}
+
+func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
+
+func (s *Store) DeleteBinding(id string) error {
+	result := s.db.Unscoped().Where("uuid = ?", id).Delete(&StackBinding{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (s *Store) ListOperations(repositoryID string, limit int) ([]Operation, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 25
