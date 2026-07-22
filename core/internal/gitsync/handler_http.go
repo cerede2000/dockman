@@ -50,8 +50,24 @@ func NewHTTPHandler(service *Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if isMemoryIntensiveGitRequest(r) {
+			releaseMemory := observeGitMemory(r.Method + " " + r.URL.Path)
+			defer releaseMemory()
+		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func isMemoryIntensiveGitRequest(r *http.Request) bool {
+	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
+		return false
+	}
+	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/repositories"} {
+		if strings.Contains(r.URL.Path, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *HTTPHandler) addBindingExclusion(w http.ResponseWriter, r *http.Request) {

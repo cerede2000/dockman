@@ -110,6 +110,7 @@ type TransferInput struct {
 	PreviewToken          string   `json:"previewToken"`
 	ResolvedPaths         []string `json:"resolvedPaths"`
 	SelectedPaths         []string `json:"selectedPaths"`
+	compactResult         bool
 }
 
 type PreviewEntry struct {
@@ -694,6 +695,9 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
+	if input.compactResult {
+		result.Preview.Entries = nil
+	}
 	return result, err
 }
 

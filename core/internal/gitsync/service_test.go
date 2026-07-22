@@ -222,6 +222,18 @@ func TestNormalizeGitHubRepositoryURL(t *testing.T) {
 	require.Equal(t, "git@github.com:owner/repository.git", sshShorthand)
 }
 
+func TestDuplicateRepositoryIdentityIsRejectedPerBranch(t *testing.T) {
+	service, _ := testService(t, true)
+	require.NoError(t, service.store.SaveRepository(&Repository{
+		UUID: uuid.NewString(), Name: "existing", Provider: "github",
+		RemoteURL: "git@github.com:Owner/Repository.git", DefaultBranch: "main", Mode: "managed", Status: "ready",
+	}))
+	identity, err := githubRepositoryIdentity("https://github.com/owner/repository")
+	require.NoError(t, err)
+	require.ErrorContains(t, service.ensureRepositoryUnique(identity, "main"), "already registered")
+	require.NoError(t, service.ensureRepositoryUnique(identity, "develop"))
+}
+
 func createTestRemote(t *testing.T) (remotePath, seedPath string) {
 	t.Helper()
 	remotePath = filepath.Join(t.TempDir(), "remote.git")

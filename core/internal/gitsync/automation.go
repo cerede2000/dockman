@@ -130,6 +130,8 @@ func (s *Service) runDueAutoSyncs(ctx context.Context, now time.Time) {
 }
 
 func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncResult, error) {
+	releaseMemory := observeGitMemory("automatic Git to Dockman synchronization")
+	defer releaseMemory()
 	binding, err := s.store.GetBinding(id)
 	if err != nil {
 		return AutoSyncResult{}, err
@@ -175,23 +177,27 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		if previewErr != nil {
 			return previewErr
 		}
-		result.Changed, result.Conflicts = preview.Changed, preview.Conflicts
-		if preview.Conflicts > 0 {
+		changed, conflicts, previewToken := preview.Changed, preview.Conflicts, preview.PreviewToken
+		result.Changed, result.Conflicts = changed, conflicts
+		// A folder can contain many thousands of entries. Do not retain the first
+		// inventory while ImportBinding builds and validates its fresh inventory.
+		preview.Entries = nil
+		if conflicts > 0 {
 			result.State = "conflict"
-			result.Message = fmt.Sprintf("%d conflict(s) require a manual decision; no file was changed", preview.Conflicts)
+			result.Message = fmt.Sprintf("%d conflict(s) require a manual decision; no file was changed", conflicts)
 			return nil
 		}
 
-		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: preview.PreviewToken})
+		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: previewToken, compactResult: true})
 		if importErr != nil {
 			return importErr
 		}
 		result.State = "up_to_date"
 		result.Backup = transfer.Backup
-		if preview.Changed == 0 {
+		if changed == 0 {
 			result.Message = "Stack already matches Git"
 		} else {
-			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", preview.Changed)
+			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
 		}
 		return nil
 	})

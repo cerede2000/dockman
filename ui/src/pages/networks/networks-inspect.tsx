@@ -24,6 +24,7 @@ import {ArrowBack, ContentCopy} from "@mui/icons-material";
 import HubIcon from "@mui/icons-material/Hub";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutlined";
+import {copyText} from "../../hooks/copy.ts";
 
 const NetworksInspect = () => {
     const dockerService = useHostClient(DockerService)
@@ -52,7 +53,7 @@ const NetworksInspect = () => {
     }, [fetchData]);
 
     const handleCopy = (text: string) => {
-        navigator.clipboard.writeText(text).then();
+        void copyText(text);
     };
 
     return (

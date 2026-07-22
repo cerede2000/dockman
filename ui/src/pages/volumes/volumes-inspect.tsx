@@ -13,6 +13,7 @@ import {formatDate} from '../../lib/api.ts';
 import ContainerFileBrowser from '../../components/container-file-browser.tsx';
 import scrollbarStyles from '../../components/scrollbar-style.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
+import {copyText} from '../../hooks/copy.ts';
 
 interface Props {
     open?: boolean;
@@ -74,7 +75,7 @@ export default function VolumesInspect({open: controlledOpen, volumeName: contro
         void fetchData();
     }, [open, volumeName, fetchData]);
 
-    const copy = (value: string) => void navigator.clipboard.writeText(value);
+    const copy = (value: string) => void copyText(value);
     const containers = inspect?.containers ?? [];
     const volume = inspect?.vol;
 

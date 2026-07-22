@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -105,6 +106,16 @@ func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (
 	if err != nil {
 		return RepositoryView{}, err
 	}
+	identity, err := githubRepositoryIdentity(clean.RemoteURL)
+	if err != nil {
+		return RepositoryView{}, err
+	}
+	creationLock := s.repositoryLock("create:" + identity + "\x00" + clean.DefaultBranch)
+	creationLock.Lock()
+	defer creationLock.Unlock()
+	if err := s.ensureRepositoryUnique(identity, clean.DefaultBranch); err != nil {
+		return RepositoryView{}, err
+	}
 	row := Repository{
 		UUID: uuid.NewString(), Name: clean.Name, Provider: "github", RemoteURL: clean.RemoteURL,
 		DefaultBranch: clean.DefaultBranch, Mode: "managed", Status: "cloning",
@@ -135,6 +146,20 @@ func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (
 		return RepositoryView{}, err
 	}
 	return s.repositoryView(row), nil
+}
+
+func (s *Service) ensureRepositoryUnique(identity, branch string) error {
+	rows, err := s.store.ListRepositories()
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		existingIdentity, identityErr := githubRepositoryIdentity(row.RemoteURL)
+		if identityErr == nil && existingIdentity == identity && row.DefaultBranch == branch {
+			return fmt.Errorf("repository %s on branch %s is already registered as %s", identity, branch, row.Name)
+		}
+	}
+	return nil
 }
 
 func (s *Service) CreateGitHubRepository(ctx context.Context, input GitHubRepositoryInput) (RepositoryView, error) {
@@ -476,6 +501,24 @@ func (s *Service) validateRepositoryInput(input RepositoryInput) (RepositoryInpu
 	}
 	input.RemoteURL = normalizedURL
 	return input, nil
+}
+
+func githubRepositoryIdentity(raw string) (string, error) {
+	normalized, err := normalizeGitHubURL(raw, true)
+	if err != nil {
+		return "", err
+	}
+	var repositoryPath string
+	if strings.HasPrefix(normalized, "git@github.com:") {
+		repositoryPath = strings.TrimPrefix(normalized, "git@github.com:")
+	} else {
+		u, parseErr := url.Parse(normalized)
+		if parseErr != nil {
+			return "", errors.New("invalid normalized GitHub repository URL")
+		}
+		repositoryPath = strings.TrimPrefix(u.Path, "/")
+	}
+	return strings.ToLower(strings.TrimSuffix(repositoryPath, ".git")), nil
 }
 
 func (s *Service) cloneRepository(ctx context.Context, row Repository) error {

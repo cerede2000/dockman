@@ -4,6 +4,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import composerize from 'composerize';
 import {ClearAllRounded, GitHub} from "@mui/icons-material";
+import {copyText} from '../../../hooks/copy.ts';
 
 const ComposerizeWidget = () => {
     const [input, setInput] = useState('');
@@ -30,9 +31,10 @@ const ComposerizeWidget = () => {
 
     const handleCopy = async () => {
         if (output) {
-            await navigator.clipboard.writeText(output);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000); // Reset icon after 2s
+            if (await copyText(output)) {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000); // Reset icon after 2s
+            }
         }
     };
 

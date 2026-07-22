@@ -6,6 +6,7 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import AppTerminal from './logs-terminal.tsx';
 import {createTab, type TabTerminal} from '../state/terminal.tsx';
 import {useContainerExecOptionsUrl, useContainerExecWsUrl} from '../../../lib/api.ts';
+import {copyText} from '../../../hooks/copy.ts';
 
 const sizes = [10, 12, 14, 16];
 
@@ -74,9 +75,10 @@ export default function ExecTerminalPanel({tab, isActive}: {tab: TabTerminal; is
             const buffer = term.buffer.active;
             for (let i = 0; i < buffer.length; i++) lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
         }
-        await navigator.clipboard.writeText(selected || lines.join('\n').replace(/\n+$/, ''));
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1200);
+        if (await copyText(selected || lines.join('\n').replace(/\n+$/, ''))) {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+        }
     };
     const changeFont = (value: number) => {
         localStorage.setItem('dockman-exec-fontsize', String(value));
