@@ -3,7 +3,7 @@ import {
     Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
     DialogTitle, FormControl, FormControlLabel, IconButton, InputLabel, Menu, MenuItem, Paper,
     Select, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-    TextField, Tooltip, Typography,
+    TablePagination, TextField, Tooltip, Typography,
 } from "@mui/material";
 import {
     Add, BlockOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
@@ -12,6 +12,8 @@ import {
 import {withProtectedAPI} from "../../lib/api.ts";
 import {formatBytes} from "../../lib/editor.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
+import {useCopyButton} from "../../hooks/copy.ts";
+import CopyButton from "../../components/copy-button.tsx";
 
 type AuthType = "public" | "https_token" | "ssh_key";
 type RepositoryDialogMode = "import" | "github";
@@ -176,6 +178,9 @@ export default function TabGit() {
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
     const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
+    const [previewPage, setPreviewPage] = useState(0);
+    const [previewRowsPerPage, setPreviewRowsPerPage] = useState(50);
+    const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
 
     const loadRepositoryStatuses = useCallback(async (rows: Repository[]) => {
         const pairs = await Promise.all(rows.filter((row) => row.workspacePresent).map(async (row) => {
@@ -386,14 +391,14 @@ export default function TabGit() {
             const preview = await api<TransferPreview>(`/bindings/${binding.id}/preview/${direction}`, {
                 method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
             });
-            setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview);
+            setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
     };
 
     const closeTransfer = () => {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
-        setSensitiveConfirmation(""); setExcludeMenu(null);
+        setSensitiveConfirmation(""); setExcludeMenu(null); setPreviewPage(0);
         if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
 
@@ -446,6 +451,21 @@ export default function TabGit() {
 
     const addPreviewExclusion = async (path: string, directory: boolean) => {
         if (!transferBinding) return;
+        const previousPreview = transferPreview;
+        setExcludeMenu(null);
+        setTransferPreview((current) => {
+            if (!current) return current;
+            let changed = current.changed;
+            let skipped = current.skipped;
+            const entries = current.entries.map((entry) => {
+                const matches = directory ? entry.path === path || entry.path.startsWith(`${path}/`) : entry.path === path;
+                if (!matches || entry.status === "skipped_excluded") return entry;
+                if (entry.status === "add" || entry.status === "modify") changed--;
+                if (!entry.status.startsWith("skipped_")) skipped++;
+                return {...entry, status: "skipped_excluded" as const};
+            });
+            return {...current, entries, changed: Math.max(0, changed), skipped};
+        });
         setBusy(`binding-exclusion-${transferBinding.id}`);
         try {
             const updated = await api<Binding>(`/bindings/${transferBinding.id}/exclusions`, {
@@ -454,10 +474,10 @@ export default function TabGit() {
             const preview = await api<TransferPreview>(`/bindings/${updated.id}/preview/${transferDirection}`, {
                 method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation: includeSensitive ? sensitiveConfirmation : ""}),
             });
-            setTransferBinding(updated); setTransferPreview(preview); setExcludeMenu(null);
+            setTransferBinding(updated); setTransferPreview(preview);
+            setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
             showSuccess(directory ? `Folder ${path} excluded.` : `File ${path} excluded.`);
-            await load();
-        } catch (error) { showError((error as Error).message); }
+        } catch (error) { setTransferPreview(previousPreview); showError((error as Error).message); }
         finally { setBusy(null); }
     };
 
@@ -499,7 +519,7 @@ export default function TabGit() {
                                 return <TableRow key={repository.id} hover>
                                     <TableCell sx={{minWidth: 220}}>
                                         <Typography variant="body2" sx={{fontWeight: 700}}>{repository.name}</Typography>
-                                        <Tooltip title={repository.remoteUrl}><Typography variant="caption" color="text.secondary" sx={{display: "block", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{repository.remoteUrl}</Typography></Tooltip>
+                                        <Stack direction="row" spacing={.25} sx={{alignItems: "center", maxWidth: 390}}><Tooltip title={repository.remoteUrl}><Typography variant="caption" color="text.secondary" sx={{minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{repository.remoteUrl}</Typography></Tooltip><CopyButton handleCopy={copyRepositoryUrl} activeID={copiedRepositoryUrl || ""} thisID={repository.remoteUrl} tooltip="Copy repository URL"/></Stack>
                                         {repository.lastError && <Typography variant="caption" color="error" sx={{display: "block", maxWidth: 360}}>{repository.lastError}</Typography>}
                                     </TableCell>
                                     <TableCell sx={{fontFamily: "monospace"}}>{repository.defaultBranch}</TableCell>
@@ -614,8 +634,9 @@ export default function TabGit() {
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Open the synchronization policy on the folder link to add <code>**</code> include or exclude rules.</Alert>}
                 <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
                     {!transferPreview?.entries.length && <TableRow><TableCell colSpan={4} align="center" sx={{py: 4, color: "text.secondary"}}>No difference.</TableCell></TableRow>}
-                    {transferPreview?.entries.map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
+                    {transferPreview?.entries.slice(previewPage * previewRowsPerPage, previewPage * previewRowsPerPage + previewRowsPerPage).map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
                 </TableBody></Table></TableContainer>
+                <TablePagination component="div" count={transferPreview?.entries.length || 0} page={previewPage} onPageChange={(_, page) => setPreviewPage(page)} rowsPerPage={previewRowsPerPage} onRowsPerPageChange={(event) => { setPreviewRowsPerPage(Number(event.target.value)); setPreviewPage(0); }} rowsPerPageOptions={[25, 50, 100]} labelRowsPerPage="Rows" sx={{border: 1, borderColor: "divider", borderTop: 0, borderRadius: "0 0 4px 4px"}}/>
                 <Menu open={excludeMenu !== null} anchorEl={excludeMenu?.anchor || null} onClose={() => setExcludeMenu(null)}>
                     {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusion(excludeMenu.entry.path, false)}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
                     {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusion(path, true)}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
