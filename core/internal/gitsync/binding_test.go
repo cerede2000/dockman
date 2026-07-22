@@ -141,6 +141,13 @@ func TestLargeFilesAreHashedAndTransferredWithBoundedBuffers(t *testing.T) {
 	require.NoError(t, streamTransferFile(file, io.Discard))
 }
 
+func TestTransferInventoryRejectsSpecialFiles(t *testing.T) {
+	require.True(t, isTransferFile(0644))
+	require.False(t, isTransferFile(os.ModeSocket|0600))
+	require.False(t, isTransferFile(os.ModeNamedPipe|0600))
+	require.False(t, isTransferFile(os.ModeDevice|0600))
+}
+
 func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

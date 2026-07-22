@@ -551,6 +551,9 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if err != nil {
 				return err
 			}
+			if !isTransferFile(info.Mode()) {
+				continue
+			}
 			if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
 				return err
 			}
@@ -614,6 +617,9 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 		info, err := entry.Info()
 		if err != nil {
 			return err
+		}
+		if !isTransferFile(info.Mode()) {
+			return nil
 		}
 		if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
 			return err
@@ -687,6 +693,10 @@ func checkTransferLimit(files int, fileSize, totalSize int64) error {
 		return fmt.Errorf("stack files exceed the %d MiB total limit", maxBindingTotalSize>>20)
 	}
 	return nil
+}
+
+func isTransferFile(mode fs.FileMode) bool {
+	return mode.IsRegular()
 }
 
 func shouldSkipPath(path string, directory bool) bool {
