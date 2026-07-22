@@ -292,15 +292,15 @@ func TestBindingInclusionsCanBeAddedInOneBatch(t *testing.T) {
 	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
 	require.NoError(t, err)
 
-	updated, err := service.AddBindingInclusions(binding.ID, []string{"scripts/run.sh", "settings[1].ini", "scripts/run.sh"})
+	updated, err := service.AddBindingInclusions(binding.ID, []string{"artifacts/run.bin", "settings[1].bin", "artifacts/run.bin"})
 	require.NoError(t, err)
-	require.Equal(t, []string{"scripts/run.sh", `settings\[1\].ini`}, updated.IncludePatterns)
+	require.Equal(t, []string{"artifacts/run.bin", `settings\[1\].bin`}, updated.IncludePatterns)
 
 	policy, err := policyFromBinding(StackBinding{SyncProfile: updated.SyncProfile, IncludePatterns: strings.Join(updated.IncludePatterns, "\n")})
 	require.NoError(t, err)
-	require.True(t, policy.includesFile("scripts/run.sh"))
-	require.True(t, policy.includesFile("settings[1].ini"))
-	require.False(t, policy.includesFile("settings1.ini"))
+	require.True(t, policy.includesFile("artifacts/run.bin"))
+	require.True(t, policy.includesFile("settings[1].bin"))
+	require.False(t, policy.includesFile("settings1.bin"))
 
 	_, err = service.AddBindingInclusions(binding.ID, nil)
 	require.ErrorContains(t, err, "at least one")
