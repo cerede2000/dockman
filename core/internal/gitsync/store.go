@@ -44,6 +44,55 @@ func (s *Store) CredentialInUse(id string) (bool, error) {
 	return count > 0, err
 }
 
+func (s *Store) ListRepositories() ([]Repository, error) {
+	var rows []Repository
+	err := s.db.Order("name COLLATE NOCASE ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) GetRepository(id string) (Repository, error) {
+	var row Repository
+	err := s.db.Where("uuid = ?", id).First(&row).Error
+	return row, err
+}
+
+func (s *Store) SaveRepository(row *Repository) error { return s.db.Save(row).Error }
+
+func (s *Store) DeleteRepository(id string) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Unscoped().Where("uuid = ?", id).Delete(&Repository{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Where("repository_uuid = ?", id).Delete(&Operation{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("repository_uuid = ?", id).Delete(&Deployment{}).Error
+	})
+}
+
+func (s *Store) RepositoryHasBindings(id string) (bool, error) {
+	var count int64
+	err := s.db.Model(&StackBinding{}).Where("repository_uuid = ?", id).Count(&count).Error
+	return count > 0, err
+}
+
+func (s *Store) ListOperations(repositoryID string, limit int) ([]Operation, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	var rows []Operation
+	query := s.db.Order("created_at DESC").Limit(limit)
+	if repositoryID != "" {
+		query = query.Where("repository_uuid = ?", repositoryID)
+	}
+	err := query.Find(&rows).Error
+	return rows, err
+}
+
 func (s *Store) StartOperation(row *Operation) error { return s.db.Create(row).Error }
 
 func (s *Store) FinishOperation(id, state, message string) error {

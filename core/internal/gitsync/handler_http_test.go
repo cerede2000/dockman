@@ -18,10 +18,20 @@ func TestDisabledHandlerOnlyExposesStatus(t *testing.T) {
 	handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/status", nil))
 	require.Equal(t, http.StatusOK, status.Code)
 	require.Contains(t, status.Body.String(), `"enabled":false`)
+	require.Contains(t, status.Body.String(), `"repositorySyncAvailable":false`)
 
 	credentials := httptest.NewRecorder()
 	handler.ServeHTTP(credentials, httptest.NewRequest(http.MethodGet, "/credentials", nil))
 	require.Equal(t, http.StatusNotFound, credentials.Code)
+}
+
+func TestEnabledStatusAdvertisesManualRepositorySync(t *testing.T) {
+	service, _ := testService(t, true)
+	response := httptest.NewRecorder()
+	NewHTTPHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status", nil))
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), `"phase":"manual_repository_sync"`)
+	require.Contains(t, response.Body.String(), `"repositorySyncAvailable":true`)
 }
 
 func TestCredentialAPIResponseDoesNotContainSecret(t *testing.T) {

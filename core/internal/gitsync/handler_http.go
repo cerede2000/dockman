@@ -1,10 +1,12 @@
 package gitsync
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -22,6 +24,15 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("DELETE /credentials/{id}", h.deleteCredential)
 	mux.HandleFunc("POST /credentials/test", h.testCredential)
 	mux.HandleFunc("POST /credentials/{id}/test", h.testSavedCredential)
+	mux.HandleFunc("GET /repositories", h.listRepositories)
+	mux.HandleFunc("POST /repositories", h.createRepository)
+	mux.HandleFunc("POST /repositories/github", h.createGitHubRepository)
+	mux.HandleFunc("GET /repositories/{id}/status", h.repositoryStatus)
+	mux.HandleFunc("POST /repositories/{id}/fetch", h.fetchRepository)
+	mux.HandleFunc("POST /repositories/{id}/pull", h.pullRepository)
+	mux.HandleFunc("POST /repositories/{id}/push", h.pushRepository)
+	mux.HandleFunc("GET /repositories/{id}/operations", h.repositoryOperations)
+	mux.HandleFunc("DELETE /repositories/{id}", h.deleteRepository)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -29,11 +40,117 @@ func NewHTTPHandler(service *Service) http.Handler {
 	})
 }
 
+func (h *HTTPHandler) listRepositories(w http.ResponseWriter, _ *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	rows, err := h.service.ListRepositories()
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) createRepository(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input RepositoryInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.CreateRepository(r.Context(), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, row)
+}
+
+func (h *HTTPHandler) createGitHubRepository(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input GitHubRepositoryInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.CreateGitHubRepository(r.Context(), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, row)
+}
+
+func (h *HTTPHandler) repositoryStatus(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	status, err := h.service.RepositoryStatus(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *HTTPHandler) fetchRepository(w http.ResponseWriter, r *http.Request) {
+	h.repositoryAction(w, r, h.service.FetchRepository)
+}
+
+func (h *HTTPHandler) pullRepository(w http.ResponseWriter, r *http.Request) {
+	h.repositoryAction(w, r, h.service.PullRepository)
+}
+
+func (h *HTTPHandler) pushRepository(w http.ResponseWriter, r *http.Request) {
+	h.repositoryAction(w, r, h.service.PushRepository)
+}
+
+func (h *HTTPHandler) repositoryAction(w http.ResponseWriter, r *http.Request, action func(context.Context, string) (RepositoryGitStatus, error)) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	status, err := action(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *HTTPHandler) repositoryOperations(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rows, err := h.service.ListRepositoryOperations(r.PathValue("id"), limit)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) deleteRepository(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	if err := h.service.DeleteRepository(r.PathValue("id")); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *HTTPHandler) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":                 h.service.Enabled(),
-		"phase":                   "credentials",
-		"repositorySyncAvailable": false,
+		"phase":                   "manual_repository_sync",
+		"repositorySyncAvailable": h.service.Enabled(),
 	})
 }
 
@@ -155,9 +272,9 @@ func decodeJSON(r *http.Request, target any) error {
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		writeAPIError(w, http.StatusNotFound, "Git credential not found")
+		writeAPIError(w, http.StatusNotFound, "Git resource not found")
 	case strings.Contains(strings.ToLower(err.Error()), "unique constraint"):
-		writeAPIError(w, http.StatusConflict, "A Git credential with this name already exists")
+		writeAPIError(w, http.StatusConflict, "A Git resource with this name already exists")
 	case strings.Contains(err.Error(), "still used"):
 		writeAPIError(w, http.StatusConflict, err.Error())
 	default:

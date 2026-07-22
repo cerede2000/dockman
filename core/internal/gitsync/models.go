@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	AuthPublic     = "public"
-	AuthHTTPSToken = "https_token"
-	AuthSSHKey     = "ssh_key"
+	AuthPublic       = "public"
+	AuthHTTPSToken   = "https_token"
+	AuthSSHKey       = "ssh_key"
+	githubAPIVersion = "2026-03-10"
 )
 
 type Credential struct {

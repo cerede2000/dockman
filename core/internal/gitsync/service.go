@@ -60,16 +60,28 @@ type TestResult struct {
 }
 
 type Service struct {
-	enabled bool
-	store   *Store
-	vault   *Vault
-	http    *http.Client
-	locksMu sync.Mutex
-	locks   map[string]*sync.Mutex
+	enabled       bool
+	store         *Store
+	vault         *Vault
+	http          *http.Client
+	githubAPIBase string
+	workspaceRoot string
+	locksMu       sync.Mutex
+	locks         map[string]*sync.Mutex
 }
 
-func NewService(enabled bool, store *Store, vault *Vault) *Service {
-	return &Service{enabled: enabled, store: store, vault: vault, http: &http.Client{Timeout: 12 * time.Second}, locks: map[string]*sync.Mutex{}}
+func NewService(enabled bool, store *Store, vault *Vault, workspaceRoot ...string) *Service {
+	root := ""
+	if len(workspaceRoot) > 0 {
+		root = workspaceRoot[0]
+	}
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("GitHub API redirect refused")
+		},
+	}
+	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, locks: map[string]*sync.Mutex{}}
 }
 
 func (s *Service) Enabled() bool { return s.enabled }
@@ -85,9 +97,6 @@ func (s *Service) RunRepositoryOperation(ctx context.Context, repositoryID, oper
 	if !s.enabled {
 		return errors.New("Git synchronization is disabled")
 	}
-	lock := s.repositoryLock(repositoryID)
-	lock.Lock()
-	defer lock.Unlock()
 	now := time.Now().UTC()
 	op := &Operation{UUID: uuid.NewString(), RepositoryUUID: repositoryID, OperationType: operationType, State: "running", StartedAt: &now}
 	if err := s.store.StartOperation(op); err != nil {
@@ -96,7 +105,7 @@ func (s *Service) RunRepositoryOperation(ctx context.Context, repositoryID, oper
 	err := fn(ctx)
 	state, message := "success", ""
 	if err != nil {
-		state, message = "failed", err.Error()
+		state, message = "failed", safeGitError(err)
 	}
 	if finishErr := s.store.FinishOperation(op.UUID, state, message); finishErr != nil && err == nil {
 		return finishErr
@@ -229,9 +238,10 @@ func (s *Service) testCredential(ctx context.Context, input CredentialInput, rep
 			}
 			return TestResult{OK: true, Message: "GitHub repository is reachable with this token."}, nil
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.githubAPIBase+"/user", nil)
 		req.Header.Set("Authorization", "Bearer "+input.Token)
 		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
 		resp, err := s.http.Do(req)
 		if err != nil {
 			return TestResult{}, fmt.Errorf("GitHub connection failed: %w", err)
@@ -261,14 +271,7 @@ func (s *Service) testCredential(ctx context.Context, input CredentialInput, rep
 		if err != nil {
 			return TestResult{}, err
 		}
-		key.HostKeyCallback = func(_ string, _ net.Addr, remoteKey ssh.PublicKey) error {
-			for _, trusted := range hostKeys {
-				if trusted.Type() == remoteKey.Type() && bytes.Equal(trusted.Marshal(), remoteKey.Marshal()) {
-					return nil
-				}
-			}
-			return errors.New("GitHub SSH host key does not match keys published by the GitHub API")
-		}
+		key.HostKeyCallback = trustedHostKeyCallback(hostKeys)
 		if err := listRemote(ctx, repositoryURL, key); err != nil {
 			return TestResult{}, fmt.Errorf("GitHub SSH repository access failed: %w", err)
 		}
@@ -279,8 +282,9 @@ func (s *Service) testCredential(ctx context.Context, input CredentialInput, rep
 }
 
 func (s *Service) githubHostKeys(ctx context.Context) ([]ssh.PublicKey, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/meta", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.githubAPIBase+"/meta", nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
 	resp, err := s.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve GitHub SSH host keys: %w", err)
@@ -306,6 +310,17 @@ func (s *Service) githubHostKeys(ctx context.Context) ([]ssh.PublicKey, error) {
 		return nil, errors.New("GitHub API returned no usable SSH host key")
 	}
 	return keys, nil
+}
+
+func trustedHostKeyCallback(hostKeys []ssh.PublicKey) ssh.HostKeyCallback {
+	return func(_ string, _ net.Addr, remoteKey ssh.PublicKey) error {
+		for _, trusted := range hostKeys {
+			if trusted.Type() == remoteKey.Type() && bytes.Equal(trusted.Marshal(), remoteKey.Marshal()) {
+				return nil
+			}
+		}
+		return errors.New("GitHub SSH host key does not match keys published by the GitHub API")
+	}
 }
 
 func listRemote(ctx context.Context, remoteURL string, auth transport.AuthMethod) error {
@@ -343,19 +358,19 @@ func validateCredentialInput(input CredentialInput, allowEmptySecret bool) (Cred
 
 func validateGitHubURL(raw string, allowSSH bool) error {
 	if strings.HasPrefix(raw, "git@github.com:") {
-		if allowSSH && strings.HasSuffix(raw, ".git") {
+		if allowSSH && githubRepositoryPathPattern.MatchString(strings.TrimPrefix(raw, "git@github.com:")) {
 			return nil
 		}
 		return errors.New("SSH repository URL is not allowed for this credential type")
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() != "github.com" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Hostname() != "github.com" || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" {
 		return errors.New("repository URL must be a credential-free github.com URL")
 	}
-	if u.Scheme == "https" && u.User == nil && strings.HasSuffix(u.Path, ".git") {
+	if u.Scheme == "https" && u.User == nil && u.Port() == "" && githubRepositoryPathPattern.MatchString(strings.TrimPrefix(u.Path, "/")) {
 		return nil
 	}
-	if allowSSH && u.Scheme == "ssh" && u.User != nil && u.User.Username() == "git" && strings.HasSuffix(u.Path, ".git") {
+	if allowSSH && u.Scheme == "ssh" && u.User != nil && u.User.String() == "git" && (u.Port() == "" || u.Port() == "22") && githubRepositoryPathPattern.MatchString(strings.TrimPrefix(u.Path, "/")) {
 		return nil
 	}
 	return errors.New("repository URL must end in .git and use HTTPS, or GitHub SSH where supported")

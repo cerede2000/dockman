@@ -157,7 +157,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 			log.Warn().Str("path", keyPath).Msg("Git master key was generated locally; mount GIT_MASTER_KEY_FILE as a Docker secret for production")
 		}
 	}
-	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault)
+	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, filepath.Join(conf.ConfigDir, "git", "repositories"))
 	if interrupted, recoverErr := gitSyncSrv.RecoverInterruptedOperations(); recoverErr != nil {
 		log.Fatal().Err(recoverErr).Msg("unable to recover interrupted Git operations")
 	} else if interrupted > 0 {

@@ -1,17 +1,21 @@
-import {useCallback, useEffect, useState} from "react";
+import {useCallback, useEffect, useMemo, useState} from "react";
 import {
     Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
-    DialogTitle, FormControl, IconButton, InputLabel, MenuItem, Paper, Select, Stack,
-    Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
-    Tooltip, Typography,
+    DialogTitle, FormControl, FormControlLabel, IconButton, InputLabel, MenuItem, Paper,
+    Select, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+    TextField, Tooltip, Typography,
 } from "@mui/material";
-import {Add, DeleteOutlined, EditOutlined, KeyOutlined, SyncOutlined} from "@mui/icons-material";
+import {
+    Add, CloudDownloadOutlined, CloudUploadOutlined, DeleteOutlined, EditOutlined,
+    FolderOpenOutlined, HistoryOutlined, KeyOutlined, RefreshOutlined, SyncOutlined,
+} from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 
 type AuthType = "public" | "https_token" | "ssh_key";
+type RepositoryDialogMode = "import" | "github";
 
-interface GitStatus {
+interface GitFeatureStatus {
     enabled: boolean;
     phase: string;
     repositorySyncAvailable: boolean;
@@ -24,8 +28,6 @@ interface Credential {
     username?: string;
     hasSecret: boolean;
     secretHint?: string;
-    createdAt: string;
-    updatedAt: string;
 }
 
 interface CredentialForm {
@@ -37,8 +39,57 @@ interface CredentialForm {
     passphrase: string;
 }
 
-const emptyForm: CredentialForm = {
+interface Repository {
+    id: string;
+    name: string;
+    provider: string;
+    remoteUrl: string;
+    defaultBranch: string;
+    credentialId?: string;
+    status: string;
+    lastError?: string;
+    lastFetchedAt?: string;
+    workspacePresent: boolean;
+}
+
+interface RepositoryStatus {
+    repositoryId: string;
+    branch: string;
+    head?: string;
+    remoteHead?: string;
+    clean: boolean;
+    ahead: number;
+    behind: number;
+    diverged: boolean;
+    state: string;
+}
+
+interface Operation {
+    id: string;
+    type: string;
+    state: string;
+    startedAt?: string;
+    finishedAt?: string;
+    error?: string;
+}
+
+interface RepositoryForm {
+    mode: RepositoryDialogMode;
+    name: string;
+    remoteUrl: string;
+    defaultBranch: string;
+    credentialId: string;
+    description: string;
+    private: boolean;
+}
+
+const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
+};
+
+const emptyRepository: RepositoryForm = {
+    mode: "import", name: "", remoteUrl: "", defaultBranch: "main", credentialId: "",
+    description: "", private: true,
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -59,59 +110,99 @@ function authLabel(type: AuthType) {
     return "Public / no authentication";
 }
 
+function statusColor(state?: string): "default" | "success" | "warning" | "error" | "info" {
+    if (state === "up-to-date") return "success";
+    if (state === "ahead" || state === "behind" || state === "local-only") return "info";
+    if (state === "diverged" || state === "dirty") return "warning";
+    if (state === "error") return "error";
+    return "default";
+}
+
+function dateLabel(value?: string) {
+    return value ? new Date(value).toLocaleString() : "—";
+}
+
 export default function TabGit() {
     const {showError, showSuccess} = useSnackbar();
-    const [status, setStatus] = useState<GitStatus | null>(null);
+    const [feature, setFeature] = useState<GitFeatureStatus | null>(null);
     const [credentials, setCredentials] = useState<Credential[]>([]);
+    const [repositories, setRepositories] = useState<Repository[]>([]);
+    const [repositoryStatuses, setRepositoryStatuses] = useState<Record<string, RepositoryStatus>>({});
     const [loading, setLoading] = useState(true);
-    const [dialogOpen, setDialogOpen] = useState(false);
-    const [editing, setEditing] = useState<Credential | null>(null);
-    const [form, setForm] = useState<CredentialForm>(emptyForm);
-    const [repositoryUrl, setRepositoryUrl] = useState("");
     const [busy, setBusy] = useState<string | null>(null);
-    const [deleteTarget, setDeleteTarget] = useState<Credential | null>(null);
+
+    const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
+    const [editingCredential, setEditingCredential] = useState<Credential | null>(null);
+    const [credentialForm, setCredentialForm] = useState<CredentialForm>(emptyCredential);
+    const [repositoryUrl, setRepositoryUrl] = useState("");
+    const [deleteCredential, setDeleteCredential] = useState<Credential | null>(null);
+
+    const [repositoryDialogOpen, setRepositoryDialogOpen] = useState(false);
+    const [repositoryForm, setRepositoryForm] = useState<RepositoryForm>(emptyRepository);
+    const [deleteRepository, setDeleteRepository] = useState<Repository | null>(null);
+    const [historyRepository, setHistoryRepository] = useState<Repository | null>(null);
+    const [operations, setOperations] = useState<Operation[]>([]);
+
+    const loadRepositoryStatuses = useCallback(async (rows: Repository[]) => {
+        const pairs = await Promise.all(rows.filter((row) => row.workspacePresent).map(async (row) => {
+            try {
+                return [row.id, await api<RepositoryStatus>(`/repositories/${row.id}/status`)] as const;
+            } catch {
+                return null;
+            }
+        }));
+        setRepositoryStatuses(Object.fromEntries(pairs.filter((pair): pair is readonly [string, RepositoryStatus] => pair !== null)));
+    }, []);
 
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const nextStatus = await api<GitStatus>("/status");
-            setStatus(nextStatus);
-            setCredentials(nextStatus.enabled ? await api<Credential[]>("/credentials") : []);
+            const nextFeature = await api<GitFeatureStatus>("/status");
+            setFeature(nextFeature);
+            if (!nextFeature.enabled) {
+                setCredentials([]);
+                setRepositories([]);
+                return;
+            }
+            const [nextCredentials, nextRepositories] = await Promise.all([
+                api<Credential[]>("/credentials"), api<Repository[]>("/repositories"),
+            ]);
+            setCredentials(nextCredentials);
+            setRepositories(nextRepositories);
+            await loadRepositoryStatuses(nextRepositories);
         } catch (error) {
             showError(`Unable to load Git settings: ${(error as Error).message}`);
         } finally {
             setLoading(false);
         }
-    }, [showError]);
+    }, [loadRepositoryStatuses, showError]);
 
     useEffect(() => { void load(); }, [load]);
 
-    const openCreate = () => {
-        setEditing(null);
-        setForm(emptyForm);
-        setDialogOpen(true);
+    const credentialNames = useMemo(() => Object.fromEntries(credentials.map((item) => [item.id, item.name])), [credentials]);
+
+    const openCredentialCreate = () => {
+        setEditingCredential(null);
+        setCredentialForm(emptyCredential);
+        setCredentialDialogOpen(true);
     };
 
-    const openEdit = (credential: Credential) => {
-        setEditing(credential);
-        setForm({
-            name: credential.name,
-            authType: credential.authType,
-            username: credential.username || "",
-            token: "",
-            privateKey: "",
-            passphrase: "",
+    const openCredentialEdit = (credential: Credential) => {
+        setEditingCredential(credential);
+        setCredentialForm({
+            name: credential.name, authType: credential.authType, username: credential.username || "",
+            token: "", privateKey: "", passphrase: "",
         });
-        setDialogOpen(true);
+        setCredentialDialogOpen(true);
     };
 
-    const save = async () => {
-        setBusy("save");
+    const saveCredential = async () => {
+        setBusy("credential-save");
         try {
-            const path = editing ? `/credentials/${editing.id}` : "/credentials";
-            await api<Credential>(path, {method: editing ? "PUT" : "POST", body: JSON.stringify(form)});
-            showSuccess(editing ? "Git credential updated." : "Git credential created.");
-            setDialogOpen(false);
+            const path = editingCredential ? `/credentials/${editingCredential.id}` : "/credentials";
+            await api<Credential>(path, {method: editingCredential ? "PUT" : "POST", body: JSON.stringify(credentialForm)});
+            showSuccess(editingCredential ? "Git credential updated." : "Git credential created.");
+            setCredentialDialogOpen(false);
             await load();
         } catch (error) {
             showError((error as Error).message);
@@ -120,10 +211,10 @@ export default function TabGit() {
         }
     };
 
-    const testSaved = async (credential: Credential) => {
-        setBusy(`test-${credential.id}`);
+    const testCredential = async (credential: Credential) => {
+        setBusy(`credential-test-${credential.id}`);
         try {
-            const result = await api<{ok: boolean; message: string}>(`/credentials/${credential.id}/test`, {
+            const result = await api<{message: string}>(`/credentials/${credential.id}/test`, {
                 method: "POST", body: JSON.stringify({repositoryUrl: repositoryUrl.trim()}),
             });
             showSuccess(result.message);
@@ -134,13 +225,13 @@ export default function TabGit() {
         }
     };
 
-    const remove = async () => {
-        if (!deleteTarget) return;
-        setBusy(`delete-${deleteTarget.id}`);
+    const confirmDeleteCredential = async () => {
+        if (!deleteCredential) return;
+        setBusy(`credential-delete-${deleteCredential.id}`);
         try {
-            await api<void>(`/credentials/${deleteTarget.id}`, {method: "DELETE"});
+            await api<void>(`/credentials/${deleteCredential.id}`, {method: "DELETE"});
             showSuccess("Git credential deleted.");
-            setDeleteTarget(null);
+            setDeleteCredential(null);
             await load();
         } catch (error) {
             showError((error as Error).message);
@@ -149,105 +240,225 @@ export default function TabGit() {
         }
     };
 
-    if (loading && !status) return <Box sx={{display: "grid", placeItems: "center", p: 6}}><CircularProgress/></Box>;
+    const openRepositoryCreate = () => {
+        setRepositoryForm(emptyRepository);
+        setRepositoryDialogOpen(true);
+    };
 
-    if (status && !status.enabled) {
-        return (
-            <Box sx={{maxWidth: 900, mx: "auto", p: {xs: 1, md: 3}}}>
-                <Alert severity="info" variant="outlined">
-                    <Typography sx={{fontWeight: 700}}>Git synchronization is disabled by default</Typography>
-                    <Typography variant="body2" sx={{mt: .5}}>
-                        Enable this experimental foundation with <code>DOCKMAN_GIT_SYNC=true</code>, then restart Dockman.
-                        For production, mount a 32-byte key as a Docker secret and set <code>DOCKMAN_GIT_MASTER_KEY_FILE=/run/secrets/dockman_git_key</code>.
-                    </Typography>
-                </Alert>
-            </Box>
-        );
+    const saveRepository = async () => {
+        setBusy("repository-save");
+        try {
+            if (repositoryForm.mode === "import") {
+                await api<Repository>("/repositories", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        name: repositoryForm.name, remoteUrl: repositoryForm.remoteUrl,
+                        defaultBranch: repositoryForm.defaultBranch, credentialId: repositoryForm.credentialId,
+                    }),
+                });
+                showSuccess("Repository imported into Dockman.");
+            } else {
+                await api<Repository>("/repositories/github", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        name: repositoryForm.name, description: repositoryForm.description,
+                        private: repositoryForm.private, defaultBranch: repositoryForm.defaultBranch,
+                        credentialId: repositoryForm.credentialId,
+                    }),
+                });
+                showSuccess("GitHub repository created and imported.");
+            }
+            setRepositoryDialogOpen(false);
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+            await load();
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const repositoryAction = async (repository: Repository, action: "fetch" | "pull" | "push") => {
+        setBusy(`${action}-${repository.id}`);
+        try {
+            const next = await api<RepositoryStatus>(`/repositories/${repository.id}/${action}`, {method: "POST"});
+            setRepositoryStatuses((current) => ({...current, [repository.id]: next}));
+            showSuccess(`${action[0].toUpperCase()}${action.slice(1)} completed for ${repository.name}.`);
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+            await load();
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const openHistory = async (repository: Repository) => {
+        setHistoryRepository(repository);
+        setOperations([]);
+        try {
+            setOperations(await api<Operation[]>(`/repositories/${repository.id}/operations?limit=50`));
+        } catch (error) {
+            showError((error as Error).message);
+        }
+    };
+
+    const confirmDeleteRepository = async () => {
+        if (!deleteRepository) return;
+        setBusy(`repository-delete-${deleteRepository.id}`);
+        try {
+            await api<void>(`/repositories/${deleteRepository.id}`, {method: "DELETE"});
+            showSuccess("Local repository workspace deleted. The GitHub repository was not modified.");
+            setDeleteRepository(null);
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    if (loading && !feature) return <Box sx={{display: "grid", placeItems: "center", p: 6}}><CircularProgress/></Box>;
+
+    if (feature && !feature.enabled) {
+        return <Box sx={{maxWidth: 900, mx: "auto", p: {xs: 1, md: 3}}}><Alert severity="info" variant="outlined">
+            <Typography sx={{fontWeight: 700}}>Git synchronization is disabled by default</Typography>
+            <Typography variant="body2" sx={{mt: .5}}>
+                Enable it with <code>DOCKMAN_GIT_SYNC=true</code>, then restart Dockman. Mount a 32-byte key as a Docker secret and set <code>DOCKMAN_GIT_MASTER_KEY_FILE=/run/secrets/dockman_git_key</code>.
+            </Typography>
+        </Alert></Box>;
     }
 
-    return (
-        <Box sx={{maxWidth: 1100, mx: "auto", p: {xs: 1, md: 3}}}>
-            <Stack spacing={2}>
-                <Paper variant="outlined" sx={{p: 2.25, borderRadius: 2}}>
-                    <Stack direction={{xs: "column", md: "row"}} sx={{justifyContent: "space-between", gap: 2}}>
-                        <Box>
-                            <Typography variant="h6">Git credentials</Typography>
-                            <Typography variant="body2" color="text.secondary">
-                                Lot 0–1 foundation. Credentials are encrypted at rest; repository import, push and synchronization remain disabled until lot 2.
-                            </Typography>
-                        </Box>
-                        <Button variant="contained" startIcon={<Add/>} onClick={openCreate}>Add credential</Button>
-                    </Stack>
-                    <TextField
-                        value={repositoryUrl}
-                        onChange={(event) => setRepositoryUrl(event.target.value)}
-                        label="Repository URL for connection tests (optional)"
-                        placeholder="https://github.com/owner/repository.git"
-                        size="small"
-                        fullWidth
-                        sx={{mt: 2}}
-                        helperText="URLs are restricted to credential-free github.com addresses during this security-sensitive phase."
-                    />
-                </Paper>
+    return <Box sx={{maxWidth: 1200, mx: "auto", p: {xs: 1, md: 3}}}>
+        <Stack spacing={3}>
+            <Alert severity="info" variant="outlined">
+                This lot manages isolated Git workspaces and manual synchronization only. It never changes, deploys, or restarts a Dockman compose stack.
+            </Alert>
 
-                <TableContainer component={Paper} variant="outlined" sx={{borderRadius: 2}}>
+            <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
+                <Stack direction={{xs: "column", md: "row"}} sx={{p: 2.25, justifyContent: "space-between", gap: 2}}>
+                    <Box>
+                        <Typography variant="h6">Repositories</Typography>
+                        <Typography variant="body2" color="text.secondary">Import an existing GitHub repository or create a dedicated one, then fetch, pull, and inspect its state.</Typography>
+                    </Box>
+                    <Button variant="contained" startIcon={<FolderOpenOutlined/>} onClick={openRepositoryCreate}>Add repository</Button>
+                </Stack>
+                <TableContainer>
                     <Table size="small">
                         <TableHead><TableRow>
-                            <TableCell>Name</TableCell><TableCell>Type</TableCell><TableCell>Identity</TableCell><TableCell>Secret</TableCell><TableCell align="right">Actions</TableCell>
+                            <TableCell>Repository</TableCell><TableCell>Branch</TableCell><TableCell>Credential</TableCell><TableCell>State</TableCell><TableCell>Last fetch</TableCell><TableCell align="right">Actions</TableCell>
                         </TableRow></TableHead>
                         <TableBody>
-                            {credentials.length === 0 && <TableRow><TableCell colSpan={5} align="center" sx={{py: 5, color: "text.secondary"}}>No Git credentials configured.</TableCell></TableRow>}
-                            {credentials.map((credential) => (
-                                <TableRow key={credential.id} hover>
-                                    <TableCell sx={{fontWeight: 650}}>{credential.name}</TableCell>
-                                    <TableCell><Chip size="small" variant="outlined" label={authLabel(credential.authType)}/></TableCell>
-                                    <TableCell>{credential.username || "—"}</TableCell>
-                                    <TableCell sx={{fontFamily: "monospace"}}>{credential.secretHint || (credential.hasSecret ? "••••" : "—")}</TableCell>
-                                    <TableCell align="right">
-                                        <Tooltip title="Test connection"><span><IconButton size="small" disabled={busy !== null} onClick={() => void testSaved(credential)}>
-                                            {busy === `test-${credential.id}` ? <CircularProgress size={18}/> : <SyncOutlined fontSize="small"/>}
-                                        </IconButton></span></Tooltip>
-                                        <Tooltip title="Edit"><IconButton size="small" disabled={busy !== null} onClick={() => openEdit(credential)}><EditOutlined fontSize="small"/></IconButton></Tooltip>
-                                        <Tooltip title="Delete"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteTarget(credential)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
+                            {repositories.length === 0 && <TableRow><TableCell colSpan={6} align="center" sx={{py: 5, color: "text.secondary"}}>No repository managed by Dockman.</TableCell></TableRow>}
+                            {repositories.map((repository) => {
+                                const gitStatus = repositoryStatuses[repository.id];
+                                const state = repository.status === "error" ? "error" : gitStatus?.state || repository.status;
+                                return <TableRow key={repository.id} hover>
+                                    <TableCell sx={{minWidth: 220}}>
+                                        <Typography variant="body2" sx={{fontWeight: 700}}>{repository.name}</Typography>
+                                        <Tooltip title={repository.remoteUrl}><Typography variant="caption" color="text.secondary" sx={{display: "block", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{repository.remoteUrl}</Typography></Tooltip>
+                                        {repository.lastError && <Typography variant="caption" color="error" sx={{display: "block", maxWidth: 360}}>{repository.lastError}</Typography>}
                                     </TableCell>
-                                </TableRow>
-                            ))}
+                                    <TableCell sx={{fontFamily: "monospace"}}>{repository.defaultBranch}</TableCell>
+                                    <TableCell>{repository.credentialId ? credentialNames[repository.credentialId] || "Unknown" : "None (public)"}</TableCell>
+                                    <TableCell>
+                                        <Stack direction="row" spacing={.75} sx={{alignItems: "center"}}>
+                                            <Chip size="small" color={statusColor(state)} variant="outlined" label={state}/>
+                                            {gitStatus && !gitStatus.clean && <Chip size="small" color="warning" label="dirty"/>}
+                                            {gitStatus && (gitStatus.ahead > 0 || gitStatus.behind > 0) && <Typography variant="caption" color="text.secondary">↑{gitStatus.ahead} ↓{gitStatus.behind}</Typography>}
+                                        </Stack>
+                                    </TableCell>
+                                    <TableCell>{dateLabel(repository.lastFetchedAt)}</TableCell>
+                                    <TableCell align="right" sx={{whiteSpace: "nowrap"}}>
+                                        <Tooltip title="Fetch remote state"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "fetch")}><RefreshOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                        <Tooltip title="Pull fast-forward changes"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "pull")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                        <Tooltip title="Push local commits"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "push")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                        <Tooltip title="Operation history"><IconButton size="small" disabled={busy !== null} onClick={() => void openHistory(repository)}><HistoryOutlined fontSize="small"/></IconButton></Tooltip>
+                                        <Tooltip title="Remove local workspace"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteRepository(repository)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
+                                    </TableCell>
+                                </TableRow>;
+                            })}
                         </TableBody>
                     </Table>
                 </TableContainer>
-            </Stack>
+            </Paper>
 
-            <Dialog open={dialogOpen} onClose={() => busy === null && setDialogOpen(false)} fullWidth maxWidth="sm">
-                <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><KeyOutlined/>{editing ? "Edit Git credential" : "Add Git credential"}</DialogTitle>
-                <DialogContent dividers>
-                    <Stack spacing={2} sx={{pt: .5}}>
-                        <TextField label="Name" value={form.name} onChange={(event) => setForm({...form, name: event.target.value})} autoFocus required/>
-                        <FormControl><InputLabel>Authentication</InputLabel>
-                            <Select label="Authentication" value={form.authType} onChange={(event) => setForm({...form, authType: event.target.value as AuthType, token: "", privateKey: "", passphrase: ""})}>
-                                <MenuItem value="public">Public / no authentication</MenuItem>
-                                <MenuItem value="https_token">GitHub HTTPS token</MenuItem>
-                                <MenuItem value="ssh_key">SSH private key</MenuItem>
-                            </Select>
-                        </FormControl>
-                        {form.authType === "https_token" && <>
-                            <TextField label="Username (optional)" value={form.username} onChange={(event) => setForm({...form, username: event.target.value})} helperText="Defaults to x-access-token, suitable for GitHub fine-grained PATs."/>
-                            <TextField label={editing ? "New token (leave blank to keep current)" : "Token"} type="password" value={form.token} onChange={(event) => setForm({...form, token: event.target.value})} required={!editing} autoComplete="new-password"/>
-                        </>}
-                        {form.authType === "ssh_key" && <>
-                            <TextField label={editing ? "New private key (leave blank to keep current)" : "Private key"} value={form.privateKey} onChange={(event) => setForm({...form, privateKey: event.target.value})} required={!editing} multiline minRows={7} maxRows={13} sx={{"& textarea": {fontFamily: "monospace"}}}/>
-                            <TextField label="Passphrase (if encrypted)" type="password" value={form.passphrase} onChange={(event) => setForm({...form, passphrase: event.target.value})} autoComplete="new-password"/>
-                        </>}
-                        {editing && form.authType !== "public" && <Alert severity="info">Stored secrets are never returned by the API. Leave the secret empty to retain it unchanged.</Alert>}
-                    </Stack>
-                </DialogContent>
-                <DialogActions><Button onClick={() => setDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void save()} disabled={busy !== null || !form.name.trim()}>{busy === "save" && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
-            </Dialog>
+            <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
+                <Stack direction={{xs: "column", md: "row"}} sx={{p: 2.25, justifyContent: "space-between", gap: 2}}>
+                    <Box>
+                        <Typography variant="h6">Git credentials</Typography>
+                        <Typography variant="body2" color="text.secondary">Secrets are encrypted at rest and are never returned by the API.</Typography>
+                    </Box>
+                    <Button variant="outlined" startIcon={<Add/>} onClick={openCredentialCreate}>Add credential</Button>
+                </Stack>
+                <Box sx={{px: 2.25, pb: 2}}><TextField value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} label="Repository URL for connection tests (optional)" placeholder="https://github.com/owner/repository.git" size="small" fullWidth helperText="Only credential-free github.com URLs are accepted."/></Box>
+                <TableContainer><Table size="small">
+                    <TableHead><TableRow><TableCell>Name</TableCell><TableCell>Type</TableCell><TableCell>Identity</TableCell><TableCell>Secret</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
+                    <TableBody>
+                        {credentials.length === 0 && <TableRow><TableCell colSpan={5} align="center" sx={{py: 5, color: "text.secondary"}}>No Git credentials configured.</TableCell></TableRow>}
+                        {credentials.map((credential) => <TableRow key={credential.id} hover>
+                            <TableCell sx={{fontWeight: 650}}>{credential.name}</TableCell><TableCell><Chip size="small" variant="outlined" label={authLabel(credential.authType)}/></TableCell><TableCell>{credential.username || "—"}</TableCell><TableCell sx={{fontFamily: "monospace"}}>{credential.secretHint || (credential.hasSecret ? "••••" : "—")}</TableCell>
+                            <TableCell align="right">
+                                <Tooltip title="Test connection"><span><IconButton size="small" disabled={busy !== null} onClick={() => void testCredential(credential)}>{busy === `credential-test-${credential.id}` ? <CircularProgress size={18}/> : <SyncOutlined fontSize="small"/>}</IconButton></span></Tooltip>
+                                <Tooltip title="Edit"><IconButton size="small" disabled={busy !== null} onClick={() => openCredentialEdit(credential)}><EditOutlined fontSize="small"/></IconButton></Tooltip>
+                                <Tooltip title="Delete"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteCredential(credential)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
+                            </TableCell>
+                        </TableRow>)}
+                    </TableBody>
+                </Table></TableContainer>
+            </Paper>
+        </Stack>
 
-            <Dialog open={deleteTarget !== null} onClose={() => busy === null && setDeleteTarget(null)} maxWidth="xs" fullWidth>
-                <DialogTitle>Delete Git credential?</DialogTitle>
-                <DialogContent><Typography>This removes <strong>{deleteTarget?.name}</strong>. The encrypted secret cannot be recovered.</Typography></DialogContent>
-                <DialogActions><Button onClick={() => setDeleteTarget(null)} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" onClick={() => void remove()} disabled={busy !== null}>Delete</Button></DialogActions>
-            </Dialog>
-        </Box>
-    );
+        <Dialog open={repositoryDialogOpen} onClose={() => busy === null && setRepositoryDialogOpen(false)} fullWidth maxWidth="sm">
+            <DialogTitle>Add Git repository</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <FormControl><InputLabel>Source</InputLabel><Select label="Source" value={repositoryForm.mode} onChange={(event) => setRepositoryForm({...emptyRepository, mode: event.target.value as RepositoryDialogMode})}>
+                    <MenuItem value="import">Import an existing repository</MenuItem><MenuItem value="github">Create a new GitHub repository</MenuItem>
+                </Select></FormControl>
+                <TextField label="Dockman repository name" value={repositoryForm.name} onChange={(event) => setRepositoryForm({...repositoryForm, name: event.target.value})} required autoFocus helperText="A local identifier; for GitHub creation this is also the remote repository name."/>
+                {repositoryForm.mode === "import" ? <TextField label="GitHub clone URL" value={repositoryForm.remoteUrl} onChange={(event) => setRepositoryForm({...repositoryForm, remoteUrl: event.target.value})} placeholder="https://github.com/owner/repository.git" required/> : <>
+                    <TextField label="Description (optional)" value={repositoryForm.description} onChange={(event) => setRepositoryForm({...repositoryForm, description: event.target.value})} slotProps={{htmlInput: {maxLength: 300}}}/>
+                    <FormControlLabel control={<Switch checked={repositoryForm.private} onChange={(event) => setRepositoryForm({...repositoryForm, private: event.target.checked})}/>} label={repositoryForm.private ? "Private repository" : "Public repository"}/>
+                </>}
+                <TextField label="Default branch" value={repositoryForm.defaultBranch} onChange={(event) => setRepositoryForm({...repositoryForm, defaultBranch: event.target.value})} required/>
+                <FormControl><InputLabel>Credential</InputLabel><Select label="Credential" value={repositoryForm.credentialId} onChange={(event) => setRepositoryForm({...repositoryForm, credentialId: event.target.value})}>
+                    {repositoryForm.mode === "import" && <MenuItem value="">None (public repository)</MenuItem>}
+                    {credentials.filter((credential) => repositoryForm.mode === "import" || credential.authType === "https_token").map((credential) => <MenuItem key={credential.id} value={credential.id}>{credential.name} — {authLabel(credential.authType)}</MenuItem>)}
+                </Select></FormControl>
+                {repositoryForm.mode === "github" && <Alert severity="info">Creation requires a GitHub HTTPS token allowed to create repositories. Dockman initializes and immediately clones the repository.</Alert>}
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setRepositoryDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveRepository()} disabled={busy !== null || !repositoryForm.name.trim() || (repositoryForm.mode === "import" ? !repositoryForm.remoteUrl.trim() : !repositoryForm.credentialId)}>{busy === "repository-save" && <CircularProgress size={16} sx={{mr: 1}}/>}{repositoryForm.mode === "import" ? "Import" : "Create"}</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={credentialDialogOpen} onClose={() => busy === null && setCredentialDialogOpen(false)} fullWidth maxWidth="sm">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><KeyOutlined/>{editingCredential ? "Edit Git credential" : "Add Git credential"}</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <TextField label="Name" value={credentialForm.name} onChange={(event) => setCredentialForm({...credentialForm, name: event.target.value})} autoFocus required/>
+                <FormControl><InputLabel>Authentication</InputLabel><Select label="Authentication" value={credentialForm.authType} onChange={(event) => setCredentialForm({...credentialForm, authType: event.target.value as AuthType, token: "", privateKey: "", passphrase: ""})}>
+                    <MenuItem value="public">Public / no authentication</MenuItem><MenuItem value="https_token">GitHub HTTPS token</MenuItem><MenuItem value="ssh_key">SSH private key</MenuItem>
+                </Select></FormControl>
+                {credentialForm.authType === "https_token" && <><TextField label="Username (optional)" value={credentialForm.username} onChange={(event) => setCredentialForm({...credentialForm, username: event.target.value})} helperText="Defaults to x-access-token."/><TextField label={editingCredential ? "New token (leave blank to keep current)" : "Token"} type="password" value={credentialForm.token} onChange={(event) => setCredentialForm({...credentialForm, token: event.target.value})} required={!editingCredential} autoComplete="new-password"/></>}
+                {credentialForm.authType === "ssh_key" && <><TextField label={editingCredential ? "New private key (leave blank to keep current)" : "Private key"} value={credentialForm.privateKey} onChange={(event) => setCredentialForm({...credentialForm, privateKey: event.target.value})} required={!editingCredential} multiline minRows={7} maxRows={13} sx={{"& textarea": {fontFamily: "monospace"}}}/><TextField label="Passphrase (if encrypted)" type="password" value={credentialForm.passphrase} onChange={(event) => setCredentialForm({...credentialForm, passphrase: event.target.value})} autoComplete="new-password"/></>}
+                {editingCredential && credentialForm.authType !== "public" && <Alert severity="info">Stored secrets are never returned. Leave the secret empty to retain it unchanged.</Alert>}
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setCredentialDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveCredential()} disabled={busy !== null || !credentialForm.name.trim()}>{busy === "credential-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={historyRepository !== null} onClose={() => setHistoryRepository(null)} fullWidth maxWidth="md">
+            <DialogTitle>Operation history — {historyRepository?.name}</DialogTitle><DialogContent dividers>
+                <Table size="small"><TableHead><TableRow><TableCell>Operation</TableCell><TableCell>State</TableCell><TableCell>Started</TableCell><TableCell>Finished</TableCell><TableCell>Details</TableCell></TableRow></TableHead><TableBody>
+                    {operations.length === 0 && <TableRow><TableCell colSpan={5} align="center" sx={{py: 4, color: "text.secondary"}}>No operation recorded.</TableCell></TableRow>}
+                    {operations.map((operation) => <TableRow key={operation.id}><TableCell>{operation.type}</TableCell><TableCell><Chip size="small" color={operation.state === "success" ? "success" : operation.state === "failed" ? "error" : "info"} variant="outlined" label={operation.state}/></TableCell><TableCell>{dateLabel(operation.startedAt)}</TableCell><TableCell>{dateLabel(operation.finishedAt)}</TableCell><TableCell sx={{maxWidth: 320, overflowWrap: "anywhere"}}>{operation.error || "—"}</TableCell></TableRow>)}
+                </TableBody></Table>
+            </DialogContent><DialogActions><Button onClick={() => setHistoryRepository(null)}>Close</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={deleteRepository !== null} onClose={() => busy === null && setDeleteRepository(null)} maxWidth="xs" fullWidth>
+            <DialogTitle>Remove managed repository?</DialogTitle><DialogContent><Alert severity="warning" sx={{mb: 2}}>This deletes only Dockman’s isolated local clone. It never deletes the GitHub repository.</Alert><Typography>Remove <strong>{deleteRepository?.name}</strong> and its local operation history?</Typography></DialogContent><DialogActions><Button onClick={() => setDeleteRepository(null)} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" onClick={() => void confirmDeleteRepository()} disabled={busy !== null}>Remove local clone</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={deleteCredential !== null} onClose={() => busy === null && setDeleteCredential(null)} maxWidth="xs" fullWidth>
+            <DialogTitle>Delete Git credential?</DialogTitle><DialogContent><Typography>This removes <strong>{deleteCredential?.name}</strong>. The encrypted secret cannot be recovered.</Typography></DialogContent><DialogActions><Button onClick={() => setDeleteCredential(null)} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" onClick={() => void confirmDeleteCredential()} disabled={busy !== null}>Delete</Button></DialogActions>
+        </Dialog>
+    </Box>;
 }
