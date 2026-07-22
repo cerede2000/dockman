@@ -283,6 +283,31 @@ func TestBindingExclusionsCanBeAddedInOneBatch(t *testing.T) {
 	require.ErrorContains(t, err, "at least one")
 }
 
+func TestBindingInclusionsCanBeAddedInOneBatch(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+
+	updated, err := service.AddBindingInclusions(binding.ID, []string{"scripts/run.sh", "settings[1].ini", "scripts/run.sh"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"scripts/run.sh", `settings\[1\].ini`}, updated.IncludePatterns)
+
+	policy, err := policyFromBinding(StackBinding{SyncProfile: updated.SyncProfile, IncludePatterns: strings.Join(updated.IncludePatterns, "\n")})
+	require.NoError(t, err)
+	require.True(t, policy.includesFile("scripts/run.sh"))
+	require.True(t, policy.includesFile("settings[1].ini"))
+	require.False(t, policy.includesFile("settings1.ini"))
+
+	_, err = service.AddBindingInclusions(binding.ID, nil)
+	require.ErrorContains(t, err, "at least one")
+	_, err = service.AddBindingInclusions(binding.ID, []string{"../outside"})
+	require.ErrorContains(t, err, "path traversal")
+}
+
 func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

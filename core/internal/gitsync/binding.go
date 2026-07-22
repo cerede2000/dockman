@@ -80,6 +80,10 @@ type BindingExclusionsInput struct {
 	Entries []BindingExclusionInput `json:"entries"`
 }
 
+type BindingInclusionsInput struct {
+	Paths []string `json:"paths"`
+}
+
 type StackTarget struct {
 	Host         string   `json:"host"`
 	Path         string   `json:"path"`
@@ -267,6 +271,49 @@ func (s *Service) AddBindingExclusions(id string, inputs []BindingExclusionInput
 	}
 	profile, includes, excludes, err := normalizeBindingPolicy(BindingPolicyInput{
 		Profile: row.SyncProfile, IncludePatterns: splitPatternLines(row.IncludePatterns), ExcludePatterns: excludes,
+	})
+	if err != nil {
+		return BindingView{}, err
+	}
+	row.SyncProfile = profile
+	row.IncludePatterns = strings.Join(includes, "\n")
+	row.ExcludePatterns = strings.Join(excludes, "\n")
+	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingView{}, err
+	}
+	return s.bindingView(row)
+}
+
+func (s *Service) AddBindingInclusions(id string, paths []string) (BindingView, error) {
+	if len(paths) == 0 {
+		return BindingView{}, errors.New("at least one inclusion is required")
+	}
+	if len(paths) > 100 {
+		return BindingView{}, errors.New("at most 100 inclusions can be added at once")
+	}
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingView{}, err
+	}
+	includes := splitPatternLines(row.IncludePatterns)
+	existingPatterns := make(map[string]struct{}, len(includes)+len(paths))
+	for _, existing := range includes {
+		existingPatterns[existing] = struct{}{}
+	}
+	for _, path := range paths {
+		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(path))))
+		if err := validateRelativePath(relative, false); err != nil {
+			return BindingView{}, fmt.Errorf("invalid inclusion path %q: %w", path, err)
+		}
+		pattern := escapeGlobLiteral(relative)
+		if _, exists := existingPatterns[pattern]; exists {
+			continue
+		}
+		existingPatterns[pattern] = struct{}{}
+		includes = append(includes, pattern)
+	}
+	profile, includes, excludes, err := normalizeBindingPolicy(BindingPolicyInput{
+		Profile: row.SyncProfile, IncludePatterns: includes, ExcludePatterns: splitPatternLines(row.ExcludePatterns),
 	})
 	if err != nil {
 		return BindingView{}, err

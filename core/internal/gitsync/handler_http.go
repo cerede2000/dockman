@@ -39,6 +39,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
 	mux.HandleFunc("POST /bindings/{id}/exclusions/batch", h.addBindingExclusions)
+	mux.HandleFunc("POST /bindings/{id}/inclusions/batch", h.addBindingInclusions)
 	mux.HandleFunc("DELETE /bindings/{id}", h.deleteBinding)
 	mux.HandleFunc("POST /bindings/{id}/preview/{direction}", h.previewBinding)
 	mux.HandleFunc("POST /bindings/{id}/export", h.exportBinding)
@@ -77,6 +78,23 @@ func (h *HTTPHandler) addBindingExclusions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	row, err := h.service.AddBindingExclusions(r.PathValue("id"), input.Entries)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) addBindingInclusions(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingInclusionsInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.AddBindingInclusions(r.PathValue("id"), input.Paths)
 	if err != nil {
 		writeServiceError(w, err)
 		return
