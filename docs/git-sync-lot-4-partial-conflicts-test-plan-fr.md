@@ -38,7 +38,7 @@ Attendu : le fichier redevient en attente et ne sera pas écrasé.
 1. Dans un export Dockman vers Git, ouvrir un conflit avec `Compare`.
 2. Choisir `Keep Git`.
 
-Attendu : Dockman passe automatiquement à une prévisualisation Git vers Dockman et présélectionne uniquement ce fichier. L'inverse doit fonctionner avec `Keep Dockman` depuis un import.
+Attendu : Dockman passe automatiquement à une prévisualisation Git vers Dockman et présélectionne uniquement ce fichier. Même si d'autres fichiers deviennent de simples modifications dans cette direction, ils ne sont pas transférés. L'inverse doit fonctionner avec `Keep Dockman` depuis un import.
 
 ## 6. Dissociation restaurable
 

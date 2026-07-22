@@ -192,6 +192,7 @@ export default function TabGit() {
     const [includeSensitive, setIncludeSensitive] = useState(false);
     const [sensitiveConfirmation, setSensitiveConfirmation] = useState("");
     const [resolvedConflictPaths, setResolvedConflictPaths] = useState<Set<string>>(new Set());
+    const [selectedTransferPaths, setSelectedTransferPaths] = useState<Set<string>>(new Set());
     const [comparison, setComparison] = useState<FileComparison | null>(null);
     const commitMessageRef = useRef<HTMLInputElement | null>(null);
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
@@ -432,7 +433,7 @@ export default function TabGit() {
         } finally { setBusy(null); }
     };
 
-    const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false, resolvedPath?: string) => {
+    const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false, resolvedPath?: string, selectedPath?: string) => {
         if (!sensitive) {
             setIncludeSensitive(false); setSensitiveConfirmation("");
             if (commitMessageRef.current) commitMessageRef.current.value = "";
@@ -446,13 +447,14 @@ export default function TabGit() {
             setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
             setPreviewSearch(""); setPreviewStatus("all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
             setResolvedConflictPaths(resolvedPath && preview.entries.some((entry) => entry.path === resolvedPath && entry.status === "conflict") ? new Set([resolvedPath]) : new Set());
+            setSelectedTransferPaths(selectedPath && preview.entries.some((entry) => entry.path === selectedPath && ["add", "modify", "conflict"].includes(entry.status)) ? new Set([selectedPath]) : new Set());
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
     };
 
     const closeTransfer = () => {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
-        setSensitiveConfirmation(""); setResolvedConflictPaths(new Set()); setComparison(null); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch(""); setPreviewStatus("all");
+        setSensitiveConfirmation(""); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set()); setComparison(null); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch(""); setPreviewStatus("all");
         setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
         if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
@@ -463,7 +465,7 @@ export default function TabGit() {
         setBusy(`transfer-${transferBinding.id}`);
         try {
             const result = await api<TransferResult>(`/bindings/${transferBinding.id}/${action}`, {
-                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage: commitMessageRef.current?.value || "", previewToken: transferPreview?.previewToken, resolvedPaths: [...resolvedConflictPaths]}),
+                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage: commitMessageRef.current?.value || "", previewToken: transferPreview?.previewToken, resolvedPaths: [...resolvedConflictPaths], selectedPaths: [...selectedTransferPaths]}),
             });
             showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
             closeTransfer();
@@ -492,7 +494,7 @@ export default function TabGit() {
         if (!transferBinding) return;
         setComparison(null);
         const opposite: TransferDirection = transferDirection === "stack_to_repository" ? "repository_to_stack" : "stack_to_repository";
-        await previewTransfer(transferBinding, opposite, includeSensitive, path);
+        await previewTransfer(transferBinding, opposite, includeSensitive, path, path);
     };
 
     const leaveConflictPending = (path: string) => {
@@ -562,7 +564,7 @@ export default function TabGit() {
             });
             setTransferBinding(updated); setTransferPreview(preview);
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
-            setSelectedPreviewPaths(new Set()); setResolvedConflictPaths(new Set());
+            setSelectedPreviewPaths(new Set()); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set());
             showSuccess(entriesToExclude.length === 1 ? `${entriesToExclude[0].directory ? "Folder" : "File"} ${entriesToExclude[0].path} excluded.` : `${entriesToExclude.length} items excluded.`);
         } catch (error) { setTransferPreview(previousPreview); showError((error as Error).message); }
         finally { setBusy(null); }
@@ -594,7 +596,7 @@ export default function TabGit() {
             });
             setTransferBinding(updated); setTransferPreview(preview);
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
-            setSelectedPreviewPaths(new Set()); setResolvedConflictPaths(new Set());
+            setSelectedPreviewPaths(new Set()); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set());
             showSuccess(`${entriesToInclude.length} file${entriesToInclude.length === 1 ? "" : "s"} allowed by the synchronization policy.`);
         } catch (error) { setTransferPreview(previousPreview); showError((error as Error).message); }
         finally { setBusy(null); }
@@ -804,7 +806,8 @@ export default function TabGit() {
                     {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusions([{path: excludeMenu.entry.path, directory: false}])}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
                     {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusions([{path, directory: true}])}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
                 </Menu>
-                {!!transferPreview?.conflicts && <Alert severity={resolvedConflictPaths.size ? "warning" : "info"}>{resolvedConflictPaths.size} conflict{resolvedConflictPaths.size === 1 ? "" : "s"} approved in this direction; {unresolvedConflictCount} left pending. Non-conflicting changes are still transferred.</Alert>}
+                {!!transferPreview?.conflicts && <Alert severity={resolvedConflictPaths.size ? "warning" : "info"}>{resolvedConflictPaths.size} conflict{resolvedConflictPaths.size === 1 ? "" : "s"} approved in this direction; {unresolvedConflictCount} left pending. {selectedTransferPaths.size === 0 && "Non-conflicting changes are still transferred."}</Alert>}
+                {selectedTransferPaths.size > 0 && <Alert severity="info">This direction was opened from a per-file decision. Only <code>{[...selectedTransferPaths][0]}</code> will be transferred; every other change remains pending.</Alert>}
                 <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
                     const checked = event.target.checked;
                     setIncludeSensitive(checked); setSensitiveConfirmation("");

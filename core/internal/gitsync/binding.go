@@ -102,6 +102,7 @@ type TransferInput struct {
 	CommitMessage         string `json:"commitMessage"`
 	PreviewToken          string `json:"previewToken"`
 	ResolvedPaths         []string `json:"resolvedPaths"`
+	SelectedPaths         []string `json:"selectedPaths"`
 }
 
 type PreviewEntry struct {
@@ -535,7 +536,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = "Repository already matches the stack"
 			return nil
 		}
-		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths)
+		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
 		if err != nil {
 			return err
 		}
@@ -642,7 +643,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = "Stack already matches the repository"
 			return nil
 		}
-		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths)
+		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
 		if err != nil {
 			return err
 		}
@@ -1544,12 +1545,16 @@ func sortedTransferFiles(files map[string]transferFile) []transferFile {
 	return result
 }
 
-func selectedTransferFiles(preview TransferPreview, source map[string]transferFile, resolvedPaths []string) (map[string]transferFile, int, error) {
-	if len(resolvedPaths) > maxBindingFiles {
+func selectedTransferFiles(preview TransferPreview, source map[string]transferFile, resolvedPaths, selectedPaths []string) (map[string]transferFile, int, error) {
+	if len(resolvedPaths) > maxBindingFiles || len(selectedPaths) > maxBindingFiles {
 		return nil, 0, errors.New("too many conflict resolutions")
 	}
 	conflicts := make(map[string]struct{}, preview.Conflicts)
+	transferable := make(map[string]struct{}, preview.Changed)
 	for _, entry := range preview.Entries {
+		if entry.Status == "add" || entry.Status == "modify" || entry.Status == "conflict" {
+			transferable[entry.Path] = struct{}{}
+		}
 		if entry.Status == "conflict" {
 			conflicts[entry.Path] = struct{}{}
 		}
@@ -1565,8 +1570,32 @@ func selectedTransferFiles(preview TransferPreview, source map[string]transferFi
 		}
 		resolved[candidate] = struct{}{}
 	}
+	limited := len(selectedPaths) > 0
+	selectedSet := make(map[string]struct{}, len(selectedPaths))
+	for _, candidate := range selectedPaths {
+		candidate = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(candidate))))
+		if err := validateRelativePath(candidate, false); err != nil {
+			return nil, 0, fmt.Errorf("invalid selected transfer path: %w", err)
+		}
+		if _, exists := transferable[candidate]; !exists {
+			return nil, 0, fmt.Errorf("%s is not a current transferable file; refresh the preview", candidate)
+		}
+		selectedSet[candidate] = struct{}{}
+	}
+	if limited {
+		for candidate := range resolved {
+			if _, selected := selectedSet[candidate]; !selected {
+				return nil, 0, fmt.Errorf("resolved conflict %s must also be selected for transfer", candidate)
+			}
+		}
+	}
 	selected := make(map[string]transferFile)
 	for _, entry := range preview.Entries {
+		if limited {
+			if _, approved := selectedSet[entry.Path]; !approved {
+				continue
+			}
+		}
 		if entry.Status != "add" && entry.Status != "modify" {
 			if entry.Status != "conflict" {
 				continue

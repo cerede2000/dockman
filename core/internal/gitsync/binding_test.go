@@ -205,7 +205,7 @@ func TestTransferSelectionLeavesUnresolvedConflictsPending(t *testing.T) {
 	preview := buildPreview("binding", "stack_to_repository", source, target, baseline)
 	require.Equal(t, 3, preview.Conflicts)
 
-	selected, pending, err := selectedTransferFiles(preview, source, []string{"two.yaml"})
+	selected, pending, err := selectedTransferFiles(preview, source, []string{"two.yaml"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, pending)
 	require.ElementsMatch(t, []string{"safe.yaml", "two.yaml"}, mapKeys(selected))
@@ -215,6 +215,16 @@ func TestTransferSelectionLeavesUnresolvedConflictsPending(t *testing.T) {
 	require.Equal(t, "two-new", next["two.yaml"])
 	require.Equal(t, "one-old", next["one.yaml"])
 	require.Equal(t, "three-old", next["three.yaml"])
+
+	limited, pending, err := selectedTransferFiles(preview, source, []string{"two.yaml"}, []string{"two.yaml"})
+	require.NoError(t, err)
+	require.Equal(t, 2, pending)
+	require.ElementsMatch(t, []string{"two.yaml"}, mapKeys(limited))
+
+	limitedSafe, pending, err := selectedTransferFiles(preview, source, nil, []string{"safe.yaml"})
+	require.NoError(t, err)
+	require.Equal(t, 3, pending)
+	require.ElementsMatch(t, []string{"safe.yaml"}, mapKeys(limitedSafe))
 }
 
 func TestPartialExportResolvesOnlyApprovedConflict(t *testing.T) {
