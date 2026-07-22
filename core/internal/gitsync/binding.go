@@ -71,6 +71,11 @@ type BindingPolicyInput struct {
 	ExcludePatterns []string `json:"excludePatterns"`
 }
 
+type BindingExclusionInput struct {
+	Path      string `json:"path"`
+	Directory bool   `json:"directory"`
+}
+
 type StackTarget struct {
 	Host         string   `json:"host"`
 	Path         string   `json:"path"`
@@ -93,6 +98,7 @@ type PreviewEntry struct {
 	TargetSHA string `json:"targetSha,omitempty"`
 	Size      int64  `json:"size,omitempty"`
 	Sensitive bool   `json:"sensitive,omitempty"`
+	Directory bool   `json:"directory,omitempty"`
 }
 
 type TransferPreview struct {
@@ -120,6 +126,7 @@ type transferFile struct {
 	sha        string
 	sensitive  bool
 	skipReason string
+	directory  bool
 	open       func() (io.ReadCloser, error)
 }
 
@@ -204,6 +211,46 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 		return BindingView{}, err
 	}
 	row.SyncProfile = policy
+	row.IncludePatterns = strings.Join(includes, "\n")
+	row.ExcludePatterns = strings.Join(excludes, "\n")
+	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingView{}, err
+	}
+	return s.bindingView(row)
+}
+
+func (s *Service) AddBindingExclusion(id string, input BindingExclusionInput) (BindingView, error) {
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingView{}, err
+	}
+	relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(input.Path))))
+	if err := validateRelativePath(relative, false); err != nil {
+		return BindingView{}, fmt.Errorf("invalid exclusion path: %w", err)
+	}
+	for _, compose := range splitPatternLines(row.ComposePaths) {
+		if !input.Directory && relative == filepath.ToSlash(filepath.Clean(filepath.FromSlash(compose))) {
+			return BindingView{}, errors.New("Compose files cannot be excluded from synchronization")
+		}
+	}
+	pattern := escapeGlobLiteral(relative)
+	if input.Directory {
+		pattern += "/"
+	}
+	excludes := splitPatternLines(row.ExcludePatterns)
+	for _, existing := range excludes {
+		if existing == pattern {
+			return s.bindingView(row)
+		}
+	}
+	excludes = append(excludes, pattern)
+	profile, includes, excludes, err := normalizeBindingPolicy(BindingPolicyInput{
+		Profile: row.SyncProfile, IncludePatterns: splitPatternLines(row.IncludePatterns), ExcludePatterns: excludes,
+	})
+	if err != nil {
+		return BindingView{}, err
+	}
+	row.SyncProfile = profile
 	row.IncludePatterns = strings.Join(includes, "\n")
 	row.ExcludePatterns = strings.Join(excludes, "\n")
 	if err := s.store.SaveBinding(&row); err != nil {
@@ -336,6 +383,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err := repo.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 			return fmt.Errorf("push stack export: %w", err)
 		}
+		compactRepositoryObjects(repo, binding.RepositoryUUID)
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
 		return nil
 	})
@@ -617,7 +665,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 					}
 					continue
 				}
-				result[childRel] = transferFile{path: childRel, skipReason: "excluded"}
+				result[childRel] = transferFile{path: childRel, skipReason: "excluded", directory: entry.IsDir()}
 				continue
 			}
 			if entry.Type()&os.ModeSymlink != 0 {
@@ -716,7 +764,7 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 			if entry.IsDir() && policy.containsCompose(rel) {
 				return nil
 			}
-			result[rel] = transferFile{path: rel, skipReason: "excluded"}
+			result[rel] = transferFile{path: rel, skipReason: "excluded", directory: entry.IsDir()}
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -896,7 +944,7 @@ func normalizePatterns(values []string) ([]string, []ignoreRule, error) {
 			return nil, nil, fmt.Errorf("line %d: negation rules are not supported", index+1)
 		}
 		directory := strings.HasSuffix(line, "/")
-		line = strings.Trim(strings.ReplaceAll(line, "\\", "/"), "/")
+		line = strings.Trim(line, "/")
 		if err := validateRelativePath(line, false); err != nil {
 			return nil, nil, fmt.Errorf("line %d: %w", index+1, err)
 		}
@@ -923,6 +971,18 @@ func normalizePatterns(values []string) ([]string, []ignoreRule, error) {
 func rulesFromPatterns(patterns []string) ([]ignoreRule, error) {
 	_, rules, err := normalizePatterns(patterns)
 	return rules, err
+}
+
+func escapeGlobLiteral(relative string) string {
+	var escaped strings.Builder
+	escaped.Grow(len(relative))
+	for _, character := range relative {
+		if strings.ContainsRune(`\\*?[]{}!`, character) {
+			escaped.WriteByte('\\')
+		}
+		escaped.WriteRune(character)
+	}
+	return escaped.String()
 }
 
 func mustRules(patterns []string) []ignoreRule {
@@ -1075,7 +1135,7 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 			if reason == "" {
 				reason = "unavailable"
 			}
-			preview.Entries = append(preview.Entries, PreviewEntry{Path: path, Status: "skipped_" + reason, Size: src.size, Sensitive: src.sensitive})
+			preview.Entries = append(preview.Entries, PreviewEntry{Path: path, Status: "skipped_" + reason, Size: src.size, Sensitive: src.sensitive, Directory: src.directory})
 			preview.Skipped++
 			continue
 		}

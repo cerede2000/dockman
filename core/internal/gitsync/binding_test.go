@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
@@ -229,6 +230,29 @@ func TestBindingPolicyIsValidatedAndPersisted(t *testing.T) {
 	require.Equal(t, []string{"scripts/**"}, updated.IncludePatterns)
 	require.Equal(t, []string{"data/**", "*.log"}, updated.ExcludePatterns)
 	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeConfig, ExcludePatterns: []string{"../outside"}})
+	require.ErrorContains(t, err, "path traversal")
+}
+
+func TestBindingExclusionsCanBeAddedFromPreviewPaths(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", "cache[1]"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+
+	updated, err := service.AddBindingExclusion(binding.ID, BindingExclusionInput{Path: "cache[1]", Directory: true})
+	require.NoError(t, err)
+	require.Equal(t, []string{`cache\[1\]/`}, updated.ExcludePatterns)
+	policy, err := policyFromBinding(StackBinding{SyncProfile: updated.SyncProfile, IncludePatterns: strings.Join(updated.IncludePatterns, "\n"), ExcludePatterns: strings.Join(updated.ExcludePatterns, "\n"), ComposePaths: strings.Join(updated.ComposePaths, "\n")})
+	require.NoError(t, err)
+	require.True(t, matchesIgnoreRule(policy.excludes, "cache[1]", true))
+	require.False(t, matchesIgnoreRule(policy.excludes, "cache1", true))
+
+	_, err = service.AddBindingExclusion(binding.ID, BindingExclusionInput{Path: "compose.yaml"})
+	require.ErrorContains(t, err, "Compose files cannot be excluded")
+	_, err = service.AddBindingExclusion(binding.ID, BindingExclusionInput{Path: "../outside"})
 	require.ErrorContains(t, err, "path traversal")
 }
 

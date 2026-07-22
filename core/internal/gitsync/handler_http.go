@@ -37,6 +37,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
+	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
 	mux.HandleFunc("DELETE /bindings/{id}", h.deleteBinding)
 	mux.HandleFunc("POST /bindings/{id}/preview/{direction}", h.previewBinding)
 	mux.HandleFunc("POST /bindings/{id}/export", h.exportBinding)
@@ -46,6 +47,23 @@ func NewHTTPHandler(service *Service) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) addBindingExclusion(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingExclusionInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.AddBindingExclusion(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
 }
 
 func (h *HTTPHandler) updateBindingPolicy(w http.ResponseWriter, r *http.Request) {

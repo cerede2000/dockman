@@ -17,10 +17,12 @@ import (
 	gitclient "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -214,9 +216,12 @@ func (s *Service) fetchRepositoryLocked(ctx context.Context, id string) (Reposit
 		if err != nil {
 			return err
 		}
-		err = repo.FetchContext(ctx, &gitclient.FetchOptions{RemoteName: "origin", Auth: auth, Force: false, Prune: true})
+		err = repo.FetchContext(ctx, &gitclient.FetchOptions{RemoteName: "origin", Auth: auth, Force: false, Prune: true, Tags: gitclient.NoTags})
 		if errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
-			return nil
+			err = nil
+		}
+		if err == nil {
+			compactRepositoryObjects(repo, id)
 		}
 		return err
 	})
@@ -483,7 +488,7 @@ func (s *Service) cloneRepository(ctx context.Context, row Repository) error {
 	}
 	_, err = gitclient.PlainCloneContext(ctx, temporary, false, &gitclient.CloneOptions{
 		URL: row.RemoteURL, RemoteName: "origin", Auth: auth,
-		ReferenceName: plumbing.NewBranchReferenceName(row.DefaultBranch), SingleBranch: true,
+		ReferenceName: plumbing.NewBranchReferenceName(row.DefaultBranch), SingleBranch: true, Tags: gitclient.NoTags,
 	})
 	if err != nil {
 		return fmt.Errorf("clone repository: %w", err)
@@ -495,6 +500,34 @@ func (s *Service) cloneRepository(ctx context.Context, row Repository) error {
 		return fmt.Errorf("secure repository workspace: %w", err)
 	}
 	return nil
+}
+
+func compactRepositoryObjects(repo *gitclient.Repository, repositoryID string) {
+	const looseObjectThreshold = 256
+	loose, ok := repo.Storer.(storer.LooseObjectStorer)
+	if !ok {
+		return
+	}
+	count := 0
+	err := loose.ForEachObjectHash(func(plumbing.Hash) error {
+		count++
+		if count >= looseObjectThreshold {
+			return storer.ErrStop
+		}
+		return nil
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("repository_id", repositoryID).Msg("Unable to inspect loose Git objects")
+		return
+	}
+	if count < looseObjectThreshold {
+		return
+	}
+	if err := repo.RepackObjects(&gitclient.RepackConfig{}); err != nil {
+		log.Warn().Err(err).Str("repository_id", repositoryID).Msg("Unable to compact Git repository objects")
+		return
+	}
+	log.Info().Int("loose_objects", count).Str("repository_id", repositoryID).Msg("Compacted Git repository objects")
 }
 
 func (s *Service) authForRepository(ctx context.Context, row Repository) (transport.AuthMethod, error) {

@@ -51,6 +51,7 @@ Large folders are inventoried file by file. Dockman hashes and transfers content
 3. Add `scripts/**` to the includes, then add `**/data/**` and `*.log` to the exclusions.
 4. Save and preview again.
 5. Optionally create a `.dockmanignore` at the linked folder root with another disposable folder pattern.
+6. In the preview, use the exclusion button on an included file, then exclude the parent folder of another entry.
 
 Expected:
 
@@ -58,6 +59,8 @@ Expected:
 - non-selected types appear as `skipped type`, large files as `skipped oversized`, and explicit rules as `skipped excluded`, with path and size visible;
 - the server log records the exact path, size, and limit for every oversized file;
 - custom includes add matching files and exclusions take priority;
+- direct file/folder exclusions are saved permanently and the preview refreshes immediately;
+- exact exclusions remain exact for names containing glob characters such as `[` or `*`;
 - `.dockmanignore` exclusions apply without changing the saved policy;
 - Compose files remain protected even if a broad exclusion matches them;
 - skipped files are never read into memory, copied, committed, or restored;
@@ -80,7 +83,7 @@ Keep the sensitive mode disabled for the remaining test unless the disposable re
 ## 5. Manual export
 
 1. Reopen the stack → Git preview.
-2. Optionally enter a one-line commit message.
+2. Enter a one-line commit message and confirm that typing remains immediate even with a large preview.
 3. Click **Commit and push**.
 4. Inspect the disposable repository on GitHub.
 

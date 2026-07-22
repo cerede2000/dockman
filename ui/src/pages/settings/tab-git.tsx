@@ -1,13 +1,13 @@
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {
     Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
-    DialogTitle, FormControl, FormControlLabel, IconButton, InputLabel, MenuItem, Paper,
+    DialogTitle, FormControl, FormControlLabel, IconButton, InputLabel, Menu, MenuItem, Paper,
     Select, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
     TextField, Tooltip, Typography,
 } from "@mui/material";
 import {
-    Add, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
-    FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SyncOutlined, TuneOutlined,
+    Add, BlockOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
+    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SyncOutlined, TuneOutlined,
 } from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
 import {formatBytes} from "../../lib/editor.ts";
@@ -93,7 +93,7 @@ interface Binding {
 }
 interface PreviewEntry {
     path: string; status: "add" | "modify" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
-    targetSha?: string; size?: number; sensitive?: boolean;
+    targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean;
 }
 interface TransferPreview {
     bindingId: string; direction: TransferDirection; entries: PreviewEntry[]; changed: number;
@@ -171,10 +171,11 @@ export default function TabGit() {
     const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
     const [includeSensitive, setIncludeSensitive] = useState(false);
     const [sensitiveConfirmation, setSensitiveConfirmation] = useState("");
-    const [commitMessage, setCommitMessage] = useState("");
+    const commitMessageRef = useRef<HTMLInputElement | null>(null);
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
+    const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
 
     const loadRepositoryStatuses = useCallback(async (rows: Repository[]) => {
         const pairs = await Promise.all(rows.filter((row) => row.workspacePresent).map(async (row) => {
@@ -376,7 +377,8 @@ export default function TabGit() {
 
     const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false) => {
         if (!sensitive) {
-            setIncludeSensitive(false); setSensitiveConfirmation(""); setCommitMessage("");
+            setIncludeSensitive(false); setSensitiveConfirmation("");
+            if (commitMessageRef.current) commitMessageRef.current.value = "";
         }
         setBusy(`preview-${binding.id}`);
         try {
@@ -391,7 +393,8 @@ export default function TabGit() {
 
     const closeTransfer = () => {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
-        setSensitiveConfirmation(""); setCommitMessage("");
+        setSensitiveConfirmation(""); setExcludeMenu(null);
+        if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
 
     const runTransfer = async () => {
@@ -400,7 +403,7 @@ export default function TabGit() {
         setBusy(`transfer-${transferBinding.id}`);
         try {
             const result = await api<TransferResult>(`/bindings/${transferBinding.id}/${action}`, {
-                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage, previewToken: transferPreview?.previewToken}),
+                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage: commitMessageRef.current?.value || "", previewToken: transferPreview?.previewToken}),
             });
             showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
             closeTransfer();
@@ -436,6 +439,23 @@ export default function TabGit() {
             })});
             showSuccess("Stack synchronization policy updated.");
             setPolicyBinding(null);
+            await load();
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
+    };
+
+    const addPreviewExclusion = async (path: string, directory: boolean) => {
+        if (!transferBinding) return;
+        setBusy(`binding-exclusion-${transferBinding.id}`);
+        try {
+            const updated = await api<Binding>(`/bindings/${transferBinding.id}/exclusions`, {
+                method: "POST", body: JSON.stringify({path, directory}),
+            });
+            const preview = await api<TransferPreview>(`/bindings/${updated.id}/preview/${transferDirection}`, {
+                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation: includeSensitive ? sensitiveConfirmation : ""}),
+            });
+            setTransferBinding(updated); setTransferPreview(preview); setExcludeMenu(null);
+            showSuccess(directory ? `Folder ${path} excluded.` : `File ${path} excluded.`);
             await load();
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
@@ -592,17 +612,21 @@ export default function TabGit() {
                     <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
                 </Stack>
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Open the synchronization policy on the folder link to add <code>**</code> include or exclude rules.</Alert>}
-                <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell></TableRow></TableHead><TableBody>
-                    {!transferPreview?.entries.length && <TableRow><TableCell colSpan={3} align="center" sx={{py: 4, color: "text.secondary"}}>No difference.</TableCell></TableRow>}
-                    {transferPreview?.entries.map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell></TableRow>)}
+                <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
+                    {!transferPreview?.entries.length && <TableRow><TableCell colSpan={4} align="center" sx={{py: 4, color: "text.secondary"}}>No difference.</TableCell></TableRow>}
+                    {transferPreview?.entries.map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
                 </TableBody></Table></TableContainer>
+                <Menu open={excludeMenu !== null} anchorEl={excludeMenu?.anchor || null} onClose={() => setExcludeMenu(null)}>
+                    {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusion(excludeMenu.entry.path, false)}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
+                    {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusion(path, true)}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
+                </Menu>
                 <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
                     const checked = event.target.checked;
                     setIncludeSensitive(checked); setSensitiveConfirmation("");
                     if (!checked && transferBinding) void previewTransfer(transferBinding, transferDirection, false);
                 }}/>} label="Include sensitive files for this transfer only"/>
                 {includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TextField label='Type "INCLUDE SENSITIVE FILES"' value={sensitiveConfirmation} onChange={(event) => setSensitiveConfirmation(event.target.value)} onBlur={() => transferBinding && sensitiveConfirmation === "INCLUDE SENSITIVE FILES" && void previewTransfer(transferBinding, transferDirection, true)} fullWidth/></>}
-                {transferDirection === "stack_to_repository" && <TextField label="Commit message (optional)" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
+                {transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>} 
             </Stack></DialogContent>
             <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button><Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || transferPreview.changed === 0 || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferDirection === "stack_to_repository" ? "Commit and push" : "Backup and import"}</Button></DialogActions>
         </Dialog>
