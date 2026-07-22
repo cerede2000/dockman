@@ -149,10 +149,32 @@ func TestBindingBaselineIsReplacedAndRemovedWithBinding(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"compose.yaml": "updated"}, baseline)
 
-	require.NoError(t, service.store.DeleteBinding(binding.UUID))
+	require.NoError(t, service.store.DeleteBinding(binding.UUID, true))
 	baseline, err = service.store.BindingBaseline(binding.UUID)
 	require.NoError(t, err)
 	require.Empty(t, baseline)
+}
+
+func TestBindingBaselineSurvivesUnlinkAndRestore(t *testing.T) {
+	service, _ := testService(t, true)
+	binding := StackBinding{
+		UUID: uuid.NewString(), RepositoryUUID: uuid.NewString(), Host: "local",
+		StackPath: "compose/restorable", SubPath: "stacks/restorable", Enabled: true,
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.NoError(t, service.store.ReplaceBindingBaseline(binding.UUID, map[string]string{"compose.yaml": "baseline"}))
+	require.NoError(t, service.store.DeleteBinding(binding.UUID, false))
+
+	_, err := service.store.GetBinding(binding.UUID)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	archived, err := service.store.ArchivedBinding(binding.Host, binding.StackPath)
+	require.NoError(t, err)
+	require.Equal(t, binding.UUID, archived.UUID)
+	require.NoError(t, service.store.RestoreBinding(&archived))
+
+	baseline, err := service.store.BindingBaseline(binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"compose.yaml": "baseline"}, baseline)
 }
 
 func TestValidateGitHubRepositoryURL(t *testing.T) {

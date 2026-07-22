@@ -2,6 +2,7 @@ package gitsync
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
 	"github.com/bmatcuk/doublestar/v4"
@@ -26,6 +28,7 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"gorm.io/gorm"
 )
 
 const (
@@ -35,6 +38,7 @@ const (
 	transferBufferSize       = 64 << 10
 	maxIgnoreFileSize        = 64 << 10
 	maxIgnoreRules           = 1000
+	maxComparisonFileSize    = 2 << 20
 	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
 	syncProfileComposeConfig = "compose_config"
 	syncProfileAllFiles      = "all_files"
@@ -97,7 +101,7 @@ type TransferInput struct {
 	SensitiveConfirmation string `json:"sensitiveConfirmation"`
 	CommitMessage         string `json:"commitMessage"`
 	PreviewToken          string `json:"previewToken"`
-	ResolveConflicts      bool   `json:"resolveConflicts"`
+	ResolvedPaths         []string `json:"resolvedPaths"`
 }
 
 type PreviewEntry struct {
@@ -108,6 +112,7 @@ type PreviewEntry struct {
 	Size      int64  `json:"size,omitempty"`
 	Sensitive bool   `json:"sensitive,omitempty"`
 	Directory bool   `json:"directory,omitempty"`
+	ConflictKind string `json:"conflictKind,omitempty"`
 }
 
 type TransferPreview struct {
@@ -127,6 +132,25 @@ type TransferResult struct {
 	CommitSHA string          `json:"commitSha,omitempty"`
 	Backup    string          `json:"backup,omitempty"`
 	Message   string          `json:"message"`
+}
+
+type ComparisonInput struct {
+	TransferInput
+	Path string `json:"path"`
+}
+
+type ComparisonSide struct {
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	Content string `json:"content,omitempty"`
+}
+
+type FileComparison struct {
+	Path       string         `json:"path"`
+	Dockman    ComparisonSide `json:"dockman"`
+	Git        ComparisonSide `json:"git"`
+	Comparable bool           `json:"comparable"`
+	Reason     string         `json:"reason,omitempty"`
 }
 
 type transferFile struct {
@@ -200,6 +224,21 @@ func (s *Service) CreateBinding(input BindingInput) (BindingView, error) {
 		return BindingView{}, err
 	}
 	compose := discoverComposeFiles(targetFS, targetRoot)
+	archived, archiveErr := s.store.ArchivedBinding(clean.Host, clean.StackPath)
+	if archiveErr == nil {
+		if archived.RepositoryUUID == clean.RepositoryID && archived.SubPath == clean.SubPath {
+			archived.ComposePaths = strings.Join(compose, "\n")
+			if err := s.store.RestoreBinding(&archived); err != nil {
+				return BindingView{}, err
+			}
+			return s.bindingView(archived)
+		}
+		if err := s.store.DeleteBinding(archived.UUID, true); err != nil {
+			return BindingView{}, err
+		}
+	} else if !errors.Is(archiveErr, gorm.ErrRecordNotFound) {
+		return BindingView{}, archiveErr
+	}
 	row := StackBinding{
 		UUID: uuid.NewString(), RepositoryUUID: clean.RepositoryID, Host: clean.Host,
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
@@ -329,11 +368,11 @@ func (s *Service) AddBindingInclusions(id string, paths []string) (BindingView, 
 	return s.bindingView(row)
 }
 
-func (s *Service) DeleteBinding(id string) error {
+func (s *Service) DeleteBinding(id string, forget bool) error {
 	if _, err := s.store.GetBinding(id); err != nil {
 		return err
 	}
-	return s.store.DeleteBinding(id)
+	return s.store.DeleteBinding(id, forget)
 }
 
 func (s *Service) ListStackTargets() ([]StackTarget, error) {
@@ -380,6 +419,82 @@ func (s *Service) PreviewBinding(id, direction string, input TransferInput) (Tra
 	return buildPreview(binding.UUID, direction, source, target, baseline), nil
 }
 
+func (s *Service) CompareBindingFile(id, direction string, input ComparisonInput) (FileComparison, error) {
+	input.Path = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(input.Path))))
+	if err := validateRelativePath(input.Path, false); err != nil {
+		return FileComparison{}, fmt.Errorf("invalid comparison path: %w", err)
+	}
+	binding, source, target, err := s.loadTransferTrees(id, direction, input.TransferInput)
+	if err != nil {
+		return FileComparison{}, err
+	}
+	baseline, err := s.store.BindingBaseline(binding.UUID)
+	if err != nil {
+		return FileComparison{}, err
+	}
+	preview := buildPreview(binding.UUID, direction, source, target, baseline)
+	conflict := false
+	for _, entry := range preview.Entries {
+		if entry.Path == input.Path && entry.Status == "conflict" {
+			conflict = true
+			break
+		}
+	}
+	if !conflict {
+		return FileComparison{}, errors.New("the requested file is not a current conflict")
+	}
+	sourceFile, sourceExists := source[input.Path]
+	targetFile, targetExists := target[input.Path]
+	if !sourceExists || !targetExists || sourceFile.open == nil || targetFile.open == nil {
+		return FileComparison{}, errors.New("both file versions must be available for comparison")
+	}
+	sourceSide, sourceComparable, sourceReason, err := comparisonSide(sourceFile)
+	if err != nil {
+		return FileComparison{}, err
+	}
+	targetSide, targetComparable, targetReason, err := comparisonSide(targetFile)
+	if err != nil {
+		return FileComparison{}, err
+	}
+	result := FileComparison{Path: input.Path, Comparable: sourceComparable && targetComparable}
+	if direction == "stack_to_repository" {
+		result.Dockman, result.Git = sourceSide, targetSide
+	} else {
+		result.Dockman, result.Git = targetSide, sourceSide
+	}
+	if !result.Comparable {
+		result.Reason = strings.TrimSpace(strings.Join([]string{sourceReason, targetReason}, " "))
+	}
+	return result, nil
+}
+
+func comparisonSide(file transferFile) (ComparisonSide, bool, string, error) {
+	side := ComparisonSide{SHA256: file.sha, Size: file.size}
+	if file.size > maxComparisonFileSize {
+		return side, false, fmt.Sprintf("File exceeds the %d MiB comparison limit.", maxComparisonFileSize>>20), nil
+	}
+	reader, err := file.open()
+	if err != nil {
+		return side, false, "", err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(reader, maxComparisonFileSize+1))
+	closeErr := reader.Close()
+	if readErr != nil {
+		return side, false, "", readErr
+	}
+	if closeErr != nil {
+		return side, false, "", closeErr
+	}
+	if len(data) > maxComparisonFileSize {
+		return side, false, fmt.Sprintf("File exceeds the %d MiB comparison limit.", maxComparisonFileSize>>20), nil
+	}
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		return side, false, "Binary files cannot be displayed as text.", nil
+	}
+	side.Content = string(data)
+	return side, true, "", nil
+}
+
 func (s *Service) ExportBinding(ctx context.Context, id string, input TransferInput) (TransferResult, error) {
 	binding, err := s.store.GetBinding(id)
 	if err != nil {
@@ -413,9 +528,6 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
 		}
-		if result.Preview.Conflicts > 0 && !input.ResolveConflicts {
-			return errors.New("export contains conflicts; explicitly confirm that the Dockman version must overwrite Git")
-		}
 		if result.Preview.Changed == 0 {
 			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
 				return err
@@ -423,11 +535,18 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = "Repository already matches the stack"
 			return nil
 		}
+		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths)
+		if err != nil {
+			return err
+		}
+		if len(selected) == 0 {
+			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
+		}
 		repoPath, err := s.repositoryPath(binding.RepositoryUUID)
 		if err != nil {
 			return err
 		}
-		if err := writeRepositoryFiles(repoPath, binding.SubPath, changedTransferFiles(source, target)); err != nil {
+		if err := writeRepositoryFiles(repoPath, binding.SubPath, selected); err != nil {
 			return err
 		}
 		row, err := s.store.GetRepository(binding.RepositoryUUID)
@@ -468,10 +587,13 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return fmt.Errorf("push stack export: %w", err)
 		}
 		compactRepositoryObjects(repo, binding.RepositoryUUID)
-		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
+		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineAfterTransfer(baseline, source, target, selected)); err != nil {
 			return err
 		}
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
+		if pendingConflicts > 0 {
+			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
+		}
 		return nil
 	})
 	return result, err
@@ -513,9 +635,6 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
 		}
-		if result.Preview.Conflicts > 0 && !input.ResolveConflicts {
-			return errors.New("import contains conflicts; explicitly confirm that the Git version must overwrite Dockman")
-		}
 		if result.Preview.Changed == 0 {
 			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
 				return err
@@ -523,21 +642,31 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = "Stack already matches the repository"
 			return nil
 		}
+		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths)
+		if err != nil {
+			return err
+		}
+		if len(selected) == 0 {
+			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
+		}
 		targetFS, targetRoot, err := s.resolveBindingStack(binding)
 		if err != nil {
 			return err
 		}
-		backup, err := s.backupChangedFiles(binding, targetFS, targetRoot, source, target)
+		backup, err := s.backupChangedFiles(binding, targetFS, targetRoot, selected, target)
 		if err != nil {
 			return err
 		}
-		if err := writeStackFiles(targetFS, targetRoot, changedTransferFiles(source, target)); err != nil {
+		if err := writeStackFiles(targetFS, targetRoot, selected); err != nil {
 			return err
 		}
-		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
+		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineAfterTransfer(baseline, source, target, selected)); err != nil {
 			return err
 		}
 		result.Backup, result.Message = backup, "Repository files imported with a backup; the stack was not deployed"
+		if pendingConflicts > 0 {
+			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
+		}
 		return nil
 	})
 	return result, err
@@ -1253,8 +1382,14 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 				continue
 			}
 			entry.Status = "modify"
-			if baseSHA, tracked := baseline[path]; tracked && dst.sha != baseSHA && src.sha != dst.sha {
+			baseSHA, tracked := baseline[path]
+			if !tracked {
 				entry.Status = "conflict"
+				entry.ConflictKind = "no_baseline"
+				preview.Conflicts++
+			} else if dst.sha != baseSHA && src.sha != dst.sha {
+				entry.Status = "conflict"
+				entry.ConflictKind = "destination_changed"
 				preview.Conflicts++
 			}
 		}
@@ -1279,7 +1414,7 @@ func previewToken(preview TransferPreview) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00", preview.BindingID, preview.Direction, preview.DeletionMode)
 	for _, entry := range preview.Entries {
-		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\x00%d\x00%t\x00", entry.Path, entry.Status, entry.SourceSHA, entry.TargetSHA, entry.Size, entry.Sensitive)
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%t\x00", entry.Path, entry.Status, entry.ConflictKind, entry.SourceSHA, entry.TargetSHA, entry.Size, entry.Sensitive)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -1409,18 +1544,62 @@ func sortedTransferFiles(files map[string]transferFile) []transferFile {
 	return result
 }
 
-func changedTransferFiles(source, target map[string]transferFile) map[string]transferFile {
-	changed := make(map[string]transferFile)
-	for path, sourceFile := range source {
-		if sourceFile.open == nil {
-			continue
-		}
-		targetFile, exists := target[path]
-		if !exists || targetFile.open == nil || sourceFile.sha != targetFile.sha {
-			changed[path] = sourceFile
+func selectedTransferFiles(preview TransferPreview, source map[string]transferFile, resolvedPaths []string) (map[string]transferFile, int, error) {
+	if len(resolvedPaths) > maxBindingFiles {
+		return nil, 0, errors.New("too many conflict resolutions")
+	}
+	conflicts := make(map[string]struct{}, preview.Conflicts)
+	for _, entry := range preview.Entries {
+		if entry.Status == "conflict" {
+			conflicts[entry.Path] = struct{}{}
 		}
 	}
-	return changed
+	resolved := make(map[string]struct{}, len(resolvedPaths))
+	for _, candidate := range resolvedPaths {
+		candidate = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(candidate))))
+		if err := validateRelativePath(candidate, false); err != nil {
+			return nil, 0, fmt.Errorf("invalid resolved conflict path: %w", err)
+		}
+		if _, conflict := conflicts[candidate]; !conflict {
+			return nil, 0, fmt.Errorf("%s is not a current conflict; refresh the preview", candidate)
+		}
+		resolved[candidate] = struct{}{}
+	}
+	selected := make(map[string]transferFile)
+	for _, entry := range preview.Entries {
+		if entry.Status != "add" && entry.Status != "modify" {
+			if entry.Status != "conflict" {
+				continue
+			}
+			if _, approved := resolved[entry.Path]; !approved {
+				continue
+			}
+		}
+		if file, exists := source[entry.Path]; exists && file.open != nil {
+			selected[entry.Path] = file
+		}
+	}
+	return selected, len(conflicts) - len(resolved), nil
+}
+
+func baselineAfterTransfer(current map[string]string, source, target, selected map[string]transferFile) map[string]string {
+	result := make(map[string]string, len(current)+len(selected))
+	for path, sha := range current {
+		result[path] = sha
+	}
+	for path, sourceFile := range source {
+		if sourceFile.open == nil || sourceFile.sha == "" {
+			continue
+		}
+		if _, applied := selected[path]; applied {
+			result[path] = sourceFile.sha
+			continue
+		}
+		if targetFile, exists := target[path]; exists && targetFile.open != nil && targetFile.sha == sourceFile.sha {
+			result[path] = sourceFile.sha
+		}
+	}
+	return result
 }
 
 func validateComposeFiles(files map[string]transferFile) error {

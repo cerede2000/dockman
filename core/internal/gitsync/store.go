@@ -60,6 +60,18 @@ func (s *Store) SaveRepository(row *Repository) error { return s.db.Save(row).Er
 
 func (s *Store) DeleteRepository(id string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var bindingIDs []string
+		if err := tx.Unscoped().Model(&StackBinding{}).Where("repository_uuid = ?", id).Pluck("uuid", &bindingIDs).Error; err != nil {
+			return err
+		}
+		if len(bindingIDs) > 0 {
+			if err := tx.Where("binding_uuid IN ?", bindingIDs).Delete(&BindingBaseline{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Unscoped().Where("uuid IN ?", bindingIDs).Delete(&StackBinding{}).Error; err != nil {
+				return err
+			}
+		}
 		result := tx.Unscoped().Where("uuid = ?", id).Delete(&Repository{})
 		if result.Error != nil {
 			return result.Error
@@ -94,16 +106,35 @@ func (s *Store) GetBinding(id string) (StackBinding, error) {
 
 func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
 
-func (s *Store) DeleteBinding(id string) error {
+func (s *Store) ArchivedBinding(host, stackPath string) (StackBinding, error) {
+	var row StackBinding
+	err := s.db.Unscoped().Where("host = ? AND stack_path = ? AND deleted_at IS NOT NULL", host, stackPath).First(&row).Error
+	return row, err
+}
+
+func (s *Store) RestoreBinding(row *StackBinding) error {
+	return s.db.Unscoped().Model(&StackBinding{}).Where("uuid = ?", row.UUID).Updates(map[string]any{
+		"deleted_at": nil, "compose_paths": row.ComposePaths, "enabled": true,
+	}).Error
+}
+
+func (s *Store) DeleteBinding(id string, forget bool) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		result := tx.Unscoped().Where("uuid = ?", id).Delete(&StackBinding{})
+		query := tx.Where("uuid = ?", id)
+		if forget {
+			query = query.Unscoped()
+		}
+		result := query.Delete(&StackBinding{})
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		return tx.Where("binding_uuid = ?", id).Delete(&BindingBaseline{}).Error
+		if forget {
+			return tx.Where("binding_uuid = ?", id).Delete(&BindingBaseline{}).Error
+		}
+		return nil
 	})
 }
 

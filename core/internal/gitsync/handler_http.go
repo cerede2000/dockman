@@ -42,6 +42,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings/{id}/inclusions/batch", h.addBindingInclusions)
 	mux.HandleFunc("DELETE /bindings/{id}", h.deleteBinding)
 	mux.HandleFunc("POST /bindings/{id}/preview/{direction}", h.previewBinding)
+	mux.HandleFunc("POST /bindings/{id}/compare/{direction}", h.compareBindingFile)
 	mux.HandleFunc("POST /bindings/{id}/export", h.exportBinding)
 	mux.HandleFunc("POST /bindings/{id}/import", h.importBinding)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +165,7 @@ func (h *HTTPHandler) deleteBinding(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
 	}
-	if err := h.service.DeleteBinding(r.PathValue("id")); err != nil {
+	if err := h.service.DeleteBinding(r.PathValue("id"), r.URL.Query().Get("forget") == "true"); err != nil {
 		writeServiceError(w, err)
 		return
 	}
@@ -185,6 +186,23 @@ func (h *HTTPHandler) previewBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, preview)
+}
+
+func (h *HTTPHandler) compareBindingFile(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input ComparisonInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	comparison, err := h.service.CompareBindingFile(r.PathValue("id"), r.PathValue("direction"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, comparison)
 }
 
 func (h *HTTPHandler) exportBinding(w http.ResponseWriter, r *http.Request) {

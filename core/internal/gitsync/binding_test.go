@@ -10,6 +10,7 @@ import (
 
 	"github.com/RA341/dockman/internal/host/filesystem"
 	gitclient "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -182,6 +183,118 @@ func TestPreviewBlocksOverwritingAChangedSynchronizationTarget(t *testing.T) {
 	bothEqual := buildPreview("binding", "stack_to_repository", map[string]transferFile{"compose.yaml": available("same")}, map[string]transferFile{"compose.yaml": available("same")}, baseline)
 	require.Zero(t, bothEqual.Conflicts)
 	require.Equal(t, 1, bothEqual.Unchanged)
+
+	unknownBaseline := buildPreview("binding", "stack_to_repository", map[string]transferFile{"compose.yaml": available("local")}, map[string]transferFile{"compose.yaml": available("remote")}, nil)
+	require.Equal(t, 1, unknownBaseline.Conflicts)
+	require.Equal(t, "no_baseline", unknownBaseline.Entries[0].ConflictKind)
+}
+
+func TestTransferSelectionLeavesUnresolvedConflictsPending(t *testing.T) {
+	available := func(sha string) transferFile {
+		return transferFile{sha: sha, open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("content")), nil }}
+	}
+	source := map[string]transferFile{
+		"safe.yaml": available("safe-new"), "one.yaml": available("one-new"),
+		"two.yaml": available("two-new"), "three.yaml": available("three-new"),
+	}
+	target := map[string]transferFile{
+		"safe.yaml": available("safe-old"), "one.yaml": available("one-remote"),
+		"two.yaml": available("two-remote"), "three.yaml": available("three-remote"),
+	}
+	baseline := map[string]string{"safe.yaml": "safe-old", "one.yaml": "one-old", "two.yaml": "two-old", "three.yaml": "three-old"}
+	preview := buildPreview("binding", "stack_to_repository", source, target, baseline)
+	require.Equal(t, 3, preview.Conflicts)
+
+	selected, pending, err := selectedTransferFiles(preview, source, []string{"two.yaml"})
+	require.NoError(t, err)
+	require.Equal(t, 2, pending)
+	require.ElementsMatch(t, []string{"safe.yaml", "two.yaml"}, mapKeys(selected))
+
+	next := baselineAfterTransfer(baseline, source, target, selected)
+	require.Equal(t, "safe-new", next["safe.yaml"])
+	require.Equal(t, "two-new", next["two.yaml"])
+	require.Equal(t, "one-old", next["one.yaml"])
+	require.Equal(t, "three-old", next["three.yaml"])
+}
+
+func TestPartialExportResolvesOnlyApprovedConflict(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	stackPath := filepath.Join(stackRoot, "app")
+	require.NoError(t, os.MkdirAll(stackPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackPath, "compose.yaml"), []byte("services: {}\n"), 0644))
+	for _, name := range []string{"one.yaml", "two.yaml", "three.yaml"} {
+		require.NoError(t, os.WriteFile(filepath.Join(stackPath, name), []byte("value: baseline\n"), 0644))
+	}
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	initial, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: initial.PreviewToken})
+	require.NoError(t, err)
+
+	for _, name := range []string{"one.yaml", "two.yaml", "three.yaml"} {
+		require.NoError(t, os.WriteFile(filepath.Join(stackPath, name), []byte("value: dockman\n"), 0644))
+	}
+	externalPath := t.TempDir()
+	external, err := gitclient.PlainClone(externalPath, false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+	require.NoError(t, err)
+	for _, name := range []string{"one.yaml", "two.yaml", "three.yaml"} {
+		commitTestFile(t, external, externalPath, filepath.ToSlash(filepath.Join("stacks", "app", name)), "value: git\n")
+	}
+	require.NoError(t, external.Push(&gitclient.PushOptions{}))
+	_, err = service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Equal(t, 3, preview.Conflicts)
+	result, err := service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken, ResolvedPaths: []string{"two.yaml"}})
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "2 conflict(s) remain pending")
+
+	workspace, err := service.repositoryPath(repository.UUID)
+	require.NoError(t, err)
+	two, err := os.ReadFile(filepath.Join(workspace, "stacks", "app", "two.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, "value: dockman\n", string(two))
+	one, err := os.ReadFile(filepath.Join(workspace, "stacks", "app", "one.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, "value: git\n", string(one))
+
+	remaining, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Equal(t, 2, remaining.Conflicts)
+}
+
+func TestComparisonSideRejectsBinaryAndOversizedFiles(t *testing.T) {
+	textFile := transferFile{sha: "text", size: 5, open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("hello")), nil }}
+	side, comparable, reason, err := comparisonSide(textFile)
+	require.NoError(t, err)
+	require.True(t, comparable)
+	require.Empty(t, reason)
+	require.Equal(t, "hello", side.Content)
+
+	binaryFile := transferFile{sha: "binary", size: 3, open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("a\x00b")), nil }}
+	_, comparable, reason, err = comparisonSide(binaryFile)
+	require.NoError(t, err)
+	require.False(t, comparable)
+	require.Contains(t, reason, "Binary")
+
+	oversized := transferFile{sha: "large", size: maxComparisonFileSize + 1}
+	_, comparable, reason, err = comparisonSide(oversized)
+	require.NoError(t, err)
+	require.False(t, comparable)
+	require.Contains(t, reason, "limit")
+}
+
+func mapKeys(values map[string]transferFile) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func TestDockmanIgnoreExcludesFilesAndFolders(t *testing.T) {
