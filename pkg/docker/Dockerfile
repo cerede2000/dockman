@@ -6,6 +6,7 @@ ARG ALPINE_VERSION=3.24.1
 ARG COMPOSE_VERSION=v5.3.1
 ARG COMPOSE_X_CRYPTO_VERSION=v0.54.0
 ARG COMPOSE_X_TEXT_VERSION=v0.40.0
+ARG COMPOSE_GRPC_VERSION=v1.82.1
 ARG NODE_IMAGE_DIGEST=sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 ARG GO_IMAGE_DIGEST=sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
 ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
@@ -71,6 +72,7 @@ FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS compose_cli_builder
 ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
+ARG COMPOSE_GRPC_VERSION
 
 # Rebuild the upstream Compose release with the patched Go toolchain and
 # explicit compatible security updates. Modules are authenticated by sum.golang.org.
@@ -82,7 +84,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cd /compose-source && \
     go mod edit \
       -require="golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
-      -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" && \
+      -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
+      -require="google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build \
       -trimpath \
@@ -115,6 +118,7 @@ ARG ALPINE_VERSION
 ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
+ARG COMPOSE_GRPC_VERSION
 ARG NODE_IMAGE_DIGEST
 ARG GO_IMAGE_DIGEST
 ARG ALPINE_IMAGE_DIGEST
@@ -132,6 +136,7 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.compose="${COMPOSE_VERSION}" \
       dev.dockman.build.compose-x-crypto="${COMPOSE_X_CRYPTO_VERSION}" \
       dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
+      dev.dockman.build.compose-grpc="${COMPOSE_GRPC_VERSION}" \
       dev.dockman.build.node-digest="${NODE_IMAGE_DIGEST}" \
       dev.dockman.build.go-digest="${GO_IMAGE_DIGEST}" \
       dev.dockman.build.alpine-digest="${ALPINE_IMAGE_DIGEST}"
