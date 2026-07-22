@@ -22,6 +22,8 @@ type AppConfig struct {
 	HTTPReadHeaderSeconds int    `config:"flag=httpReadHeaderTimeout,env=HTTP_READ_HEADER_TIMEOUT,default=10,usage=HTTP header read timeout in seconds"`
 	HTTPIdleSeconds       int    `config:"flag=httpIdleTimeout,env=HTTP_IDLE_TIMEOUT,default=120,usage=HTTP keep-alive idle timeout in seconds"`
 	AllowSelfExec         bool   `config:"flag=allowSelfExec,env=ALLOW_SELF_EXEC,default=false,usage=Allow exec sessions inside Dockman containers (unsafe; troubleshooting only)"`
+	GitSyncEnabled        bool   `config:"flag=gitSync,env=GIT_SYNC,default=false,usage=Enable the experimental Git synchronization foundation"`
+	GitMasterKeyFile      string `config:"flag=gitMasterKeyFile,env=GIT_MASTER_KEY_FILE,default=,usage=Path to the 32-byte or base64 Git credential encryption key"`
 	UIPath                string `config:"flag=ui,env=UI_PATH,default=dist,usage=Path to frontend files"`
 	LocalAddr             string `config:"flag=ma,env=MACHINE_ADDR,default=0.0.0.0,usage=Local machine IP address"`
 	ComposeRoot           string `config:"flag=cr,env=COMPOSE_ROOT,default=./compose,usage=Root directory for compose files"`

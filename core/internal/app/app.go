@@ -19,6 +19,7 @@ import (
 	"github.com/RA341/dockman/internal/docker"
 	"github.com/RA341/dockman/internal/dockyaml"
 	"github.com/RA341/dockman/internal/files"
+	"github.com/RA341/dockman/internal/gitsync"
 	"github.com/RA341/dockman/internal/host"
 	hostMiddleware "github.com/RA341/dockman/internal/host/middleware"
 	"github.com/RA341/dockman/internal/info"
@@ -43,6 +44,7 @@ type App struct {
 	CleanerSrv    *cleaner.Service
 	Viewer        *viewer.Service
 	DockYaml      *dockyaml.Service
+	GitSync       *gitsync.Service
 }
 
 func (a *App) VerifyServices() error {
@@ -143,6 +145,25 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		cleanerStore,
 	)
 
+	gitStore := gitsync.NewStore(gormDB)
+	var gitVault *gitsync.Vault
+	if conf.GitSyncEnabled {
+		var keyPath string
+		gitVault, keyPath, err = gitsync.LoadOrCreateVault(conf.ConfigDir, conf.GitMasterKeyFile)
+		if err != nil {
+			log.Fatal().Err(err).Msg("unable to initialize Git credential encryption")
+		}
+		if conf.GitMasterKeyFile == "" {
+			log.Warn().Str("path", keyPath).Msg("Git master key was generated locally; mount GIT_MASTER_KEY_FILE as a Docker secret for production")
+		}
+	}
+	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault)
+	if interrupted, recoverErr := gitSyncSrv.RecoverInterruptedOperations(); recoverErr != nil {
+		log.Fatal().Err(recoverErr).Msg("unable to recover interrupted Git operations")
+	} else if interrupted > 0 {
+		log.Warn().Int64("operations", interrupted).Msg("marked interrupted Git operations as failed")
+	}
+
 	viewerSrv := viewer.New(
 		hostManager.GetDockerService,
 		func(input, host string) (root string, relpath string, err error) {
@@ -169,6 +190,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		UserConfigSrv: userConfigSrv,
 		CleanerSrv:    cleanerSrv,
 		Viewer:        viewerSrv,
+		GitSync:       gitSyncSrv,
 	}
 	err = app.VerifyServices()
 	if err != nil {
@@ -304,6 +326,11 @@ func (a *App) registerApiProtectedRoutes(protectedApiMux *http.ServeMux) {
 		protectedApiMux,
 		"/viewer",
 		viewer.NewHandlerHttp(a.Viewer),
+	)
+	withSubRouter(
+		protectedApiMux,
+		"/git",
+		gitsync.NewHTTPHandler(a.GitSync),
 	)
 
 	// /:host
