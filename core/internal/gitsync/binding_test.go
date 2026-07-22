@@ -148,6 +148,90 @@ func TestTransferInventoryRejectsSpecialFiles(t *testing.T) {
 	require.False(t, isTransferFile(os.ModeDevice|0600))
 }
 
+func TestStackInventoryReportsOversizedFilesWithoutReadingThem(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0644))
+	largePath := filepath.Join(stackRoot, "generated.bundle")
+	require.NoError(t, os.WriteFile(largePath, nil, 0644))
+	require.NoError(t, os.Truncate(largePath, maxBindingFileSize+1))
+
+	files, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false)
+	require.NoError(t, err)
+	require.Equal(t, "oversized", files["generated.bundle"].skipReason)
+	require.Nil(t, files["generated.bundle"].open)
+	preview := buildPreview("binding", "stack_to_repository", files, nil)
+	require.Equal(t, 1, preview.Skipped)
+	require.Contains(t, preview.Entries, PreviewEntry{Path: "generated.bundle", Status: "skipped_oversized", Size: maxBindingFileSize + 1})
+}
+
+func TestDockmanIgnoreExcludesFilesAndFolders(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "cache"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, ".dockmanignore"), []byte("cache/\n*.log\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "runtime.log"), []byte("generated"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "cache", "large.bin"), []byte("generated"), 0644))
+
+	files, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false)
+	require.NoError(t, err)
+	require.Equal(t, "excluded", files["cache"].skipReason)
+	require.Equal(t, "excluded", files["runtime.log"].skipReason)
+	require.NotContains(t, files, "cache/large.bin")
+	require.Contains(t, files, ".dockmanignore")
+	require.Contains(t, files, "compose.yaml")
+}
+
+func TestComposeConfigPolicySupportsIncludesAndExcludes(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "scripts", "nested"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "runtime", "cache"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yaml"), []byte("services: {}\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "photo.jpg"), []byte("not configuration"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "scripts", "nested", "prepare.py"), []byte("print('ok')\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "runtime", "cache", "state.json"), []byte("{}\n"), 0644))
+	policy := syncPolicy{profile: syncProfileComposeConfig, includes: mustRules([]string{"scripts/**"}), excludes: mustRules([]string{"runtime/**"})}
+
+	files, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false, policy)
+	require.NoError(t, err)
+	require.NotNil(t, files["compose.yaml"].open)
+	require.Equal(t, "type", files["photo.jpg"].skipReason)
+	require.NotNil(t, files["scripts/nested/prepare.py"].open)
+	require.Equal(t, "excluded", files["runtime"].skipReason)
+	require.NotContains(t, files, "runtime/cache/state.json")
+}
+
+func TestComposeFilesCannotBeExcludedByPolicyOrDockmanIgnore(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "nested"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, ".dockmanignore"), []byte("*.yaml\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "nested", "compose.yaml"), []byte("services: {}\n"), 0644))
+	policy := syncPolicy{profile: syncProfileComposeConfig, excludes: mustRules([]string{"**"}), compose: map[string]struct{}{"nested/compose.yaml": {}}}
+
+	files, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false, policy)
+	require.NoError(t, err)
+	require.NotNil(t, files["nested/compose.yaml"].open)
+	require.NoError(t, validateComposeFiles(files))
+	require.Equal(t, "excluded", files[".dockmanignore"].skipReason)
+}
+
+func TestBindingPolicyIsValidatedAndPersisted(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+
+	updated, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileAllFiles, IncludePatterns: []string{"scripts/**"}, ExcludePatterns: []string{"data/**", "*.log"}})
+	require.NoError(t, err)
+	require.Equal(t, syncProfileAllFiles, updated.SyncProfile)
+	require.Equal(t, []string{"scripts/**"}, updated.IncludePatterns)
+	require.Equal(t, []string{"data/**", "*.log"}, updated.ExcludePatterns)
+	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeConfig, ExcludePatterns: []string{"../outside"}})
+	require.ErrorContains(t, err, "path traversal")
+}
+
 func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

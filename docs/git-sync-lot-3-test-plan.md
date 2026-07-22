@@ -42,9 +42,28 @@ Expected:
 - the dialog states that deletions are not propagated;
 - closing the dialog changes neither Git nor the stack.
 
-Large folders are inventoried file by file. Dockman hashes and transfers content through a reusable 64 KiB buffer instead of retaining all file contents in memory. The safety ceilings are now 20,000 files, 100 MiB per file, and 2 GiB per linked folder; these bound accidental work, not Dockman's RAM usage.
+Large folders are inventoried file by file. Dockman hashes and transfers content through a reusable 64 KiB buffer instead of retaining all file contents in memory. The safety ceilings are now 20,000 files and 2 GiB of selected content per linked folder. Files over 100 MiB are reported and skipped individually instead of aborting the complete preview; these bounds limit accidental work, not Dockman's RAM usage.
 
-## 3. Secret filtering
+## 3. Synchronization policy and exclusions
+
+1. Open the synchronization policy with the tuning icon on the folder link.
+2. Keep **Compose configuration** selected and preview a folder containing YAML/JSON configuration, an image, a log, and a file over 100 MiB.
+3. Add `scripts/**` to the includes, then add `**/data/**` and `*.log` to the exclusions.
+4. Save and preview again.
+5. Optionally create a `.dockmanignore` at the linked folder root with another disposable folder pattern.
+
+Expected:
+
+- the default profile selects configuration and deployment files, not arbitrary generated/binary content;
+- non-selected types appear as `skipped type`, large files as `skipped oversized`, and explicit rules as `skipped excluded`, with path and size visible;
+- the server log records the exact path, size, and limit for every oversized file;
+- custom includes add matching files and exclusions take priority;
+- `.dockmanignore` exclusions apply without changing the saved policy;
+- Compose files remain protected even if a broad exclusion matches them;
+- skipped files are never read into memory, copied, committed, or restored;
+- switching to **All regular files** includes ordinary files while retaining the special-file, sensitive-file and 100 MiB protections.
+
+## 4. Secret filtering
 
 1. Add a `.env` file with a fake value to the test stack.
 2. Reopen the stack → Git preview.
@@ -58,7 +77,7 @@ Expected:
 
 Keep the sensitive mode disabled for the remaining test unless the disposable repository is private and contains fake data only.
 
-## 4. Manual export
+## 5. Manual export
 
 1. Reopen the stack → Git preview.
 2. Optionally enter a one-line commit message.
@@ -74,7 +93,7 @@ Expected:
 - no stack or container action occurs;
 - a second preview reports no changes.
 
-## 5. Manual import and backup
+## 6. Manual import and backup
 
 1. Change `compose.yaml` in GitHub, keeping it valid YAML, and add a harmless text file.
 2. In Dockman, fetch then pull the repository.
@@ -93,7 +112,7 @@ Expected:
 
 Then open the stack in Dockman's Files view and confirm that normal editing still works.
 
-## 6. Repository-state guards
+## 7. Repository-state guards
 
 Create each state below in the disposable repository and retry a transfer:
 
@@ -103,13 +122,13 @@ Create each state below in the disposable repository and retry a transfer:
 
 Expected: transfer is refused with a clear instruction to pull or resolve the repository first. Existing stack files remain unchanged.
 
-## 7. SSH host smoke test
+## 8. SSH host smoke test
 
 Link a non-production stack on a connected SSH host, preview in both directions, export one harmless file, then import one harmless change.
 
 Expected: behavior matches the local host, paths remain within the configured alias, and no unrelated remote file changes.
 
-## 8. Cleanup
+## 9. Cleanup
 
 Delete the link from Dockman.
 

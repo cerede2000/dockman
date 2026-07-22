@@ -43,13 +43,16 @@ func (Repository) TableName() string { return "git_repositories" }
 
 type StackBinding struct {
 	gorm.Model
-	UUID           string `gorm:"not null;uniqueIndex"`
-	RepositoryUUID string `gorm:"not null;index"`
-	Host           string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
-	StackPath      string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
-	SubPath        string `gorm:"not null"`
-	ComposePaths   string
-	Enabled        bool `gorm:"not null;default:true"`
+	UUID            string `gorm:"not null;uniqueIndex"`
+	RepositoryUUID  string `gorm:"not null;index"`
+	Host            string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
+	StackPath       string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
+	SubPath         string `gorm:"not null"`
+	ComposePaths    string
+	SyncProfile     string `gorm:"not null;default:compose_config"`
+	IncludePatterns string `gorm:"type:text"`
+	ExcludePatterns string `gorm:"type:text"`
+	Enabled         bool   `gorm:"not null;default:true"`
 }
 
 func (StackBinding) TableName() string { return "git_stack_bindings" }

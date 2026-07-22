@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,18 +20,24 @@ import (
 	"time"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
+	"github.com/bmatcuk/doublestar/v4"
 	gitclient "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/goccy/go-yaml"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 const (
-	maxBindingFiles      = 20_000
-	maxBindingFileSize   = 100 << 20
-	maxBindingTotalSize  = 2 << 30
-	transferBufferSize   = 64 << 10
-	sensitiveConfirmText = "INCLUDE SENSITIVE FILES"
+	maxBindingFiles          = 20_000
+	maxBindingFileSize       = 100 << 20
+	maxBindingTotalSize      = 2 << 30
+	transferBufferSize       = 64 << 10
+	maxIgnoreFileSize        = 64 << 10
+	maxIgnoreRules           = 1000
+	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
+	syncProfileComposeConfig = "compose_config"
+	syncProfileAllFiles      = "all_files"
 )
 
 var transferBufferPool = sync.Pool{New: func() any { return make([]byte, transferBufferSize) }}
@@ -43,16 +50,25 @@ type BindingInput struct {
 }
 
 type BindingView struct {
-	ID             string    `json:"id"`
-	RepositoryID   string    `json:"repositoryId"`
-	RepositoryName string    `json:"repositoryName"`
-	Host           string    `json:"host"`
-	StackPath      string    `json:"stackPath"`
-	SubPath        string    `json:"subPath"`
-	ComposePaths   []string  `json:"composePaths"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID              string    `json:"id"`
+	RepositoryID    string    `json:"repositoryId"`
+	RepositoryName  string    `json:"repositoryName"`
+	Host            string    `json:"host"`
+	StackPath       string    `json:"stackPath"`
+	SubPath         string    `json:"subPath"`
+	ComposePaths    []string  `json:"composePaths"`
+	SyncProfile     string    `json:"syncProfile"`
+	IncludePatterns []string  `json:"includePatterns"`
+	ExcludePatterns []string  `json:"excludePatterns"`
+	Enabled         bool      `json:"enabled"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+type BindingPolicyInput struct {
+	Profile         string   `json:"profile"`
+	IncludePatterns []string `json:"includePatterns"`
+	ExcludePatterns []string `json:"excludePatterns"`
 }
 
 type StackTarget struct {
@@ -98,13 +114,34 @@ type TransferResult struct {
 }
 
 type transferFile struct {
-	path      string
-	mode      fs.FileMode
-	size      int64
-	sha       string
-	sensitive bool
-	open      func() (io.ReadCloser, error)
+	path       string
+	mode       fs.FileMode
+	size       int64
+	sha        string
+	sensitive  bool
+	skipReason string
+	open       func() (io.ReadCloser, error)
 }
+
+type ignoreRule struct {
+	pattern   string
+	directory bool
+	basename  bool
+}
+
+type syncPolicy struct {
+	profile  string
+	includes []ignoreRule
+	excludes []ignoreRule
+	compose  map[string]struct{}
+}
+
+var composeConfigRules = mustRules([]string{
+	"*.yml", "*.yaml", "*.json", "*.toml", "*.conf", "*.config", "*.cfg", "*.ini",
+	"*.properties", "*.xml", "*.tmpl", "*.tpl", "*.j2", "*.sh", "*.bash", "*.sql",
+	"*.txt", "*.md", "*.crt", ".env", ".env.*", ".gitignore", ".dockerignore",
+	".dockmanignore", "Dockerfile*", "Containerfile*", "Caddyfile", "Makefile",
+})
 
 type rootedReadCloser struct {
 	file *os.File
@@ -149,8 +186,26 @@ func (s *Service) CreateBinding(input BindingInput) (BindingView, error) {
 	row := StackBinding{
 		UUID: uuid.NewString(), RepositoryUUID: clean.RepositoryID, Host: clean.Host,
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
-		ComposePaths: strings.Join(compose, "\n"), Enabled: true,
+		ComposePaths: strings.Join(compose, "\n"), SyncProfile: syncProfileComposeConfig, Enabled: true,
 	}
+	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingView{}, err
+	}
+	return s.bindingView(row)
+}
+
+func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (BindingView, error) {
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingView{}, err
+	}
+	policy, includes, excludes, err := normalizeBindingPolicy(input)
+	if err != nil {
+		return BindingView{}, err
+	}
+	row.SyncProfile = policy
+	row.IncludePatterns = strings.Join(includes, "\n")
+	row.ExcludePatterns = strings.Join(excludes, "\n")
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
 	}
@@ -431,7 +486,11 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 	if row.ComposePaths != "" {
 		compose = strings.Split(row.ComposePaths, "\n")
 	}
-	return BindingView{ID: row.UUID, RepositoryID: row.RepositoryUUID, RepositoryName: repository.Name, Host: row.Host, StackPath: row.StackPath, SubPath: row.SubPath, ComposePaths: compose, Enabled: row.Enabled, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
+	profile := row.SyncProfile
+	if profile == "" {
+		profile = syncProfileComposeConfig
+	}
+	return BindingView{ID: row.UUID, RepositoryID: row.RepositoryUUID, RepositoryName: repository.Name, Host: row.Host, StackPath: row.StackPath, SubPath: row.SubPath, ComposePaths: compose, SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns), ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
 }
 
 func discoverComposeFiles(targetFS filesystem.FileSystem, root string) []string {
@@ -490,11 +549,15 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	if err != nil {
 		return StackBinding{}, nil, nil, err
 	}
+	policy, err := policyFromBinding(binding)
+	if err != nil {
+		return binding, nil, nil, err
+	}
 	targetFS, targetRoot, err := s.resolveBindingStack(binding)
 	if err != nil {
 		return binding, nil, nil, err
 	}
-	stackFiles, err := collectStackFiles(targetFS, targetRoot, input.IncludeSensitive)
+	stackFiles, err := collectStackFiles(targetFS, targetRoot, input.IncludeSensitive, policy)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return binding, nil, nil, fmt.Errorf("read stack files: %w", err)
 	}
@@ -502,7 +565,7 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	if err != nil {
 		return binding, nil, nil, err
 	}
-	repositoryFiles, err := collectRepositoryFiles(repositoryRoot, binding.SubPath, input.IncludeSensitive)
+	repositoryFiles, err := collectRepositoryFiles(repositoryRoot, binding.SubPath, input.IncludeSensitive, policy)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return binding, nil, nil, fmt.Errorf("read repository files: %w", err)
 	}
@@ -523,8 +586,17 @@ func validateSensitiveOptIn(input TransferInput) error {
 	return nil
 }
 
-func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensitive bool) (map[string]transferFile, error) {
+func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
 	result := map[string]transferFile{}
+	policy := defaultSyncPolicy()
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	ignoreRules, err := loadStackIgnoreRules(targetFS, root)
+	if err != nil {
+		return nil, err
+	}
+	excludeRules := append(append([]ignoreRule(nil), policy.excludes...), ignoreRules...)
 	var total int64
 	var walk func(string, string) error
 	walk = func(dir, rel string) error {
@@ -535,6 +607,17 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 		for _, entry := range entries {
 			childRel := filepath.ToSlash(filepath.Join(rel, entry.Name()))
 			if shouldSkipPath(childRel, entry.IsDir()) {
+				continue
+			}
+			if matchesIgnoreRule(excludeRules, childRel, entry.IsDir()) && !policy.protectsCompose(childRel) {
+				if entry.IsDir() && policy.containsCompose(childRel) {
+					child := targetFS.Join(dir, entry.Name())
+					if err := walk(child, childRel); err != nil {
+						return err
+					}
+					continue
+				}
+				result[childRel] = transferFile{path: childRel, skipReason: "excluded"}
 				continue
 			}
 			if entry.Type()&os.ModeSymlink != 0 {
@@ -554,15 +637,30 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if !isTransferFile(info.Mode()) {
 				continue
 			}
+			if len(result)+1 > maxBindingFiles {
+				return fmt.Errorf("stack contains more than %d files; exclude generated folders with .dockmanignore", maxBindingFiles)
+			}
+			sensitive := isSensitivePath(childRel)
+			if sensitive && !includeSensitive {
+				result[childRel] = transferFile{path: childRel, size: info.Size(), sensitive: true, skipReason: "sensitive"}
+				continue
+			}
+			if info.Size() > maxBindingFileSize {
+				log.Warn().Str("file", childRel).Int64("size_bytes", info.Size()).Int64("limit_bytes", maxBindingFileSize).Msg("Git stack sync skipped oversized file")
+				result[childRel] = transferFile{path: childRel, size: info.Size(), skipReason: "oversized"}
+				continue
+			}
+			if !policy.includesFile(childRel) {
+				result[childRel] = transferFile{path: childRel, size: info.Size(), skipReason: "type"}
+				continue
+			}
+			if total+info.Size() > maxBindingTotalSize {
+				return fmt.Errorf("stack files exceed the %d MiB total limit at %s (%d MiB accumulated); exclude this file or a generated folder with .dockmanignore", maxBindingTotalSize>>20, childRel, (total+info.Size())>>20)
+			}
 			if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
 				return err
 			}
 			total += info.Size()
-			sensitive := isSensitivePath(childRel)
-			if sensitive && !includeSensitive {
-				result[childRel] = transferFile{path: childRel, size: info.Size(), sensitive: true}
-				continue
-			}
 			childPath := child
 			file := transferFile{path: childRel, size: info.Size(), mode: info.Mode().Perm(), sensitive: sensitive, open: func() (io.ReadCloser, error) {
 				return targetFS.OpenFile(childPath, os.O_RDONLY, 0)
@@ -578,7 +676,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 	return result, walk(root, "")
 }
 
-func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive bool) (map[string]transferFile, error) {
+func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
 	safeRoot, err := os.OpenRoot(repositoryRoot)
 	if err != nil {
 		return nil, err
@@ -589,6 +687,15 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 		baseRelative = filepath.FromSlash(subPath)
 	}
 	result := map[string]transferFile{}
+	policy := defaultSyncPolicy()
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	ignoreRules, err := loadRepositoryIgnoreRules(safeRoot, baseRelative)
+	if err != nil {
+		return nil, err
+	}
+	excludeRules := append(append([]ignoreRule(nil), policy.excludes...), ignoreRules...)
 	var total int64
 	err = fs.WalkDir(safeRoot.FS(), filepath.ToSlash(baseRelative), func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -600,6 +707,16 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 		}
 		rel = filepath.ToSlash(rel)
 		if shouldSkipPath(rel, entry.IsDir()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if matchesIgnoreRule(excludeRules, rel, entry.IsDir()) && !policy.protectsCompose(rel) {
+			if entry.IsDir() && policy.containsCompose(rel) {
+				return nil
+			}
+			result[rel] = transferFile{path: rel, skipReason: "excluded"}
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -621,15 +738,30 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 		if !isTransferFile(info.Mode()) {
 			return nil
 		}
+		if len(result)+1 > maxBindingFiles {
+			return fmt.Errorf("repository folder contains more than %d files; exclude generated folders with .dockmanignore", maxBindingFiles)
+		}
+		sensitive := isSensitivePath(rel)
+		if sensitive && !includeSensitive {
+			result[rel] = transferFile{path: rel, size: info.Size(), sensitive: true, skipReason: "sensitive"}
+			return nil
+		}
+		if info.Size() > maxBindingFileSize {
+			log.Warn().Str("file", rel).Int64("size_bytes", info.Size()).Int64("limit_bytes", maxBindingFileSize).Msg("Git stack sync skipped oversized file")
+			result[rel] = transferFile{path: rel, size: info.Size(), skipReason: "oversized"}
+			return nil
+		}
+		if !policy.includesFile(rel) {
+			result[rel] = transferFile{path: rel, size: info.Size(), skipReason: "type"}
+			return nil
+		}
+		if total+info.Size() > maxBindingTotalSize {
+			return fmt.Errorf("repository files exceed the %d MiB total limit at %s (%d MiB accumulated); exclude this file or a generated folder with .dockmanignore", maxBindingTotalSize>>20, rel, (total+info.Size())>>20)
+		}
 		if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
 			return err
 		}
 		total += info.Size()
-		sensitive := isSensitivePath(rel)
-		if sensitive && !includeSensitive {
-			result[rel] = transferFile{path: rel, size: info.Size(), sensitive: true}
-			return nil
-		}
 		repositoryRelative := filepath.Join(baseRelative, filepath.FromSlash(rel))
 		file := transferFile{path: rel, size: info.Size(), mode: info.Mode().Perm(), sensitive: sensitive, open: repositoryFileOpener(repositoryRoot, repositoryRelative)}
 		file.sha, err = hashTransferFile(file)
@@ -695,8 +827,221 @@ func checkTransferLimit(files int, fileSize, totalSize int64) error {
 	return nil
 }
 
+func defaultSyncPolicy() syncPolicy {
+	return syncPolicy{profile: syncProfileComposeConfig}
+}
+
+func policyFromBinding(binding StackBinding) (syncPolicy, error) {
+	profile := binding.SyncProfile
+	if profile == "" {
+		profile = syncProfileComposeConfig
+	}
+	_, includes, excludes, err := normalizeBindingPolicy(BindingPolicyInput{
+		Profile: profile, IncludePatterns: splitPatternLines(binding.IncludePatterns), ExcludePatterns: splitPatternLines(binding.ExcludePatterns),
+	})
+	if err != nil {
+		return syncPolicy{}, fmt.Errorf("invalid stack link policy: %w", err)
+	}
+	includeRules, err := rulesFromPatterns(includes)
+	if err != nil {
+		return syncPolicy{}, err
+	}
+	excludeRules, err := rulesFromPatterns(excludes)
+	if err != nil {
+		return syncPolicy{}, err
+	}
+	compose := make(map[string]struct{})
+	for _, relative := range splitPatternLines(binding.ComposePaths) {
+		compose[filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))] = struct{}{}
+	}
+	return syncPolicy{profile: profile, includes: includeRules, excludes: excludeRules, compose: compose}, nil
+}
+
+func normalizeBindingPolicy(input BindingPolicyInput) (string, []string, []string, error) {
+	profile := strings.TrimSpace(input.Profile)
+	if profile == "" {
+		profile = syncProfileComposeConfig
+	}
+	if profile != syncProfileComposeConfig && profile != syncProfileAllFiles {
+		return "", nil, nil, errors.New("sync profile must be compose_config or all_files")
+	}
+	includes, _, err := normalizePatterns(input.IncludePatterns)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("invalid include patterns: %w", err)
+	}
+	excludes, _, err := normalizePatterns(input.ExcludePatterns)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("invalid exclude patterns: %w", err)
+	}
+	return profile, includes, excludes, nil
+}
+
+func splitPatternLines(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return []string{}
+	}
+	return strings.Split(value, "\n")
+}
+
+func normalizePatterns(values []string) ([]string, []ignoreRule, error) {
+	normalized := make([]string, 0, len(values))
+	rules := make([]ignoreRule, 0, len(values))
+	total := 0
+	for index, raw := range values {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "!") {
+			return nil, nil, fmt.Errorf("line %d: negation rules are not supported", index+1)
+		}
+		directory := strings.HasSuffix(line, "/")
+		line = strings.Trim(strings.ReplaceAll(line, "\\", "/"), "/")
+		if err := validateRelativePath(line, false); err != nil {
+			return nil, nil, fmt.Errorf("line %d: %w", index+1, err)
+		}
+		if !doublestar.ValidatePattern(line) {
+			return nil, nil, fmt.Errorf("line %d: invalid glob pattern", index+1)
+		}
+		total += len(line)
+		if total > maxIgnoreFileSize {
+			return nil, nil, fmt.Errorf("patterns exceed %d KiB", maxIgnoreFileSize>>10)
+		}
+		normalizedLine := line
+		if directory {
+			normalizedLine += "/"
+		}
+		normalized = append(normalized, normalizedLine)
+		rules = append(rules, ignoreRule{pattern: line, directory: directory, basename: !strings.Contains(line, "/")})
+		if len(rules) > maxIgnoreRules {
+			return nil, nil, fmt.Errorf("more than %d rules", maxIgnoreRules)
+		}
+	}
+	return normalized, rules, nil
+}
+
+func rulesFromPatterns(patterns []string) ([]ignoreRule, error) {
+	_, rules, err := normalizePatterns(patterns)
+	return rules, err
+}
+
+func mustRules(patterns []string) []ignoreRule {
+	rules, err := rulesFromPatterns(patterns)
+	if err != nil {
+		panic(err)
+	}
+	return rules
+}
+
+func (policy syncPolicy) includesFile(relative string) bool {
+	if matchesIgnoreRule(policy.includes, relative, false) {
+		return true
+	}
+	if policy.profile == syncProfileAllFiles {
+		return true
+	}
+	return matchesIgnoreRule(composeConfigRules, relative, false)
+}
+
+func (policy syncPolicy) protectsCompose(relative string) bool {
+	if !isComposePath(relative) {
+		return false
+	}
+	if len(policy.compose) == 0 {
+		return true
+	}
+	_, protected := policy.compose[filepath.ToSlash(relative)]
+	return protected
+}
+
+func (policy syncPolicy) containsCompose(directory string) bool {
+	directory = strings.Trim(filepath.ToSlash(directory), "/")
+	for compose := range policy.compose {
+		if strings.HasPrefix(compose, directory+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func loadStackIgnoreRules(targetFS filesystem.FileSystem, root string) ([]ignoreRule, error) {
+	ignorePath := targetFS.Join(root, ".dockmanignore")
+	info, err := targetFS.Stat(ignorePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("inspect .dockmanignore: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New(".dockmanignore must be a regular file")
+	}
+	reader, err := targetFS.OpenFile(ignorePath, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open .dockmanignore: %w", err)
+	}
+	return parseIgnoreRules(reader)
+}
+
+func loadRepositoryIgnoreRules(root *os.Root, base string) ([]ignoreRule, error) {
+	reader, err := root.Open(filepath.Join(base, ".dockmanignore"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open .dockmanignore: %w", err)
+	}
+	return parseIgnoreRules(reader)
+}
+
+func parseIgnoreRules(reader io.ReadCloser) ([]ignoreRule, error) {
+	defer reader.Close()
+	contents, err := io.ReadAll(io.LimitReader(reader, maxIgnoreFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read .dockmanignore: %w", err)
+	}
+	if len(contents) > maxIgnoreFileSize {
+		return nil, fmt.Errorf(".dockmanignore exceeds %d KiB", maxIgnoreFileSize>>10)
+	}
+	_, rules, err := normalizePatterns(strings.Split(string(contents), "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid .dockmanignore: %w", err)
+	}
+	return rules, nil
+}
+
+func matchesIgnoreRule(rules []ignoreRule, relative string, directory bool) bool {
+	relative = filepath.ToSlash(strings.TrimPrefix(relative, "./"))
+	for _, rule := range rules {
+		if rule.directory && (relative == rule.pattern || strings.HasPrefix(relative, rule.pattern+"/")) {
+			return true
+		}
+		if directory && strings.HasSuffix(rule.pattern, "/**") && relative == strings.TrimSuffix(rule.pattern, "/**") {
+			return true
+		}
+		candidate := relative
+		if rule.basename {
+			candidate = path.Base(relative)
+		}
+		matched, err := doublestar.Match(rule.pattern, candidate)
+		if err == nil && matched && (!rule.directory || directory) {
+			return true
+		}
+	}
+	return false
+}
+
 func isTransferFile(mode fs.FileMode) bool {
 	return mode.IsRegular()
+}
+
+func isComposePath(relative string) bool {
+	switch strings.ToLower(filepath.Base(relative)) {
+	case "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldSkipPath(path string, directory bool) bool {
@@ -725,8 +1070,12 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 	sort.Strings(paths)
 	for _, path := range paths {
 		src := source[path]
-		if src.sensitive && src.open == nil {
-			preview.Entries = append(preview.Entries, PreviewEntry{Path: path, Status: "skipped_sensitive", Size: src.size, Sensitive: true})
+		if src.open == nil {
+			reason := src.skipReason
+			if reason == "" {
+				reason = "unavailable"
+			}
+			preview.Entries = append(preview.Entries, PreviewEntry{Path: path, Status: "skipped_" + reason, Size: src.size, Sensitive: src.sensitive})
 			preview.Skipped++
 			continue
 		}
@@ -899,11 +1248,10 @@ func changedTransferFiles(source, target map[string]transferFile) map[string]tra
 func validateComposeFiles(files map[string]transferFile) error {
 	found := false
 	for path, file := range files {
-		switch strings.ToLower(filepath.Base(path)) {
-		case "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml":
+		if isComposePath(path) {
 			found = true
 			if file.open == nil {
-				return fmt.Errorf("compose file %s is sensitive and was skipped", path)
+				return fmt.Errorf("compose file %s was skipped (%s); Compose files cannot be excluded from synchronization", path, file.skipReason)
 			}
 			reader, err := file.open()
 			if err != nil {

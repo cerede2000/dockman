@@ -7,9 +7,10 @@ import {
 } from "@mui/material";
 import {
     Add, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
-    FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SyncOutlined,
+    FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SyncOutlined, TuneOutlined,
 } from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
+import {formatBytes} from "../../lib/editor.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 
 type AuthType = "public" | "https_token" | "ssh_key";
@@ -87,10 +88,11 @@ interface RepositoryForm {
 interface StackTarget { host: string; path: string; composePaths: string[]; scope: "all_stacks" | "folder"; stackCount: number; }
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
-    subPath: string; composePaths: string[]; enabled: boolean;
+    subPath: string; composePaths: string[]; syncProfile: "compose_config" | "all_files";
+    includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
 }
 interface PreviewEntry {
-    path: string; status: "add" | "modify" | "skipped_sensitive"; sourceSha?: string;
+    path: string; status: "add" | "modify" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
     targetSha?: string; size?: number; sensitive?: boolean;
 }
 interface TransferPreview {
@@ -171,6 +173,8 @@ export default function TabGit() {
     const [sensitiveConfirmation, setSensitiveConfirmation] = useState("");
     const [commitMessage, setCommitMessage] = useState("");
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
+    const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
+    const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
 
     const loadRepositoryStatuses = useCallback(async (rows: Repository[]) => {
         const pairs = await Promise.all(rows.filter((row) => row.workspacePresent).map(async (row) => {
@@ -416,6 +420,27 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
+    const openBindingPolicy = (binding: Binding) => {
+        setPolicyBinding(binding);
+        setPolicyForm({profile: binding.syncProfile || "compose_config", includes: (binding.includePatterns || []).join("\n"), excludes: (binding.excludePatterns || []).join("\n")});
+    };
+
+    const saveBindingPolicy = async () => {
+        if (!policyBinding) return;
+        setBusy(`binding-policy-${policyBinding.id}`);
+        try {
+            await api<Binding>(`/bindings/${policyBinding.id}/policy`, {method: "PUT", body: JSON.stringify({
+                profile: policyForm.profile,
+                includePatterns: policyForm.includes.split("\n"),
+                excludePatterns: policyForm.excludes.split("\n"),
+            })});
+            showSuccess("Stack synchronization policy updated.");
+            setPolicyBinding(null);
+            await load();
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
+    };
+
     if (loading && !feature) return <Box sx={{display: "grid", placeItems: "center", p: 6}}><CircularProgress/></Box>;
 
     if (feature && !feature.enabled) {
@@ -495,9 +520,10 @@ export default function TabGit() {
                         {bindings.length === 0 && <TableRow><TableCell colSpan={4} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
                         {bindings.map((binding) => <TableRow key={binding.id} hover>
                             <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Complete folder on {binding.host}</Typography></TableCell>
-                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography></TableCell>
+                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Box sx={{mt: .5}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : "Configuration files"}/></Box></TableCell>
                             <TableCell>{binding.composePaths.length ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>{binding.composePaths.slice(0, 2).map((path) => <Chip key={path} size="small" variant="outlined" label={path}/>)}{binding.composePaths.length > 2 && <Chip size="small" color="info" variant="outlined" label={`+${binding.composePaths.length - 2}`}/>}</Stack> : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
                             <TableCell align="right" sx={{whiteSpace: "nowrap"}}>
+                                <Tooltip title="Synchronization policy"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingPolicy(binding)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                 <Tooltip title="Preview stack → Git"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "stack_to_repository")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                 <Tooltip title="Preview Git → stack"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "repository_to_stack")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                 <Tooltip title="Remove link"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteBinding(binding)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
@@ -562,12 +588,13 @@ export default function TabGit() {
                 </Alert>
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
                     <Chip label={`${transferPreview?.changed || 0} changed`} color={transferPreview?.changed ? "warning" : "success"}/>
-                    <Chip label={`${transferPreview?.skipped || 0} sensitive skipped`} variant="outlined"/>
+                    <Chip label={`${transferPreview?.skipped || 0} skipped`} variant="outlined" color={transferPreview?.skipped ? "warning" : "default"}/>
                     <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
                 </Stack>
+                {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Open the synchronization policy on the folder link to add <code>**</code> include or exclude rules.</Alert>}
                 <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell></TableRow></TableHead><TableBody>
                     {!transferPreview?.entries.length && <TableRow><TableCell colSpan={3} align="center" sx={{py: 4, color: "text.secondary"}}>No difference.</TableCell></TableRow>}
-                    {transferPreview?.entries.map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status === "skipped_sensitive" ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : `${entry.size} B`}</TableCell></TableRow>)}
+                    {transferPreview?.entries.map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell></TableRow>)}
                 </TableBody></Table></TableContainer>
                 <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
                     const checked = event.target.checked;
@@ -578,6 +605,21 @@ export default function TabGit() {
                 {transferDirection === "stack_to_repository" && <TextField label="Commit message (optional)" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
             </Stack></DialogContent>
             <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button><Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || transferPreview.changed === 0 || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferDirection === "stack_to_repository" ? "Commit and push" : "Backup and import"}</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={policyBinding !== null} onClose={() => busy === null && setPolicyBinding(null)} fullWidth maxWidth="sm">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Synchronization policy</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <Alert severity="info">The policy applies in both directions. Compose files stay protected. Special files, Git metadata and files over 100 MiB are always excluded.</Alert>
+                <FormControl><InputLabel>Base profile</InputLabel><Select label="Base profile" value={policyForm.profile} onChange={(event) => setPolicyForm({...policyForm, profile: event.target.value as "compose_config" | "all_files"})}>
+                    <MenuItem value="compose_config">Compose configuration — recommended</MenuItem>
+                    <MenuItem value="all_files">All regular files</MenuItem>
+                </Select></FormControl>
+                <TextField label="Additional include rules" value={policyForm.includes} onChange={(event) => setPolicyForm({...policyForm, includes: event.target.value})} multiline minRows={4} maxRows={10} placeholder={"scripts/**\ncustom-file\n*.py"} helperText="One relative glob per line. These rules extend the selected profile." sx={{"& textarea": {fontFamily: "monospace"}}}/>
+                <TextField label="Exclude rules" value={policyForm.excludes} onChange={(event) => setPolicyForm({...policyForm, excludes: event.target.value})} multiline minRows={4} maxRows={10} placeholder={"**/data/**\n**/cache/**\n*.log"} helperText="One relative glob per line. Exclusions always take priority." sx={{"& textarea": {fontFamily: "monospace"}}}/>
+                <Typography variant="caption" color="text.secondary">The configuration profile includes Compose/YAML, JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Sensitive files remain protected separately.</Typography>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
         </Dialog>
 
         <Dialog open={deleteBinding !== null} onClose={() => busy === null && setDeleteBinding(null)} maxWidth="xs" fullWidth>

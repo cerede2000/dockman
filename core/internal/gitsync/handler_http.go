@@ -36,6 +36,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /stack-targets", h.listStackTargets)
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("POST /bindings", h.createBinding)
+	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("DELETE /bindings/{id}", h.deleteBinding)
 	mux.HandleFunc("POST /bindings/{id}/preview/{direction}", h.previewBinding)
 	mux.HandleFunc("POST /bindings/{id}/export", h.exportBinding)
@@ -45,6 +46,23 @@ func NewHTTPHandler(service *Service) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) updateBindingPolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingPolicyInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.UpdateBindingPolicy(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
 }
 
 func (h *HTTPHandler) listStackTargets(w http.ResponseWriter, _ *http.Request) {

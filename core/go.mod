@@ -8,6 +8,7 @@ require (
 	connectrpc.com/cors v0.1.0
 	dario.cat/mergo v1.0.2
 	fyne.io/systray v1.12.2
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/creack/pty v1.1.24
 	github.com/docker/compose/v5 v5.3.1
@@ -65,7 +66,6 @@ require (
 	github.com/akavel/rsrc v0.10.2 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/awesome-gocui/gocui v1.1.0 // indirect
-	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
