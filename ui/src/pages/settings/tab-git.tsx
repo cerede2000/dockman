@@ -84,7 +84,7 @@ interface RepositoryForm {
     private: boolean;
 }
 
-interface StackTarget { host: string; path: string; composePaths: string[]; }
+interface StackTarget { host: string; path: string; composePaths: string[]; scope: "all_stacks" | "folder"; stackCount: number; }
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
     subPath: string; composePaths: string[]; enabled: boolean;
@@ -163,7 +163,7 @@ export default function TabGit() {
     const [bindings, setBindings] = useState<Binding[]>([]);
     const [stackTargets, setStackTargets] = useState<StackTarget[]>([]);
     const [bindingDialogOpen, setBindingDialogOpen] = useState(false);
-    const [bindingForm, setBindingForm] = useState({repositoryId: "", host: "", stackPath: "", subPath: "."});
+    const [bindingForm, setBindingForm] = useState({repositoryId: "", host: "", stackPath: "", subPath: "stacks", targetMode: "repository_folder" as "repository_folder" | "repository_root"});
     const [transferBinding, setTransferBinding] = useState<Binding | null>(null);
     const [transferDirection, setTransferDirection] = useState<TransferDirection>("stack_to_repository");
     const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
@@ -354,15 +354,15 @@ export default function TabGit() {
 
     const openBindingCreate = () => {
         const first = stackTargets[0];
-        setBindingForm({repositoryId: repositories[0]?.id || "", host: first?.host || "", stackPath: first?.path || "", subPath: "."});
+        setBindingForm({repositoryId: repositories[0]?.id || "", host: first?.host || "", stackPath: first?.path || "", subPath: "stacks", targetMode: "repository_folder"});
         setBindingDialogOpen(true);
     };
 
     const saveBinding = async () => {
         setBusy("binding-save");
         try {
-            await api<Binding>("/bindings", {method: "POST", body: JSON.stringify(bindingForm)});
-            showSuccess("Stack linked to the Git repository.");
+            await api<Binding>("/bindings", {method: "POST", body: JSON.stringify({repositoryId: bindingForm.repositoryId, host: bindingForm.host, stackPath: bindingForm.stackPath, subPath: bindingForm.subPath})});
+            showSuccess("Complete folder linked to the Git repository.");
             setBindingDialogOpen(false);
             await load();
         } catch (error) {
@@ -484,19 +484,19 @@ export default function TabGit() {
             <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
                 <Stack direction={{xs: "column", md: "row"}} sx={{p: 2.25, justifyContent: "space-between", gap: 2}}>
                     <Box>
-                        <Typography variant="h6">Stack links</Typography>
-                        <Typography variant="body2" color="text.secondary">Link one host stack folder to one repository folder, preview differences, then transfer explicitly.</Typography>
+                        <Typography variant="h6">Folder links</Typography>
+                        <Typography variant="body2" color="text.secondary">Link a complete stacks root to a Git folder or a dedicated repository. Its full subfolder tree is preserved automatically.</Typography>
                     </Box>
-                    <Button variant="contained" startIcon={<LinkOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openBindingCreate}>Link stack</Button>
+                    <Button variant="contained" startIcon={<LinkOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openBindingCreate}>Link folder</Button>
                 </Stack>
                 <TableContainer><Table size="small">
-                    <TableHead><TableRow><TableCell>Stack</TableCell><TableCell>Repository folder</TableCell><TableCell>Compose</TableCell><TableCell align="right">Manual transfer</TableCell></TableRow></TableHead>
+                    <TableHead><TableRow><TableCell>Source folder</TableCell><TableCell>Git destination</TableCell><TableCell>Compose files</TableCell><TableCell align="right">Manual transfer</TableCell></TableRow></TableHead>
                     <TableBody>
                         {bindings.length === 0 && <TableRow><TableCell colSpan={4} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
                         {bindings.map((binding) => <TableRow key={binding.id} hover>
-                            <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Host: {binding.host}</Typography></TableCell>
+                            <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Complete folder on {binding.host}</Typography></TableCell>
                             <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography></TableCell>
-                            <TableCell>{binding.composePaths.length ? binding.composePaths.map((path) => <Chip key={path} size="small" variant="outlined" label={path} sx={{mr: .5}}/>) : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
+                            <TableCell>{binding.composePaths.length ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>{binding.composePaths.slice(0, 2).map((path) => <Chip key={path} size="small" variant="outlined" label={path}/>)}{binding.composePaths.length > 2 && <Chip size="small" color="info" variant="outlined" label={`+${binding.composePaths.length - 2}`}/>}</Stack> : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
                             <TableCell align="right" sx={{whiteSpace: "nowrap"}}>
                                 <Tooltip title="Preview stack → Git"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "stack_to_repository")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                 <Tooltip title="Preview Git → stack"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "repository_to_stack")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
@@ -534,18 +534,22 @@ export default function TabGit() {
         </Stack>
 
         <Dialog open={bindingDialogOpen} onClose={() => busy === null && setBindingDialogOpen(false)} fullWidth maxWidth="sm">
-            <DialogTitle>Link a stack to Git</DialogTitle>
+            <DialogTitle>Link a complete stacks folder to Git</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
                 <FormControl><InputLabel>Repository</InputLabel><Select label="Repository" value={bindingForm.repositoryId} onChange={(event) => setBindingForm({...bindingForm, repositoryId: event.target.value})}>
                     {repositories.map((repository) => <MenuItem key={repository.id} value={repository.id}>{repository.name}</MenuItem>)}
                 </Select></FormControl>
-                {stackTargets.length > 0 && <FormControl><InputLabel>Detected stack</InputLabel><Select label="Detected stack" value={stackTargets.some((target) => `${target.host}\n${target.path}` === `${bindingForm.host}\n${bindingForm.stackPath}`) ? `${bindingForm.host}\n${bindingForm.stackPath}` : ""} onChange={(event) => {
+                {stackTargets.length > 0 && <FormControl><InputLabel>Source folder</InputLabel><Select label="Source folder" value={stackTargets.some((target) => `${target.host}\n${target.path}` === `${bindingForm.host}\n${bindingForm.stackPath}`) ? `${bindingForm.host}\n${bindingForm.stackPath}` : ""} onChange={(event) => {
                     const target = stackTargets.find((item) => `${item.host}\n${item.path}` === event.target.value);
                     if (target) setBindingForm({...bindingForm, host: target.host, stackPath: target.path});
-                }}><MenuItem value=""><em>Custom path</em></MenuItem>{stackTargets.map((target) => <MenuItem key={`${target.host}-${target.path}`} value={`${target.host}\n${target.path}`}>{target.host} — {target.path}</MenuItem>)}</Select></FormControl>}
-                <Stack direction={{xs: "column", sm: "row"}} spacing={2}><TextField fullWidth label="Host" value={bindingForm.host} onChange={(event) => setBindingForm({...bindingForm, host: event.target.value})} required/><TextField fullWidth label="Stack path" value={bindingForm.stackPath} onChange={(event) => setBindingForm({...bindingForm, stackPath: event.target.value})} placeholder="compose/my-stack" required/></Stack>
-                <TextField label="Repository subfolder" value={bindingForm.subPath} onChange={(event) => setBindingForm({...bindingForm, subPath: event.target.value})} placeholder="stacks/my-stack" helperText="Use . for the repository root. Absolute paths and .git are refused." required/>
-                <Alert severity="info">The link alone copies nothing. You will preview and confirm each direction afterward.</Alert>
+                }}><MenuItem value=""><em>Custom folder</em></MenuItem>{stackTargets.map((target) => <MenuItem key={`${target.host}-${target.path}`} value={`${target.host}\n${target.path}`}>{target.scope === "all_stacks" ? "All stacks" : "Folder"} — {target.host} / {target.path} ({target.stackCount} stack{target.stackCount === 1 ? "" : "s"})</MenuItem>)}</Select></FormControl>}
+                <Stack direction={{xs: "column", sm: "row"}} spacing={2}><TextField fullWidth label="Host" value={bindingForm.host} onChange={(event) => setBindingForm({...bindingForm, host: event.target.value})} required/><TextField fullWidth label="Complete source folder" value={bindingForm.stackPath} onChange={(event) => setBindingForm({...bindingForm, stackPath: event.target.value})} placeholder="compose" required/></Stack>
+                <FormControl><InputLabel>Git destination</InputLabel><Select label="Git destination" value={bindingForm.targetMode} onChange={(event) => {
+                    const targetMode = event.target.value as "repository_folder" | "repository_root";
+                    setBindingForm({...bindingForm, targetMode, subPath: targetMode === "repository_root" ? "." : (bindingForm.subPath === "." ? "stacks" : bindingForm.subPath)});
+                }}><MenuItem value="repository_folder">A folder inside a shared repository</MenuItem><MenuItem value="repository_root">The root of a dedicated repository</MenuItem></Select></FormControl>
+                {bindingForm.targetMode === "repository_folder" && <TextField label="Repository folder" value={bindingForm.subPath} onChange={(event) => setBindingForm({...bindingForm, subPath: event.target.value})} placeholder="stacks" helperText="Every stack subfolder is preserved below this destination." required/>}
+                <Alert severity="info">All subfolders and compose stacks below this source are handled by one link. Creating it copies nothing; every transfer still requires a preview and confirmation.</Alert>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setBindingDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBinding()} disabled={busy !== null || !bindingForm.repositoryId || !bindingForm.host.trim() || !bindingForm.stackPath.trim() || !bindingForm.subPath.trim()}>{busy === "binding-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Link</Button></DialogActions>
         </Dialog>

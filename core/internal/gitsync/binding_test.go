@@ -97,6 +97,29 @@ func TestRepositoryBindingPathsCannotOverlap(t *testing.T) {
 	require.False(t, pathsOverlap("stacks/app", "stacks/database"))
 }
 
+func TestCompleteStacksFolderIsDiscoveredAndLinkedOnce(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	for _, stack := range []string{"app", "media/nested"} {
+		directory := filepath.Join(stackRoot, filepath.FromSlash(stack))
+		require.NoError(t, os.MkdirAll(directory, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0644))
+	}
+
+	targets, err := service.ListStackTargets()
+	require.NoError(t, err)
+	require.NotEmpty(t, targets)
+	require.Equal(t, "compose", targets[0].Path)
+	require.Equal(t, "all_stacks", targets[0].Scope)
+	require.Equal(t, 2, targets[0].StackCount)
+	require.Equal(t, []string{"app/compose.yaml", "media/nested/compose.yaml"}, targets[0].ComposePaths)
+
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	require.Equal(t, targets[0].ComposePaths, binding.ComposePaths)
+}
+
 func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

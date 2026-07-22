@@ -54,6 +54,8 @@ type StackTarget struct {
 	Host         string   `json:"host"`
 	Path         string   `json:"path"`
 	ComposePaths []string `json:"composePaths"`
+	Scope        string   `json:"scope"`
+	StackCount   int      `json:"stackCount"`
 }
 
 type TransferInput struct {
@@ -153,9 +155,8 @@ func (s *Service) ListStackTargets() ([]StackTarget, error) {
 		if err != nil {
 			continue
 		}
-		if compose := discoverComposeFiles(targetFS, root); len(compose) > 0 {
-			result = append(result, StackTarget{Host: host, Path: "compose", ComposePaths: compose})
-		}
+		composeRoot := discoverComposeFiles(targetFS, root)
+		result = append(result, StackTarget{Host: host, Path: "compose", ComposePaths: composeRoot, Scope: "all_stacks", StackCount: countComposeFolders(composeRoot)})
 		entries, err := targetFS.ReadDir(root)
 		if err != nil {
 			continue
@@ -167,7 +168,7 @@ func (s *Service) ListStackTargets() ([]StackTarget, error) {
 			rel := targetFS.Join(root, entry.Name())
 			compose := discoverComposeFiles(targetFS, rel)
 			if len(compose) > 0 {
-				result = append(result, StackTarget{Host: host, Path: filepath.ToSlash(filepath.Join("compose", entry.Name())), ComposePaths: compose})
+				result = append(result, StackTarget{Host: host, Path: filepath.ToSlash(filepath.Join("compose", entry.Name())), ComposePaths: compose, Scope: "folder", StackCount: countComposeFolders(compose)})
 			}
 		}
 	}
@@ -350,6 +351,9 @@ func (s *Service) validateBindingInput(input BindingInput) (BindingInput, filesy
 		return input, nil, "", err
 	}
 	for _, row := range rows {
+		if row.Host == input.Host && pathsOverlap(row.StackPath, input.StackPath) {
+			return input, nil, "", fmt.Errorf("source folder overlaps existing link %s on host %s; remove the narrower link before linking its parent", row.StackPath, row.Host)
+		}
 		if row.RepositoryUUID == input.RepositoryID && pathsOverlap(row.SubPath, input.SubPath) {
 			return input, nil, "", fmt.Errorf("repository path overlaps stack link %s on host %s", row.StackPath, row.Host)
 		}
@@ -410,22 +414,44 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 }
 
 func discoverComposeFiles(targetFS filesystem.FileSystem, root string) []string {
-	entries, err := targetFS.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, 2)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	names := make([]string, 0)
+	visited := 0
+	var walk func(string, string, int)
+	walk = func(directory, relative string, depth int) {
+		if depth > 8 || visited >= 1000 || len(names) >= 500 {
+			return
 		}
-		switch strings.ToLower(entry.Name()) {
-		case "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml":
-			names = append(names, entry.Name())
+		visited++
+		entries, err := targetFS.ReadDir(directory)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			childRelative := filepath.ToSlash(filepath.Join(relative, entry.Name()))
+			if entry.Type()&os.ModeSymlink != 0 || shouldSkipPath(childRelative, entry.IsDir()) {
+				continue
+			}
+			if entry.IsDir() {
+				walk(targetFS.Join(directory, entry.Name()), childRelative, depth+1)
+				continue
+			}
+			switch strings.ToLower(entry.Name()) {
+			case "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml":
+				names = append(names, childRelative)
+			}
 		}
 	}
+	walk(root, "", 0)
 	sort.Strings(names)
 	return names
+}
+
+func countComposeFolders(paths []string) int {
+	folders := make(map[string]struct{}, len(paths))
+	for _, composePath := range paths {
+		folders[filepath.ToSlash(filepath.Dir(composePath))] = struct{}{}
+	}
+	return len(folders)
 }
 
 func (s *Service) resolveBindingStack(binding StackBinding) (filesystem.FileSystem, string, error) {

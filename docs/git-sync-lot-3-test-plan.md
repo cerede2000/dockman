@@ -1,6 +1,6 @@
 # Git sync lot 3 — stack links and manual transfers
 
-This lot links a Dockman stack folder to a managed Git repository folder. It adds previews and explicit transfers in both directions. It does not poll Git, deploy a stack, restart containers, delete files missing from the source, or resolve Git conflicts automatically.
+This lot links a complete Dockman stacks folder to either a folder in a shared Git repository or the root of a dedicated repository. Every stack subfolder below that root is preserved automatically. Unit-level links remain supported. The lot adds previews and explicit transfers in both directions. It does not poll Git, deploy a stack, restart containers, delete files missing from the source, or resolve Git conflicts automatically.
 
 ## Prerequisites
 
@@ -14,13 +14,15 @@ This lot links a Dockman stack folder to a managed Git repository folder. It add
 1. Open **Settings → Git**.
 2. Confirm that **Stack links** appears between repositories and credentials.
 3. Click **Link stack**.
-4. Select the test repository and a detected stack.
-5. Enter a repository folder such as `stacks/dockman-test`, then create the link.
+4. Select **All stacks — host / compose** to associate the complete stacks root in one operation.
+5. Select either a folder in a shared repository, such as `stacks`, or the root of a dedicated repository.
+6. Create the link.
 
 Expected:
 
 - local and connected SSH hosts are supported;
-- detected compose files are shown on the link row;
+- all nested compose stacks are detected and summarized on the link row;
+- their relative folder structure is preserved in Git;
 - creating the link copies nothing;
 - the same host/stack cannot be linked twice;
 - absolute paths, `..`, and `.git` paths are refused.
