@@ -330,7 +330,7 @@ func (h *HTTPHandler) deleteRepository(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":                 h.service.Enabled(),
-		"phase":                   "manual_stack_sync",
+		"phase":                   "conflict_management",
 		"repositorySyncAvailable": h.service.Enabled(),
 		"stackSyncAvailable":      h.service.Enabled(),
 	})

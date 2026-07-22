@@ -57,6 +57,17 @@ type StackBinding struct {
 
 func (StackBinding) TableName() string { return "git_stack_bindings" }
 
+type BindingBaseline struct {
+	ID          uint      `gorm:"primarykey"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	BindingUUID string `gorm:"not null;uniqueIndex:idx_git_binding_baseline_path"`
+	Path        string `gorm:"not null;uniqueIndex:idx_git_binding_baseline_path"`
+	SHA256      string `gorm:"not null"`
+}
+
+func (BindingBaseline) TableName() string { return "git_binding_baselines" }
+
 type Operation struct {
 	ID             uint `gorm:"primarykey"`
 	CreatedAt      time.Time

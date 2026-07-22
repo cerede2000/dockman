@@ -94,19 +94,19 @@ interface Binding {
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
 }
 interface PreviewEntry {
-    path: string; status: "add" | "modify" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
+    path: string; status: "add" | "modify" | "conflict" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
     targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean;
 }
 interface TransferPreview {
     bindingId: string; direction: TransferDirection; entries: PreviewEntry[]; changed: number;
-    unchanged: number; skipped: number; deletionMode: string;
+    unchanged: number; skipped: number; conflicts: number; deletionMode: string;
     previewToken: string;
 }
 interface TransferResult { preview: TransferPreview; commitSha?: string; backup?: string; message: string; }
 type TransferDirection = "stack_to_repository" | "repository_to_stack";
 type PreviewStatus = PreviewEntry["status"];
 
-const previewStatuses: PreviewStatus[] = ["add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
+const previewStatuses: PreviewStatus[] = ["conflict", "add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
@@ -176,6 +176,7 @@ export default function TabGit() {
     const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
     const [includeSensitive, setIncludeSensitive] = useState(false);
     const [sensitiveConfirmation, setSensitiveConfirmation] = useState("");
+    const [resolveConflicts, setResolveConflicts] = useState(false);
     const commitMessageRef = useRef<HTMLInputElement | null>(null);
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
@@ -203,7 +204,7 @@ export default function TabGit() {
         previewPage * previewRowsPerPage,
         previewPage * previewRowsPerPage + previewRowsPerPage,
     ), [filteredPreviewEntries, previewPage, previewRowsPerPage]);
-    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded");
+    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict");
     const selectedVisibleCount = selectablePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).length;
     const allowableSelectedEntries = visiblePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path) && entry.status === "skipped_type");
 
@@ -425,14 +426,14 @@ export default function TabGit() {
                 method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
             });
             setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
-            setPreviewSearch(""); setPreviewStatus("all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
+            setPreviewSearch(""); setPreviewStatus("all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set()); setResolveConflicts(false);
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
     };
 
     const closeTransfer = () => {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
-        setSensitiveConfirmation(""); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch(""); setPreviewStatus("all");
+        setSensitiveConfirmation(""); setResolveConflicts(false); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch(""); setPreviewStatus("all");
         setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
         if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
@@ -443,7 +444,7 @@ export default function TabGit() {
         setBusy(`transfer-${transferBinding.id}`);
         try {
             const result = await api<TransferResult>(`/bindings/${transferBinding.id}/${action}`, {
-                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage: commitMessageRef.current?.value || "", previewToken: transferPreview?.previewToken}),
+                method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage: commitMessageRef.current?.value || "", previewToken: transferPreview?.previewToken, resolveConflicts}),
             });
             showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
             closeTransfer();
@@ -718,9 +719,13 @@ export default function TabGit() {
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
                     <Chip label={`${transferPreview?.changed || 0} changed`} color={transferPreview?.changed ? "warning" : "success"}/>
                     <Chip label={`${transferPreview?.skipped || 0} skipped`} variant="outlined" color={transferPreview?.skipped ? "warning" : "default"}/>
+                    {!!transferPreview?.conflicts && <Chip label={`${transferPreview.conflicts} conflict${transferPreview.conflicts === 1 ? "" : "s"}`} color="error"/>}
                     <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
                 </Stack>
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Files skipped only by type can be permanently allowed here. Oversized, unavailable, sensitive, and explicitly excluded files keep their dedicated protection.</Alert>}
+                {!!transferPreview?.conflicts && <Alert severity="error">
+                    The destination version changed since the last successful synchronization. The selected direction would overwrite it, so an explicit decision is required.
+                </Alert>}
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
                     <TextField size="small" value={previewSearch} onChange={(event) => {
                         setPreviewSearch(event.target.value); setPreviewPage(0); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
@@ -737,7 +742,7 @@ export default function TabGit() {
                 </Stack>
                 <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell padding="checkbox"><Checkbox size="small" disabled={busy !== null || selectablePreviewEntries.length === 0} checked={selectablePreviewEntries.length > 0 && selectedVisibleCount === selectablePreviewEntries.length} indeterminate={selectedVisibleCount > 0 && selectedVisibleCount < selectablePreviewEntries.length} onChange={(_, checked) => toggleVisiblePreviewEntries(checked)} slotProps={{input: {"aria-label": "Select all items on this page"}}}/></TableCell><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
                     {!filteredPreviewEntries.length && <TableRow><TableCell colSpan={5} align="center" sx={{py: 4, color: "text.secondary"}}>{previewSearch ? "No item matches this search." : "No difference."}</TableCell></TableRow>}
-                    {visiblePreviewEntries.map((entry) => <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}><TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
+                    {visiblePreviewEntries.map((entry) => <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}><TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
                 </TableBody></Table></TableContainer>
                 <Stack direction={{xs: "column", md: "row"}} sx={{alignItems: {md: "center"}, border: 1, borderColor: "divider", borderTop: 0, borderRadius: "0 0 4px 4px"}}>
                     <TablePagination component="div" count={filteredPreviewEntries.length} page={previewPage} onPageChange={(_, page) => changePreviewPage(page)} rowsPerPage={previewRowsPerPage} onRowsPerPageChange={(event) => { setPreviewRowsPerPage(Number(event.target.value)); changePreviewPage(0); }} rowsPerPageOptions={[25, 50, 100]} labelRowsPerPage="Rows" showFirstButton showLastButton sx={{flex: 1, border: 0}}/>
@@ -751,6 +756,7 @@ export default function TabGit() {
                     {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusions([{path: excludeMenu.entry.path, directory: false}])}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
                     {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusions([{path, directory: true}])}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
                 </Menu>
+                {!!transferPreview?.conflicts && <FormControlLabel control={<Checkbox checked={resolveConflicts} onChange={(_, checked) => setResolveConflicts(checked)}/>} label={transferDirection === "stack_to_repository" ? "Keep Dockman versions for every conflict and overwrite Git" : "Keep Git versions for every conflict and overwrite Dockman (a backup is created first)"}/>}
                 <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
                     const checked = event.target.checked;
                     setIncludeSensitive(checked); setSensitiveConfirmation("");
@@ -759,7 +765,7 @@ export default function TabGit() {
                 {includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TextField label='Type "INCLUDE SENSITIVE FILES"' value={sensitiveConfirmation} onChange={(event) => setSensitiveConfirmation(event.target.value)} onBlur={() => transferBinding && sensitiveConfirmation === "INCLUDE SENSITIVE FILES" && void previewTransfer(transferBinding, transferDirection, true)} fullWidth/></>}
                 {transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>} 
             </Stack></DialogContent>
-            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button><Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || transferPreview.changed === 0 || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferDirection === "stack_to_repository" ? "Commit and push" : "Backup and import"}</Button></DialogActions>
+            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button><Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.conflicts > 0 && !resolveConflicts) || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit and push" : "Backup and import"}</Button></DialogActions>
         </Dialog>
 
         <Dialog open={policyBinding !== null} onClose={() => busy === null && setPolicyBinding(null)} fullWidth maxWidth="sm">

@@ -97,6 +97,7 @@ type TransferInput struct {
 	SensitiveConfirmation string `json:"sensitiveConfirmation"`
 	CommitMessage         string `json:"commitMessage"`
 	PreviewToken          string `json:"previewToken"`
+	ResolveConflicts      bool   `json:"resolveConflicts"`
 }
 
 type PreviewEntry struct {
@@ -116,6 +117,7 @@ type TransferPreview struct {
 	Changed      int            `json:"changed"`
 	Unchanged    int            `json:"unchanged"`
 	Skipped      int            `json:"skipped"`
+	Conflicts    int            `json:"conflicts"`
 	DeletionMode string         `json:"deletionMode"`
 	PreviewToken string         `json:"previewToken"`
 }
@@ -371,7 +373,11 @@ func (s *Service) PreviewBinding(id, direction string, input TransferInput) (Tra
 	if err != nil {
 		return TransferPreview{}, err
 	}
-	return buildPreview(binding.UUID, direction, source, target), nil
+	baseline, err := s.store.BindingBaseline(binding.UUID)
+	if err != nil {
+		return TransferPreview{}, err
+	}
+	return buildPreview(binding.UUID, direction, source, target, baseline), nil
 }
 
 func (s *Service) ExportBinding(ctx context.Context, id string, input TransferInput) (TransferResult, error) {
@@ -399,11 +405,21 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		result.Preview = buildPreview(binding.UUID, "stack_to_repository", source, target)
+		baseline, err := s.store.BindingBaseline(binding.UUID)
+		if err != nil {
+			return err
+		}
+		result.Preview = buildPreview(binding.UUID, "stack_to_repository", source, target, baseline)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
 		}
+		if result.Preview.Conflicts > 0 && !input.ResolveConflicts {
+			return errors.New("export contains conflicts; explicitly confirm that the Dockman version must overwrite Git")
+		}
 		if result.Preview.Changed == 0 {
+			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
+				return err
+			}
 			result.Message = "Repository already matches the stack"
 			return nil
 		}
@@ -452,6 +468,9 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return fmt.Errorf("push stack export: %w", err)
 		}
 		compactRepositoryObjects(repo, binding.RepositoryUUID)
+		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
+			return err
+		}
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
 		return nil
 	})
@@ -486,11 +505,21 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err := validateComposeFiles(source); err != nil {
 			return err
 		}
-		result.Preview = buildPreview(binding.UUID, "repository_to_stack", source, target)
+		baseline, err := s.store.BindingBaseline(binding.UUID)
+		if err != nil {
+			return err
+		}
+		result.Preview = buildPreview(binding.UUID, "repository_to_stack", source, target, baseline)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
 		}
+		if result.Preview.Conflicts > 0 && !input.ResolveConflicts {
+			return errors.New("import contains conflicts; explicitly confirm that the Git version must overwrite Dockman")
+		}
 		if result.Preview.Changed == 0 {
+			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
+				return err
+			}
 			result.Message = "Stack already matches the repository"
 			return nil
 		}
@@ -503,6 +532,9 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		if err := writeStackFiles(targetFS, targetRoot, changedTransferFiles(source, target)); err != nil {
+			return err
+		}
+		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
 			return err
 		}
 		result.Backup, result.Message = backup, "Repository files imported with a backup; the stack was not deployed"
@@ -1189,8 +1221,12 @@ func isSensitivePath(path string) bool {
 	return strings.Contains(base, "secret") || strings.Contains(base, "credential")
 }
 
-func buildPreview(bindingID, direction string, source, target map[string]transferFile) TransferPreview {
+func buildPreview(bindingID, direction string, source, target map[string]transferFile, baselines ...map[string]string) TransferPreview {
 	preview := TransferPreview{BindingID: bindingID, Direction: direction, Entries: []PreviewEntry{}, DeletionMode: "non_destructive"}
+	baseline := map[string]string{}
+	if len(baselines) > 0 && baselines[0] != nil {
+		baseline = baselines[0]
+	}
 	paths := make([]string, 0, len(source))
 	for path := range source {
 		paths = append(paths, path)
@@ -1217,12 +1253,26 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 				continue
 			}
 			entry.Status = "modify"
+			if baseSHA, tracked := baseline[path]; tracked && dst.sha != baseSHA && src.sha != dst.sha {
+				entry.Status = "conflict"
+				preview.Conflicts++
+			}
 		}
 		preview.Entries = append(preview.Entries, entry)
 		preview.Changed++
 	}
 	preview.PreviewToken = previewToken(preview)
 	return preview
+}
+
+func baselineFromSource(source map[string]transferFile) map[string]string {
+	result := make(map[string]string, len(source))
+	for path, file := range source {
+		if file.open != nil && file.sha != "" {
+			result[path] = file.sha
+		}
+	}
+	return result
 }
 
 func previewToken(preview TransferPreview) string {

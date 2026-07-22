@@ -95,14 +95,44 @@ func (s *Store) GetBinding(id string) (StackBinding, error) {
 func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
 
 func (s *Store) DeleteBinding(id string) error {
-	result := s.db.Unscoped().Where("uuid = ?", id).Delete(&StackBinding{})
-	if result.Error != nil {
-		return result.Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Unscoped().Where("uuid = ?", id).Delete(&StackBinding{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Where("binding_uuid = ?", id).Delete(&BindingBaseline{}).Error
+	})
+}
+
+func (s *Store) BindingBaseline(id string) (map[string]string, error) {
+	var rows []BindingBaseline
+	if err := s.db.Where("binding_uuid = ?", id).Find(&rows).Error; err != nil {
+		return nil, err
 	}
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
+	result := make(map[string]string, len(rows))
+	for _, row := range rows {
+		result[row.Path] = row.SHA256
 	}
-	return nil
+	return result, nil
+}
+
+func (s *Store) ReplaceBindingBaseline(id string, hashes map[string]string) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("binding_uuid = ?", id).Delete(&BindingBaseline{}).Error; err != nil {
+			return err
+		}
+		rows := make([]BindingBaseline, 0, len(hashes))
+		for path, sha := range hashes {
+			rows = append(rows, BindingBaseline{BindingUUID: id, Path: path, SHA256: sha})
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		return tx.CreateInBatches(rows, 250).Error
+	})
 }
 
 func (s *Store) ListOperations(repositoryID string, limit int) ([]Operation, error) {

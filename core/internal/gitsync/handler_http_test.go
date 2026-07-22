@@ -25,12 +25,12 @@ func TestDisabledHandlerOnlyExposesStatus(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, credentials.Code)
 }
 
-func TestEnabledStatusAdvertisesManualStackSync(t *testing.T) {
+func TestEnabledStatusAdvertisesConflictManagement(t *testing.T) {
 	service, _ := testService(t, true)
 	response := httptest.NewRecorder()
 	NewHTTPHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status", nil))
 	require.Equal(t, http.StatusOK, response.Code)
-	require.Contains(t, response.Body.String(), `"phase":"manual_stack_sync"`)
+	require.Contains(t, response.Body.String(), `"phase":"conflict_management"`)
 	require.Contains(t, response.Body.String(), `"repositorySyncAvailable":true`)
 	require.Contains(t, response.Body.String(), `"stackSyncAvailable":true`)
 }

@@ -23,7 +23,7 @@ func testService(t *testing.T, enabled bool) (*Service, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Credential{}, &Repository{}, &StackBinding{}, &Operation{}, &Deployment{}))
+	require.NoError(t, db.AutoMigrate(&Credential{}, &Repository{}, &StackBinding{}, &BindingBaseline{}, &Operation{}, &Deployment{}))
 	vault, err := NewVault(bytes.Repeat([]byte{0x13}, 32))
 	require.NoError(t, err)
 	return NewService(enabled, NewStore(db), vault, filepath.Join(t.TempDir(), "repositories")), db
@@ -126,6 +126,33 @@ func TestRepositoryWorkspaceSymlinkIsRefused(t *testing.T) {
 	require.NoError(t, os.Symlink(t.TempDir(), path))
 	_, err = service.openRepository(row)
 	require.ErrorContains(t, err, "symbolic link")
+}
+
+func TestBindingBaselineIsReplacedAndRemovedWithBinding(t *testing.T) {
+	service, _ := testService(t, true)
+	binding := StackBinding{
+		UUID: uuid.NewString(), RepositoryUUID: uuid.NewString(), Host: "local",
+		StackPath: "compose/test", SubPath: "stacks/test", Enabled: true,
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.NoError(t, service.store.ReplaceBindingBaseline(binding.UUID, map[string]string{
+		"compose.yaml": "first",
+		"config.json":  "second",
+	}))
+
+	baseline, err := service.store.BindingBaseline(binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"compose.yaml": "first", "config.json": "second"}, baseline)
+
+	require.NoError(t, service.store.ReplaceBindingBaseline(binding.UUID, map[string]string{"compose.yaml": "updated"}))
+	baseline, err = service.store.BindingBaseline(binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"compose.yaml": "updated"}, baseline)
+
+	require.NoError(t, service.store.DeleteBinding(binding.UUID))
+	baseline, err = service.store.BindingBaseline(binding.UUID)
+	require.NoError(t, err)
+	require.Empty(t, baseline)
 }
 
 func TestValidateGitHubRepositoryURL(t *testing.T) {

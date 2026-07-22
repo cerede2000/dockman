@@ -165,6 +165,25 @@ func TestStackInventoryReportsOversizedFilesWithoutReadingThem(t *testing.T) {
 	require.Contains(t, preview.Entries, PreviewEntry{Path: "generated.bundle", Status: "skipped_oversized", Size: maxBindingFileSize + 1})
 }
 
+func TestPreviewBlocksOverwritingAChangedSynchronizationTarget(t *testing.T) {
+	available := func(sha string) transferFile {
+		return transferFile{sha: sha, open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("content")), nil }}
+	}
+	baseline := map[string]string{"compose.yaml": "base"}
+
+	remoteChanged := buildPreview("binding", "stack_to_repository", map[string]transferFile{"compose.yaml": available("base")}, map[string]transferFile{"compose.yaml": available("remote")}, baseline)
+	require.Equal(t, 1, remoteChanged.Conflicts)
+	require.Equal(t, "conflict", remoteChanged.Entries[0].Status)
+
+	localChanged := buildPreview("binding", "stack_to_repository", map[string]transferFile{"compose.yaml": available("local")}, map[string]transferFile{"compose.yaml": available("base")}, baseline)
+	require.Zero(t, localChanged.Conflicts)
+	require.Equal(t, "modify", localChanged.Entries[0].Status)
+
+	bothEqual := buildPreview("binding", "stack_to_repository", map[string]transferFile{"compose.yaml": available("same")}, map[string]transferFile{"compose.yaml": available("same")}, baseline)
+	require.Zero(t, bothEqual.Conflicts)
+	require.Equal(t, 1, bothEqual.Unchanged)
+}
+
 func TestDockmanIgnoreExcludesFilesAndFolders(t *testing.T) {
 	stackRoot := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "cache"), 0755))
