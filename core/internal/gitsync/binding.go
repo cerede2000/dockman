@@ -253,7 +253,7 @@ func (s *Service) AddBindingExclusions(id string, inputs []BindingExclusionInput
 			return BindingView{}, fmt.Errorf("invalid exclusion path %q: %w", input.Path, err)
 		}
 		if _, compose := composePaths[relative]; compose && !input.Directory {
-			return BindingView{}, fmt.Errorf("Compose file %q cannot be excluded from synchronization", relative)
+			return BindingView{}, fmt.Errorf("Compose files cannot be excluded from synchronization: %q", relative)
 		}
 		pattern := escapeGlobLiteral(relative)
 		if input.Directory {
