@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
@@ -24,11 +26,14 @@ import (
 )
 
 const (
-	maxBindingFiles      = 2000
-	maxBindingFileSize   = 10 << 20
-	maxBindingTotalSize  = 50 << 20
+	maxBindingFiles      = 20_000
+	maxBindingFileSize   = 100 << 20
+	maxBindingTotalSize  = 2 << 30
+	transferBufferSize   = 64 << 10
 	sensitiveConfirmText = "INCLUDE SENSITIVE FILES"
 )
+
+var transferBufferPool = sync.Pool{New: func() any { return make([]byte, transferBufferSize) }}
 
 type BindingInput struct {
 	RepositoryID string `json:"repositoryId"`
@@ -94,10 +99,26 @@ type TransferResult struct {
 
 type transferFile struct {
 	path      string
-	data      []byte
 	mode      fs.FileMode
 	size      int64
+	sha       string
 	sensitive bool
+	open      func() (io.ReadCloser, error)
+}
+
+type rootedReadCloser struct {
+	file *os.File
+	root *os.Root
+}
+
+func (r *rootedReadCloser) Read(p []byte) (int, error) { return r.file.Read(p) }
+func (r *rootedReadCloser) Close() error {
+	fileErr := r.file.Close()
+	rootErr := r.root.Close()
+	if fileErr != nil {
+		return fileErr
+	}
+	return rootErr
 }
 
 func (s *Service) ListBindings() ([]BindingView, error) {
@@ -220,7 +241,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if err := writeRepositoryFiles(repoPath, binding.SubPath, source); err != nil {
+		if err := writeRepositoryFiles(repoPath, binding.SubPath, changedTransferFiles(source, target)); err != nil {
 			return err
 		}
 		row, err := s.store.GetRepository(binding.RepositoryUUID)
@@ -310,7 +331,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if err := writeStackFiles(targetFS, targetRoot, source); err != nil {
+		if err := writeStackFiles(targetFS, targetRoot, changedTransferFiles(source, target)); err != nil {
 			return err
 		}
 		result.Backup, result.Message = backup, "Repository files imported with a backup; the stack was not deployed"
@@ -533,17 +554,21 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
 				return err
 			}
+			total += info.Size()
 			sensitive := isSensitivePath(childRel)
 			if sensitive && !includeSensitive {
 				result[childRel] = transferFile{path: childRel, size: info.Size(), sensitive: true}
 				continue
 			}
-			data, err := targetFS.ReadFile(child)
+			childPath := child
+			file := transferFile{path: childRel, size: info.Size(), mode: info.Mode().Perm(), sensitive: sensitive, open: func() (io.ReadCloser, error) {
+				return targetFS.OpenFile(childPath, os.O_RDONLY, 0)
+			}}
+			file.sha, err = hashTransferFile(file)
 			if err != nil {
 				return err
 			}
-			total += int64(len(data))
-			result[childRel] = transferFile{path: childRel, data: data, mode: info.Mode().Perm(), sensitive: sensitive}
+			result[childRel] = file
 		}
 		return nil
 	}
@@ -556,19 +581,17 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 		return nil, err
 	}
 	defer safeRoot.Close()
-	base := repositoryRoot
 	baseRelative := "."
 	if subPath != "." {
 		baseRelative = filepath.FromSlash(subPath)
-		base = filepath.Join(repositoryRoot, baseRelative)
 	}
 	result := map[string]transferFile{}
 	var total int64
-	err = filepath.WalkDir(base, func(path string, entry fs.DirEntry, err error) error {
+	err = fs.WalkDir(safeRoot.FS(), filepath.ToSlash(baseRelative), func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(base, path)
+		rel, err := filepath.Rel(filepath.ToSlash(baseRelative), path)
 		if err != nil || rel == "." {
 			return err
 		}
@@ -595,20 +618,62 @@ func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive boo
 		if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
 			return err
 		}
+		total += info.Size()
 		sensitive := isSensitivePath(rel)
 		if sensitive && !includeSensitive {
 			result[rel] = transferFile{path: rel, size: info.Size(), sensitive: true}
 			return nil
 		}
-		data, err := safeRoot.ReadFile(filepath.Join(baseRelative, filepath.FromSlash(rel)))
+		repositoryRelative := filepath.Join(baseRelative, filepath.FromSlash(rel))
+		file := transferFile{path: rel, size: info.Size(), mode: info.Mode().Perm(), sensitive: sensitive, open: repositoryFileOpener(repositoryRoot, repositoryRelative)}
+		file.sha, err = hashTransferFile(file)
 		if err != nil {
 			return err
 		}
-		total += int64(len(data))
-		result[rel] = transferFile{path: rel, data: data, mode: info.Mode().Perm(), sensitive: sensitive}
+		result[rel] = file
 		return nil
 	})
 	return result, err
+}
+
+func repositoryFileOpener(repositoryRoot, relativePath string) func() (io.ReadCloser, error) {
+	return func() (io.ReadCloser, error) {
+		root, err := os.OpenRoot(repositoryRoot)
+		if err != nil {
+			return nil, err
+		}
+		file, err := root.Open(relativePath)
+		if err != nil {
+			_ = root.Close()
+			return nil, err
+		}
+		return &rootedReadCloser{file: file, root: root}, nil
+	}
+}
+
+func hashTransferFile(file transferFile) (string, error) {
+	if file.open == nil {
+		return "", nil
+	}
+	reader, err := file.open()
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	buffer := transferBufferPool.Get().([]byte)
+	n, copyErr := io.CopyBuffer(hash, io.LimitReader(reader, file.size+1), buffer)
+	transferBufferPool.Put(buffer)
+	closeErr := reader.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if n != file.size {
+		return "", fmt.Errorf("file %s changed while it was being hashed; retry the preview", file.path)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func checkTransferLimit(files int, fileSize, totalSize int64) error {
@@ -650,15 +715,15 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 	sort.Strings(paths)
 	for _, path := range paths {
 		src := source[path]
-		if src.sensitive && src.data == nil {
+		if src.sensitive && src.open == nil {
 			preview.Entries = append(preview.Entries, PreviewEntry{Path: path, Status: "skipped_sensitive", Size: src.size, Sensitive: true})
 			preview.Skipped++
 			continue
 		}
 		dst, exists := target[path]
-		entry := PreviewEntry{Path: path, Status: "add", SourceSHA: contentSHA(src.data), Size: int64(len(src.data)), Sensitive: src.sensitive}
-		if exists && dst.data != nil {
-			entry.TargetSHA = contentSHA(dst.data)
+		entry := PreviewEntry{Path: path, Status: "add", SourceSHA: src.sha, Size: src.size, Sensitive: src.sensitive}
+		if exists && dst.open != nil {
+			entry.TargetSHA = dst.sha
 			if entry.SourceSHA == entry.TargetSHA {
 				entry.Status = "unchanged"
 				preview.Unchanged++
@@ -692,11 +757,6 @@ func validatePreviewToken(expected, actual string) error {
 	return nil
 }
 
-func contentSHA(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 func writeRepositoryFiles(repositoryRoot, subPath string, files map[string]transferFile) error {
 	root, err := os.OpenRoot(repositoryRoot)
 	if err != nil {
@@ -708,24 +768,32 @@ func writeRepositoryFiles(repositoryRoot, subPath string, files map[string]trans
 		base = filepath.FromSlash(subPath)
 	}
 	for _, file := range sortedTransferFiles(files) {
-		if file.data == nil {
+		if file.open == nil {
 			continue
 		}
 		destination := filepath.Join(base, filepath.FromSlash(file.path))
 		if err := root.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 			return err
 		}
-		handle, err := root.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, safeFileMode(file.mode))
+		temporary := destination + ".dockman-git-" + uuid.NewString() + ".tmp"
+		handle, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, safeFileMode(file.mode))
 		if err != nil {
 			return err
 		}
-		_, writeErr := handle.Write(file.data)
+		writeErr := streamTransferFile(file, handle)
 		closeErr := handle.Close()
+		if writeErr != nil || closeErr != nil {
+			_ = root.Remove(temporary)
+		}
 		if writeErr != nil {
 			return writeErr
 		}
 		if closeErr != nil {
 			return closeErr
+		}
+		if err := root.Rename(temporary, destination); err != nil {
+			_ = root.Remove(temporary)
+			return fmt.Errorf("replace %s: %w", file.path, err)
 		}
 	}
 	return nil
@@ -733,7 +801,7 @@ func writeRepositoryFiles(repositoryRoot, subPath string, files map[string]trans
 
 func writeStackFiles(targetFS filesystem.FileSystem, root string, files map[string]transferFile) error {
 	for _, file := range sortedTransferFiles(files) {
-		if file.data == nil {
+		if file.open == nil {
 			continue
 		}
 		destination := targetFS.Join(root, filepath.FromSlash(file.path))
@@ -745,7 +813,7 @@ func writeStackFiles(targetFS filesystem.FileSystem, root string, files map[stri
 		if err != nil {
 			return err
 		}
-		_, writeErr := handle.Write(file.data)
+		writeErr := streamTransferFile(file, handle)
 		closeErr := handle.Close()
 		if writeErr != nil || closeErr != nil {
 			_ = targetFS.RemoveAll(temporary)
@@ -758,6 +826,31 @@ func writeStackFiles(targetFS filesystem.FileSystem, root string, files map[stri
 			_ = targetFS.RemoveAll(temporary)
 			return fmt.Errorf("replace %s: %w", file.path, err)
 		}
+	}
+	return nil
+}
+
+func streamTransferFile(file transferFile, destination io.Writer) error {
+	reader, err := file.open()
+	if err != nil {
+		return err
+	}
+	buffer := transferBufferPool.Get().([]byte)
+	hash := sha256.New()
+	written, copyErr := io.CopyBuffer(io.MultiWriter(destination, hash), io.LimitReader(reader, file.size+1), buffer)
+	transferBufferPool.Put(buffer)
+	closeErr := reader.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if written != file.size {
+		return fmt.Errorf("file %s changed during transfer; retry from a new preview", file.path)
+	}
+	if currentSHA := hex.EncodeToString(hash.Sum(nil)); currentSHA != file.sha {
+		return fmt.Errorf("file %s changed after the preview; retry from a new preview", file.path)
 	}
 	return nil
 }
@@ -779,18 +872,44 @@ func sortedTransferFiles(files map[string]transferFile) []transferFile {
 	return result
 }
 
+func changedTransferFiles(source, target map[string]transferFile) map[string]transferFile {
+	changed := make(map[string]transferFile)
+	for path, sourceFile := range source {
+		if sourceFile.open == nil {
+			continue
+		}
+		targetFile, exists := target[path]
+		if !exists || targetFile.open == nil || sourceFile.sha != targetFile.sha {
+			changed[path] = sourceFile
+		}
+	}
+	return changed
+}
+
 func validateComposeFiles(files map[string]transferFile) error {
 	found := false
 	for path, file := range files {
 		switch strings.ToLower(filepath.Base(path)) {
 		case "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml":
 			found = true
-			if file.data == nil {
+			if file.open == nil {
 				return fmt.Errorf("compose file %s is sensitive and was skipped", path)
 			}
+			reader, err := file.open()
+			if err != nil {
+				return fmt.Errorf("open compose YAML %s: %w", path, err)
+			}
 			var value any
-			if err := yaml.Unmarshal(file.data, &value); err != nil {
-				return fmt.Errorf("invalid compose YAML %s: %w", path, err)
+			decodeErr := yaml.NewDecoder(io.LimitReader(reader, file.size+1)).Decode(&value)
+			closeErr := reader.Close()
+			if decodeErr != nil {
+				return fmt.Errorf("invalid compose YAML %s: %w", path, decodeErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close compose YAML %s: %w", path, closeErr)
+			}
+			if value == nil {
+				return fmt.Errorf("invalid compose YAML %s: document is empty", path)
 			}
 		}
 	}
@@ -832,19 +951,19 @@ func (s *Service) backupChangedFiles(binding StackBinding, _ filesystem.FileSyst
 		for _, sourceFile := range sortedTransferFiles(source) {
 			targetFile, exists := target[sourceFile.path]
 			if !exists {
-				if sourceFile.data != nil {
+				if sourceFile.open != nil {
 					created = append(created, sourceFile.path)
 				}
 				continue
 			}
-			if targetFile.data == nil || contentSHA(sourceFile.data) == contentSHA(targetFile.data) {
+			if targetFile.open == nil || sourceFile.sha == targetFile.sha {
 				continue
 			}
-			header := &tar.Header{Name: sourceFile.path, Mode: int64(safeFileMode(targetFile.mode)), Size: int64(len(targetFile.data)), ModTime: time.Now().UTC()}
+			header := &tar.Header{Name: sourceFile.path, Mode: int64(safeFileMode(targetFile.mode)), Size: targetFile.size, ModTime: time.Now().UTC()}
 			if err := tarWriter.WriteHeader(header); err != nil {
 				return err
 			}
-			if _, err := tarWriter.Write(targetFile.data); err != nil {
+			if err := streamTransferFile(targetFile, tarWriter); err != nil {
 				return err
 			}
 		}

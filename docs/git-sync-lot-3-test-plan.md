@@ -42,6 +42,8 @@ Expected:
 - the dialog states that deletions are not propagated;
 - closing the dialog changes neither Git nor the stack.
 
+Large folders are inventoried file by file. Dockman hashes and transfers content through a reusable 64 KiB buffer instead of retaining all file contents in memory. The safety ceilings are now 20,000 files, 100 MiB per file, and 2 GiB per linked folder; these bound accidental work, not Dockman's RAM usage.
+
 ## 3. Secret filtering
 
 1. Add a `.env` file with a fake value to the test stack.

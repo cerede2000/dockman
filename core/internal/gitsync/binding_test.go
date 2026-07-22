@@ -2,6 +2,7 @@ package gitsync
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -118,6 +119,26 @@ func TestCompleteStacksFolderIsDiscoveredAndLinkedOnce(t *testing.T) {
 	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
 	require.NoError(t, err)
 	require.Equal(t, targets[0].ComposePaths, binding.ComposePaths)
+}
+
+type zeroStream struct{}
+
+func (zeroStream) Read(buffer []byte) (int, error) {
+	clear(buffer)
+	return len(buffer), nil
+}
+
+func TestLargeFilesAreHashedAndTransferredWithBoundedBuffers(t *testing.T) {
+	const size = int64(64 << 20)
+	require.NoError(t, checkTransferLimit(1, size, size))
+	file := transferFile{path: "large/config.bundle", size: size, mode: 0644, open: func() (io.ReadCloser, error) {
+		return io.NopCloser(io.LimitReader(zeroStream{}, size)), nil
+	}}
+	var err error
+	file.sha, err = hashTransferFile(file)
+	require.NoError(t, err)
+	require.NotEmpty(t, file.sha)
+	require.NoError(t, streamTransferFile(file, io.Discard))
 }
 
 func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
