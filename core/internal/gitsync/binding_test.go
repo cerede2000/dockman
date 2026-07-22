@@ -256,6 +256,33 @@ func TestBindingExclusionsCanBeAddedFromPreviewPaths(t *testing.T) {
 	require.ErrorContains(t, err, "path traversal")
 }
 
+func TestBindingExclusionsCanBeAddedInOneBatch(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", "cache"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+
+	updated, err := service.AddBindingExclusions(binding.ID, []BindingExclusionInput{
+		{Path: "cache", Directory: true},
+		{Path: "settings.json"},
+		{Path: "settings.json"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"cache/", "settings.json"}, updated.ExcludePatterns)
+
+	_, err = service.AddBindingExclusions(binding.ID, []BindingExclusionInput{{Path: "compose.yaml"}, {Path: "other.json"}})
+	require.ErrorContains(t, err, "cannot be excluded")
+	unchanged, err := service.ListBindings()
+	require.NoError(t, err)
+	require.Equal(t, []string{"cache/", "settings.json"}, unchanged[0].ExcludePatterns)
+
+	_, err = service.AddBindingExclusions(binding.ID, nil)
+	require.ErrorContains(t, err, "at least one")
+}
+
 func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

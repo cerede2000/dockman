@@ -38,6 +38,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
+	mux.HandleFunc("POST /bindings/{id}/exclusions/batch", h.addBindingExclusions)
 	mux.HandleFunc("DELETE /bindings/{id}", h.deleteBinding)
 	mux.HandleFunc("POST /bindings/{id}/preview/{direction}", h.previewBinding)
 	mux.HandleFunc("POST /bindings/{id}/export", h.exportBinding)
@@ -59,6 +60,23 @@ func (h *HTTPHandler) addBindingExclusion(w http.ResponseWriter, r *http.Request
 		return
 	}
 	row, err := h.service.AddBindingExclusion(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) addBindingExclusions(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingExclusionsInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.AddBindingExclusions(r.PathValue("id"), input.Entries)
 	if err != nil {
 		writeServiceError(w, err)
 		return

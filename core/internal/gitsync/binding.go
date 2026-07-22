@@ -76,6 +76,10 @@ type BindingExclusionInput struct {
 	Directory bool   `json:"directory"`
 }
 
+type BindingExclusionsInput struct {
+	Entries []BindingExclusionInput `json:"entries"`
+}
+
 type StackTarget struct {
 	Host         string   `json:"host"`
 	Path         string   `json:"path"`
@@ -220,30 +224,47 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 }
 
 func (s *Service) AddBindingExclusion(id string, input BindingExclusionInput) (BindingView, error) {
+	return s.AddBindingExclusions(id, []BindingExclusionInput{input})
+}
+
+func (s *Service) AddBindingExclusions(id string, inputs []BindingExclusionInput) (BindingView, error) {
+	if len(inputs) == 0 {
+		return BindingView{}, errors.New("at least one exclusion is required")
+	}
+	if len(inputs) > 100 {
+		return BindingView{}, errors.New("at most 100 exclusions can be added at once")
+	}
 	row, err := s.store.GetBinding(id)
 	if err != nil {
 		return BindingView{}, err
 	}
-	relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(input.Path))))
-	if err := validateRelativePath(relative, false); err != nil {
-		return BindingView{}, fmt.Errorf("invalid exclusion path: %w", err)
-	}
-	for _, compose := range splitPatternLines(row.ComposePaths) {
-		if !input.Directory && relative == filepath.ToSlash(filepath.Clean(filepath.FromSlash(compose))) {
-			return BindingView{}, errors.New("Compose files cannot be excluded from synchronization")
-		}
-	}
-	pattern := escapeGlobLiteral(relative)
-	if input.Directory {
-		pattern += "/"
-	}
 	excludes := splitPatternLines(row.ExcludePatterns)
+	existingPatterns := make(map[string]struct{}, len(excludes)+len(inputs))
 	for _, existing := range excludes {
-		if existing == pattern {
-			return s.bindingView(row)
-		}
+		existingPatterns[existing] = struct{}{}
 	}
-	excludes = append(excludes, pattern)
+	composePaths := make(map[string]struct{}, len(splitPatternLines(row.ComposePaths)))
+	for _, compose := range splitPatternLines(row.ComposePaths) {
+		composePaths[filepath.ToSlash(filepath.Clean(filepath.FromSlash(compose)))] = struct{}{}
+	}
+	for _, input := range inputs {
+		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(input.Path))))
+		if err := validateRelativePath(relative, false); err != nil {
+			return BindingView{}, fmt.Errorf("invalid exclusion path %q: %w", input.Path, err)
+		}
+		if _, compose := composePaths[relative]; compose && !input.Directory {
+			return BindingView{}, fmt.Errorf("Compose file %q cannot be excluded from synchronization", relative)
+		}
+		pattern := escapeGlobLiteral(relative)
+		if input.Directory {
+			pattern += "/"
+		}
+		if _, exists := existingPatterns[pattern]; exists {
+			continue
+		}
+		existingPatterns[pattern] = struct{}{}
+		excludes = append(excludes, pattern)
+	}
 	profile, includes, excludes, err := normalizeBindingPolicy(BindingPolicyInput{
 		Profile: row.SyncProfile, IncludePatterns: splitPatternLines(row.IncludePatterns), ExcludePatterns: excludes,
 	})

@@ -1,13 +1,13 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {useCallback, useDeferredValue, useEffect, useMemo, useRef, useState} from "react";
 import {
-    Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
+    Alert, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
     DialogTitle, FormControl, FormControlLabel, IconButton, InputLabel, Menu, MenuItem, Paper,
     Select, Stack, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
     TablePagination, TextField, Tooltip, Typography,
 } from "@mui/material";
 import {
     Add, BlockOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
-    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SyncOutlined, TuneOutlined,
+    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SearchOutlined, SyncOutlined, TuneOutlined,
 } from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
 import {formatBytes} from "../../lib/editor.ts";
@@ -180,7 +180,31 @@ export default function TabGit() {
     const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
     const [previewPage, setPreviewPage] = useState(0);
     const [previewRowsPerPage, setPreviewRowsPerPage] = useState(50);
+    const [previewSearch, setPreviewSearch] = useState("");
+    const [previewPageInput, setPreviewPageInput] = useState("1");
+    const [selectedPreviewPaths, setSelectedPreviewPaths] = useState<Set<string>>(() => new Set());
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
+    const deferredPreviewSearch = useDeferredValue(previewSearch);
+    const filteredPreviewEntries = useMemo(() => {
+        const query = deferredPreviewSearch.trim().toLocaleLowerCase();
+        if (!query) return transferPreview?.entries || [];
+        return (transferPreview?.entries || []).filter((entry) => entry.path.toLocaleLowerCase().includes(query));
+    }, [deferredPreviewSearch, transferPreview?.entries]);
+    const previewPageCount = Math.max(1, Math.ceil(filteredPreviewEntries.length / previewRowsPerPage));
+    const visiblePreviewEntries = useMemo(() => filteredPreviewEntries.slice(
+        previewPage * previewRowsPerPage,
+        previewPage * previewRowsPerPage + previewRowsPerPage,
+    ), [filteredPreviewEntries, previewPage, previewRowsPerPage]);
+    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded");
+    const selectedVisibleCount = selectablePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).length;
+
+    useEffect(() => {
+        setPreviewPage((current) => Math.min(current, previewPageCount - 1));
+    }, [previewPageCount]);
+
+    useEffect(() => {
+        setPreviewPageInput(String(previewPage + 1));
+    }, [previewPage]);
 
     const loadRepositoryStatuses = useCallback(async (rows: Repository[]) => {
         const pairs = await Promise.all(rows.filter((row) => row.workspacePresent).map(async (row) => {
@@ -392,13 +416,15 @@ export default function TabGit() {
                 method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
             });
             setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
+            setPreviewSearch(""); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
     };
 
     const closeTransfer = () => {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
-        setSensitiveConfirmation(""); setExcludeMenu(null); setPreviewPage(0);
+        setSensitiveConfirmation(""); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch("");
+        setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
         if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
 
@@ -449,16 +475,18 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
-    const addPreviewExclusion = async (path: string, directory: boolean) => {
-        if (!transferBinding) return;
+    const addPreviewExclusions = async (entriesToExclude: Array<{path: string; directory: boolean}>) => {
+        if (!transferBinding || entriesToExclude.length === 0) return;
         const previousPreview = transferPreview;
         setExcludeMenu(null);
+        const exactPaths = new Set(entriesToExclude.filter((entry) => !entry.directory).map((entry) => entry.path));
+        const directoryPaths = entriesToExclude.filter((entry) => entry.directory).map((entry) => entry.path);
         setTransferPreview((current) => {
             if (!current) return current;
             let changed = current.changed;
             let skipped = current.skipped;
             const entries = current.entries.map((entry) => {
-                const matches = directory ? entry.path === path || entry.path.startsWith(`${path}/`) : entry.path === path;
+                const matches = exactPaths.has(entry.path) || directoryPaths.some((path) => entry.path === path || entry.path.startsWith(`${path}/`));
                 if (!matches || entry.status === "skipped_excluded") return entry;
                 if (entry.status === "add" || entry.status === "modify") changed--;
                 if (!entry.status.startsWith("skipped_")) skipped++;
@@ -468,17 +496,37 @@ export default function TabGit() {
         });
         setBusy(`binding-exclusion-${transferBinding.id}`);
         try {
-            const updated = await api<Binding>(`/bindings/${transferBinding.id}/exclusions`, {
-                method: "POST", body: JSON.stringify({path, directory}),
+            const updated = await api<Binding>(`/bindings/${transferBinding.id}/exclusions/batch`, {
+                method: "POST", body: JSON.stringify({entries: entriesToExclude}),
             });
             const preview = await api<TransferPreview>(`/bindings/${updated.id}/preview/${transferDirection}`, {
                 method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation: includeSensitive ? sensitiveConfirmation : ""}),
             });
             setTransferBinding(updated); setTransferPreview(preview);
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
-            showSuccess(directory ? `Folder ${path} excluded.` : `File ${path} excluded.`);
+            setSelectedPreviewPaths(new Set());
+            showSuccess(entriesToExclude.length === 1 ? `${entriesToExclude[0].directory ? "Folder" : "File"} ${entriesToExclude[0].path} excluded.` : `${entriesToExclude.length} items excluded.`);
         } catch (error) { setTransferPreview(previousPreview); showError((error as Error).message); }
         finally { setBusy(null); }
+    };
+
+    const changePreviewPage = (page: number) => {
+        const next = Math.max(0, Math.min(page, previewPageCount - 1));
+        setPreviewPage(next);
+        setPreviewPageInput(String(next + 1));
+        setSelectedPreviewPaths(new Set());
+    };
+
+    const toggleVisiblePreviewEntries = (checked: boolean) => {
+        setSelectedPreviewPaths(checked ? new Set(selectablePreviewEntries.map((entry) => entry.path)) : new Set());
+    };
+
+    const togglePreviewEntry = (path: string, checked: boolean) => {
+        setSelectedPreviewPaths((current) => {
+            const next = new Set(current);
+            if (checked) next.add(path); else next.delete(path);
+            return next;
+        });
     };
 
     if (loading && !feature) return <Box sx={{display: "grid", placeItems: "center", p: 6}}><CircularProgress/></Box>;
@@ -632,14 +680,29 @@ export default function TabGit() {
                     <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
                 </Stack>
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Open the synchronization policy on the folder link to add <code>**</code> include or exclude rules.</Alert>}
-                <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
-                    {!transferPreview?.entries.length && <TableRow><TableCell colSpan={4} align="center" sx={{py: 4, color: "text.secondary"}}>No difference.</TableCell></TableRow>}
-                    {transferPreview?.entries.slice(previewPage * previewRowsPerPage, previewPage * previewRowsPerPage + previewRowsPerPage).map((entry) => <TableRow key={entry.path}><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
+                <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
+                    <TextField size="small" value={previewSearch} onChange={(event) => {
+                        setPreviewSearch(event.target.value); setPreviewPage(0); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
+                    }} placeholder="Search by path…" slotProps={{input: {startAdornment: <SearchOutlined fontSize="small" sx={{mr: 1, color: "text.secondary"}}/>}}} sx={{flex: 1}}/>
+                    <Button variant="outlined" color="warning" startIcon={<BlockOutlined/>} disabled={busy !== null || selectedPreviewPaths.size === 0} onClick={() => void addPreviewExclusions(visiblePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).map((entry) => ({path: entry.path, directory: !!entry.directory})))}>
+                        Exclude selected ({selectedPreviewPaths.size})
+                    </Button>
+                </Stack>
+                <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 310}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell padding="checkbox"><Checkbox size="small" disabled={busy !== null || selectablePreviewEntries.length === 0} checked={selectablePreviewEntries.length > 0 && selectedVisibleCount === selectablePreviewEntries.length} indeterminate={selectedVisibleCount > 0 && selectedVisibleCount < selectablePreviewEntries.length} onChange={(_, checked) => toggleVisiblePreviewEntries(checked)} slotProps={{input: {"aria-label": "Select all items on this page"}}}/></TableCell><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
+                    {!filteredPreviewEntries.length && <TableRow><TableCell colSpan={5} align="center" sx={{py: 4, color: "text.secondary"}}>{previewSearch ? "No item matches this search." : "No difference."}</TableCell></TableRow>}
+                    {visiblePreviewEntries.map((entry) => <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}><TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
                 </TableBody></Table></TableContainer>
-                <TablePagination component="div" count={transferPreview?.entries.length || 0} page={previewPage} onPageChange={(_, page) => setPreviewPage(page)} rowsPerPage={previewRowsPerPage} onRowsPerPageChange={(event) => { setPreviewRowsPerPage(Number(event.target.value)); setPreviewPage(0); }} rowsPerPageOptions={[25, 50, 100]} labelRowsPerPage="Rows" sx={{border: 1, borderColor: "divider", borderTop: 0, borderRadius: "0 0 4px 4px"}}/>
+                <Stack direction={{xs: "column", md: "row"}} sx={{alignItems: {md: "center"}, border: 1, borderColor: "divider", borderTop: 0, borderRadius: "0 0 4px 4px"}}>
+                    <TablePagination component="div" count={filteredPreviewEntries.length} page={previewPage} onPageChange={(_, page) => changePreviewPage(page)} rowsPerPage={previewRowsPerPage} onRowsPerPageChange={(event) => { setPreviewRowsPerPage(Number(event.target.value)); changePreviewPage(0); }} rowsPerPageOptions={[25, 50, 100]} labelRowsPerPage="Rows" showFirstButton showLastButton sx={{flex: 1, border: 0}}/>
+                    <Stack direction="row" spacing={1} sx={{alignItems: "center", px: 2, pb: {xs: 1.5, md: 0}}}>
+                        <Typography variant="body2" color="text.secondary">Page</Typography>
+                        <TextField size="small" value={previewPageInput} onChange={(event) => setPreviewPageInput(event.target.value.replace(/\D/g, ""))} onBlur={() => changePreviewPage(Number(previewPageInput || 1) - 1)} onKeyDown={(event) => { if (event.key === "Enter") changePreviewPage(Number(previewPageInput || 1) - 1); }} slotProps={{htmlInput: {inputMode: "numeric", min: 1, max: previewPageCount, "aria-label": "Go to page"}}} sx={{width: 76}}/>
+                        <Typography variant="body2" color="text.secondary">/ {previewPageCount}</Typography>
+                    </Stack>
+                </Stack>
                 <Menu open={excludeMenu !== null} anchorEl={excludeMenu?.anchor || null} onClose={() => setExcludeMenu(null)}>
-                    {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusion(excludeMenu.entry.path, false)}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
-                    {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusion(path, true)}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
+                    {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusions([{path: excludeMenu.entry.path, directory: false}])}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
+                    {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusions([{path, directory: true}])}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
                 </Menu>
                 <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
                     const checked = event.target.checked;
