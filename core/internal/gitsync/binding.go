@@ -54,19 +54,25 @@ type BindingInput struct {
 }
 
 type BindingView struct {
-	ID              string    `json:"id"`
-	RepositoryID    string    `json:"repositoryId"`
-	RepositoryName  string    `json:"repositoryName"`
-	Host            string    `json:"host"`
-	StackPath       string    `json:"stackPath"`
-	SubPath         string    `json:"subPath"`
-	ComposePaths    []string  `json:"composePaths"`
-	SyncProfile     string    `json:"syncProfile"`
-	IncludePatterns []string  `json:"includePatterns"`
-	ExcludePatterns []string  `json:"excludePatterns"`
-	Enabled         bool      `json:"enabled"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID                      string     `json:"id"`
+	RepositoryID            string     `json:"repositoryId"`
+	RepositoryName          string     `json:"repositoryName"`
+	Host                    string     `json:"host"`
+	StackPath               string     `json:"stackPath"`
+	SubPath                 string     `json:"subPath"`
+	ComposePaths            []string   `json:"composePaths"`
+	SyncProfile             string     `json:"syncProfile"`
+	IncludePatterns         []string   `json:"includePatterns"`
+	ExcludePatterns         []string   `json:"excludePatterns"`
+	Enabled                 bool       `json:"enabled"`
+	AutoSyncEnabled         bool       `json:"autoSyncEnabled"`
+	AutoSyncIntervalMinutes int        `json:"autoSyncIntervalMinutes"`
+	AutoSyncState           string     `json:"autoSyncState"`
+	AutoSyncError           string     `json:"autoSyncError,omitempty"`
+	LastAutoSyncAt          *time.Time `json:"lastAutoSyncAt,omitempty"`
+	LastAutoSyncSuccessAt   *time.Time `json:"lastAutoSyncSuccessAt,omitempty"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
 }
 
 type BindingPolicyInput struct {
@@ -97,22 +103,22 @@ type StackTarget struct {
 }
 
 type TransferInput struct {
-	IncludeSensitive      bool   `json:"includeSensitive"`
-	SensitiveConfirmation string `json:"sensitiveConfirmation"`
-	CommitMessage         string `json:"commitMessage"`
-	PreviewToken          string `json:"previewToken"`
+	IncludeSensitive      bool     `json:"includeSensitive"`
+	SensitiveConfirmation string   `json:"sensitiveConfirmation"`
+	CommitMessage         string   `json:"commitMessage"`
+	PreviewToken          string   `json:"previewToken"`
 	ResolvedPaths         []string `json:"resolvedPaths"`
 	SelectedPaths         []string `json:"selectedPaths"`
 }
 
 type PreviewEntry struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	SourceSHA string `json:"sourceSha,omitempty"`
-	TargetSHA string `json:"targetSha,omitempty"`
-	Size      int64  `json:"size,omitempty"`
-	Sensitive bool   `json:"sensitive,omitempty"`
-	Directory bool   `json:"directory,omitempty"`
+	Path         string `json:"path"`
+	Status       string `json:"status"`
+	SourceSHA    string `json:"sourceSha,omitempty"`
+	TargetSHA    string `json:"targetSha,omitempty"`
+	Size         int64  `json:"size,omitempty"`
+	Sensitive    bool   `json:"sensitive,omitempty"`
+	Directory    bool   `json:"directory,omitempty"`
 	ConflictKind string `json:"conflictKind,omitempty"`
 }
 
@@ -244,6 +250,7 @@ func (s *Service) CreateBinding(input BindingInput) (BindingView, error) {
 		UUID: uuid.NewString(), RepositoryUUID: clean.RepositoryID, Host: clean.Host,
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
 		ComposePaths: strings.Join(compose, "\n"), SyncProfile: syncProfileComposeConfig, Enabled: true,
+		AutoSyncIntervalMinutes: defaultAutoSyncIntervalMinutes, AutoSyncState: "disabled",
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
@@ -370,7 +377,17 @@ func (s *Service) AddBindingInclusions(id string, paths []string) (BindingView, 
 }
 
 func (s *Service) DeleteBinding(id string, forget bool) error {
-	if _, err := s.store.GetBinding(id); err != nil {
+	automationLock := s.repositoryLock("automation:" + id)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return err
+	}
+	row.AutoSyncEnabled = false
+	row.AutoSyncState = "disabled"
+	row.AutoSyncError = ""
+	if err := s.store.SaveBinding(&row); err != nil {
 		return err
 	}
 	return s.store.DeleteBinding(id, forget)
@@ -768,7 +785,16 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 	if profile == "" {
 		profile = syncProfileComposeConfig
 	}
-	return BindingView{ID: row.UUID, RepositoryID: row.RepositoryUUID, RepositoryName: repository.Name, Host: row.Host, StackPath: row.StackPath, SubPath: row.SubPath, ComposePaths: compose, SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns), ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}, nil
+	return BindingView{
+		ID: row.UUID, RepositoryID: row.RepositoryUUID, RepositoryName: repository.Name,
+		Host: row.Host, StackPath: row.StackPath, SubPath: row.SubPath, ComposePaths: compose,
+		SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns),
+		ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled,
+		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
+		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
+		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}, nil
 }
 
 func discoverComposeFiles(targetFS filesystem.FileSystem, root string) []string {

@@ -93,7 +93,10 @@ interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
     subPath: string; composePaths: string[]; syncProfile: "compose_config" | "all_files";
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
+    autoSyncEnabled: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
+    autoSyncError?: string; lastAutoSyncAt?: string; lastAutoSyncSuccessAt?: string;
 }
+interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; message: string; }
 interface PreviewEntry {
     path: string; status: "add" | "modify" | "conflict" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
     targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed";
@@ -198,6 +201,8 @@ export default function TabGit() {
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
+    const [automationBinding, setAutomationBinding] = useState<Binding | null>(null);
+    const [automationForm, setAutomationForm] = useState({enabled: false, intervalMinutes: 15});
     const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
     const [previewPage, setPreviewPage] = useState(0);
     const [previewRowsPerPage, setPreviewRowsPerPage] = useState(50);
@@ -275,6 +280,15 @@ export default function TabGit() {
     }, [loadRepositoryStatuses, showError]);
 
     useEffect(() => { void load(); }, [load]);
+
+    useEffect(() => {
+        if (!feature?.enabled) return;
+        const timer = window.setInterval(() => {
+            if (document.visibilityState !== "visible" || busy !== null) return;
+            void api<Binding[]>("/bindings").then(setBindings).catch(() => undefined);
+        }, 30_000);
+        return () => window.clearInterval(timer);
+    }, [busy, feature?.enabled]);
 
     const credentialNames = useMemo(() => Object.fromEntries(credentials.map((item) => [item.id, item.name])), [credentials]);
 
@@ -535,6 +549,36 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
+    const openBindingAutomation = (binding: Binding) => {
+        setAutomationBinding(binding);
+        setAutomationForm({enabled: binding.autoSyncEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15});
+    };
+
+    const saveBindingAutomation = async () => {
+        if (!automationBinding) return;
+        setBusy(`binding-automation-${automationBinding.id}`);
+        try {
+            await api<Binding>(`/bindings/${automationBinding.id}/automation`, {
+                method: "PUT", body: JSON.stringify(automationForm),
+            });
+            showSuccess(automationForm.enabled ? "Automatic Git monitoring enabled." : "Automatic Git monitoring disabled.");
+            setAutomationBinding(null);
+            await load();
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
+    };
+
+    const runBindingAutomation = async (binding: Binding) => {
+        setBusy(`binding-auto-run-${binding.id}`);
+        try {
+            const result = await api<AutoSyncResult>(`/bindings/${binding.id}/automation/run`, {method: "POST"});
+            if (result.state === "conflict" || result.state === "blocked") showError(result.message);
+            else showSuccess(result.message);
+            await load();
+        } catch (error) { showError((error as Error).message); await load(); }
+        finally { setBusy(null); }
+    };
+
     const addPreviewExclusions = async (entriesToExclude: Array<{path: string; directory: boolean}>) => {
         if (!transferBinding || entriesToExclude.length === 0) return;
         const previousPreview = transferPreview;
@@ -635,7 +679,7 @@ export default function TabGit() {
     return <Box sx={{maxWidth: 1200, mx: "auto", p: {xs: 1, md: 3}}}>
         <Stack spacing={3}>
             <Alert severity="info" variant="outlined">
-                Git synchronization is manual and non-destructive: files missing from the source are never deleted. Import creates a backup and never deploys or restarts the stack.
+                Git transfers remain non-destructive. Optional automatic monitoring is Git → Dockman only, creates a backup before changes, stops on conflicts, and never deploys or restarts a stack.
             </Alert>
 
             <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
@@ -695,13 +739,21 @@ export default function TabGit() {
                     <Button variant="contained" startIcon={<LinkOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openBindingCreate}>Link folder</Button>
                 </Stack>
                 <TableContainer><Table size="small">
-                    <TableHead><TableRow><TableCell>Source folder</TableCell><TableCell>Git destination</TableCell><TableCell>Compose files</TableCell><TableCell align="right">Manual transfer</TableCell></TableRow></TableHead>
+                    <TableHead><TableRow><TableCell>Source folder</TableCell><TableCell>Git destination</TableCell><TableCell>Compose files</TableCell><TableCell>Automatic Git → Dockman</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
                     <TableBody>
-                        {bindings.length === 0 && <TableRow><TableCell colSpan={4} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
+                        {bindings.length === 0 && <TableRow><TableCell colSpan={5} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
                         {bindings.map((binding) => <TableRow key={binding.id} hover>
                             <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Complete folder on {binding.host}</Typography></TableCell>
                             <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Box sx={{mt: .5}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : "Configuration files"}/></Box></TableCell>
                             <TableCell>{binding.composePaths.length ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>{binding.composePaths.slice(0, 2).map((path) => <Chip key={path} size="small" variant="outlined" label={path}/>)}{binding.composePaths.length > 2 && <Chip size="small" color="info" variant="outlined" label={`+${binding.composePaths.length - 2}`}/>}</Stack> : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
+                            <TableCell sx={{minWidth: 190}}>
+                                <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
+                                    <Tooltip title={binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
+                                    <Tooltip title="Configure automatic monitoring"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingAutomation(binding)}><SyncOutlined fontSize="small"/></IconButton></Tooltip>
+                                    {binding.autoSyncEnabled && <Tooltip title="Check and synchronize now"><span><IconButton size="small" disabled={busy !== null} onClick={() => void runBindingAutomation(binding)}>{busy === `binding-auto-run-${binding.id}` ? <CircularProgress size={17}/> : <RefreshOutlined fontSize="small"/>}</IconButton></span></Tooltip>}
+                                </Stack>
+                                {binding.lastAutoSyncAt && <Typography variant="caption" color="text.secondary">Checked {dateLabel(binding.lastAutoSyncAt)}</Typography>}
+                            </TableCell>
                             <TableCell align="right" sx={{whiteSpace: "nowrap"}}>
                                 <Tooltip title="Synchronization policy"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingPolicy(binding)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                 <Tooltip title="Preview stack → Git"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "stack_to_repository")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
@@ -843,6 +895,19 @@ export default function TabGit() {
                 <Typography variant="caption" color="text.secondary">The configuration profile includes Compose/YAML, JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Sensitive files remain protected separately.</Typography>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={automationBinding !== null} onClose={() => busy === null && setAutomationBinding(null)} fullWidth maxWidth="xs">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><SyncOutlined/>Automatic Git monitoring</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <FormControlLabel control={<Switch checked={automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, enabled: event.target.checked})}/>} label="Synchronize changes from Git automatically"/>
+                <TextField label="Check interval (minutes)" type="number" value={automationForm.intervalMinutes} onChange={(event) => setAutomationForm({...automationForm, intervalMinutes: Number(event.target.value)})} disabled={!automationForm.enabled} slotProps={{htmlInput: {min: 5, max: 1440, step: 5}}} helperText="Between 5 minutes and 24 hours."/>
+                <Alert severity="info">Dockman fetches Git and fast-forwards the managed repository, then imports allowed files with a backup. Missing source files are not deleted.</Alert>
+                <Alert severity="warning">A dirty/diverged repository or any file conflict blocks the complete automatic import. Deployment and container actions remain manual.</Alert>
+                {automationBinding?.lastAutoSyncSuccessAt && <Typography variant="body2" color="text.secondary">Last successful synchronization: {dateLabel(automationBinding.lastAutoSyncSuccessAt)}</Typography>}
+                {automationBinding?.autoSyncError && <Alert severity="error">{automationBinding.autoSyncError}</Alert>}
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setAutomationBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingAutomation()} disabled={busy !== null || (automationForm.enabled && (automationForm.intervalMinutes < 5 || automationForm.intervalMinutes > 1440))}>{busy?.startsWith("binding-automation-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
         </Dialog>
 
         <Dialog open={deleteBinding !== null} onClose={() => busy === null && setDeleteBinding(null)} maxWidth="xs" fullWidth>

@@ -172,6 +172,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	} else if interrupted > 0 {
 		log.Warn().Int64("operations", interrupted).Msg("marked interrupted Git operations as failed")
 	}
+	gitSyncSrv.StartAutomation(conf.ServerContext)
 
 	viewerSrv := viewer.New(
 		hostManager.GetDockerService,

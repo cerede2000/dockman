@@ -1,5 +1,7 @@
-h1:dSNYqFNOSXX2fDgiXWOGu0cpEkQc2bzz5soCGhr1dBw=
+h1:KiYnJgQOkJ17OFFWQcCkyvBScNCPWL+1Cr90h/LPlHs=
 20260208203619_mig.sql h1:xBogJIlN+Qqa/9+EkfhypXCAZ8Hlqawf9Vh4ZvllQkc=
 20260208221102_mig.sql h1:Qx+BFt3Ilnk8My/pLg74kR0Mpgz0DqcXeB4RsuM5qqI=
 20260722090000_git_sync_foundation.sql h1:zeelfWn1yknX4cx8az8Z3r/Ie8pr+2EJx4jwcYpAeyU=
 20260722190000_git_sync_binding_policy.sql h1:/lB1es9U6gtLtCYUbX8rSB9pOnW6a8lyluBVU/jPs8k=
+20260722210000_git_sync_baselines.sql h1:4+EaW5SMnUWJxJQ87sy/5PhJJQ8EYhRr5UdOlEsuEUw=
+20260722213000_git_sync_automation.sql h1:+5cQmEE4k1JbYAWi0X3xO6iAh/CwyQg0mShkdqqqE9w=

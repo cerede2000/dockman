@@ -104,7 +104,26 @@ func (s *Store) GetBinding(id string) (StackBinding, error) {
 	return row, err
 }
 
+func (s *Store) ListAutoSyncBindings() ([]StackBinding, error) {
+	var rows []StackBinding
+	err := s.db.Where("auto_sync_enabled = ?", true).
+		Order("last_auto_sync_at ASC, created_at ASC").Find(&rows).Error
+	return rows, err
+}
+
 func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
+
+func (s *Store) UpdateBindingAutoSyncState(id, state, message, commit string, attemptedAt, succeededAt *time.Time) error {
+	updates := map[string]any{"auto_sync_state": state, "auto_sync_error": message}
+	if attemptedAt != nil {
+		updates["last_auto_sync_at"] = attemptedAt
+	}
+	if succeededAt != nil {
+		updates["last_auto_sync_success_at"] = succeededAt
+		updates["last_auto_sync_commit"] = commit
+	}
+	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error
+}
 
 func (s *Store) ArchivedBinding(host, stackPath string) (StackBinding, error) {
 	var row StackBinding

@@ -37,6 +37,8 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
+	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
+	mux.HandleFunc("POST /bindings/{id}/automation/run", h.runBindingAutomation)
 	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
 	mux.HandleFunc("POST /bindings/{id}/exclusions/batch", h.addBindingExclusions)
 	mux.HandleFunc("POST /bindings/{id}/inclusions/batch", h.addBindingInclusions)
@@ -118,6 +120,35 @@ func (h *HTTPHandler) updateBindingPolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) updateBindingAutomation(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingAutomationInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.UpdateBindingAutomation(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) runBindingAutomation(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.RunBindingAutoSync(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) listStackTargets(w http.ResponseWriter, _ *http.Request) {
@@ -348,7 +379,7 @@ func (h *HTTPHandler) deleteRepository(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) status(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":                 h.service.Enabled(),
-		"phase":                   "conflict_management",
+		"phase":                   "safe_automation",
 		"repositorySyncAvailable": h.service.Enabled(),
 		"stackSyncAvailable":      h.service.Enabled(),
 	})
