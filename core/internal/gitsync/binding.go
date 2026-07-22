@@ -39,6 +39,7 @@ const (
 	maxIgnoreFileSize        = 64 << 10
 	maxIgnoreRules           = 1000
 	maxComparisonFileSize    = 2 << 20
+	gitBackupRetention       = 5
 	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
 	syncProfileComposeConfig = "compose_config"
 	syncProfileAllFiles      = "all_files"
@@ -384,10 +385,16 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	if err != nil {
 		return err
 	}
+	repositoryLock := s.repositoryLock(row.RepositoryUUID)
+	repositoryLock.Lock()
+	defer repositoryLock.Unlock()
 	row.AutoSyncEnabled = false
 	row.AutoSyncState = "disabled"
 	row.AutoSyncError = ""
 	if err := s.store.SaveBinding(&row); err != nil {
+		return err
+	}
+	if err := s.removeBindingBackups(row.UUID); err != nil {
 		return err
 	}
 	return s.store.DeleteBinding(id, forget)
@@ -1763,5 +1770,64 @@ func (s *Service) backupChangedFiles(binding StackBinding, _ filesystem.FileSyst
 			return "", fmt.Errorf("write stack backup: %w", candidate)
 		}
 	}
+	if err := pruneBindingBackups(backupFS, binding.UUID, gitBackupRetention); err != nil {
+		return "", fmt.Errorf("prune old stack backups: %w", err)
+	}
 	return filepath.ToSlash(relativePath), nil
+}
+
+func pruneBindingBackups(backupFS *os.Root, bindingID string, retain int) error {
+	if retain < 1 {
+		return errors.New("backup retention must keep at least one archive")
+	}
+	directory, err := backupFS.Open(bindingID)
+	if err != nil {
+		return err
+	}
+	entries, readErr := directory.ReadDir(-1)
+	closeErr := directory.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".tar.gz") {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names[:max(0, len(names)-retain)] {
+		if err := backupFS.Remove(filepath.Join(bindingID, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) removeBindingBackups(bindingID string) error {
+	if s.backupRoot == "" {
+		return nil
+	}
+	if _, err := uuid.Parse(bindingID); err != nil {
+		return errors.New("invalid binding identifier for backup cleanup")
+	}
+	info, err := os.Lstat(s.backupRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Git stack backup root must be a real directory")
+	}
+	backupFS, err := os.OpenRoot(s.backupRoot)
+	if err != nil {
+		return fmt.Errorf("open backup directory: %w", err)
+	}
+	defer backupFS.Close()
+	if err := backupFS.RemoveAll(bindingID); err != nil {
+		return fmt.Errorf("remove binding backups: %w", err)
+	}
+	return nil
 }

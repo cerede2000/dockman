@@ -180,8 +180,12 @@ func TestBindingBaselineSurvivesUnlinkAndRestore(t *testing.T) {
 func TestValidateGitHubRepositoryURL(t *testing.T) {
 	for _, value := range []string{
 		"https://github.com/owner/repository.git",
+		"https://github.com/owner/repository",
+		"owner/repository",
 		"git@github.com:owner/repository.git",
+		"git@github.com:owner/repository",
 		"ssh://git@github.com/owner/repository.git",
+		"ssh://git@github.com/owner/repository",
 		"ssh://git@github.com:22/owner/repository.git",
 	} {
 		require.NoError(t, validateGitHubURL(value, true), value)
@@ -190,7 +194,6 @@ func TestValidateGitHubRepositoryURL(t *testing.T) {
 		"https://token@github.com/owner/repository.git",
 		"https://github.com:8443/owner/repository.git",
 		"https://api.github.com/owner/repository.git",
-		"https://github.com/owner/repository",
 		"https://github.com/owner/nested/repository.git",
 		"https://github.com/owner/repository.git?token=secret",
 		"https://github.com/owner%2Frepository.git",
@@ -199,6 +202,24 @@ func TestValidateGitHubRepositoryURL(t *testing.T) {
 	} {
 		require.Error(t, validateGitHubURL(value, true), value)
 	}
+}
+
+func TestNormalizeGitHubRepositoryURL(t *testing.T) {
+	tests := map[string]string{
+		"owner/repository":                        "https://github.com/owner/repository.git",
+		"https://github.com/owner/repository":     "https://github.com/owner/repository.git",
+		"https://github.com/owner/repository.git": "https://github.com/owner/repository.git",
+		"git@github.com:owner/repository":         "git@github.com:owner/repository.git",
+		"ssh://git@github.com/owner/repository":   "ssh://git@github.com/owner/repository.git",
+	}
+	for input, expected := range tests {
+		actual, err := normalizeGitHubURL(input, true)
+		require.NoError(t, err, input)
+		require.Equal(t, expected, actual, input)
+	}
+	sshShorthand, err := normalizeGitHubURL("owner/repository", true, true)
+	require.NoError(t, err)
+	require.Equal(t, "git@github.com:owner/repository.git", sshShorthand)
 }
 
 func createTestRemote(t *testing.T) (remotePath, seedPath string) {

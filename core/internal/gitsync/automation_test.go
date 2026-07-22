@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	gitclient "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -33,6 +34,23 @@ func TestBindingAutomationConfigurationIsOptInAndBounded(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, archived.AutoSyncEnabled, "relinking must never resume automation implicitly")
 	require.Equal(t, "disabled", archived.AutoSyncState)
+}
+
+func TestNextAutoSyncDelayTracksExactDeadline(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	attempted := now.Add(-4*time.Minute - 50*time.Second)
+	require.NoError(t, service.store.UpdateBindingAutoSyncState(binding.ID, "watching", "", "", &attempted, nil))
+	delay := service.nextAutoSyncDelay(now)
+	require.InDelta(t, 10*time.Second, delay, float64(100*time.Millisecond))
 }
 
 func TestBindingAutomationImportsRemoteChangesWithBackup(t *testing.T) {

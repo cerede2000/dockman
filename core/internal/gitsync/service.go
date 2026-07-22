@@ -240,13 +240,19 @@ func (s *Service) TestCredential(ctx context.Context, input TestInput) (TestResu
 }
 
 func (s *Service) testCredential(ctx context.Context, input CredentialInput, repositoryURL string) (TestResult, error) {
+	repositoryURL = strings.TrimSpace(repositoryURL)
+	if repositoryURL != "" {
+		allowSSH := input.AuthType == AuthSSHKey
+		normalizedURL, err := normalizeGitHubURL(repositoryURL, allowSSH, allowSSH)
+		if err != nil {
+			return TestResult{}, err
+		}
+		repositoryURL = normalizedURL
+	}
 	switch input.AuthType {
 	case AuthPublic:
 		if repositoryURL == "" {
 			return TestResult{OK: true, Message: "Public access needs no credential. Add a repository URL to verify remote access."}, nil
-		}
-		if err := validateGitHubURL(repositoryURL, false); err != nil {
-			return TestResult{}, err
 		}
 		if err := listRemote(ctx, repositoryURL, nil); err != nil {
 			return TestResult{}, fmt.Errorf("public repository access failed: %w", err)
@@ -254,9 +260,6 @@ func (s *Service) testCredential(ctx context.Context, input CredentialInput, rep
 		return TestResult{OK: true, Message: "Public repository is reachable."}, nil
 	case AuthHTTPSToken:
 		if repositoryURL != "" {
-			if err := validateGitHubURL(repositoryURL, false); err != nil {
-				return TestResult{}, err
-			}
 			username := input.Username
 			if username == "" {
 				username = "x-access-token"
@@ -280,11 +283,6 @@ func (s *Service) testCredential(ctx context.Context, input CredentialInput, rep
 		}
 		return TestResult{OK: true, Message: "GitHub accepted the token."}, nil
 	case AuthSSHKey:
-		if repositoryURL != "" {
-			if err := validateGitHubURL(repositoryURL, true); err != nil {
-				return TestResult{}, err
-			}
-		}
 		key, err := gitssh.NewPublicKeys("git", []byte(input.PrivateKey), input.Passphrase)
 		if err != nil {
 			return TestResult{}, fmt.Errorf("invalid SSH private key or passphrase: %w", err)
@@ -385,23 +383,47 @@ func validateCredentialInput(input CredentialInput, allowEmptySecret bool) (Cred
 }
 
 func validateGitHubURL(raw string, allowSSH bool) error {
-	if strings.HasPrefix(raw, "git@github.com:") {
-		if allowSSH && githubRepositoryPathPattern.MatchString(strings.TrimPrefix(raw, "git@github.com:")) {
-			return nil
+	_, err := normalizeGitHubURL(raw, allowSSH)
+	return err
+}
+
+// normalizeGitHubURL accepts the human-facing owner/repository form and
+// GitHub HTTPS/SSH clone URLs. It stores one canonical clone URL so validation
+// remains strict without forcing users to know Git's optional .git suffix.
+func normalizeGitHubURL(raw string, allowSSH bool, preferSSH ...bool) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if githubRepositoryPathPattern.MatchString(raw) {
+		if allowSSH && len(preferSSH) > 0 && preferSSH[0] {
+			return "git@github.com:" + ensureGitSuffix(raw), nil
 		}
-		return errors.New("SSH repository URL is not allowed for this credential type")
+		return "https://github.com/" + ensureGitSuffix(raw), nil
+	}
+	if strings.HasPrefix(raw, "git@github.com:") {
+		path := strings.TrimPrefix(raw, "git@github.com:")
+		if allowSSH && githubRepositoryPathPattern.MatchString(path) {
+			return "git@github.com:" + ensureGitSuffix(path), nil
+		}
+		return "", errors.New("SSH repository URL is not allowed for this credential type")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() != "github.com" || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" {
-		return errors.New("repository URL must be a credential-free github.com URL")
+		return "", errors.New("repository URL must be an owner/repository pair or a credential-free github.com URL")
 	}
-	if u.Scheme == "https" && u.User == nil && u.Port() == "" && githubRepositoryPathPattern.MatchString(strings.TrimPrefix(u.Path, "/")) {
-		return nil
+	repositoryPath := strings.TrimPrefix(u.Path, "/")
+	if u.Scheme == "https" && u.User == nil && u.Port() == "" && githubRepositoryPathPattern.MatchString(repositoryPath) {
+		return "https://github.com/" + ensureGitSuffix(repositoryPath), nil
 	}
-	if allowSSH && u.Scheme == "ssh" && u.User != nil && u.User.String() == "git" && (u.Port() == "" || u.Port() == "22") && githubRepositoryPathPattern.MatchString(strings.TrimPrefix(u.Path, "/")) {
-		return nil
+	if allowSSH && u.Scheme == "ssh" && u.User != nil && u.User.String() == "git" && (u.Port() == "" || u.Port() == "22") && githubRepositoryPathPattern.MatchString(repositoryPath) {
+		return "ssh://git@github.com/" + ensureGitSuffix(repositoryPath), nil
 	}
-	return errors.New("repository URL must end in .git and use HTTPS, or GitHub SSH where supported")
+	return "", errors.New("repository URL must use owner/repository, GitHub HTTPS, or GitHub SSH where supported")
+}
+
+func ensureGitSuffix(repositoryPath string) string {
+	if strings.HasSuffix(repositoryPath, ".git") {
+		return repositoryPath
+	}
+	return repositoryPath + ".git"
 }
 
 func (s *Service) encryptPayload(id string, payload secretPayload) ([]byte, error) {

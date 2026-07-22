@@ -28,7 +28,7 @@ import (
 var (
 	repositoryNamePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 	branchNamePattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
-	githubRepositoryPathPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}\.git$`)
+	githubRepositoryPathPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}(?:\.git)?$`)
 )
 
 type RepositoryInput struct {
@@ -414,6 +414,15 @@ func (s *Service) DeleteRepository(id string) error {
 	if hasBindings {
 		return errors.New("repository is still linked to one or more stacks")
 	}
+	bindingIDs, err := s.store.RepositoryBindingIDs(id)
+	if err != nil {
+		return err
+	}
+	for _, bindingID := range bindingIDs {
+		if err := s.removeBindingBackups(bindingID); err != nil {
+			return err
+		}
+	}
 	path, err := s.repositoryPath(id)
 	if err != nil {
 		return err
@@ -453,14 +462,19 @@ func (s *Service) validateRepositoryInput(input RepositoryInput) (RepositoryInpu
 	if !branchNamePattern.MatchString(input.DefaultBranch) || strings.Contains(input.DefaultBranch, "..") {
 		return input, errors.New("invalid default branch name")
 	}
-	if err := validateGitHubURL(input.RemoteURL, true); err != nil {
-		return input, err
-	}
+	preferSSH := false
 	if input.CredentialUUID != "" {
-		if _, err := s.store.GetCredential(input.CredentialUUID); err != nil {
+		credential, err := s.store.GetCredential(input.CredentialUUID)
+		if err != nil {
 			return input, err
 		}
+		preferSSH = credential.AuthType == AuthSSHKey
 	}
+	normalizedURL, err := normalizeGitHubURL(input.RemoteURL, true, preferSSH)
+	if err != nil {
+		return input, err
+	}
+	input.RemoteURL = normalizedURL
 	return input, nil
 }
 

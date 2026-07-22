@@ -4,7 +4,7 @@ Ce lot ajoute une surveillance périodique **optionnelle par lien de dossier**. 
 
 ## Préparation
 
-1. Démarrer l'image `ghcr.io/cerede2000/dockman:git-sync-lot-5` avec le même `/config` et la même clé Git que pour le lot 4.
+1. Démarrer l'image `ghcr.io/cerede2000/dockman:git-sync-lot-5-1` avec le même `/config` et la même clé Git que pour le lot 4.
 2. Conserver `DOCKMAN_GIT_SYNC=true` et `DOCKMAN_GIT_MASTER_KEY_FILE=/run/secrets/dockman_git_key`.
 3. Utiliser le dépôt GitHub jetable et une stack sans enjeu de production.
 4. Vérifier que le lien possède déjà une baseline saine du lot 4. Sinon, confirmer une première synchronisation manuelle sans conflit.
@@ -17,7 +17,17 @@ Attendu : la migration démarre sans perte de dépôt, de lien, de règle d'incl
 2. Activer **Synchronize changes from Git automatically**.
 3. Essayer `4` minutes, puis `5` minutes.
 
-Attendu : `4` est refusé ; `5` est accepté. La fréquence maximale est 1 440 minutes. Le lien passe à l'état `watching`, sans transfert immédiat déclenché par le bouton d'enregistrement.
+Attendu : `4` est refusé ; `5` est accepté. La fréquence maximale est 1 440 minutes. Le lien passe à l'état `watching`, sans transfert immédiat déclenché par le bouton d'enregistrement. Les contrôles suivants sont calés sur l'échéance exacte ; l'ancienne marge de 30 secondes n'existe plus.
+
+## 1 bis. Formats de dépôt acceptés
+
+Créer ou tester successivement le même dépôt avec :
+
+- `cerede2000/dockman-git-sync-test` ;
+- `https://github.com/cerede2000/dockman-git-sync-test` ;
+- `https://github.com/cerede2000/dockman-git-sync-test.git`.
+
+Attendu : les trois formats fonctionnent et sont normalisés vers l'URL canonique terminée par `.git`. Les tokens dans l'URL, paramètres, fragments, ports HTTPS personnalisés et domaines autres que `github.com` restent refusés.
 
 ## 2. Détection périodique réelle
 
@@ -45,10 +55,19 @@ Le commit traité est mémorisé par lien. Tant que le HEAD Git ne change pas, D
 ## 4. Conflit local/Git
 
 1. Partir d'une baseline à jour.
-2. Modifier différemment le même fichier dans Dockman et dans GitHub.
+2. Modifier différemment plusieurs fichiers dans Dockman et dans GitHub.
 3. Attendre le contrôle ou lancer **maintenant**.
 
-Attendu : l'état devient `conflict`. **Aucun fichier du lot n'est importé**, même si d'autres changements Git étaient sans conflit. Le fichier Dockman reste intact. La résolution se fait avec la comparaison et les décisions unitaires du lot 4, puis un nouveau contrôle peut être lancé.
+Attendu : l'état devient `conflict`. **Aucun fichier du lot n'est importé**, même si d'autres changements Git étaient sans conflit. Cliquer directement sur le tag rouge ouvre la liste filtrée des conflits. Pour chaque fichier, comparer puis choisir indépendamment **Keep Git** ou **Keep Dockman**. Valider seulement une partie : les autres restent en attente. Après la dernière résolution, Dockman relance immédiatement le contrôle automatique et le tag repasse à `up to date` sans intervention supplémentaire.
+
+## 4 bis. Rétention et nettoyage des backups
+
+1. Produire au moins 7 imports Git → Dockman modifiant un fichier existant.
+2. Examiner `/config/git/backups/<identifiant-du-lien>`.
+3. Retirer le lien, puis vérifier son dossier de backup.
+4. Refaire le scénario avec un lien retiré puis supprimer le dépôt dans Dockman.
+
+Attendu : seuls les 5 backups les plus récents sont conservés. Retirer un lien supprime tous ses backups, avec ou sans oubli de baseline. Supprimer un dépôt nettoie également les éventuels backups de ses anciens liens archivés.
 
 ## 5. Dépôt dans un état dangereux
 

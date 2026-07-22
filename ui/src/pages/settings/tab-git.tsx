@@ -111,6 +111,7 @@ interface ComparisonSide { sha256: string; size: number; content?: string; }
 interface FileComparison { path: string; dockman: ComparisonSide; git: ComparisonSide; comparable: boolean; reason?: string; }
 type TransferDirection = "stack_to_repository" | "repository_to_stack";
 type PreviewStatus = PreviewEntry["status"];
+type ConflictDecision = "git" | "dockman";
 
 const previewStatuses: PreviewStatus[] = ["conflict", "add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
@@ -197,6 +198,8 @@ export default function TabGit() {
     const [resolvedConflictPaths, setResolvedConflictPaths] = useState<Set<string>>(new Set());
     const [selectedTransferPaths, setSelectedTransferPaths] = useState<Set<string>>(new Set());
     const [comparison, setComparison] = useState<FileComparison | null>(null);
+    const [conflictResolutionMode, setConflictResolutionMode] = useState(false);
+    const [conflictDecisions, setConflictDecisions] = useState<Record<string, ConflictDecision>>({});
     const commitMessageRef = useRef<HTMLInputElement | null>(null);
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
@@ -447,7 +450,9 @@ export default function TabGit() {
         } finally { setBusy(null); }
     };
 
-    const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false, resolvedPath?: string, selectedPath?: string) => {
+    const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false, resolvedPath?: string, selectedPath?: string, conflictMode = false) => {
+        setConflictResolutionMode(conflictMode);
+        if (!conflictMode) setConflictDecisions({});
         if (!sensitive) {
             setIncludeSensitive(false); setSensitiveConfirmation("");
             if (commitMessageRef.current) commitMessageRef.current.value = "";
@@ -459,7 +464,7 @@ export default function TabGit() {
                 method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
             });
             setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
-            setPreviewSearch(""); setPreviewStatus("all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
+            setPreviewSearch(""); setPreviewStatus(conflictMode ? "conflict" : "all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
             setResolvedConflictPaths(resolvedPath && preview.entries.some((entry) => entry.path === resolvedPath && entry.status === "conflict") ? new Set([resolvedPath]) : new Set());
             setSelectedTransferPaths(selectedPath && preview.entries.some((entry) => entry.path === selectedPath && ["add", "modify", "conflict"].includes(entry.status)) ? new Set([selectedPath]) : new Set());
         } catch (error) { showError((error as Error).message); }
@@ -469,12 +474,14 @@ export default function TabGit() {
     const closeTransfer = () => {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
         setSensitiveConfirmation(""); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set()); setComparison(null); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch(""); setPreviewStatus("all");
+        setConflictResolutionMode(false); setConflictDecisions({});
         setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
         if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
 
     const runTransfer = async () => {
         if (!transferBinding) return;
+        const completedBinding = transferBinding;
         const action = transferDirection === "stack_to_repository" ? "export" : "import";
         setBusy(`transfer-${transferBinding.id}`);
         try {
@@ -483,6 +490,7 @@ export default function TabGit() {
             });
             showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
             closeTransfer();
+            if (completedBinding.autoSyncEnabled) await api<AutoSyncResult>(`/bindings/${completedBinding.id}/automation/run`, {method: "POST"});
             await load();
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
@@ -515,6 +523,44 @@ export default function TabGit() {
         setResolvedConflictPaths((current) => {
             const next = new Set(current); next.delete(path); return next;
         });
+    };
+
+    const decideConflict = (path: string, decision: ConflictDecision) => {
+        setConflictDecisions((current) => ({...current, [path]: decision}));
+        setComparison(null);
+    };
+
+    const resolveAutomationConflicts = async () => {
+        if (!transferBinding || !transferPreview) return;
+        const gitPaths = Object.entries(conflictDecisions).filter(([, decision]) => decision === "git").map(([path]) => path);
+        const dockmanPaths = Object.entries(conflictDecisions).filter(([, decision]) => decision === "dockman").map(([path]) => path);
+        if (gitPaths.length + dockmanPaths.length === 0) return;
+        setBusy(`transfer-${transferBinding.id}`);
+        try {
+            if (gitPaths.length > 0) {
+                await api<TransferResult>(`/bindings/${transferBinding.id}/import`, {method: "POST", body: JSON.stringify({
+                    previewToken: transferPreview.previewToken, resolvedPaths: gitPaths, selectedPaths: gitPaths,
+                })});
+            }
+            if (dockmanPaths.length > 0) {
+                const preview = await api<TransferPreview>(`/bindings/${transferBinding.id}/preview/stack_to_repository`, {method: "POST", body: JSON.stringify({})});
+                const currentConflicts = new Set(preview.entries.filter((entry) => entry.status === "conflict").map((entry) => entry.path));
+                const stillConflicting = dockmanPaths.filter((path) => currentConflicts.has(path));
+                if (stillConflicting.length !== dockmanPaths.length) throw new Error("Conflict state changed during resolution; refresh and review the remaining files.");
+                await api<TransferResult>(`/bindings/${transferBinding.id}/export`, {method: "POST", body: JSON.stringify({
+                    previewToken: preview.previewToken, resolvedPaths: dockmanPaths, selectedPaths: dockmanPaths,
+                    commitMessage: `chore(stack): resolve Git conflicts for ${transferBinding.stackPath}`,
+                })});
+            }
+            const result = await api<AutoSyncResult>(`/bindings/${transferBinding.id}/automation/run`, {method: "POST"});
+            closeTransfer();
+            if (result.state === "conflict") showSuccess("Selected conflicts resolved. Other conflicts remain pending.");
+            else showSuccess("Conflicts resolved and automatic Git synchronization refreshed.");
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+            await load();
+        } finally { setBusy(null); }
     };
 
     const confirmDeleteBinding = async (forget: boolean) => {
@@ -748,7 +794,7 @@ export default function TabGit() {
                             <TableCell>{binding.composePaths.length ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>{binding.composePaths.slice(0, 2).map((path) => <Chip key={path} size="small" variant="outlined" label={path}/>)}{binding.composePaths.length > 2 && <Chip size="small" color="info" variant="outlined" label={`+${binding.composePaths.length - 2}`}/>}</Stack> : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
                             <TableCell sx={{minWidth: 190}}>
                                 <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
-                                    <Tooltip title={binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
+                                    <Tooltip title={binding.autoSyncState === "conflict" ? "Open and resolve conflicts" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict"} onClick={binding.autoSyncState === "conflict" ? () => void previewTransfer(binding, "repository_to_stack", false, undefined, undefined, true) : undefined} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
                                     <Tooltip title="Configure automatic monitoring"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingAutomation(binding)}><SyncOutlined fontSize="small"/></IconButton></Tooltip>
                                     {binding.autoSyncEnabled && <Tooltip title="Check and synchronize now"><span><IconButton size="small" disabled={busy !== null} onClick={() => void runBindingAutomation(binding)}>{busy === `binding-auto-run-${binding.id}` ? <CircularProgress size={17}/> : <RefreshOutlined fontSize="small"/>}</IconButton></span></Tooltip>}
                                 </Stack>
@@ -773,7 +819,7 @@ export default function TabGit() {
                     </Box>
                     <Button variant="outlined" startIcon={<Add/>} onClick={openCredentialCreate}>Add credential</Button>
                 </Stack>
-                <Box sx={{px: 2.25, pb: 2}}><TextField value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} label="Repository URL for connection tests (optional)" placeholder="https://github.com/owner/repository.git" size="small" fullWidth helperText="Only credential-free github.com URLs are accepted."/></Box>
+                <Box sx={{px: 2.25, pb: 2}}><TextField value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} label="Repository for connection tests (optional)" placeholder="owner/repository or https://github.com/owner/repository" size="small" fullWidth helperText="GitHub HTTPS/SSH URLs and owner/repository are accepted; embedded credentials remain forbidden."/></Box>
                 <TableContainer><Table size="small">
                     <TableHead><TableRow><TableCell>Name</TableCell><TableCell>Type</TableCell><TableCell>Identity</TableCell><TableCell>Secret</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
                     <TableBody>
@@ -813,10 +859,10 @@ export default function TabGit() {
         </Dialog>
 
         <Dialog open={transferBinding !== null} onClose={() => busy === null && closeTransfer()} fullWidth maxWidth="md">
-            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><CompareArrowsOutlined/>{transferDirection === "stack_to_repository" ? "Export stack to Git" : "Import Git into stack"}</DialogTitle>
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><CompareArrowsOutlined/>{conflictResolutionMode ? "Resolve synchronization conflicts" : transferDirection === "stack_to_repository" ? "Export stack to Git" : "Import Git into stack"}</DialogTitle>
             <DialogContent dividers><Stack spacing={2}>
-                <Alert severity={transferDirection === "stack_to_repository" ? "info" : "warning"}>
-                    {transferDirection === "stack_to_repository" ? "Changed stack files will be committed and pushed. Remote-only files are preserved." : "Changed repository files will be copied into the stack after a backup. Stack deployment is never triggered."}
+                <Alert severity={conflictResolutionMode ? "error" : transferDirection === "stack_to_repository" ? "info" : "warning"}>
+                    {conflictResolutionMode ? "Choose Git or Dockman independently for each conflict, then validate. Files left without a decision remain pending." : transferDirection === "stack_to_repository" ? "Changed stack files will be committed and pushed. Remote-only files are preserved." : "Changed repository files will be copied into the stack after a backup. Stack deployment is never triggered."}
                 </Alert>
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
                     <Chip label={`${transferPreview?.changed || 0} changed`} color={transferPreview?.changed ? "warning" : "success"}/>
@@ -844,7 +890,7 @@ export default function TabGit() {
                 </Stack>
                 <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 340}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell padding="checkbox"><Checkbox size="small" disabled={busy !== null || selectablePreviewEntries.length === 0} checked={selectablePreviewEntries.length > 0 && selectedVisibleCount === selectablePreviewEntries.length} indeterminate={selectedVisibleCount > 0 && selectedVisibleCount < selectablePreviewEntries.length} onChange={(_, checked) => toggleVisiblePreviewEntries(checked)} slotProps={{input: {"aria-label": "Select all items on this page"}}}/></TableCell><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell>Resolution</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
                     {!filteredPreviewEntries.length && <TableRow><TableCell colSpan={6} align="center" sx={{py: 4, color: "text.secondary"}}>{previewSearch ? "No item matches this search." : "No difference."}</TableCell></TableRow>}
-                    {visiblePreviewEntries.map((entry) => <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}><TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell>{entry.status === "conflict" && <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button>{resolvedConflictPaths.has(entry.path) ? <Button size="small" color="warning" startIcon={<UndoOutlined/>} onClick={() => leaveConflictPending(entry.path)}>Pending</Button> : <Button size="small" color="error" variant="contained" onClick={() => keepCurrentSource(entry.path)}>{transferDirection === "stack_to_repository" ? "Keep Dockman" : "Keep Git"}</Button>}</Stack>}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
+                    {visiblePreviewEntries.map((entry) => <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}><TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell>{entry.status === "conflict" && (conflictResolutionMode ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button><Button size="small" color="warning" variant={conflictDecisions[entry.path] === "git" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "git")}>Keep Git</Button><Button size="small" color="primary" variant={conflictDecisions[entry.path] === "dockman" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "dockman")}>Keep Dockman</Button></Stack> : <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button>{resolvedConflictPaths.has(entry.path) ? <Button size="small" color="warning" startIcon={<UndoOutlined/>} onClick={() => leaveConflictPending(entry.path)}>Pending</Button> : <Button size="small" color="error" variant="contained" onClick={() => keepCurrentSource(entry.path)}>{transferDirection === "stack_to_repository" ? "Keep Dockman" : "Keep Git"}</Button>}</Stack>)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
                 </TableBody></Table></TableContainer>
                 <Stack direction={{xs: "column", md: "row"}} sx={{alignItems: {md: "center"}, border: 1, borderColor: "divider", borderTop: 0, borderRadius: "0 0 4px 4px"}}>
                     <TablePagination component="div" count={filteredPreviewEntries.length} page={previewPage} onPageChange={(_, page) => changePreviewPage(page)} rowsPerPage={previewRowsPerPage} onRowsPerPageChange={(event) => { setPreviewRowsPerPage(Number(event.target.value)); changePreviewPage(0); }} rowsPerPageOptions={[25, 50, 100]} labelRowsPerPage="Rows" showFirstButton showLastButton sx={{flex: 1, border: 0}}/>
@@ -858,17 +904,17 @@ export default function TabGit() {
                     {excludeMenu && !excludeMenu.entry.directory && <MenuItem onClick={() => void addPreviewExclusions([{path: excludeMenu.entry.path, directory: false}])}><BlockOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude this file</MenuItem>}
                     {excludeMenu && (() => { const path = excludeMenu.entry.directory ? excludeMenu.entry.path : excludeMenu.entry.path.slice(0, excludeMenu.entry.path.lastIndexOf("/")); return path ? <MenuItem onClick={() => void addPreviewExclusions([{path, directory: true}])}><FolderOffOutlined fontSize="small" sx={{mr: 1.25}}/>Exclude folder <code style={{marginLeft: 6}}>{path}</code></MenuItem> : null; })()}
                 </Menu>
-                {!!transferPreview?.conflicts && <Alert severity={resolvedConflictPaths.size ? "warning" : "info"}>{resolvedConflictPaths.size} conflict{resolvedConflictPaths.size === 1 ? "" : "s"} approved in this direction; {unresolvedConflictCount} left pending. {selectedTransferPaths.size === 0 && "Non-conflicting changes are still transferred."}</Alert>}
+                {!!transferPreview?.conflicts && (conflictResolutionMode ? <Alert severity={Object.keys(conflictDecisions).length ? "warning" : "info"}>{Object.keys(conflictDecisions).length} decision{Object.keys(conflictDecisions).length === 1 ? "" : "s"} ready; {transferPreview.conflicts - Object.keys(conflictDecisions).length} conflict{transferPreview.conflicts - Object.keys(conflictDecisions).length === 1 ? "" : "s"} left pending.</Alert> : <Alert severity={resolvedConflictPaths.size ? "warning" : "info"}>{resolvedConflictPaths.size} conflict{resolvedConflictPaths.size === 1 ? "" : "s"} approved in this direction; {unresolvedConflictCount} left pending. {selectedTransferPaths.size === 0 && "Non-conflicting changes are still transferred."}</Alert>)}
                 {selectedTransferPaths.size > 0 && <Alert severity="info">This direction was opened from a per-file decision. Only <code>{[...selectedTransferPaths][0]}</code> will be transferred; every other change remains pending.</Alert>}
-                <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
+                {!conflictResolutionMode && <FormControlLabel control={<Switch checked={includeSensitive} onChange={(event) => {
                     const checked = event.target.checked;
                     setIncludeSensitive(checked); setSensitiveConfirmation("");
                     if (!checked && transferBinding) void previewTransfer(transferBinding, transferDirection, false);
-                }}/>} label="Include sensitive files for this transfer only"/>
-                {includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TextField label='Type "INCLUDE SENSITIVE FILES"' value={sensitiveConfirmation} onChange={(event) => setSensitiveConfirmation(event.target.value)} onBlur={() => transferBinding && sensitiveConfirmation === "INCLUDE SENSITIVE FILES" && void previewTransfer(transferBinding, transferDirection, true)} fullWidth/></>}
-                {transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>} 
+                }}/>} label="Include sensitive files for this transfer only"/>}
+                {!conflictResolutionMode && includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TextField label='Type "INCLUDE SENSITIVE FILES"' value={sensitiveConfirmation} onChange={(event) => setSensitiveConfirmation(event.target.value)} onBlur={() => transferBinding && sensitiveConfirmation === "INCLUDE SENSITIVE FILES" && void previewTransfer(transferBinding, transferDirection, true)} fullWidth/></>}
+                {!conflictResolutionMode && transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
             </Stack></DialogContent>
-            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button><Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.changed > 0 && safeTransferCount === 0 && resolvedConflictPaths.size === 0) || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit selected and push" : "Backup and import selected"}</Button></DialogActions>
+            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button>{conflictResolutionMode ? <Button variant="contained" disabled={busy !== null || Object.keys(conflictDecisions).length === 0} onClick={() => void resolveAutomationConflicts()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}Resolve selected decisions</Button> : <Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.changed > 0 && safeTransferCount === 0 && resolvedConflictPaths.size === 0) || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit selected and push" : "Backup and import selected"}</Button>}</DialogActions>
         </Dialog>
 
         <Dialog open={comparison !== null} onClose={() => busy === null && setComparison(null)} fullWidth maxWidth="lg">
@@ -879,7 +925,7 @@ export default function TabGit() {
                     <DiffEditor height="52vh" theme="vs-dark" original={comparison.dockman.content || ""} modified={comparison.git.content || ""} language={comparisonLanguage(comparison.path)} options={{readOnly: true, renderSideBySide: true, minimap: {enabled: false}, wordWrap: "on", originalEditable: false, automaticLayout: true}}/>
                 </> : <Stack spacing={2} sx={{p: 3}}><Alert severity="warning">{comparison?.reason || "This file cannot be displayed as a text comparison."}</Alert><Typography>Dockman: {comparison && formatBytes(comparison.dockman.size)} · <code>{comparison?.dockman.sha256}</code></Typography><Typography>Git: {comparison && formatBytes(comparison.git.size)} · <code>{comparison?.git.sha256}</code></Typography></Stack>}
             </DialogContent>
-            <DialogActions sx={{justifyContent: "space-between"}}><Button onClick={() => setComparison(null)}>Leave pending</Button><Stack direction="row" spacing={1}><Button color="warning" variant="outlined" onClick={() => comparison && (transferDirection === "stack_to_repository" ? keepCurrentTarget(comparison.path) : keepCurrentSource(comparison.path))}>Keep Git</Button><Button color="primary" variant="contained" onClick={() => comparison && (transferDirection === "stack_to_repository" ? keepCurrentSource(comparison.path) : keepCurrentTarget(comparison.path))}>Keep Dockman</Button></Stack></DialogActions>
+            <DialogActions sx={{justifyContent: "space-between"}}><Button onClick={() => setComparison(null)}>Leave pending</Button><Stack direction="row" spacing={1}><Button color="warning" variant="outlined" onClick={() => comparison && (conflictResolutionMode ? decideConflict(comparison.path, "git") : transferDirection === "stack_to_repository" ? keepCurrentTarget(comparison.path) : keepCurrentSource(comparison.path))}>Keep Git</Button><Button color="primary" variant="contained" onClick={() => comparison && (conflictResolutionMode ? decideConflict(comparison.path, "dockman") : transferDirection === "stack_to_repository" ? keepCurrentSource(comparison.path) : keepCurrentTarget(comparison.path))}>Keep Dockman</Button></Stack></DialogActions>
         </Dialog>
 
         <Dialog open={policyBinding !== null} onClose={() => busy === null && setPolicyBinding(null)} fullWidth maxWidth="sm">
@@ -921,7 +967,7 @@ export default function TabGit() {
                     <MenuItem value="import">Import an existing repository</MenuItem><MenuItem value="github">Create a new GitHub repository</MenuItem>
                 </Select></FormControl>
                 <TextField label="Dockman repository name" value={repositoryForm.name} onChange={(event) => setRepositoryForm({...repositoryForm, name: event.target.value})} required autoFocus helperText="A local identifier; for GitHub creation this is also the remote repository name."/>
-                {repositoryForm.mode === "import" ? <TextField label="GitHub clone URL" value={repositoryForm.remoteUrl} onChange={(event) => setRepositoryForm({...repositoryForm, remoteUrl: event.target.value})} placeholder="https://github.com/owner/repository.git" required/> : <>
+                {repositoryForm.mode === "import" ? <TextField label="GitHub repository" value={repositoryForm.remoteUrl} onChange={(event) => setRepositoryForm({...repositoryForm, remoteUrl: event.target.value})} placeholder="owner/repository or https://github.com/owner/repository" helperText="The optional .git suffix is added automatically." required/> : <>
                     <TextField label="Description (optional)" value={repositoryForm.description} onChange={(event) => setRepositoryForm({...repositoryForm, description: event.target.value})} slotProps={{htmlInput: {maxLength: 300}}}/>
                     <FormControlLabel control={<Switch checked={repositoryForm.private} onChange={(event) => setRepositoryForm({...repositoryForm, private: event.target.checked})}/>} label={repositoryForm.private ? "Private repository" : "Public repository"}/>
                 </>}

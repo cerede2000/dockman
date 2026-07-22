@@ -92,6 +92,12 @@ func (s *Store) RepositoryHasBindings(id string) (bool, error) {
 	return count > 0, err
 }
 
+func (s *Store) RepositoryBindingIDs(id string) ([]string, error) {
+	var ids []string
+	err := s.db.Unscoped().Model(&StackBinding{}).Where("repository_uuid = ?", id).Pluck("uuid", &ids).Error
+	return ids, err
+}
+
 func (s *Store) ListBindings() ([]StackBinding, error) {
 	var rows []StackBinding
 	err := s.db.Order("host COLLATE NOCASE ASC, stack_path COLLATE NOCASE ASC").Find(&rows).Error

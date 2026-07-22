@@ -2,6 +2,7 @@ package gitsync
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -276,6 +277,24 @@ func TestPartialExportResolvesOnlyApprovedConflict(t *testing.T) {
 	remaining, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
 	require.NoError(t, err)
 	require.Equal(t, 2, remaining.Conflicts)
+
+	// Resolve the remaining files with mixed decisions, as the automatic
+	// conflict dialog does: Git wins for one file and Dockman for the other.
+	gitPreview, err := service.PreviewBinding(binding.ID, "repository_to_stack", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ImportBinding(context.Background(), binding.ID, TransferInput{
+		PreviewToken: gitPreview.PreviewToken, ResolvedPaths: []string{"one.yaml"}, SelectedPaths: []string{"one.yaml"},
+	})
+	require.NoError(t, err)
+	dockmanPreview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ExportBinding(context.Background(), binding.ID, TransferInput{
+		PreviewToken: dockmanPreview.PreviewToken, ResolvedPaths: []string{"three.yaml"}, SelectedPaths: []string{"three.yaml"},
+	})
+	require.NoError(t, err)
+	resolved, err := service.PreviewBinding(binding.ID, "repository_to_stack", TransferInput{})
+	require.NoError(t, err)
+	require.Zero(t, resolved.Conflicts)
 }
 
 func TestComparisonSideRejectsBinaryAndOversizedFiles(t *testing.T) {
@@ -297,6 +316,43 @@ func TestComparisonSideRejectsBinaryAndOversizedFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, comparable)
 	require.Contains(t, reason, "limit")
+}
+
+func TestBindingBackupRetentionAndUnlinkCleanup(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+
+	bindingBackupRoot := filepath.Join(service.backupRoot, binding.ID)
+	require.NoError(t, os.MkdirAll(bindingBackupRoot, 0o700))
+	for index := 0; index < gitBackupRetention+2; index++ {
+		name := fmt.Sprintf("20260722T12000%d.000000000Z.tar.gz", index)
+		require.NoError(t, os.WriteFile(filepath.Join(bindingBackupRoot, name), []byte("backup"), 0o600))
+	}
+	root, err := os.OpenRoot(service.backupRoot)
+	require.NoError(t, err)
+	require.NoError(t, pruneBindingBackups(root, binding.ID, gitBackupRetention))
+	require.NoError(t, root.Close())
+	entries, err := os.ReadDir(bindingBackupRoot)
+	require.NoError(t, err)
+	require.Len(t, entries, gitBackupRetention)
+	require.Equal(t, "20260722T120002.000000000Z.tar.gz", entries[0].Name())
+
+	require.NoError(t, service.DeleteBinding(binding.ID, false))
+	_, err = os.Stat(bindingBackupRoot)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	// Repository deletion also cleans backups belonging to a previously
+	// archived link, including archives left by an interrupted older version.
+	require.NoError(t, os.MkdirAll(bindingBackupRoot, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(bindingBackupRoot, "legacy.tar.gz"), []byte("backup"), 0o600))
+	require.NoError(t, service.DeleteRepository(repository.UUID))
+	_, err = os.Stat(bindingBackupRoot)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func mapKeys(values map[string]transferFile) []string {

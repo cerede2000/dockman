@@ -13,7 +13,8 @@ const (
 	defaultAutoSyncIntervalMinutes = 15
 	minAutoSyncIntervalMinutes     = 5
 	maxAutoSyncIntervalMinutes     = 24 * 60
-	autoSyncSchedulerInterval      = 30 * time.Second
+	autoSyncSchedulerMaxSleep      = 30 * time.Second
+	autoSyncSchedulerMinSleep      = time.Second
 )
 
 type BindingAutomationInput struct {
@@ -65,17 +66,47 @@ func (s *Service) StartAutomation(ctx context.Context) {
 		return
 	}
 	go func() {
-		ticker := time.NewTicker(autoSyncSchedulerInterval)
-		defer ticker.Stop()
+		timer := time.NewTimer(0)
+		defer timer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case now := <-ticker.C:
-				s.runDueAutoSyncs(ctx, now.UTC())
+			case <-timer.C:
+				s.runDueAutoSyncs(ctx, time.Now().UTC())
+				timer.Reset(s.nextAutoSyncDelay(time.Now().UTC()))
 			}
 		}
 	}()
+}
+
+func (s *Service) nextAutoSyncDelay(now time.Time) time.Duration {
+	bindings, err := s.store.ListAutoSyncBindings()
+	if err != nil || len(bindings) == 0 {
+		return autoSyncSchedulerMaxSleep
+	}
+	delay := autoSyncSchedulerMaxSleep
+	for _, binding := range bindings {
+		if binding.LastAutoSyncAt == nil {
+			return autoSyncSchedulerMinSleep
+		}
+		interval := normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes)
+		candidate := binding.LastAutoSyncAt.Add(time.Duration(interval) * time.Minute).Sub(now)
+		if candidate <= autoSyncSchedulerMinSleep {
+			return autoSyncSchedulerMinSleep
+		}
+		if candidate < delay {
+			delay = candidate
+		}
+	}
+	return delay
+}
+
+func normalizedAutoSyncInterval(interval int) int {
+	if interval < minAutoSyncIntervalMinutes || interval > maxAutoSyncIntervalMinutes {
+		return defaultAutoSyncIntervalMinutes
+	}
+	return interval
 }
 
 func (s *Service) runDueAutoSyncs(ctx context.Context, now time.Time) {
@@ -88,10 +119,7 @@ func (s *Service) runDueAutoSyncs(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		interval := binding.AutoSyncIntervalMinutes
-		if interval < minAutoSyncIntervalMinutes {
-			interval = defaultAutoSyncIntervalMinutes
-		}
+		interval := normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes)
 		if binding.LastAutoSyncAt != nil && now.Before(binding.LastAutoSyncAt.Add(time.Duration(interval)*time.Minute)) {
 			continue
 		}
