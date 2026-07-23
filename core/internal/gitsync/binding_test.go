@@ -228,6 +228,75 @@ func TestComposeSelectionPersistsAndSkipsUnselectedStackTrees(t *testing.T) {
 	require.ErrorContains(t, err, "no longer available")
 }
 
+func TestBindingAppliesComposeSelectionBeforeInitialExport(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	for _, stack := range []string{"alpha", "beta"} {
+		directory := filepath.Join(stackRoot, stack)
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services:\n  "+stack+":\n    image: alpine\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "settings.json"), []byte(`{"stack":"`+stack+`"}`), 0o644))
+	}
+
+	binding, err := service.CreateBindingContext(context.Background(), BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks",
+		InitialSync: "stack_to_repository", ComposeSelectionMode: composeSelectionSelected,
+		SelectedComposePaths: []string{"alpha/compose.yaml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "exported", binding.InitialSyncState)
+	require.Equal(t, composeSelectionSelected, binding.ComposeSelectionMode)
+	require.Equal(t, []string{"alpha/compose.yaml"}, binding.SelectedComposePaths)
+
+	check, err := gitclient.PlainClone(t.TempDir(), false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+	require.NoError(t, err)
+	requireGitFileContent(t, check, "main", "stacks/alpha/settings.json", `{"stack":"alpha"}`)
+	tree, err := repositoryCommitTree(check, "main")
+	require.NoError(t, err)
+	_, err = tree.File("stacks/beta/compose.yaml")
+	require.Error(t, err, "an unselected stack must not be exported during link initialization")
+}
+
+func TestBindingRejectsUnavailableInitialComposeSelection(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yaml"), []byte("services: {}\n"), 0o644))
+
+	_, err := service.CreateBinding(BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks",
+		ComposeSelectionMode: composeSelectionSelected, SelectedComposePaths: []string{"missing/compose.yaml"},
+	})
+	require.ErrorContains(t, err, "no longer available")
+	bindings, listErr := service.ListBindings()
+	require.NoError(t, listErr)
+	require.Empty(t, bindings)
+}
+
+func TestRelinkingPreservesAnExistingComposeSelection(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	for _, stack := range []string{"alpha", "beta"} {
+		directory := filepath.Join(stackRoot, stack)
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	}
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{Mode: composeSelectionSelected, ComposePaths: []string{"alpha/compose.yaml"}})
+	require.NoError(t, err)
+	require.NoError(t, service.store.DeleteBinding(binding.ID, false))
+
+	relinked, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	require.Equal(t, binding.ID, relinked.ID)
+	require.Equal(t, composeSelectionSelected, relinked.ComposeSelectionMode)
+	require.Equal(t, []string{"alpha/compose.yaml"}, relinked.SelectedComposePaths)
+}
+
 func TestComposeSelectionPrunesAutomaticDeploymentTargets(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

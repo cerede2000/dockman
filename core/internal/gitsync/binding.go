@@ -52,12 +52,14 @@ const (
 var transferBufferPool = sync.Pool{New: func() any { return make([]byte, transferBufferSize) }}
 
 type BindingInput struct {
-	RepositoryID  string `json:"repositoryId"`
-	Host          string `json:"host"`
-	StackPath     string `json:"stackPath"`
-	SubPath       string `json:"subPath"`
-	AutoReconcile *bool  `json:"autoReconcile"`
-	InitialSync   string `json:"initialSync"`
+	RepositoryID         string   `json:"repositoryId"`
+	Host                 string   `json:"host"`
+	StackPath            string   `json:"stackPath"`
+	SubPath              string   `json:"subPath"`
+	AutoReconcile        *bool    `json:"autoReconcile"`
+	InitialSync          string   `json:"initialSync"`
+	ComposeSelectionMode string   `json:"composeSelectionMode"`
+	SelectedComposePaths []string `json:"selectedComposePaths"`
 }
 
 type BindingView struct {
@@ -250,6 +252,10 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 		return BindingView{}, err
 	}
 	compose := discoverComposeFiles(targetFS, targetRoot)
+	selectionMode, selectedCompose, err := normalizeComposeSelection(compose, clean.ComposeSelectionMode, clean.SelectedComposePaths, composeSelectionAll)
+	if err != nil {
+		return BindingView{}, err
+	}
 	autoReconcile := true
 	if clean.AutoReconcile != nil {
 		autoReconcile = *clean.AutoReconcile
@@ -265,6 +271,23 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	if archiveErr == nil {
 		if archived.RepositoryUUID == clean.RepositoryID && archived.SubPath == clean.SubPath {
 			archived.ComposePaths = strings.Join(compose, "\n")
+			if strings.TrimSpace(clean.ComposeSelectionMode) != "" {
+				archived.ComposeSelectionMode = selectionMode
+				archived.SelectedComposePaths = strings.Join(selectedCompose, "\n")
+			} else if normalizedComposeSelectionMode(archived.ComposeSelectionMode) == composeSelectionSelected {
+				// A legacy relink keeps its previous choice, limited to stacks that still exist.
+				available := make(map[string]struct{}, len(compose))
+				for _, relative := range compose {
+					available[relative] = struct{}{}
+				}
+				preserved := make([]string, 0)
+				for _, relative := range splitPatternLines(archived.SelectedComposePaths) {
+					if _, ok := available[relative]; ok {
+						preserved = append(preserved, relative)
+					}
+				}
+				archived.SelectedComposePaths = strings.Join(preserved, "\n")
+			}
 			archived.AutoReconcileEnabled = autoReconcile
 			archived.InitialSyncState = "checking"
 			archived.InitialSyncError = ""
@@ -282,7 +305,7 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	row := StackBinding{
 		UUID: uuid.NewString(), RepositoryUUID: clean.RepositoryID, Host: clean.Host,
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
-		ComposePaths: strings.Join(compose, "\n"), ComposeSelectionMode: composeSelectionAll, SyncProfile: syncProfileComposeConfig, Enabled: true,
+		ComposePaths: strings.Join(compose, "\n"), ComposeSelectionMode: selectionMode, SelectedComposePaths: strings.Join(selectedCompose, "\n"), SyncProfile: syncProfileComposeConfig, Enabled: true,
 		AutoSyncIntervalMinutes: defaultAutoSyncIntervalMinutes, AutoSyncState: "disabled",
 		AutoReconcileEnabled: autoReconcile, InitialSyncState: "checking",
 	}
@@ -396,35 +419,9 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 	repositoryLock := s.repositoryLock(row.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
-	mode := strings.TrimSpace(input.Mode)
-	if mode == "" {
-		mode = composeSelectionSelected
-	}
-	if mode != composeSelectionAll && mode != composeSelectionSelected {
-		return BindingView{}, errors.New("Compose selection mode must be all or selected")
-	}
-	available := make(map[string]struct{})
-	for _, relative := range splitPatternLines(row.ComposePaths) {
-		available[filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))] = struct{}{}
-	}
-	selected := make([]string, 0, len(input.ComposePaths))
-	seen := make(map[string]struct{}, len(input.ComposePaths))
-	for _, raw := range input.ComposePaths {
-		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(raw))))
-		if err := validateRelativePath(relative, false); err != nil {
-			return BindingView{}, fmt.Errorf("invalid Compose selection %q: %w", raw, err)
-		}
-		if _, ok := available[relative]; !ok {
-			return BindingView{}, fmt.Errorf("Compose file is no longer available in this folder link: %s", relative)
-		}
-		if _, ok := seen[relative]; !ok {
-			seen[relative] = struct{}{}
-			selected = append(selected, relative)
-		}
-	}
-	sort.Strings(selected)
-	if mode == composeSelectionAll {
-		selected = nil
+	mode, selected, err := normalizeComposeSelection(splitPatternLines(row.ComposePaths), input.Mode, input.ComposePaths, composeSelectionSelected)
+	if err != nil {
+		return BindingView{}, err
 	}
 	row.ComposeSelectionMode = mode
 	row.SelectedComposePaths = strings.Join(selected, "\n")
@@ -1439,6 +1436,42 @@ func normalizedComposeSelectionMode(mode string) string {
 		return composeSelectionSelected
 	}
 	return composeSelectionAll
+}
+
+func normalizeComposeSelection(availablePaths []string, mode string, requestedPaths []string, defaultMode string) (string, []string, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = defaultMode
+	}
+	if mode != composeSelectionAll && mode != composeSelectionSelected {
+		return "", nil, errors.New("Compose selection mode must be all or selected")
+	}
+	if mode == composeSelectionAll {
+		return mode, nil, nil
+	}
+	available := make(map[string]struct{}, len(availablePaths))
+	for _, raw := range availablePaths {
+		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(raw))))
+		available[relative] = struct{}{}
+	}
+	selected := make([]string, 0, len(requestedPaths))
+	seen := make(map[string]struct{}, len(requestedPaths))
+	for _, raw := range requestedPaths {
+		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(raw))))
+		if err := validateRelativePath(relative, false); err != nil {
+			return "", nil, fmt.Errorf("invalid Compose selection %q: %w", raw, err)
+		}
+		if _, ok := available[relative]; !ok {
+			return "", nil, fmt.Errorf("Compose file is no longer available in this folder link: %s", relative)
+		}
+		if _, ok := seen[relative]; ok {
+			continue
+		}
+		seen[relative] = struct{}{}
+		selected = append(selected, relative)
+	}
+	sort.Strings(selected)
+	return mode, selected, nil
 }
 
 func selectedComposePaths(binding StackBinding) []string {

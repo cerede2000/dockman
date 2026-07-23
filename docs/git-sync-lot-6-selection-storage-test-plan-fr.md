@@ -7,10 +7,12 @@ Ce lot doit valider ensemble les comportements suivants :
 1. la colonne **Compose files** affiche un nombre compact et ouvre le détail au clic ;
 2. les stacks d'un folder link peuvent être sélectionnées ou retirées de la synchronisation en masse ;
 3. la recherche et le filtre de statut ne perdent jamais les sélections faites précédemment ;
-4. une stack non sélectionnée n'est ni lue, ni hachée, ni copiée, ni déployée par ce lien ;
-5. les liens créés avant cette version continuent à synchroniser toutes leurs stacks ;
-6. les objets Git compacts et les sauvegardes peuvent être placés dans un volume dédié avec `DOCKMAN_GIT_STORAGE_PATH` ;
-7. aucun scan supplémentaire n'est ajouté au polling de fond.
+4. le périmètre peut être choisi dès la création du folder link, avant une éventuelle initialisation Dockman → Git ou Git → Dockman ;
+5. les cibles d'auto-déploiement disposent de la même sélection en masse ;
+6. une stack non sélectionnée n'est ni lue, ni hachée, ni copiée, ni déployée par ce lien ;
+7. les liens créés avant cette version continuent à synchroniser toutes leurs stacks ;
+8. les objets Git compacts et les sauvegardes peuvent être placés dans un volume dédié avec `DOCKMAN_GIT_STORAGE_PATH` ;
+9. aucun scan supplémentaire n'est ajouté au polling de fond.
 
 ## 2. Préparation et sauvegarde
 
@@ -97,6 +99,27 @@ Préparer deux stacks `stack-a` et `stack-b`, puis ne sélectionner que `stack-a
 
 Résultats attendus : seuls les fichiers de `stack-a` sont lus, affichés et poussés. Le contenu Git de `stack-b` ne change pas.
 
+### 6.1 Sélection dès la création du lien
+
+Préparer un dossier source détecté contenant au moins `stack-a`, `stack-b` et `stack-c`.
+
+1. Cliquer sur **Link folder** et choisir ce dossier source.
+2. Dans **Stacks included in this link**, rechercher `stack-b`, puis cliquer sur **Deselect filtered**.
+3. Rechercher `stack-c`, la décocher avec sa case, puis effacer la recherche.
+4. Vérifier que seule `stack-a` reste sélectionnée et que les choix faits sous les filtres sont conservés.
+5. Choisir **Dockman → Git** comme initialisation et créer le lien.
+6. Contrôler le commit et le dépôt distant.
+7. Rouvrir le nombre de Compose files du lien.
+
+Résultats attendus :
+
+- le lien est créé avec uniquement `stack-a` synchronisée ;
+- l'initialisation pousse uniquement l'arborescence de `stack-a` ;
+- `stack-b` et `stack-c` ne sont ni lues ni ajoutées au commit ;
+- la sélection enregistrée est identique après rechargement et redémarrage.
+
+Refaire ensuite le test avec **Git → Dockman** : seules les stacks sélectionnées doivent être importées et sauvegardées. Enfin, créer un lien avec **Select none** et **Link only** : le lien doit être accepté avec `0 / N`, sans transfert ni suppression.
+
 ## 7. Isolation Git → Dockman
 
 Conserver uniquement `stack-a` sélectionnée.
@@ -129,13 +152,19 @@ Résultats attendus : le folder link est conservé, aucun fichier n'est transfé
 
 ## 10. Interaction avec l'auto-sync et l'auto-déploiement
 
-1. Autoriser `stack-a` et `stack-b` comme cibles de déploiement automatique.
-2. Retirer `stack-b` de la sélection de synchronisation et sauvegarder.
-3. Rouvrir la configuration automatique.
-4. Vérifier que `stack-b` n'est plus une cible autorisée et n'est plus proposée dans la liste.
-5. Modifier `stack-b` sur Git et lancer un contrôle automatique.
+1. Ouvrir la configuration automatique d'un lien contenant au moins six stacks.
+2. Activer la synchronisation puis **Deploy affected stacks after a successful import**.
+3. Vérifier la présence de la recherche, du filtre de statut, des actions **Select all/none**, **Select/Deselect filtered**, du compteur et de la case d'en-tête.
+4. Rechercher `stack-a`, la sélectionner, rechercher `stack-b`, la sélectionner, puis effacer la recherche.
+5. Vérifier que les deux sélections ont été mémorisées ; choisir **Selected** puis **Not selected** et contrôler chaque liste.
+6. Utiliser **Select filtered** sur un autre résultat, sauvegarder, recharger la page puis rouvrir la configuration.
+7. Vérifier que toutes les cibles choisies ont persisté.
+8. Retirer ensuite `stack-b` de la sélection générale de synchronisation et sauvegarder.
+9. Rouvrir la configuration automatique.
+10. Vérifier que `stack-b` n'est plus une cible autorisée et n'est plus proposée dans la liste.
+11. Modifier `stack-b` sur Git et lancer un contrôle automatique.
 
-Résultats attendus : `stack-b` n'est ni importée ni déployée. `stack-a` continue de fonctionner normalement.
+Résultats attendus : les filtres ne perdent aucune sélection, les actions en masse respectent leur périmètre, les choix persistent après sauvegarde, `stack-b` n'est ni importée ni déployée et `stack-a` continue de fonctionner normalement.
 
 Test complémentaire « nouvelle stack Git » :
 
