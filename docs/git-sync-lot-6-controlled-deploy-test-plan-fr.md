@@ -38,6 +38,18 @@ Attendu : import et backup réussissent, puis validation, dry-run et `compose up
 
 Attendu : le fichier est sauvegardé puis importé, mais `compose config` bloque avant toute action sur les conteneurs. L'état de déploiement est `failed`, les conteneurs existants restent actifs et l'erreur apparaît dans l'historique. Corriger Git puis relancer.
 
+## 5 bis. Nouvelle stack créée dans Git
+
+1. Activer **Automatically deploy newly discovered Git stacks** sur un folder link de test couvrant le dossier parent des stacks.
+2. Ajouter dans Git un nouveau dossier `nouvelle-stack/` contenant au minimum un `compose.yml` valide.
+3. Commit, push, puis lancer la synchronisation.
+
+Attendu : Dockman reconnaît uniquement le fichier Compose réellement ajouté par ce commit, importe le dossier, valide puis dry-run la nouvelle stack, la déploie et ajoute `nouvelle-stack/compose.yml` aux cibles autorisées persistantes. Les modifications suivantes sous ce dossier redéploient cette stack normalement.
+
+Refaire avec l'option désactivée. Attendu : le dossier est importé mais la stack n'est ni démarrée ni ajoutée aux cibles de déploiement.
+
+Créer ensuite 11 nouveaux dossiers de stack dans un seul commit. Attendu : l'automatisation refuse le lot avant import avec la limite de 10 ; aucune des nouvelles stacks n'est déployée. Un fichier nommé autrement que `compose.yml`, `compose.yaml`, `docker-compose.yml` ou `docker-compose.yaml` n'est jamais reconnu automatiquement comme point de déploiement.
+
 ## 6. Verrouillage concurrent
 
 1. Lancer une action Compose longue sur la stack depuis Monitor.

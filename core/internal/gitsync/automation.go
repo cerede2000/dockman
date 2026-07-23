@@ -22,6 +22,7 @@ type BindingAutomationInput struct {
 	Enabled            bool     `json:"enabled"`
 	IntervalMinutes    int      `json:"intervalMinutes"`
 	DeployEnabled      bool     `json:"deployEnabled"`
+	DeployNewStacks    bool     `json:"deployNewStacks"`
 	DeployComposePaths []string `json:"deployComposePaths"`
 }
 
@@ -50,6 +51,9 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		input.DeployEnabled = false
 		input.DeployComposePaths = nil
 	}
+	if !input.DeployEnabled {
+		input.DeployNewStacks = false
+	}
 	if input.IntervalMinutes < minAutoSyncIntervalMinutes || input.IntervalMinutes > maxAutoSyncIntervalMinutes {
 		return BindingView{}, fmt.Errorf("automatic synchronization interval must be between %d and %d minutes", minAutoSyncIntervalMinutes, maxAutoSyncIntervalMinutes)
 	}
@@ -61,11 +65,12 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	} else {
 		row.AutoSyncState = "disabled"
 	}
-	deployPaths, err := validateDeploymentTargets(row, input.DeployEnabled, input.DeployComposePaths)
+	deployPaths, err := validateDeploymentTargets(row, input.DeployEnabled, input.DeployNewStacks, input.DeployComposePaths)
 	if err != nil {
 		return BindingView{}, err
 	}
 	row.AutoDeployEnabled = input.DeployEnabled
+	row.AutoDeployNewStacks = input.DeployNewStacks
 	row.AutoDeployComposePaths = strings.Join(deployPaths, "\n")
 	row.AutoDeployError = ""
 	if input.DeployEnabled {
@@ -202,11 +207,22 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		// A folder can contain many thousands of entries. Do not retain the first
 		// inventory while ImportBinding builds and validates its fresh inventory.
 		changedPaths := changedPreviewPaths(preview)
+		newTargets, newTargetErr := newComposeDeploymentTargets(binding, preview)
+		if newTargetErr != nil {
+			return newTargetErr
+		}
 		preview.Entries = nil
 		if conflicts > 0 {
 			result.State = "conflict"
 			result.Message = fmt.Sprintf("%d conflict(s) require a manual decision; no file was changed", conflicts)
 			return nil
+		}
+		if len(newTargets) > 0 {
+			var registerErr error
+			binding, registerErr = s.registerDiscoveredDeploymentTargets(binding, newTargets)
+			if registerErr != nil {
+				return registerErr
+			}
 		}
 
 		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: previewToken, compactResult: true})

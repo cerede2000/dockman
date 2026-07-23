@@ -138,6 +138,13 @@ func (s *Store) UpdateBindingAutoDeployState(id, state, message string, at *time
 	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error
 }
 
+func (s *Store) UpdateBindingDeploymentTargets(id, composePaths, deployPaths, state, message string) error {
+	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(map[string]any{
+		"compose_paths": composePaths, "auto_deploy_compose_paths": deployPaths,
+		"auto_deploy_state": state, "auto_deploy_error": message,
+	}).Error
+}
+
 func (s *Store) UpdateBindingAutoSyncState(id, state, message, commit string, attemptedAt, succeededAt *time.Time) error {
 	updates := map[string]any{"auto_sync_state": state, "auto_sync_error": message}
 	if attemptedAt != nil {

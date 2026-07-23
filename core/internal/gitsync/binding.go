@@ -73,6 +73,7 @@ type BindingView struct {
 	LastAutoSyncAt          *time.Time `json:"lastAutoSyncAt,omitempty"`
 	LastAutoSyncSuccessAt   *time.Time `json:"lastAutoSyncSuccessAt,omitempty"`
 	AutoDeployEnabled       bool       `json:"autoDeployEnabled"`
+	AutoDeployNewStacks     bool       `json:"autoDeployNewStacks"`
 	AutoDeployComposePaths  []string   `json:"autoDeployComposePaths"`
 	AutoDeployState         string     `json:"autoDeployState"`
 	AutoDeployError         string     `json:"autoDeployError,omitempty"`
@@ -398,6 +399,7 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	row.AutoSyncState = "disabled"
 	row.AutoSyncError = ""
 	row.AutoDeployEnabled = false
+	row.AutoDeployNewStacks = false
 	row.AutoDeployState = "disabled"
 	row.AutoDeployError = ""
 	if err := s.store.SaveBinding(&row); err != nil {
@@ -819,7 +821,7 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
 		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
 		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
-		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployComposePaths: splitPatternLines(row.AutoDeployComposePaths),
+		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployNewStacks: row.AutoDeployNewStacks, AutoDeployComposePaths: splitPatternLines(row.AutoDeployComposePaths),
 		AutoDeployState: row.AutoDeployState, AutoDeployError: row.AutoDeployError, LastAutoDeployAt: row.LastAutoDeployAt,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
