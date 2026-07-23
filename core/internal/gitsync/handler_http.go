@@ -38,6 +38,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
+	mux.HandleFunc("GET /bindings/{id}/deployments", h.listBindingDeployments)
 	mux.HandleFunc("POST /bindings/{id}/automation/run", h.runBindingAutomation)
 	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
 	mux.HandleFunc("POST /bindings/{id}/exclusions/batch", h.addBindingExclusions)
@@ -56,6 +57,18 @@ func NewHTTPHandler(service *Service) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) listBindingDeployments(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	rows, err := h.service.ListBindingDeployments(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 func isMemoryIntensiveGitRequest(r *http.Request) bool {

@@ -119,6 +119,25 @@ func (s *Store) ListAutoSyncBindings() ([]StackBinding, error) {
 
 func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
 
+func (s *Store) SaveDeployment(row *Deployment) error { return s.db.Save(row).Error }
+
+func (s *Store) ListDeployments(bindingID string, limit int) ([]Deployment, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	var rows []Deployment
+	err := s.db.Where("binding_uuid = ?", bindingID).Order("created_at DESC").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) UpdateBindingAutoDeployState(id, state, message string, at *time.Time) error {
+	updates := map[string]any{"auto_deploy_state": state, "auto_deploy_error": message}
+	if at != nil {
+		updates["last_auto_deploy_at"] = at
+	}
+	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error
+}
+
 func (s *Store) UpdateBindingAutoSyncState(id, state, message, commit string, attemptedAt, succeededAt *time.Time) error {
 	updates := map[string]any{"auto_sync_state": state, "auto_sync_error": message}
 	if attemptedAt != nil {
@@ -220,6 +239,13 @@ func (s *Store) MarkInterruptedOperations() (int64, error) {
 		Updates(map[string]any{
 			"state": "failed", "error_message": "Dockman restarted while the operation was in progress", "finished_at": &now,
 		})
+	return result.RowsAffected, result.Error
+}
+
+func (s *Store) MarkInterruptedDeployments() (int64, error) {
+	result := s.db.Model(&Deployment{}).Where("state IN ?", []string{"validating", "dry_run", "deploying"}).Updates(map[string]any{
+		"state": "failed", "result": "Dockman stopped before the controlled deployment completed",
+	})
 	return result.RowsAffected, result.Error
 }
 

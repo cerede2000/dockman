@@ -72,6 +72,11 @@ type BindingView struct {
 	AutoSyncError           string     `json:"autoSyncError,omitempty"`
 	LastAutoSyncAt          *time.Time `json:"lastAutoSyncAt,omitempty"`
 	LastAutoSyncSuccessAt   *time.Time `json:"lastAutoSyncSuccessAt,omitempty"`
+	AutoDeployEnabled       bool       `json:"autoDeployEnabled"`
+	AutoDeployComposePaths  []string   `json:"autoDeployComposePaths"`
+	AutoDeployState         string     `json:"autoDeployState"`
+	AutoDeployError         string     `json:"autoDeployError,omitempty"`
+	LastAutoDeployAt        *time.Time `json:"lastAutoDeployAt,omitempty"`
 	CreatedAt               time.Time  `json:"createdAt"`
 	UpdatedAt               time.Time  `json:"updatedAt"`
 }
@@ -392,6 +397,9 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	row.AutoSyncEnabled = false
 	row.AutoSyncState = "disabled"
 	row.AutoSyncError = ""
+	row.AutoDeployEnabled = false
+	row.AutoDeployState = "disabled"
+	row.AutoDeployError = ""
 	if err := s.store.SaveBinding(&row); err != nil {
 		return err
 	}
@@ -689,6 +697,13 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineAfterTransfer(baseline, source, target, selected)); err != nil {
 			return err
 		}
+		selectedPaths := make([]string, 0, len(selected))
+		for path := range selected {
+			selectedPaths = append(selectedPaths, path)
+		}
+		if binding.AutoDeployEnabled && len(deploymentTargetsForChanges(binding, selectedPaths)) > 0 {
+			_ = s.store.UpdateBindingAutoDeployState(binding.UUID, "pending", "Imported changes are waiting for controlled deployment", nil)
+		}
 		result.Backup, result.Message = backup, "Repository files imported with a backup; the stack was not deployed"
 		if pendingConflicts > 0 {
 			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
@@ -804,6 +819,8 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
 		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
 		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
+		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployComposePaths: splitPatternLines(row.AutoDeployComposePaths),
+		AutoDeployState: row.AutoDeployState, AutoDeployError: row.AutoDeployError, LastAutoDeployAt: row.LastAutoDeployAt,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }

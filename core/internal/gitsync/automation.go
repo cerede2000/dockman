@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -18,17 +19,20 @@ const (
 )
 
 type BindingAutomationInput struct {
-	Enabled         bool `json:"enabled"`
-	IntervalMinutes int  `json:"intervalMinutes"`
+	Enabled            bool     `json:"enabled"`
+	IntervalMinutes    int      `json:"intervalMinutes"`
+	DeployEnabled      bool     `json:"deployEnabled"`
+	DeployComposePaths []string `json:"deployComposePaths"`
 }
 
 type AutoSyncResult struct {
-	BindingID string `json:"bindingId"`
-	State     string `json:"state"`
-	Changed   int    `json:"changed"`
-	Conflicts int    `json:"conflicts"`
-	Backup    string `json:"backup,omitempty"`
-	Message   string `json:"message"`
+	BindingID string   `json:"bindingId"`
+	State     string   `json:"state"`
+	Changed   int      `json:"changed"`
+	Conflicts int      `json:"conflicts"`
+	Backup    string   `json:"backup,omitempty"`
+	Deployed  []string `json:"deployed,omitempty"`
+	Message   string   `json:"message"`
 }
 
 func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInput) (BindingView, error) {
@@ -42,6 +46,10 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	if input.IntervalMinutes == 0 {
 		input.IntervalMinutes = defaultAutoSyncIntervalMinutes
 	}
+	if !input.Enabled {
+		input.DeployEnabled = false
+		input.DeployComposePaths = nil
+	}
 	if input.IntervalMinutes < minAutoSyncIntervalMinutes || input.IntervalMinutes > maxAutoSyncIntervalMinutes {
 		return BindingView{}, fmt.Errorf("automatic synchronization interval must be between %d and %d minutes", minAutoSyncIntervalMinutes, maxAutoSyncIntervalMinutes)
 	}
@@ -52,6 +60,18 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		row.AutoSyncState = "watching"
 	} else {
 		row.AutoSyncState = "disabled"
+	}
+	deployPaths, err := validateDeploymentTargets(row, input.DeployEnabled, input.DeployComposePaths)
+	if err != nil {
+		return BindingView{}, err
+	}
+	row.AutoDeployEnabled = input.DeployEnabled
+	row.AutoDeployComposePaths = strings.Join(deployPaths, "\n")
+	row.AutoDeployError = ""
+	if input.DeployEnabled {
+		row.AutoDeployState = "watching"
+	} else {
+		row.AutoDeployState = "disabled"
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
@@ -181,6 +201,7 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		result.Changed, result.Conflicts = changed, conflicts
 		// A folder can contain many thousands of entries. Do not retain the first
 		// inventory while ImportBinding builds and validates its fresh inventory.
+		changedPaths := changedPreviewPaths(preview)
 		preview.Entries = nil
 		if conflicts > 0 {
 			result.State = "conflict"
@@ -198,6 +219,19 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			result.Message = "Stack already matches Git"
 		} else {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
+		}
+		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "pending") {
+			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
+		}
+		if len(changedPaths) > 0 && binding.AutoDeployEnabled {
+			deployed, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths)
+			if deployErr != nil {
+				return deployErr
+			}
+			result.Deployed = deployed
+			if len(deployed) > 0 {
+				result.Message = fmt.Sprintf("%d file(s) synchronized and %d stack(s) deployed", changed, len(deployed))
+			}
 		}
 		return nil
 	})

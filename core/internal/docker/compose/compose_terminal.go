@@ -212,6 +212,15 @@ func (c *Service) Up(
 	)
 }
 
+// DryRunUp validates the complete execution plan without changing containers,
+// networks or images. It uses Compose's global --dry-run mode with the same
+// options as Up so automatic Git deployment cannot skip the real plan check.
+func (c *Service) DryRunUp(ctx context.Context, filename string, out io.Writer) error {
+	return c.withCmd(ctx, filename, out, func(cmdList []string) []string {
+		return append(cmdList, "--dry-run", "up", "-d", "-y", "--build", "--remove-orphans")
+	}, nil)
+}
+
 // Redeploy runs `up -d` with explicit force flags so a stack can be
 // re-rolled in one action: pull images, rebuild, or recreate containers
 // even when nothing changed.
@@ -460,7 +469,7 @@ func (c *Service) Validate(ctx context.Context, filename string) []error {
 	err := c.withCmd(ctx, filename, buf,
 		func(cmdList []string) []string {
 			return append(
-				cmdList, "config",
+				cmdList, "config", "--quiet",
 			)
 		},
 		[]string{},
@@ -469,8 +478,7 @@ func (c *Service) Validate(ctx context.Context, filename string) []error {
 		return []error{}
 	}
 
-	s := buf.String()
-	fileErr := fmt.Errorf("failed to validate compose file: %s", s)
+	fileErr := fmt.Errorf("failed to validate compose file: %w", err)
 	// todo more validations
 
 	return []error{fileErr}

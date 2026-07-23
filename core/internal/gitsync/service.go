@@ -62,17 +62,31 @@ type TestResult struct {
 }
 
 type Service struct {
-	enabled       bool
-	store         *Store
-	vault         *Vault
-	http          *http.Client
-	githubAPIBase string
-	workspaceRoot string
-	backupRoot    string
-	stackResolver func(host, stackPath string) (filesystem.FileSystem, string, error)
-	hostLister    func() []string
-	locksMu       sync.Mutex
-	locks         map[string]*sync.Mutex
+	enabled         bool
+	store           *Store
+	vault           *Vault
+	http            *http.Client
+	githubAPIBase   string
+	workspaceRoot   string
+	backupRoot      string
+	stackResolver   func(host, stackPath string) (filesystem.FileSystem, string, error)
+	hostLister      func() []string
+	validateCompose func(context.Context, string, string) error
+	dryRunCompose   func(context.Context, string, string, io.Writer) error
+	deployCompose   func(context.Context, string, string, io.Writer) error
+	lockCompose     func(string, string) (func(), bool)
+	locksMu         sync.Mutex
+	locks           map[string]*sync.Mutex
+}
+
+func (s *Service) ConfigureDeployment(
+	validate func(context.Context, string, string) error,
+	dryRun func(context.Context, string, string, io.Writer) error,
+	deploy func(context.Context, string, string, io.Writer) error,
+	lock func(string, string) (func(), bool),
+) {
+	s.validateCompose, s.dryRunCompose, s.deployCompose = validate, dryRun, deploy
+	s.lockCompose = lock
 }
 
 func NewService(enabled bool, store *Store, vault *Vault, workspaceRoot ...string) *Service {
@@ -110,7 +124,12 @@ func (s *Service) RecoverInterruptedOperations() (int64, error) {
 	if !s.enabled {
 		return 0, nil
 	}
-	return s.store.MarkInterruptedOperations()
+	operations, err := s.store.MarkInterruptedOperations()
+	if err != nil {
+		return 0, err
+	}
+	deployments, err := s.store.MarkInterruptedDeployments()
+	return operations + deployments, err
 }
 
 func (s *Service) RunRepositoryOperation(ctx context.Context, repositoryID, operationType string, fn func(context.Context) error) error {

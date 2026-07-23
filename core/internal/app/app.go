@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"github.com/RA341/dockman/internal/config"
 	"github.com/RA341/dockman/internal/database"
 	"github.com/RA341/dockman/internal/docker"
+	"github.com/RA341/dockman/internal/docker/compose"
 	"github.com/RA341/dockman/internal/dockyaml"
 	"github.com/RA341/dockman/internal/files"
 	"github.com/RA341/dockman/internal/gitsync"
@@ -166,6 +169,33 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		},
 		hostManager.ListConnected,
 		filepath.Join(conf.ConfigDir, "git", "backups"),
+	)
+	gitSyncSrv.ConfigureDeployment(
+		func(ctx context.Context, hostname, filename string) error {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return getErr
+			}
+			if validation := dkSrv.Compose.Validate(ctx, filename); len(validation) > 0 {
+				return errors.Join(validation...)
+			}
+			return nil
+		},
+		func(ctx context.Context, hostname, filename string, out io.Writer) error {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return getErr
+			}
+			return dkSrv.Compose.DryRunUp(ctx, filename, out)
+		},
+		func(ctx context.Context, hostname, filename string, out io.Writer) error {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return getErr
+			}
+			return dkSrv.Compose.Up(ctx, filename, out)
+		},
+		compose.TryLockStack,
 	)
 	if interrupted, recoverErr := gitSyncSrv.RecoverInterruptedOperations(); recoverErr != nil {
 		log.Fatal().Err(recoverErr).Msg("unable to recover interrupted Git operations")

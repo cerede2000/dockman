@@ -15,6 +15,7 @@ import (
 
 	v1 "github.com/RA341/dockman/generated/docker/v1"
 	dockerpc "github.com/RA341/dockman/generated/docker/v1/v1connect"
+	"github.com/RA341/dockman/internal/docker/compose"
 	contSrv "github.com/RA341/dockman/internal/docker/container"
 	hm "github.com/RA341/dockman/internal/host/middleware"
 	"github.com/RA341/dockman/pkg/fileutil"
@@ -178,56 +179,66 @@ func containerExitCode(ct container.Summary) int {
 
 func (h *Handler) ComposeUp(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Compose.Up(
-			ctx,
-			req.Msg.Filename,
-			writer,
-			req.Msg.SelectedServices...,
-		)
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			return dkSrv.Compose.Up(
+				ctx,
+				req.Msg.Filename,
+				writer,
+				req.Msg.SelectedServices...,
+			)
+		})
 	})
 }
 
 func (h *Handler) ComposeStart(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Compose.Start(
-			ctx,
-			req.Msg.Filename,
-			writer,
-			req.Msg.SelectedServices...,
-		)
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			return dkSrv.Compose.Start(
+				ctx,
+				req.Msg.Filename,
+				writer,
+				req.Msg.SelectedServices...,
+			)
+		})
 	})
 }
 
 func (h *Handler) ComposeStop(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Compose.Stop(
-			ctx,
-			req.Msg.Filename,
-			writer,
-			req.Msg.SelectedServices...,
-		)
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			return dkSrv.Compose.Stop(
+				ctx,
+				req.Msg.Filename,
+				writer,
+				req.Msg.SelectedServices...,
+			)
+		})
 	})
 }
 
 func (h *Handler) ComposeDown(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Compose.Down(
-			ctx,
-			req.Msg.Filename,
-			writer,
-			req.Msg.SelectedServices...,
-		)
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			return dkSrv.Compose.Down(
+				ctx,
+				req.Msg.Filename,
+				writer,
+				req.Msg.SelectedServices...,
+			)
+		})
 	})
 }
 
 func (h *Handler) ComposeRestart(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Compose.Restart(
-			ctx,
-			req.Msg.Filename,
-			writer,
-			req.Msg.SelectedServices...,
-		)
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			return dkSrv.Compose.Restart(
+				ctx,
+				req.Msg.Filename,
+				writer,
+				req.Msg.SelectedServices...,
+			)
+		})
 	})
 
 }
@@ -235,24 +246,35 @@ func (h *Handler) ComposeRestart(ctx context.Context, req *connect.Request[v1.Co
 func (h *Handler) ComposeRedeploy(ctx context.Context, req *connect.Request[v1.ComposeRedeployRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
 		file := req.Msg.GetFile()
-		return dkSrv.Compose.Redeploy(
-			ctx,
-			file.GetFilename(),
-			writer,
-			req.Msg.GetPull(), req.Msg.GetBuild(), req.Msg.GetRecreate(),
-			file.GetSelectedServices()...,
-		)
+		return withComposeActionLock(dkSrv, file.GetFilename(), func() error {
+			return dkSrv.Compose.Redeploy(
+				ctx,
+				file.GetFilename(),
+				writer,
+				req.Msg.GetPull(), req.Msg.GetBuild(), req.Msg.GetRecreate(),
+				file.GetSelectedServices()...,
+			)
+		})
 	})
 }
 
 func (h *Handler) ComposeUpdate(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Compose.Update(ctx, req.Msg.Filename, writer, req.Msg.SelectedServices...)
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error { return dkSrv.Compose.Update(ctx, req.Msg.Filename, writer, req.Msg.SelectedServices...) })
 	})
 
 	// todo
 	//go sendReqToUpdater(h.addr, h.pass, "")
 	//return nil
+}
+
+func withComposeActionLock(dkSrv *Service, filename string, action func() error) error {
+	unlock, ok := compose.TryLockStack(dkSrv.Host, filename)
+	if !ok {
+		return fmt.Errorf("another action is already running for stack %s", filename)
+	}
+	defer unlock()
+	return action()
 }
 
 func (h *Handler) DockerCommand(ctx context.Context, req *connect.Request[v1.DockerCommandRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {

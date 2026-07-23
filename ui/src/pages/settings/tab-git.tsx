@@ -95,8 +95,11 @@ interface Binding {
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
     autoSyncEnabled: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
     autoSyncError?: string; lastAutoSyncAt?: string; lastAutoSyncSuccessAt?: string;
+    autoDeployEnabled: boolean; autoDeployComposePaths: string[]; autoDeployState: string;
+    autoDeployError?: string; lastAutoDeployAt?: string;
 }
-interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; message: string; }
+interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; message: string; }
+interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
 interface PreviewEntry {
     path: string; status: "add" | "modify" | "conflict" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
     targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed";
@@ -205,7 +208,8 @@ export default function TabGit() {
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
     const [automationBinding, setAutomationBinding] = useState<Binding | null>(null);
-    const [automationForm, setAutomationForm] = useState({enabled: false, intervalMinutes: 15});
+    const [deployments, setDeployments] = useState<Deployment[]>([]);
+    const [automationForm, setAutomationForm] = useState({enabled: false, intervalMinutes: 15, deployEnabled: false, deployComposePaths: [] as string[]});
     const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
     const [previewPage, setPreviewPage] = useState(0);
     const [previewRowsPerPage, setPreviewRowsPerPage] = useState(50);
@@ -597,7 +601,9 @@ export default function TabGit() {
 
     const openBindingAutomation = (binding: Binding) => {
         setAutomationBinding(binding);
-        setAutomationForm({enabled: binding.autoSyncEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15});
+        setAutomationForm({enabled: binding.autoSyncEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployComposePaths: binding.autoDeployComposePaths || []});
+        setDeployments([]);
+        void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
     };
 
     const saveBindingAutomation = async () => {
@@ -607,7 +613,7 @@ export default function TabGit() {
             await api<Binding>(`/bindings/${automationBinding.id}/automation`, {
                 method: "PUT", body: JSON.stringify(automationForm),
             });
-            showSuccess(automationForm.enabled ? "Automatic Git monitoring enabled." : "Automatic Git monitoring disabled.");
+            showSuccess(automationForm.deployEnabled ? "Automatic Git monitoring and controlled deployment enabled." : automationForm.enabled ? "Automatic Git monitoring enabled." : "Automatic Git monitoring disabled.");
             setAutomationBinding(null);
             await load();
         } catch (error) { showError((error as Error).message); }
@@ -797,6 +803,7 @@ export default function TabGit() {
                                     <Tooltip title={binding.autoSyncState === "conflict" ? "Open and resolve conflicts" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict"} onClick={binding.autoSyncState === "conflict" ? () => void previewTransfer(binding, "repository_to_stack", false, undefined, undefined, true) : undefined} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
                                     <Tooltip title="Configure automatic monitoring"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingAutomation(binding)}><SyncOutlined fontSize="small"/></IconButton></Tooltip>
                                     {binding.autoSyncEnabled && <Tooltip title="Check and synchronize now"><span><IconButton size="small" disabled={busy !== null} onClick={() => void runBindingAutomation(binding)}>{busy === `binding-auto-run-${binding.id}` ? <CircularProgress size={17}/> : <RefreshOutlined fontSize="small"/>}</IconButton></span></Tooltip>}
+                                    {binding.autoDeployEnabled && <Tooltip title={binding.autoDeployError || `${binding.autoDeployComposePaths.length} controlled deployment target(s)`}><Chip size="small" variant="outlined" color={binding.autoDeployState === "failed" ? "error" : "warning"} label={binding.autoDeployState === "success" ? "deployed" : "auto deploy"}/></Tooltip>}
                                 </Stack>
                                 {binding.lastAutoSyncAt && <Typography variant="caption" color="text.secondary">Checked {dateLabel(binding.lastAutoSyncAt)}</Typography>}
                             </TableCell>
@@ -943,17 +950,22 @@ export default function TabGit() {
             <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
         </Dialog>
 
-        <Dialog open={automationBinding !== null} onClose={() => busy === null && setAutomationBinding(null)} fullWidth maxWidth="xs">
+        <Dialog open={automationBinding !== null} onClose={() => busy === null && setAutomationBinding(null)} fullWidth maxWidth="sm">
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><SyncOutlined/>Automatic Git monitoring</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
-                <FormControlLabel control={<Switch checked={automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, enabled: event.target.checked})}/>} label="Synchronize changes from Git automatically"/>
+                <FormControlLabel control={<Switch checked={automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, enabled: event.target.checked, ...(!event.target.checked ? {deployEnabled: false, deployComposePaths: []} : {})})}/>} label="Synchronize changes from Git automatically"/>
                 <TextField label="Check interval (minutes)" type="number" value={automationForm.intervalMinutes} onChange={(event) => setAutomationForm({...automationForm, intervalMinutes: Number(event.target.value)})} disabled={!automationForm.enabled} slotProps={{htmlInput: {min: 5, max: 1440, step: 5}}} helperText="Between 5 minutes and 24 hours."/>
                 <Alert severity="info">Dockman fetches Git and fast-forwards the managed repository, then imports allowed files with a backup. Missing source files are not deleted.</Alert>
-                <Alert severity="warning">A dirty/diverged repository or any file conflict blocks the complete automatic import. Deployment and container actions remain manual.</Alert>
+                <FormControlLabel control={<Switch checked={automationForm.deployEnabled} disabled={!automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, deployEnabled: event.target.checked})}/>} label="Deploy affected stacks after a successful import"/>
+                {automationForm.deployEnabled && <FormControl><InputLabel>Compose deployment targets</InputLabel><Select multiple label="Compose deployment targets" value={automationForm.deployComposePaths} onChange={(event) => setAutomationForm({...automationForm, deployComposePaths: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value})} renderValue={(selected) => selected.join(", ")}>
+                    {(automationBinding?.composePaths || []).map((path) => <MenuItem key={path} value={path}><Checkbox checked={automationForm.deployComposePaths.includes(path)}/><Typography variant="body2" sx={{fontFamily: "monospace"}}>{path}</Typography></MenuItem>)}
+                </Select></FormControl>}
+                <Alert severity="warning">Deployment is disabled by default. When enabled, Dockman validates the Compose configuration, performs a dry-run, then runs the normal Compose up only for selected stacks affected by changed files. Any conflict or failed check blocks deployment.</Alert>
                 {automationBinding?.lastAutoSyncSuccessAt && <Typography variant="body2" color="text.secondary">Last successful synchronization: {dateLabel(automationBinding.lastAutoSyncSuccessAt)}</Typography>}
                 {automationBinding?.autoSyncError && <Alert severity="error">{automationBinding.autoSyncError}</Alert>}
+                {deployments.length > 0 && <Box><Typography variant="subtitle2" sx={{mb: 1}}>Recent controlled deployments</Typography><Stack spacing={1}>{deployments.map((deployment) => <Paper key={deployment.id} variant="outlined" sx={{p: 1.25}}><Stack direction="row" sx={{justifyContent: "space-between", gap: 1}}><Typography variant="body2" sx={{fontFamily: "monospace"}}>{deployment.composePath}</Typography><Chip size="small" color={deployment.state === "success" ? "success" : "error"} label={deployment.state}/></Stack><Typography variant="caption" color="text.secondary">{dateLabel(deployment.createdAt)} · {deployment.commitSha.slice(0, 12)}</Typography>{deployment.result && deployment.state !== "success" && <Alert severity="error" sx={{mt: 1}}>{deployment.result}</Alert>}{deployment.logs && <Box component="pre" sx={{mt: 1, mb: 0, p: 1, maxHeight: 140, overflow: "auto", bgcolor: "#050607", color: "grey.300", fontSize: 11, whiteSpace: "pre-wrap", userSelect: "text"}}>{deployment.logs}</Box>}</Paper>)}</Stack></Box>}
             </Stack></DialogContent>
-            <DialogActions><Button onClick={() => setAutomationBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingAutomation()} disabled={busy !== null || (automationForm.enabled && (automationForm.intervalMinutes < 5 || automationForm.intervalMinutes > 1440))}>{busy?.startsWith("binding-automation-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
+            <DialogActions><Button onClick={() => setAutomationBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingAutomation()} disabled={busy !== null || (automationForm.enabled && (automationForm.intervalMinutes < 5 || automationForm.intervalMinutes > 1440)) || (automationForm.deployEnabled && automationForm.deployComposePaths.length === 0)}>{busy?.startsWith("binding-automation-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
         </Dialog>
 
         <Dialog open={deleteBinding !== null} onClose={() => busy === null && setDeleteBinding(null)} maxWidth="xs" fullWidth>

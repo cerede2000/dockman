@@ -60,6 +60,11 @@ type StackBinding struct {
 	LastAutoSyncAt          *time.Time
 	LastAutoSyncSuccessAt   *time.Time
 	LastAutoSyncCommit      string
+	AutoDeployEnabled       bool   `gorm:"not null;default:false"`
+	AutoDeployComposePaths  string `gorm:"type:text"`
+	AutoDeployState         string `gorm:"not null;default:disabled"`
+	AutoDeployError         string `gorm:"type:text"`
+	LastAutoDeployAt        *time.Time
 }
 
 func (StackBinding) TableName() string { return "git_stack_bindings" }
