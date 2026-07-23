@@ -230,6 +230,42 @@ func TestComposeSelectionPersistsAndSkipsUnselectedStackTrees(t *testing.T) {
 	require.ErrorContains(t, err, "no longer available")
 }
 
+func TestRefreshComposeCatalogAddsNewLocalStackUnselected(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	for _, stack := range []string{"alpha", "beta"} {
+		directory := filepath.Join(stackRoot, stack)
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	}
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	require.Equal(t, composeSelectionAll, binding.ComposeSelectionMode)
+
+	gamma := filepath.Join(stackRoot, "gamma")
+	require.NoError(t, os.MkdirAll(gamma, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(gamma, "compose.yml"), []byte("services: {}\n"), 0o644))
+	refreshed, err := service.RefreshBindingComposeCatalog(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/compose.yaml", "beta/compose.yaml", "gamma/compose.yml"}, refreshed.ComposePaths)
+	require.Equal(t, composeSelectionSelected, refreshed.ComposeSelectionMode)
+	require.Equal(t, []string{"alpha/compose.yaml", "beta/compose.yaml"}, refreshed.SelectedComposePaths)
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	for _, entry := range preview.Entries {
+		require.NotContains(t, entry.Path, "gamma/", "new local stacks must not enter synchronization before approval")
+	}
+
+	approved, err := service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{
+		Mode: composeSelectionAll, ComposePaths: refreshed.ComposePaths,
+	})
+	require.NoError(t, err)
+	require.Equal(t, composeSelectionAll, approved.ComposeSelectionMode)
+	require.Contains(t, approved.SelectedComposePaths, "gamma/compose.yml")
+}
+
 func TestBindingAppliesComposeSelectionBeforeInitialExport(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

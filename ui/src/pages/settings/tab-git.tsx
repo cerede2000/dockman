@@ -695,9 +695,20 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
-    const openComposeSelection = (binding: Binding) => {
-        setComposeBinding(binding);
-        setSelectedComposePaths(new Set(binding.selectedComposePaths || (binding.composeSelectionMode === "selected" ? [] : binding.composePaths)));
+    const refreshBindingComposeCatalog = async (binding: Binding) => {
+        const refreshed = await api<Binding>(`/bindings/${binding.id}/refresh-compose`, {method: "POST"});
+        setBindings((current) => current.map((candidate) => candidate.id === refreshed.id ? refreshed : candidate));
+        return refreshed;
+    };
+
+    const openComposeSelection = async (binding: Binding) => {
+        setBusy(`binding-compose-refresh-${binding.id}`);
+        try {
+            const refreshed = await refreshBindingComposeCatalog(binding);
+            setComposeBinding(refreshed);
+            setSelectedComposePaths(new Set(refreshed.selectedComposePaths || (refreshed.composeSelectionMode === "selected" ? [] : refreshed.composePaths)));
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
     };
 
     const saveComposeSelection = async () => {
@@ -711,16 +722,21 @@ export default function TabGit() {
             });
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
             setComposeBinding(null);
-            showSuccess(mode === "all" ? "All current and future stacks are synchronized." : `${selected.length} stack${selected.length === 1 ? "" : "s"} selected for synchronization.`);
+            showSuccess(mode === "all" ? "All currently discovered stacks are synchronized. Future local stacks remain unselected until approved." : `${selected.length} stack${selected.length === 1 ? "" : "s"} selected for synchronization.`);
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
     };
 
-    const openBindingAutomation = (binding: Binding) => {
-        setAutomationBinding(binding);
-        setAutomationForm({enabled: binding.autoSyncEnabled, autoReconcile: binding.autoReconcileEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployComposePaths: binding.autoDeployComposePaths || []});
-        setDeployments([]);
-        void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
+    const openBindingAutomation = async (binding: Binding) => {
+        setBusy(`binding-compose-refresh-${binding.id}`);
+        try {
+            const refreshed = await refreshBindingComposeCatalog(binding);
+            setAutomationBinding(refreshed);
+            setAutomationForm({enabled: refreshed.autoSyncEnabled, autoReconcile: refreshed.autoReconcileEnabled, intervalMinutes: refreshed.autoSyncIntervalMinutes || 15, deployEnabled: refreshed.autoDeployEnabled, deployNewStacks: refreshed.autoDeployNewStacks, deployComposePaths: refreshed.autoDeployComposePaths || []});
+            setDeployments([]);
+            void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
     };
 
     const openRepositoryPolicy = (repository: Repository) => {
@@ -1174,7 +1190,7 @@ export default function TabGit() {
         <Dialog open={composeBinding !== null} onClose={() => busy === null && setComposeBinding(null)} fullWidth maxWidth="md">
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><FolderOpenOutlined/>Synchronized stacks — {composeBinding?.stackPath}</DialogTitle>
             <DialogContent dividers><Stack spacing={1.5}>
-                <Alert severity="info">Only selected stack folders are synchronized in either direction. Removing a stack here never deletes its files and never stops it. Existing links initially keep every detected stack selected.</Alert>
+                <Alert severity="info">Only selected stack folders are synchronized in either direction. Newly discovered local stacks appear unselected until you explicitly approve them. Removing a stack here never deletes its files and never stops it.</Alert>
                 <ComposePathSelector key={composeBinding?.id || "compose-selection"} paths={composeBinding?.composePaths || []} selectedPaths={selectedComposePaths} onChange={setSelectedComposePaths} selectedLabel="synchronized" unselectedLabel="excluded" maxHeight="48vh"/>
                 {selectedComposePaths.size === 0 && <Alert severity="warning">No stack will be synchronized by this folder link. The link and its baseline are preserved.</Alert>}
             </Stack></DialogContent>

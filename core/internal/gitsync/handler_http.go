@@ -42,6 +42,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings/{id}/orphan/{composePath...}", h.resolveGitOrphan)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
+	mux.HandleFunc("POST /bindings/{id}/refresh-compose", h.refreshBindingComposeCatalog)
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
 	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
 	mux.HandleFunc("GET /bindings/{id}/deployments", h.listBindingDeployments)
@@ -133,6 +134,18 @@ func (h *HTTPHandler) updateBindingComposeSelection(w http.ResponseWriter, r *ht
 		return
 	}
 	row, err := h.service.UpdateBindingComposeSelection(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) refreshBindingComposeCatalog(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	row, err := h.service.RefreshBindingComposeCatalog(r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, err)
 		return

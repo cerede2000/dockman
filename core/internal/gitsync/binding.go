@@ -443,6 +443,16 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 	repositoryLock := s.repositoryLock(row.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
+	var added []string
+	row, added, err = s.refreshBindingComposeCatalogLocked(row)
+	if err != nil {
+		return BindingView{}, err
+	}
+	if len(added) > 0 && input.Mode == composeSelectionAll {
+		// The caller built its "all" choice from an older catalog. Keep the
+		// just-discovered paths outside that stale selection.
+		input.Mode = composeSelectionSelected
+	}
 	mode, selected, err := normalizeComposeSelection(splitPatternLines(row.ComposePaths), input.Mode, input.ComposePaths, composeSelectionSelected)
 	if err != nil {
 		return BindingView{}, err
@@ -475,6 +485,62 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 		return BindingView{}, err
 	}
 	return s.bindingView(row)
+}
+
+// RefreshBindingComposeCatalog discovers Compose files added locally after a
+// folder link was created. New stacks are deliberately catalogued as
+// unselected so a local directory can never enter Git synchronization merely
+// by appearing on disk.
+func (s *Service) RefreshBindingComposeCatalog(id string) (BindingView, error) {
+	automationLock := s.repositoryLock("automation:" + id)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingView{}, err
+	}
+	repositoryLock := s.repositoryLock(row.RepositoryUUID)
+	repositoryLock.Lock()
+	defer repositoryLock.Unlock()
+	row, _, err = s.refreshBindingComposeCatalogLocked(row)
+	if err != nil {
+		return BindingView{}, err
+	}
+	return s.bindingView(row)
+}
+
+func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBinding, []string, error) {
+	targetFS, targetRoot, err := s.resolveBindingStack(row)
+	if err != nil {
+		return row, nil, err
+	}
+	discovered := discoverComposeFiles(targetFS, targetRoot)
+	known := splitPatternLines(row.ComposePaths)
+	knownSet := make(map[string]struct{}, len(known))
+	for _, path := range known {
+		knownSet[path] = struct{}{}
+	}
+	added := make([]string, 0)
+	for _, path := range discovered {
+		if _, exists := knownSet[path]; exists {
+			continue
+		}
+		added = append(added, path)
+	}
+	if len(added) == 0 {
+		return row, nil, nil
+	}
+	// Capture the effective selection before extending the catalog. An old
+	// "all" selection therefore becomes an explicit selection of the stacks
+	// the user already approved, leaving every newly found stack grey.
+	selected := selectedComposePaths(row)
+	row.ComposePaths = strings.Join(uniqueSortedStrings(append(known, added...)), "\n")
+	row.ComposeSelectionMode = composeSelectionSelected
+	row.SelectedComposePaths = strings.Join(uniqueSortedStrings(selected), "\n")
+	if err := s.store.SaveBinding(&row); err != nil {
+		return row, nil, err
+	}
+	return row, added, nil
 }
 
 func (s *Service) AddBindingExclusion(id string, input BindingExclusionInput) (BindingView, error) {
