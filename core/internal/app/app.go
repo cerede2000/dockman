@@ -161,14 +161,18 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 			log.Warn().Str("path", keyPath).Msg("Git master key was generated locally; mount GIT_MASTER_KEY_FILE as a Docker secret for production")
 		}
 	}
-	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, filepath.Join(conf.ConfigDir, "git", "repositories"))
+	gitWorkspaceRoot, gitBackupRoot, err := conf.GetGitStorageRoots()
+	if err != nil {
+		log.Fatal().Err(err).Msg("invalid Git storage configuration")
+	}
+	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, gitWorkspaceRoot)
 	gitSyncSrv.ConfigureStackAccess(
 		func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
 			stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)
 			return stackFS, relpath, loadErr
 		},
 		hostManager.ListConnected,
-		filepath.Join(conf.ConfigDir, "git", "backups"),
+		gitBackupRoot,
 	)
 	gitSyncSrv.ConfigureDeployment(
 		func(ctx context.Context, hostname, filename string) error {

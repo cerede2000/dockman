@@ -21,7 +21,7 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count))
 		require.Equal(t, 1, count, table)
 	}
-	for _, column := range []string{"sync_profile", "include_patterns", "exclude_patterns"} {
+	for _, column := range []string{"sync_profile", "include_patterns", "exclude_patterns", "compose_selection_mode", "selected_compose_paths"} {
 		var count int
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('git_stack_bindings') WHERE name=?", column).Scan(&count))
 		require.Equal(t, 1, count, column)

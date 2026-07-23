@@ -141,6 +141,8 @@ func TestBindingAutomationDiscoversAndDeploysNewGitStack(t *testing.T) {
 	repository := prepareBindingRepository(t, service)
 	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
 	require.NoError(t, err)
+	binding, err = service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{Mode: composeSelectionSelected})
+	require.NoError(t, err)
 	remoteChange(t, repository.RemoteURL, "stacks/new-stack/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
 	var actions []string
 	service.ConfigureDeployment(
@@ -175,6 +177,7 @@ func TestBindingAutomationDiscoversAndDeploysNewGitStack(t *testing.T) {
 	updated, err := service.store.GetBinding(binding.ID)
 	require.NoError(t, err)
 	require.Contains(t, splitPatternLines(updated.ComposePaths), "new-stack/compose.yml")
+	require.Contains(t, splitPatternLines(updated.SelectedComposePaths), "new-stack/compose.yml")
 	require.Contains(t, splitPatternLines(updated.AutoDeployComposePaths), "new-stack/compose.yml")
 }
 

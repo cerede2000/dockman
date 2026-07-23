@@ -50,6 +50,8 @@ type StackBinding struct {
 	StackPath               string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
 	SubPath                 string `gorm:"not null"`
 	ComposePaths            string
+	ComposeSelectionMode    string `gorm:"not null;default:all"`
+	SelectedComposePaths    string `gorm:"type:text"`
 	SyncProfile             string `gorm:"not null;default:compose_config"`
 	IncludePatterns         string `gorm:"type:text"`
 	ExcludePatterns         string `gorm:"type:text"`

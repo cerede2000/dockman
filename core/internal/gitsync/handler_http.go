@@ -38,6 +38,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
+	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
 	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
 	mux.HandleFunc("GET /bindings/{id}/deployments", h.listBindingDeployments)
 	mux.HandleFunc("POST /bindings/{id}/automation/run", h.runBindingAutomation)
@@ -58,6 +59,23 @@ func NewHTTPHandler(service *Service) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) updateBindingComposeSelection(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingComposeSelectionInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.UpdateBindingComposeSelection(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
 }
 
 func (h *HTTPHandler) listBindingDeployments(w http.ResponseWriter, r *http.Request) {

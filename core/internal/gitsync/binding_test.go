@@ -191,6 +191,66 @@ func TestCompleteStacksFolderIsDiscoveredAndLinkedOnce(t *testing.T) {
 	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
 	require.NoError(t, err)
 	require.Equal(t, targets[0].ComposePaths, binding.ComposePaths)
+	require.Equal(t, composeSelectionAll, binding.ComposeSelectionMode)
+	require.Equal(t, binding.ComposePaths, binding.SelectedComposePaths)
+}
+
+func TestComposeSelectionPersistsAndSkipsUnselectedStackTrees(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	for _, stack := range []string{"alpha", "beta"} {
+		directory := filepath.Join(stackRoot, stack)
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services: {}\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "settings.json"), []byte(`{"stack":"`+stack+`"}`), 0o644))
+	}
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+
+	updated, err := service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{Mode: composeSelectionSelected, ComposePaths: []string{"alpha/compose.yaml"}})
+	require.NoError(t, err)
+	require.Equal(t, composeSelectionSelected, updated.ComposeSelectionMode)
+	require.Equal(t, []string{"alpha/compose.yaml"}, updated.SelectedComposePaths)
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Equal(t, 2, preview.Changed)
+	for _, entry := range preview.Entries {
+		require.NotContains(t, entry.Path, "beta/")
+	}
+
+	listed, err := service.ListBindings()
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/compose.yaml"}, listed[0].SelectedComposePaths)
+
+	_, err = service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{Mode: composeSelectionSelected, ComposePaths: []string{"missing/compose.yaml"}})
+	require.ErrorContains(t, err, "no longer available")
+}
+
+func TestComposeSelectionPrunesAutomaticDeploymentTargets(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	for _, stack := range []string{"alpha", "beta"} {
+		directory := filepath.Join(stackRoot, stack)
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	}
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	row.AutoSyncEnabled = true
+	row.AutoDeployEnabled = true
+	row.AutoDeployState = "watching"
+	row.AutoDeployComposePaths = "alpha/compose.yaml\nbeta/compose.yaml"
+	require.NoError(t, service.store.SaveBinding(&row))
+
+	updated, err := service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{Mode: composeSelectionSelected, ComposePaths: []string{"alpha/compose.yaml"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/compose.yaml"}, updated.AutoDeployComposePaths)
+	require.True(t, updated.AutoDeployEnabled)
 }
 
 type zeroStream struct{}

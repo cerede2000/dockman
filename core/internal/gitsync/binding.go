@@ -45,6 +45,8 @@ const (
 	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
 	syncProfileComposeConfig = "compose_config"
 	syncProfileAllFiles      = "all_files"
+	composeSelectionAll      = "all"
+	composeSelectionSelected = "selected"
 )
 
 var transferBufferPool = sync.Pool{New: func() any { return make([]byte, transferBufferSize) }}
@@ -66,6 +68,8 @@ type BindingView struct {
 	StackPath               string     `json:"stackPath"`
 	SubPath                 string     `json:"subPath"`
 	ComposePaths            []string   `json:"composePaths"`
+	ComposeSelectionMode    string     `json:"composeSelectionMode"`
+	SelectedComposePaths    []string   `json:"selectedComposePaths"`
 	SyncProfile             string     `json:"syncProfile"`
 	IncludePatterns         []string   `json:"includePatterns"`
 	ExcludePatterns         []string   `json:"excludePatterns"`
@@ -94,6 +98,11 @@ type BindingPolicyInput struct {
 	Profile         string   `json:"profile"`
 	IncludePatterns []string `json:"includePatterns"`
 	ExcludePatterns []string `json:"excludePatterns"`
+}
+
+type BindingComposeSelectionInput struct {
+	Mode         string   `json:"mode"`
+	ComposePaths []string `json:"composePaths"`
 }
 
 type BindingExclusionInput struct {
@@ -200,6 +209,9 @@ type syncPolicy struct {
 	repositoryExcludes []ignoreRule
 	repositorySubPath  string
 	compose            map[string]struct{}
+	selectedRoots      map[string]struct{}
+	selectionEnabled   bool
+	selectNewCompose   bool
 }
 
 var composeConfigRules = mustRules([]string{
@@ -270,7 +282,7 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	row := StackBinding{
 		UUID: uuid.NewString(), RepositoryUUID: clean.RepositoryID, Host: clean.Host,
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
-		ComposePaths: strings.Join(compose, "\n"), SyncProfile: syncProfileComposeConfig, Enabled: true,
+		ComposePaths: strings.Join(compose, "\n"), ComposeSelectionMode: composeSelectionAll, SyncProfile: syncProfileComposeConfig, Enabled: true,
 		AutoSyncIntervalMinutes: defaultAutoSyncIntervalMinutes, AutoSyncState: "disabled",
 		AutoReconcileEnabled: autoReconcile, InitialSyncState: "checking",
 	}
@@ -367,6 +379,74 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 	row.SyncProfile = policy
 	row.IncludePatterns = strings.Join(includes, "\n")
 	row.ExcludePatterns = strings.Join(excludes, "\n")
+	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingView{}, err
+	}
+	return s.bindingView(row)
+}
+
+func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeSelectionInput) (BindingView, error) {
+	automationLock := s.repositoryLock("automation:" + id)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingView{}, err
+	}
+	repositoryLock := s.repositoryLock(row.RepositoryUUID)
+	repositoryLock.Lock()
+	defer repositoryLock.Unlock()
+	mode := strings.TrimSpace(input.Mode)
+	if mode == "" {
+		mode = composeSelectionSelected
+	}
+	if mode != composeSelectionAll && mode != composeSelectionSelected {
+		return BindingView{}, errors.New("Compose selection mode must be all or selected")
+	}
+	available := make(map[string]struct{})
+	for _, relative := range splitPatternLines(row.ComposePaths) {
+		available[filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))] = struct{}{}
+	}
+	selected := make([]string, 0, len(input.ComposePaths))
+	seen := make(map[string]struct{}, len(input.ComposePaths))
+	for _, raw := range input.ComposePaths {
+		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(raw))))
+		if err := validateRelativePath(relative, false); err != nil {
+			return BindingView{}, fmt.Errorf("invalid Compose selection %q: %w", raw, err)
+		}
+		if _, ok := available[relative]; !ok {
+			return BindingView{}, fmt.Errorf("Compose file is no longer available in this folder link: %s", relative)
+		}
+		if _, ok := seen[relative]; !ok {
+			seen[relative] = struct{}{}
+			selected = append(selected, relative)
+		}
+	}
+	sort.Strings(selected)
+	if mode == composeSelectionAll {
+		selected = nil
+	}
+	row.ComposeSelectionMode = mode
+	row.SelectedComposePaths = strings.Join(selected, "\n")
+	// A deselected stack must never remain authorized for automatic deployment.
+	if mode == composeSelectionSelected {
+		allowed := make(map[string]struct{}, len(selected))
+		for _, relative := range selected {
+			allowed[relative] = struct{}{}
+		}
+		deploy := make([]string, 0)
+		for _, relative := range splitPatternLines(row.AutoDeployComposePaths) {
+			if _, ok := allowed[relative]; ok {
+				deploy = append(deploy, relative)
+			}
+		}
+		row.AutoDeployComposePaths = strings.Join(deploy, "\n")
+		if row.AutoDeployEnabled && len(deploy) == 0 && !row.AutoDeployNewStacks {
+			row.AutoDeployEnabled = false
+			row.AutoDeployState = "disabled"
+			row.AutoDeployError = ""
+		}
+	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
 	}
@@ -909,6 +989,7 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 	return BindingView{
 		ID: row.UUID, RepositoryID: row.RepositoryUUID, RepositoryName: repository.Name,
 		Host: row.Host, StackPath: row.StackPath, SubPath: row.SubPath, ComposePaths: compose,
+		ComposeSelectionMode: normalizedComposeSelectionMode(row.ComposeSelectionMode), SelectedComposePaths: selectedComposePaths(row),
 		SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns),
 		ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled,
 		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
@@ -1038,6 +1119,15 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 		}
 		for _, entry := range entries {
 			childRel := filepath.ToSlash(filepath.Join(rel, entry.Name()))
+			selected, traverse := policy.selectsPath(childRel, entry.IsDir())
+			if !selected {
+				if entry.IsDir() && traverse {
+					if err := walk(targetFS.Join(dir, entry.Name()), childRel); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if shouldSkipPath(childRel, entry.IsDir()) {
 				continue
 			}
@@ -1122,6 +1212,16 @@ func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, 
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
+	if policy.selectionEnabled && policy.selectNewCompose {
+		if policy.selectedRoots == nil {
+			policy.selectedRoots = make(map[string]struct{})
+		}
+		for _, relative := range discoverRepositoryComposeFiles(tree) {
+			if _, known := policy.compose[relative]; !known {
+				policy.selectedRoots[filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))] = struct{}{}
+			}
+		}
+	}
 	ignoreRules, err := loadRepositoryTreeIgnoreRules(tree)
 	if err != nil {
 		return nil, err
@@ -1138,6 +1238,19 @@ func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, 
 				return fmt.Errorf("repository contains unsafe Git tree path %q: %w", rel, err)
 			}
 			isDirectory := entry.Mode == filemode.Dir
+			selected, traverse := policy.selectsPath(rel, isDirectory)
+			if !selected {
+				if isDirectory && traverse {
+					subtree, err := current.Tree(entry.Name)
+					if err != nil {
+						return err
+					}
+					if err := walk(subtree, rel); err != nil {
+						return err
+					}
+				}
+				continue
+			}
 			if shouldSkipPath(rel, isDirectory) {
 				continue
 			}
@@ -1209,6 +1322,34 @@ func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, 
 	return result, walk(tree, "")
 }
 
+func discoverRepositoryComposeFiles(tree *object.Tree) []string {
+	result := make([]string, 0)
+	visited := 0
+	var walk func(*object.Tree, string, int)
+	walk = func(current *object.Tree, parent string, depth int) {
+		if depth > 8 || visited >= 1000 || len(result) >= 500 {
+			return
+		}
+		visited++
+		for _, entry := range current.Entries {
+			relative := path.Join(parent, entry.Name)
+			if entry.Mode == filemode.Dir {
+				subtree, err := current.Tree(entry.Name)
+				if err == nil {
+					walk(subtree, relative, depth+1)
+				}
+				continue
+			}
+			if isComposeDeploymentFile(relative) {
+				result = append(result, relative)
+			}
+		}
+	}
+	walk(tree, "", 0)
+	sort.Strings(result)
+	return result
+}
+
 func hashTransferFile(file transferFile) (string, error) {
 	if file.open == nil {
 		return "", nil
@@ -1275,6 +1416,15 @@ func policyFromBinding(binding StackBinding, repositories ...Repository) (syncPo
 		compose[filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))] = struct{}{}
 	}
 	policy := syncPolicy{profile: profile, includes: includeRules, excludes: excludeRules, compose: compose, repositorySubPath: binding.SubPath}
+	if normalizedComposeSelectionMode(binding.ComposeSelectionMode) == composeSelectionSelected {
+		policy.selectionEnabled = true
+		policy.selectNewCompose = binding.AutoDeployEnabled && binding.AutoDeployNewStacks
+		policy.selectedRoots = make(map[string]struct{})
+		for _, relative := range selectedComposePaths(binding) {
+			root := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))
+			policy.selectedRoots[root] = struct{}{}
+		}
+	}
 	if len(repositories) > 0 {
 		policy.repositoryExcludes, err = rulesFromPatterns(splitPatternLines(repositories[0].ExcludePatterns))
 		if err != nil {
@@ -1282,6 +1432,37 @@ func policyFromBinding(binding StackBinding, repositories ...Repository) (syncPo
 		}
 	}
 	return policy, nil
+}
+
+func normalizedComposeSelectionMode(mode string) string {
+	if mode == composeSelectionSelected {
+		return composeSelectionSelected
+	}
+	return composeSelectionAll
+}
+
+func selectedComposePaths(binding StackBinding) []string {
+	if normalizedComposeSelectionMode(binding.ComposeSelectionMode) == composeSelectionAll {
+		return splitPatternLines(binding.ComposePaths)
+	}
+	return splitPatternLines(binding.SelectedComposePaths)
+}
+
+func (policy syncPolicy) selectsPath(relative string, directory bool) (selected, traverse bool) {
+	if !policy.selectionEnabled {
+		return true, true
+	}
+	relative = strings.Trim(filepath.ToSlash(relative), "/")
+	for root := range policy.selectedRoots {
+		root = strings.Trim(root, "/")
+		if root == "." || relative == root || strings.HasPrefix(relative, root+"/") {
+			return true, true
+		}
+		if directory && strings.HasPrefix(root, relative+"/") {
+			traverse = true
+		}
+	}
+	return false, traverse
 }
 
 func normalizeBindingPolicy(input BindingPolicyInput) (string, []string, []string, error) {

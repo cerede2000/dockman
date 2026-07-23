@@ -67,7 +67,7 @@ func validateDeploymentTargets(binding StackBinding, enabled, allowNew bool, req
 		return nil, errors.New("automatic deployment requires automatic Git synchronization")
 	}
 	available := make(map[string]struct{})
-	for _, path := range splitPatternLines(binding.ComposePaths) {
+	for _, path := range selectedComposePaths(binding) {
 		available[path] = struct{}{}
 	}
 	seen := make(map[string]struct{})
@@ -139,10 +139,13 @@ func isComposeDeploymentFile(path string) bool {
 
 func (s *Service) registerDiscoveredDeploymentTargets(binding StackBinding, targets []string) (StackBinding, error) {
 	binding.ComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.ComposePaths), targets...)), "\n")
+	if normalizedComposeSelectionMode(binding.ComposeSelectionMode) == composeSelectionSelected {
+		binding.SelectedComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.SelectedComposePaths), targets...)), "\n")
+	}
 	binding.AutoDeployComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.AutoDeployComposePaths), targets...)), "\n")
 	binding.AutoDeployState = "pending"
 	binding.AutoDeployError = "New Git stack discovered; waiting for controlled deployment"
-	if err := s.store.UpdateBindingDeploymentTargets(binding.UUID, binding.ComposePaths, binding.AutoDeployComposePaths, binding.AutoDeployState, binding.AutoDeployError); err != nil {
+	if err := s.store.SaveBinding(&binding); err != nil {
 		return binding, err
 	}
 	return binding, nil

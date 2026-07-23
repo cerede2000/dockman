@@ -94,6 +94,7 @@ interface StackTarget { host: string; path: string; composePaths: string[]; scop
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
     subPath: string; composePaths: string[]; syncProfile: "compose_config" | "all_files";
+    composeSelectionMode: "all" | "selected"; selectedComposePaths: string[];
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
     autoSyncEnabled: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
     autoSyncError?: string; lastAutoSyncAt?: string; lastAutoSyncSuccessAt?: string;
@@ -211,6 +212,10 @@ export default function TabGit() {
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
     const [automationBinding, setAutomationBinding] = useState<Binding | null>(null);
+	const [composeBinding, setComposeBinding] = useState<Binding | null>(null);
+	const [composeSearch, setComposeSearch] = useState("");
+	const [composeStatus, setComposeStatus] = useState<"all" | "selected" | "not_selected">("all");
+	const [selectedComposePaths, setSelectedComposePaths] = useState<Set<string>>(() => new Set());
     const [deployments, setDeployments] = useState<Deployment[]>([]);
     const [automationForm, setAutomationForm] = useState({enabled: false, autoReconcile: true, intervalMinutes: 15, deployEnabled: false, deployNewStacks: false, deployComposePaths: [] as string[]});
     const [policyRepository, setPolicyRepository] = useState<Repository | null>(null);
@@ -224,6 +229,14 @@ export default function TabGit() {
     const [selectedPreviewPaths, setSelectedPreviewPaths] = useState<Set<string>>(() => new Set());
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
     const deferredPreviewSearch = useDeferredValue(previewSearch);
+	const deferredComposeSearch = useDeferredValue(composeSearch);
+	const filteredComposePaths = useMemo(() => {
+		const query = deferredComposeSearch.trim().toLocaleLowerCase();
+		return (composeBinding?.composePaths || []).filter((path) => {
+			const selected = selectedComposePaths.has(path);
+			return (!query || path.toLocaleLowerCase().includes(query)) && (composeStatus === "all" || (composeStatus === "selected" ? selected : !selected));
+		});
+	}, [composeBinding?.composePaths, composeStatus, deferredComposeSearch, selectedComposePaths]);
     const previewStatusCounts = useMemo(() => {
         const counts = new Map<PreviewStatus, number>();
         for (const entry of transferPreview?.entries || []) counts.set(entry.status, (counts.get(entry.status) || 0) + 1);
@@ -611,6 +624,37 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
+	const openComposeSelection = (binding: Binding) => {
+		setComposeBinding(binding);
+		setComposeSearch("");
+		setComposeStatus("all");
+		setSelectedComposePaths(new Set(binding.selectedComposePaths || (binding.composeSelectionMode === "selected" ? [] : binding.composePaths)));
+	};
+
+	const toggleComposePath = (path: string, checked: boolean) => {
+		setSelectedComposePaths((current) => {
+			const next = new Set(current);
+			if (checked) next.add(path); else next.delete(path);
+			return next;
+		});
+	};
+
+	const saveComposeSelection = async () => {
+		if (!composeBinding) return;
+		setBusy(`binding-compose-${composeBinding.id}`);
+		try {
+			const selected = composeBinding.composePaths.filter((path) => selectedComposePaths.has(path));
+			const mode = selected.length === composeBinding.composePaths.length ? "all" : "selected";
+			const updated = await api<Binding>(`/bindings/${composeBinding.id}/compose-selection`, {
+				method: "PUT", body: JSON.stringify({mode, composePaths: selected}),
+			});
+			setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
+			setComposeBinding(null);
+			showSuccess(mode === "all" ? "All current and future stacks are synchronized." : `${selected.length} stack${selected.length === 1 ? "" : "s"} selected for synchronization.`);
+		} catch (error) { showError((error as Error).message); }
+		finally { setBusy(null); }
+	};
+
     const openBindingAutomation = (binding: Binding) => {
         setAutomationBinding(binding);
         setAutomationForm({enabled: binding.autoSyncEnabled, autoReconcile: binding.autoReconcileEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployComposePaths: binding.autoDeployComposePaths || []});
@@ -837,7 +881,7 @@ export default function TabGit() {
                         {bindings.map((binding) => <TableRow key={binding.id} hover>
                             <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Complete folder on {binding.host}</Typography></TableCell>
                             <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Stack direction="row" spacing={.5} sx={{mt: .5, alignItems: "center"}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : "Configuration files"}/><Tooltip title={binding.initialSyncError || "Initial link state"}><Chip size="small" variant="outlined" color={binding.initialSyncState === "error" ? "error" : binding.initialSyncState === "reconciled" || binding.initialSyncState === "imported" || binding.initialSyncState === "exported" ? "success" : "default"} label={(binding.initialSyncState || "pending").replaceAll("_", " ")}/></Tooltip></Stack></TableCell>
-                            <TableCell>{binding.composePaths.length ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>{binding.composePaths.slice(0, 2).map((path) => <Chip key={path} size="small" variant="outlined" label={path}/>)}{binding.composePaths.length > 2 && <Chip size="small" color="info" variant="outlined" label={`+${binding.composePaths.length - 2}`}/>}</Stack> : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
+                            <TableCell>{binding.composePaths.length ? <Tooltip title="View and choose synchronized stacks"><Chip size="small" clickable color={(binding.selectedComposePaths || []).length === binding.composePaths.length ? "info" : "warning"} variant="outlined" onClick={() => openComposeSelection(binding)} label={(binding.selectedComposePaths || []).length}/></Tooltip> : <Chip size="small" color="warning" variant="outlined" label="0"/>}</TableCell>
                             <TableCell sx={{minWidth: 190}}>
                                 <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
                                     <Tooltip title={binding.autoSyncState === "conflict" ? "Open and resolve conflicts" : binding.autoSyncState === "error" ? "Open error details" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict" || binding.autoSyncState === "error"} onClick={() => openBindingState(binding)} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
@@ -990,6 +1034,30 @@ export default function TabGit() {
             <DialogActions sx={{justifyContent: "space-between"}}><Button onClick={() => setComparison(null)}>Leave pending</Button><Stack direction="row" spacing={1}><Button color="warning" variant="outlined" onClick={() => comparison && (conflictResolutionMode ? decideConflict(comparison.path, "git") : transferDirection === "stack_to_repository" ? keepCurrentTarget(comparison.path) : keepCurrentSource(comparison.path))}>Keep Git</Button><Button color="primary" variant="contained" onClick={() => comparison && (conflictResolutionMode ? decideConflict(comparison.path, "dockman") : transferDirection === "stack_to_repository" ? keepCurrentSource(comparison.path) : keepCurrentTarget(comparison.path))}>Keep Dockman</Button></Stack></DialogActions>
         </Dialog>
 
+        <Dialog open={composeBinding !== null} onClose={() => busy === null && setComposeBinding(null)} fullWidth maxWidth="md">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><FolderOpenOutlined/>Synchronized stacks — {composeBinding?.stackPath}</DialogTitle>
+            <DialogContent dividers><Stack spacing={1.5}>
+                <Alert severity="info">Only selected stack folders are synchronized in either direction. Removing a stack here never deletes its files and never stops it. Existing links initially keep every detected stack selected.</Alert>
+                <Stack direction={{xs: "column", md: "row"}} spacing={1}>
+                    <TextField size="small" fullWidth value={composeSearch} onChange={(event) => setComposeSearch(event.target.value)} placeholder="Search a Compose path…" slotProps={{input: {startAdornment: <SearchOutlined fontSize="small" sx={{mr: 1, color: "text.secondary"}}/>}}}/>
+                    <FormControl size="small" sx={{minWidth: 170}}><InputLabel>Status</InputLabel><Select label="Status" value={composeStatus} onChange={(event) => setComposeStatus(event.target.value as "all" | "selected" | "not_selected")}><MenuItem value="all">All</MenuItem><MenuItem value="selected">Selected</MenuItem><MenuItem value="not_selected">Not selected</MenuItem></Select></FormControl>
+                </Stack>
+                <Stack direction="row" spacing={1} sx={{flexWrap: "wrap", alignItems: "center"}}>
+                    <Button size="small" onClick={() => setSelectedComposePaths(new Set(composeBinding?.composePaths || []))}>Select all</Button>
+                    <Button size="small" onClick={() => setSelectedComposePaths(new Set())}>Select none</Button>
+                    <Button size="small" disabled={filteredComposePaths.length === 0} onClick={() => setSelectedComposePaths((current) => new Set([...current, ...filteredComposePaths]))}>Select filtered</Button>
+                    <Button size="small" disabled={filteredComposePaths.length === 0} onClick={() => setSelectedComposePaths((current) => { const next = new Set(current); filteredComposePaths.forEach((path) => next.delete(path)); return next; })}>Deselect filtered</Button>
+                    <Typography variant="caption" color="text.secondary" sx={{ml: {md: "auto !important"}}}>{selectedComposePaths.size} / {composeBinding?.composePaths.length || 0} selected · {filteredComposePaths.length} displayed</Typography>
+                </Stack>
+                {selectedComposePaths.size === 0 && <Alert severity="warning">No stack will be synchronized by this folder link. The link and its baseline are preserved.</Alert>}
+                <TableContainer component={Paper} variant="outlined" sx={{maxHeight: "48vh"}}><Table size="small" stickyHeader>
+                    <TableHead><TableRow><TableCell padding="checkbox"><Checkbox size="small" checked={filteredComposePaths.length > 0 && filteredComposePaths.every((path) => selectedComposePaths.has(path))} indeterminate={filteredComposePaths.some((path) => selectedComposePaths.has(path)) && !filteredComposePaths.every((path) => selectedComposePaths.has(path))} onChange={(_, checked) => setSelectedComposePaths((current) => { const next = new Set(current); filteredComposePaths.forEach((path) => checked ? next.add(path) : next.delete(path)); return next; })}/></TableCell><TableCell>Compose file</TableCell><TableCell>Status</TableCell><TableCell align="right">Action</TableCell></TableRow></TableHead>
+                    <TableBody>{filteredComposePaths.length === 0 ? <TableRow><TableCell colSpan={4} align="center" sx={{py: 4, color: "text.secondary"}}>No stack matches this filter.</TableCell></TableRow> : filteredComposePaths.map((path) => { const selected = selectedComposePaths.has(path); return <TableRow key={path} hover selected={selected}><TableCell padding="checkbox"><Checkbox size="small" checked={selected} onChange={(_, checked) => toggleComposePath(path, checked)}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{path}</TableCell><TableCell><Chip size="small" variant="outlined" color={selected ? "success" : "default"} label={selected ? "synchronized" : "excluded"}/></TableCell><TableCell align="right"><Tooltip title={selected ? "Remove from synchronization" : "Add to synchronization"}><IconButton size="small" color={selected ? "error" : "primary"} onClick={() => toggleComposePath(path, !selected)}>{selected ? <DeleteOutlined fontSize="small"/> : <Add fontSize="small"/>}</IconButton></Tooltip></TableCell></TableRow>; })}</TableBody>
+                </Table></TableContainer>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setComposeBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveComposeSelection()} disabled={busy !== null}>{busy?.startsWith("binding-compose-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save selection</Button></DialogActions>
+        </Dialog>
+
         <Dialog open={policyBinding !== null} onClose={() => busy === null && setPolicyBinding(null)} fullWidth maxWidth="sm">
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Synchronization policy</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
@@ -1016,7 +1084,7 @@ export default function TabGit() {
                 {automationForm.deployEnabled && <FormControlLabel control={<Switch checked={automationForm.deployNewStacks} onChange={(event) => setAutomationForm({...automationForm, deployNewStacks: event.target.checked})}/>} label="Automatically deploy newly discovered Git stacks"/>}
                 {automationForm.deployEnabled && automationForm.deployNewStacks && <Alert severity="warning">A newly added compose.yml/docker-compose.yml inside this folder link will be validated, dry-run, deployed, then retained as an authorized target. At most 10 new stack folders are accepted per synchronization.</Alert>}
                 {automationForm.deployEnabled && <FormControl><InputLabel>Compose deployment targets</InputLabel><Select multiple label="Compose deployment targets" value={automationForm.deployComposePaths} onChange={(event) => setAutomationForm({...automationForm, deployComposePaths: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value})} renderValue={(selected) => selected.join(", ")}>
-                    {(automationBinding?.composePaths || []).map((path) => <MenuItem key={path} value={path}><Checkbox checked={automationForm.deployComposePaths.includes(path)}/><Typography variant="body2" sx={{fontFamily: "monospace"}}>{path}</Typography></MenuItem>)}
+                    {(automationBinding?.selectedComposePaths || []).map((path) => <MenuItem key={path} value={path}><Checkbox checked={automationForm.deployComposePaths.includes(path)}/><Typography variant="body2" sx={{fontFamily: "monospace"}}>{path}</Typography></MenuItem>)}
                 </Select></FormControl>}
                 <Alert severity="warning">Deployment is disabled by default. When enabled, Dockman validates the Compose configuration, performs a dry-run, then runs the normal Compose up only for selected stacks affected by changed files. Any conflict or failed check blocks deployment.</Alert>
                 {automationBinding?.lastAutoSyncSuccessAt && <Typography variant="body2" color="text.secondary">Last successful synchronization: {dateLabel(automationBinding.lastAutoSyncSuccessAt)}</Typography>}

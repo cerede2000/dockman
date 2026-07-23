@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/RA341/dockman/internal/auth"
@@ -24,6 +25,7 @@ type AppConfig struct {
 	AllowSelfExec         bool   `config:"flag=allowSelfExec,env=ALLOW_SELF_EXEC,default=false,usage=Allow exec sessions inside Dockman containers (unsafe; troubleshooting only)"`
 	GitSyncEnabled        bool   `config:"flag=gitSync,env=GIT_SYNC,default=false,usage=Enable the experimental Git synchronization foundation"`
 	GitMasterKeyFile      string `config:"flag=gitMasterKeyFile,env=GIT_MASTER_KEY_FILE,default=,usage=Path to the 32-byte or base64 Git credential encryption key"`
+	GitStoragePath        string `config:"flag=gitStoragePath,env=GIT_STORAGE_PATH,default=,usage=Optional dedicated directory for Git repository objects and backups"`
 	UIPath                string `config:"flag=ui,env=UI_PATH,default=dist,usage=Path to frontend files"`
 	LocalAddr             string `config:"flag=ma,env=MACHINE_ADDR,default=0.0.0.0,usage=Local machine IP address"`
 	ComposeRoot           string `config:"flag=cr,env=COMPOSE_ROOT,default=./compose,usage=Root directory for compose files"`
@@ -48,6 +50,21 @@ func (c *AppConfig) GetAllowedOrigins() []string {
 		}
 	}
 	return origins
+}
+
+func (c *AppConfig) GetGitStorageRoots() (string, string, error) {
+	configuredRoot := strings.TrimSpace(c.GitStoragePath)
+	if configuredRoot == "" {
+		return filepath.Join(c.ConfigDir, "git", "repositories"), filepath.Join(c.ConfigDir, "git", "backups"), nil
+	}
+	if !filepath.IsAbs(configuredRoot) {
+		return "", "", fmt.Errorf("Git storage path must be absolute: %s", configuredRoot)
+	}
+	configuredRoot = filepath.Clean(configuredRoot)
+	if filepath.Dir(configuredRoot) == configuredRoot {
+		return "", "", fmt.Errorf("Git storage path cannot be a filesystem root: %s", configuredRoot)
+	}
+	return filepath.Join(configuredRoot, "repositories"), filepath.Join(configuredRoot, "backups"), nil
 }
 
 func (c *AppConfig) GetDockmanWithMachineUrl() string {
