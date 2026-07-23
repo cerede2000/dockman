@@ -62,21 +62,30 @@ type TestResult struct {
 }
 
 type Service struct {
-	enabled         bool
-	store           *Store
-	vault           *Vault
-	http            *http.Client
-	githubAPIBase   string
-	workspaceRoot   string
-	backupRoot      string
-	stackResolver   func(host, stackPath string) (filesystem.FileSystem, string, error)
-	hostLister      func() []string
-	validateCompose func(context.Context, string, string) error
-	dryRunCompose   func(context.Context, string, string, io.Writer) error
-	deployCompose   func(context.Context, string, string, io.Writer) error
-	lockCompose     func(string, string) (func(), bool)
-	locksMu         sync.Mutex
-	locks           map[string]*sync.Mutex
+	enabled          bool
+	store            *Store
+	vault            *Vault
+	http             *http.Client
+	githubAPIBase    string
+	workspaceRoot    string
+	backupRoot       string
+	stackResolver    func(host, stackPath string) (filesystem.FileSystem, string, error)
+	hostLister       func() []string
+	validateCompose  func(context.Context, string, string) error
+	dryRunCompose    func(context.Context, string, string, io.Writer) error
+	deployCompose    func(context.Context, string, string, io.Writer) error
+	lockCompose      func(string, string) (func(), bool)
+	dirtyEditorPaths func(string) []string
+	fileChangeNotify func(string, string)
+	locksMu          sync.Mutex
+	locks            map[string]*sync.Mutex
+}
+
+// ConfigureEditorCoherence prevents an incoming transfer from overwriting a
+// dirty browser editor and lets clean editors reload after Git changed a file.
+func (s *Service) ConfigureEditorCoherence(dirty func(string) []string, notify func(string, string)) {
+	s.dirtyEditorPaths = dirty
+	s.fileChangeNotify = notify
 }
 
 func (s *Service) ConfigureDeployment(

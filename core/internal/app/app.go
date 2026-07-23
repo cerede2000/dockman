@@ -170,6 +170,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("unable to initialize compact Git stack status index")
 	}
 	fileSrv.ConfigureChangeNotifier(gitSyncSrv.MarkLocalChange)
+	gitSyncSrv.ConfigureEditorCoherence(fileSrv.DirtyEditorPaths, fileSrv.NotifyExternalChange)
 	gitSyncSrv.ConfigureStackAccess(
 		func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
 			stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)

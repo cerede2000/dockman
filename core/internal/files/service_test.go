@@ -42,6 +42,25 @@ func TestSaveUsesCreateCompatibleWriteMode(t *testing.T) {
 	require.Equal(t, "services:\n  app: {}\n", string(contents))
 }
 
+func TestSaveIfRevisionRejectsAnObsoleteEditor(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+	path := filepath.Join(root, "compose.yml")
+	require.NoError(t, os.WriteFile(path, []byte("version: one\n"), 0o644))
+
+	revision, err := srv.Revision("compose/compose.yml", "local")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("version: git\n"), 0o644))
+
+	current, err := srv.SaveIfRevision("compose/compose.yml", "local", revision, bytes.NewBufferString("version: editor\n"))
+	require.ErrorIs(t, err, ErrStaleFile)
+	require.NotEqual(t, revision, current)
+	contents, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	require.Equal(t, "version: git\n", string(contents))
+}
+
 func TestList(t *testing.T) {
 	// todo
 	//structure, err := CreateRandomDirStructure(5)
@@ -135,11 +154,11 @@ func TestSortComposePinnedAndCase(t *testing.T) {
 	}
 
 	want := []string{
-		"notes.md",           // pinned wins over everything
-		"Backups", "data",    // folders, case-insensitive
-		"compose.yaml",       // files: compose first
-		"values.yaml",        // then other yaml
-		".env", "app.env",    // then remaining files, case-insensitive (dot floats)
+		"notes.md",        // pinned wins over everything
+		"Backups", "data", // folders, case-insensitive
+		"compose.yaml",    // files: compose first
+		"values.yaml",     // then other yaml
+		".env", "app.env", // then remaining files, case-insensitive (dot floats)
 	}
 	require.Equal(t, want, sortNames(srv, input))
 }

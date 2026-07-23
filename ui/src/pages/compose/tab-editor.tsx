@@ -28,14 +28,13 @@ interface EditorProps {
 function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
     const {showWarning} = useSnackbar();
     const dockerClient = useHostClient(DockerService)
-    const {uploadFile, downloadFile} = useFiles()
+    const {loadEditableFile, saveEditableFile, setEditorLease, editorEventsUrl} = useFiles()
 
     const [errors, setErrors] = useState<string[]>([])
 
     const getFile = useCallback(async (filename: string) => {
-        const {file, err} = await downloadFile(filename)
-        return {contents: file, err: err}
-    }, [downloadFile]);
+        return loadEditableFile(filename)
+    }, [loadEditableFile]);
 
     const [activeAction, setActiveAction] = useState<string | null>(null);
 
@@ -66,15 +65,15 @@ function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
         }
     }, [dockerClient, selectedPage, showWarning])
 
-    const saveFile = useCallback(async (filename: string, contents: string) => {
-        const err = await uploadFile(filename, contents);
-        if (err) {
-            return err
+    const saveFile = useCallback(async (filename: string, contents: string, revision: string, session: string) => {
+        const result = await saveEditableFile(filename, contents, revision, session);
+        if (result.err) {
+            return result
         }
 
         await validateFile();
-        return ""
-    }, [uploadFile, validateFile])
+        return result
+    }, [saveEditableFile, validateFile])
 
     const actions: Record<string, ActionItem> = useMemo(() => {
         const baseActions: Record<string, ActionItem> = {
@@ -137,6 +136,8 @@ function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
                         filename={selectedPage}
                         saveFile={saveFile}
                         getFile={getFile}
+                        setEditorLease={setEditorLease}
+                        editorEventsUrl={editorEventsUrl}
                         setFileSaveStatus={setFileSaveStatus}
                     />
                 </Box>

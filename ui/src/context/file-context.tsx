@@ -38,6 +38,10 @@ export interface FilesContextType {
     uploadFilesFromPC: (targetDir: string, files: File[]) => Promise<void>
 
     downloadFile: (filename: string, shouldDownload?: boolean) => Promise<{ file: string; err: string }>
+    loadEditableFile: (filename: string) => Promise<{ contents: string; revision: string; err: string }>
+    saveEditableFile: (filename: string, contents: string, revision: string, session: string) => Promise<{ revision: string; err: string; conflict: boolean }>
+    setEditorLease: (filename: string, session: string, dirty: boolean) => Promise<void>
+    editorEventsUrl: string
 }
 
 export const FilesContext = createContext<FilesContextType | undefined>(undefined)
@@ -184,6 +188,7 @@ function FilesProvider({children}: { children: ReactNode }) {
     }
 
     const getUrl = useHostUrl()
+    const editorEventsUrl = getUrl('/file/events')
 
     const uploadFile = useCallback(function (
         fullPath: string,
@@ -323,6 +328,51 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
     }, [getUrl])
 
+    const loadEditableFile = useCallback(async (filename: string) => {
+        try {
+            const response = await fetch(getUrl(`/file/load/${encodeURIComponent(filename)}?download=false`), {cache: 'no-cache'});
+            const contents = await response.text();
+            if (!response.ok) return {contents: '', revision: '', err: `Failed to load file: ${response.status} ${contents}`};
+            return {contents, revision: (response.headers.get('ETag') ?? '').replaceAll('"', ''), err: ''};
+        } catch (error) {
+            return {contents: '', revision: '', err: String(error)};
+        }
+    }, [getUrl]);
+
+    const saveEditableFile = useCallback((filename: string, contents: string, revision: string, session: string) => {
+        return new Promise<{ revision: string; err: string; conflict: boolean }>((resolve) => {
+            const formData = new FormData();
+            formData.append('contents', new File([contents], getEntryDisplayName(filename)), encodePathForMultipart(filename));
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', getUrl('/file/save'), true);
+            if (revision) xhr.setRequestHeader('If-Match', `"${revision}"`);
+            xhr.setRequestHeader('X-Dockman-Editor-Session', session);
+            xhr.onload = () => {
+                const next = (xhr.getResponseHeader('ETag') ?? '').replaceAll('"', '');
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    markGitStackLocal(host, filename);
+                    resolve({revision: next, err: '', conflict: false});
+                } else {
+                    resolve({revision: next, err: xhr.responseText || `Save failed (${xhr.status})`, conflict: xhr.status === 409});
+                }
+            };
+            xhr.onerror = () => resolve({revision: '', err: 'Network error', conflict: false});
+            xhr.send(formData);
+        });
+    }, [getUrl, host]);
+
+    const setEditorLease = useCallback(async (filename: string, session: string, dirty: boolean) => {
+        try {
+            await fetch(getUrl('/file/edit-lease'), {
+                method: dirty ? 'PUT' : 'DELETE',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({path: filename, session}),
+            });
+        } catch (error) {
+            debugError('Editor lease update failed', error);
+        }
+    }, [getUrl]);
+
     useEffect(() => {
         fetchFiles().then()
     }, [fetchFiles])
@@ -337,7 +387,11 @@ function FilesProvider({children}: { children: ReactNode }) {
         listFiles: fetchFiles,
         uploadFile,
         downloadFile,
-        uploadFilesFromPC
+        uploadFilesFromPC,
+        loadEditableFile,
+        saveEditableFile,
+        setEditorLease,
+        editorEventsUrl,
     }
 
     return (

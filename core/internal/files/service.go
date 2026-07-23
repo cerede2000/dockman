@@ -29,6 +29,7 @@ type Service struct {
 	dockYml        DockyamlProvider
 	templateFolder string
 	changeNotifier func(host, path string)
+	editor         *editorState
 }
 
 func New(
@@ -40,6 +41,7 @@ func New(
 		dockYml: dockYml,
 		// todo load from env
 		templateFolder: "templates",
+		editor:         newEditorState(),
 	}
 }
 
@@ -48,9 +50,60 @@ func (s *Service) ConfigureChangeNotifier(notifier func(host, path string)) {
 }
 
 func (s *Service) NotifyChange(host, path string) {
+	s.NotifyChangeWithSession(host, path, "")
+}
+
+func (s *Service) NotifyChangeWithSession(host, path, session string) {
 	if s.changeNotifier != nil {
 		s.changeNotifier(host, path)
 	}
+	s.editor.publish(FileChange{Host: host, Path: filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))), Session: session})
+}
+
+// NotifyExternalChange informs open editors without marking an incoming Git
+// synchronization as a new local modification.
+func (s *Service) NotifyExternalChange(host, path string) {
+	s.editor.publish(FileChange{Host: host, Path: filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))})
+}
+
+func (s *Service) DirtyEditorPaths(host string) []string { return s.editor.dirtyPaths(host) }
+
+func (s *Service) Revision(filename, hostname string) (string, error) {
+	fileSystem, resolved, _, err := s.LoadFs(filename, hostname)
+	if err != nil {
+		return "", err
+	}
+	reader, err := fileSystem.OpenFile(resolved, os.O_RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer fileutil.Close(reader)
+	return hashRevision(reader)
+}
+
+var ErrStaleFile = errors.New("file changed since it was opened")
+
+func (s *Service) SaveIfRevision(filename, hostname, expected string, source io.Reader) (string, error) {
+	hasExpectedRevision := strings.TrimSpace(expected) != ""
+	if hasExpectedRevision {
+		current, err := s.Revision(filename, hostname)
+		if err != nil {
+			return "", err
+		}
+		if current != strings.Trim(strings.TrimSpace(expected), `"`) {
+			return current, ErrStaleFile
+		}
+	}
+	if err := s.Save(filename, hostname, false, source); err != nil {
+		return "", err
+	}
+	// Drag-and-drop uploads do not participate in editor concurrency control.
+	// Avoid reading a potentially multi-gigabyte upload back into memory merely
+	// to compute an ETag that those callers do not use.
+	if !hasExpectedRevision {
+		return "", nil
+	}
+	return s.Revision(filename, hostname)
 }
 
 type Entry struct {

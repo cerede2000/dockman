@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -270,9 +271,14 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		}
 		result.State = "up_to_date"
 		result.Backup = transfer.Backup
+		if len(transfer.EditorBlocked) > 0 {
+			changedPaths = excludeComposeStackPaths(changedPaths, transfer.EditorBlocked)
+			result.State = "blocked"
+			result.Message = fmt.Sprintf("%d stack(s) kept unchanged while edited in Dockman; other safe changes were synchronized", len(transfer.EditorBlocked))
+		}
 		if changed == 0 {
 			result.Message = "Stack already matches Git"
-		} else {
+		} else if len(transfer.EditorBlocked) == 0 {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
 		}
 		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "pending") {
@@ -315,4 +321,29 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		s.updateActiveStackStatuses(binding, stackSyncUpToDate, "", synchronizedCommit, true)
 	}
 	return result, nil
+}
+
+func excludeComposeStackPaths(paths, blockedCompose []string) []string {
+	blockedDirs := make([]string, 0, len(blockedCompose))
+	for _, composePath := range blockedCompose {
+		dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(composePath)))
+		if dir == "." {
+			dir = ""
+		}
+		blockedDirs = append(blockedDirs, dir)
+	}
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		blocked := false
+		for _, dir := range blockedDirs {
+			if (dir == "" && !strings.Contains(path, "/")) || (dir != "" && (path == dir || strings.HasPrefix(path, dir+"/"))) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			result = append(result, path)
+		}
+	}
+	return result
 }

@@ -258,4 +258,61 @@ Résultats attendus :
 
 Valider au minimum : ajout/test d'un credential, copie d'URL, fetch/pull/push, exclusions globales, preview dans les deux sens, comparaison et résolution d'un conflit, backup/restauration, auto-réconciliation, auto-sync, auto-déploiement contrôlé, delink/relink et redémarrage de Dockman.
 
+## 17. Cohérence entre l'éditeur et la synchronisation Git
+
+Ce parcours se réalise idéalement avec deux fenêtres : la première sur l'éditeur Dockman, la seconde sur **Settings > Git**. Utiliser un folder link contenant au moins deux stacks `stack-a` et `stack-b`.
+
+### 17.1 Fichier ouvert mais non modifié
+
+1. Ouvrir `stack-a/compose.yml` dans l'éditeur et placer le curseur au milieu du fichier.
+2. Modifier ce fichier sur Git, puis lancer Git → Dockman ou attendre l'auto-sync.
+3. Revenir dans l'éditeur sans recharger le navigateur.
+
+Résultats attendus : le contenu se rafraîchit automatiquement, le curseur reste sur une position valide, aucun brouillon local n'est créé et la stack peut être auto-déployée normalement si cette option est active.
+
+### 17.2 Édition active pendant une importation
+
+1. Préparer sur Git une modification de `stack-a/compose.yml` et une autre de `stack-b/compose.yml` dans le même commit.
+2. Dans Dockman, commencer à modifier `stack-a/compose.yml` et continuer à saisir du texte afin que l'état **Typing** reste actif.
+3. Depuis la seconde fenêtre, déclencher immédiatement la synchronisation Git → Dockman.
+4. Contrôler les deux stacks et le résultat de synchronisation.
+
+Résultats attendus : `stack-a` n'est jamais écrasée et n'est pas auto-déployée ; `stack-b` est synchronisée et peut être déployée ; l'état du lien signale qu'une stack est temporairement bloquée par un éditeur. Aucun polling ou scan supplémentaire n'est lancé.
+
+### 17.3 Comparaison et choix explicite
+
+1. Pendant qu'un brouillon local de `stack-a` existe, faire arriver une version Git différente ou provoquer une sauvegarde sur une révision devenue obsolète.
+2. Vérifier l'avertissement dans l'éditeur et ouvrir **Compare**.
+3. Vérifier les deux colonnes : brouillon Dockman à gauche, fichier courant à droite.
+4. Choisir **Keep editing** : la fenêtre se ferme, le brouillon reste visible et l'avertissement reste présent.
+5. Rouvrir la comparaison et choisir **Use current file**.
+
+Résultats attendus : la version Git remplace le brouillon uniquement après cette décision explicite, l'avertissement disparaît et l'auto-sync peut reprendre.
+
+Refaire le scénario et choisir **Overwrite with my draft**. Résultat attendu : Dockman sauvegarde explicitement le brouillon par-dessus la révision courante, sans boucle d'erreurs, puis la modification apparaît comme changement local à pousser vers Git.
+
+### 17.4 Protection entre deux navigateurs
+
+1. Ouvrir le même fichier dans deux navigateurs ou deux sessions distinctes.
+2. Modifier et laisser sauvegarder la première session.
+3. Modifier ensuite la copie devenue obsolète dans la seconde session.
+
+Résultat attendu : la seconde sauvegarde reçoit un conflit, n'écrase pas la première, présente la comparaison et exige **Use current file** ou **Overwrite with my draft**.
+
+### 17.5 Expiration et fermeture de l'éditeur
+
+1. Commencer une modification, puis fermer brutalement l'onglet du navigateur avant la sauvegarde.
+2. Attendre deux minutes et relancer la synchronisation.
+3. Refaire le test en naviguant proprement vers un autre fichier après sauvegarde.
+
+Résultats attendus : un bail abandonné expire automatiquement et ne bloque jamais durablement Git ; une sauvegarde réussie ou la fermeture normale libère immédiatement le blocage ; aucune entrée persistante n'est ajoutée en base.
+
+### 17.6 Charge au repos
+
+1. Fermer tous les éditeurs, puis mesurer le CPU pendant dix minutes.
+2. Ouvrir un fichier sans le modifier et mesurer à nouveau.
+3. Modifier puis sauvegarder, attendre deux minutes et contrôler CPU/RAM.
+
+Résultats attendus : le flux d'événements reste dormant sans modification, aucun timer serveur de polling n'est créé, le seul renouvellement navigateur est actif uniquement pendant un brouillon sale, et Dockman revient à son niveau de repos habituel.
+
 Le lot est accepté si tous les résultats attendus sont obtenus, si aucun fichier non sélectionné n'est modifié et si l'utilisation CPU au repos ne présente pas de hausse durable par rapport à l'image précédente.

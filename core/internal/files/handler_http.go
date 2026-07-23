@@ -2,11 +2,15 @@ package files
 
 import (
 	b64 "encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/RA341/dockman/internal/host/middleware"
 	fu "github.com/RA341/dockman/pkg/fileutil"
@@ -31,6 +35,9 @@ func (h *FileHandler) register() http.Handler {
 	subMux.HandleFunc("POST /save", h.saveFile)
 	subMux.HandleFunc("GET /load/{filename}", h.loadFile)
 	subMux.HandleFunc("GET /search/{root}", h.searchFile)
+	subMux.HandleFunc("GET /events", h.fileEvents)
+	subMux.HandleFunc("PUT /edit-lease", h.editLease)
+	subMux.HandleFunc("DELETE /edit-lease", h.editLease)
 
 	return subMux
 }
@@ -74,6 +81,15 @@ func (h *FileHandler) loadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer fu.Close(reader)
+	if !download {
+		if revision, revisionErr := hashRevision(reader); revisionErr == nil {
+			w.Header().Set("ETag", `"`+revision+`"`)
+		}
+		if _, seekErr := reader.Seek(0, io.SeekStart); seekErr != nil {
+			http.Error(w, "failed to rewind file", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	http.ServeContent(w, r, filename, modTime, reader)
 }
@@ -127,31 +143,103 @@ func (h *FileHandler) saveFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err = h.srv.Save(string(decodedFileName), getHost, createFile, part); err != nil {
+		revision, saveErr := h.srv.SaveIfRevision(string(decodedFileName), getHost, r.Header.Get("If-Match"), part)
+		if saveErr != nil {
 			_ = part.Close()
-			log.Error().Err(err).
+			log.Error().Err(saveErr).
 				Str("host", getHost).
 				Str("path", string(decodedFileName)).
 				Bool("create", createFile).
 				Msg("Error saving file")
 			switch {
-			case errors.Is(err, fs.ErrPermission):
+			case errors.Is(saveErr, ErrStaleFile):
+				w.Header().Set("ETag", `"`+revision+`"`)
+				http.Error(w, "file changed outside this editor; compare or reload before saving", http.StatusConflict)
+			case errors.Is(saveErr, fs.ErrPermission):
 				http.Error(w, "permission denied while saving file", http.StatusForbidden)
-			case errors.Is(err, fs.ErrNotExist):
+			case errors.Is(saveErr, fs.ErrNotExist):
 				http.Error(w, "file path not found", http.StatusNotFound)
-			case isRequestTooLarge(err):
+			case isRequestTooLarge(saveErr):
 				http.Error(w, "upload exceeds the configured size limit", http.StatusRequestEntityTooLarge)
 			default:
 				http.Error(w, "Error saving file", http.StatusInternalServerError)
 			}
 			return
 		}
-		h.srv.NotifyChange(getHost, string(decodedFileName))
+		h.srv.NotifyChangeWithSession(getHost, string(decodedFileName), strings.TrimSpace(r.Header.Get("X-Dockman-Editor-Session")))
+		w.Header().Set("ETag", `"`+revision+`"`)
 		_ = part.Close()
 		return
 	}
 
 	http.Error(w, "no file provided in form", http.StatusBadRequest)
+}
+
+type editLeaseRequest struct {
+	Path    string `json:"path"`
+	Session string `json:"session"`
+}
+
+func (h *FileHandler) editLease(w http.ResponseWriter, r *http.Request) {
+	host, err := middleware.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, "host not provided", http.StatusBadRequest)
+		return
+	}
+	var input editLeaseRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&input); err != nil {
+		http.Error(w, "invalid editor lease", http.StatusBadRequest)
+		return
+	}
+	input.Path, input.Session = strings.TrimSpace(input.Path), strings.TrimSpace(input.Session)
+	if input.Path == "" || input.Session == "" || len(input.Session) > 128 {
+		http.Error(w, "path and session are required", http.StatusBadRequest)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		h.srv.editor.releaseLease(host, input.Path, input.Session)
+	} else {
+		h.srv.editor.setLease(host, input.Path, input.Session)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *FileHandler) fileEvents(w http.ResponseWriter, r *http.Request) {
+	host, err := middleware.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, "host not provided", http.StatusBadRequest)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	changes, unsubscribe := h.srv.editor.subscribe()
+	defer unsubscribe()
+	keepAlive := time.NewTicker(25 * time.Second)
+	defer keepAlive.Stop()
+	_, _ = io.WriteString(w, ": connected\n\n")
+	flusher.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case change := <-changes:
+			if change.Host != host {
+				continue
+			}
+			payload, _ := json.Marshal(change)
+			_, _ = fmt.Fprintf(w, "event: file-change\ndata: %s\n\n", payload)
+			flusher.Flush()
+		case <-keepAlive.C:
+			_, _ = io.WriteString(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 func isRequestTooLarge(err error) bool {

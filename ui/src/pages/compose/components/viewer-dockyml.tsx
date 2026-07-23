@@ -35,19 +35,20 @@ function DockyamlViewer({filename}: { filename: string }) {
         await getFile()
     }
 
-    const getFile = async (): Promise<{ contents: string; err: string }> => {
+    const getFile = async (): Promise<{ contents: string; revision: string; err: string }> => {
         const {val, err} = await callRPC(() => dockYamlClient.get({}))
         return {
             contents: bytesToString(val?.contents),
+            revision: '',
             err: err
         }
     };
 
-    const saveFile = async (_: string, newContent: string): Promise<string> => {
+    const saveFile = async (_: string, newContent: string): Promise<{revision: string; err: string; conflict: boolean}> => {
         const {err} = await callRPC(() =>
             dockYamlClient.save({contents: stringToArrayBuffer(newContent)})
         );
-        return err
+        return {revision: '', err, conflict: false}
     };
 
     return (

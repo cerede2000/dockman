@@ -164,10 +164,11 @@ type TransferPreview struct {
 }
 
 type TransferResult struct {
-	Preview   TransferPreview `json:"preview"`
-	CommitSHA string          `json:"commitSha,omitempty"`
-	Backup    string          `json:"backup,omitempty"`
-	Message   string          `json:"message"`
+	Preview       TransferPreview `json:"preview"`
+	CommitSHA     string          `json:"commitSha,omitempty"`
+	Backup        string          `json:"backup,omitempty"`
+	Message       string          `json:"message"`
+	EditorBlocked []string        `json:"editorBlocked,omitempty"`
 }
 
 type ComparisonInput struct {
@@ -894,6 +895,11 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if len(selected) == 0 {
 			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
 		}
+		selected, result.EditorBlocked = s.excludeDirtyEditorStacks(binding, selected)
+		if len(selected) == 0 {
+			result.Message = "Synchronization paused for the stack currently being edited; no file was overwritten"
+			return nil
+		}
 		targetFS, targetRoot, err := s.resolveBindingStack(binding)
 		if err != nil {
 			return err
@@ -904,6 +910,11 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		if err := writeStackFiles(targetFS, targetRoot, selected); err != nil {
 			return err
+		}
+		if s.fileChangeNotify != nil {
+			for path := range selected {
+				s.fileChangeNotify(binding.Host, filepath.ToSlash(filepath.Join(binding.StackPath, path)))
+			}
 		}
 		if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineAfterTransfer(baseline, source, target, selected)); err != nil {
 			return err
@@ -921,7 +932,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
-	if err == nil && result.Preview.Conflicts == 0 {
+	if err == nil && result.Preview.Conflicts == 0 && len(result.EditorBlocked) == 0 {
 		paths := selectedComposePaths(binding)
 		if input.automation {
 			paths = s.activeAutomationComposePaths(binding)
@@ -933,6 +944,70 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		result.Preview.Entries = nil
 	}
 	return result, err
+}
+
+func (s *Service) excludeDirtyEditorStacks(binding StackBinding, selected map[string]transferFile) (map[string]transferFile, []string) {
+	if s.dirtyEditorPaths == nil || len(selected) == 0 {
+		return selected, nil
+	}
+	root := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
+	composePaths := selectedComposePaths(binding)
+	blockedDirs := map[string]struct{}{}
+	blockedCompose := map[string]struct{}{}
+	for _, openPath := range s.dirtyEditorPaths(binding.Host) {
+		openPath = strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(openPath))), "/")
+		relative := openPath
+		if root != "." && root != "" {
+			if openPath == root {
+				relative = "."
+			} else if strings.HasPrefix(openPath, root+"/") {
+				relative = strings.TrimPrefix(openPath, root+"/")
+			} else {
+				continue
+			}
+		}
+		bestCompose, bestDir := "", ""
+		for _, composePath := range composePaths {
+			dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(composePath)))
+			if dir == "." {
+				dir = ""
+			}
+			if (dir == "" || relative == dir || strings.HasPrefix(relative, dir+"/")) && len(dir) >= len(bestDir) {
+				bestCompose, bestDir = composePath, dir
+			}
+		}
+		if bestCompose != "" {
+			blockedCompose[bestCompose] = struct{}{}
+			blockedDirs[bestDir] = struct{}{}
+		}
+	}
+	if len(blockedDirs) == 0 {
+		return selected, nil
+	}
+	filtered := make(map[string]transferFile, len(selected))
+	for path, file := range selected {
+		blocked := false
+		for dir := range blockedDirs {
+			if dir == "" {
+				// A root stack owns root files only; nested stacks remain independent.
+				blocked = !strings.Contains(path, "/")
+			} else {
+				blocked = path == dir || strings.HasPrefix(path, dir+"/")
+			}
+			if blocked {
+				break
+			}
+		}
+		if !blocked {
+			filtered[path] = file
+		}
+	}
+	blocked := make([]string, 0, len(blockedCompose))
+	for path := range blockedCompose {
+		blocked = append(blocked, path)
+	}
+	sort.Strings(blocked)
+	return filtered, blocked
 }
 
 func (s *Service) validateBindingInput(input BindingInput) (BindingInput, filesystem.FileSystem, string, error) {

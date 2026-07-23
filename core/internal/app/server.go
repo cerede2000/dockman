@@ -39,9 +39,9 @@ func NewServer(app *App) {
 	corsConfig := cors.New(cors.Options{
 		AllowedOrigins:      conf.GetAllowedOrigins(),
 		AllowPrivateNetwork: true,
-		AllowedMethods:      connectcors.AllowedMethods(),
-		AllowedHeaders:      connectcors.AllowedHeaders(),
-		ExposedHeaders:      connectcors.ExposedHeaders(),
+		AllowedMethods:      append(connectcors.AllowedMethods(), http.MethodPut, http.MethodDelete),
+		AllowedHeaders:      append(connectcors.AllowedHeaders(), "If-Match", "X-Dockman-Editor-Session"),
+		ExposedHeaders:      append(connectcors.ExposedHeaders(), "ETag"),
 	})
 	finalMux := enforceOriginPolicy(conf, corsConfig.Handler(limitRequestBodies(conf, router)))
 
