@@ -231,7 +231,7 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			skippedStackScan = true
 			if binding.AutoSyncState == "blocked" && strings.Contains(binding.AutoSyncError, "Git deletion") {
 				result.State = "blocked"
-				result.Message = binding.AutoSyncError + "; no new Git commit, stack scan skipped"
+				result.Message = preservedDeletionMessage(binding.AutoSyncError) + "; no new Git commit, stack scan skipped"
 			} else {
 				result.State = "up_to_date"
 				result.Message = "No new Git commit; stack scan skipped"
@@ -340,6 +340,15 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		s.updateActiveStackStatuses(binding, stackSyncUpToDate, "", synchronizedCommit, true)
 	}
 	return result, nil
+}
+
+func preservedDeletionMessage(message string) string {
+	const suffix = "; no new Git commit, stack scan skipped"
+	message = strings.TrimSpace(message)
+	for strings.HasSuffix(message, suffix) {
+		message = strings.TrimSpace(strings.TrimSuffix(message, suffix))
+	}
+	return message
 }
 
 func excludeComposeStackPaths(paths, blockedCompose []string) []string {

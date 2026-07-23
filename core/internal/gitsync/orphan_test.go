@@ -106,8 +106,14 @@ func TestOrphanRestorePushesOnlyTheDeletedStackBackToGit(t *testing.T) {
 
 func TestOrphanDeleteCreatesBackupAndRefusesDirtyEditor(t *testing.T) {
 	service, stackRoot, _, binding := prepareOrphanedStack(t)
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	row.AutoSyncEnabled = true
+	row.AutoSyncState = "blocked"
+	row.AutoSyncError = "2 Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion; no new Git commit, stack scan skipped"
+	require.NoError(t, service.store.SaveBinding(&row))
 	service.dirtyEditorPaths = func(string) []string { return []string{"compose/app/config.yml"} }
-	_, err := service.ResolveGitOrphan(context.Background(), binding.ID, "app/compose.yaml", OrphanActionInput{Action: "delete", Confirmation: orphanConfirmText})
+	_, err = service.ResolveGitOrphan(context.Background(), binding.ID, "app/compose.yaml", OrphanActionInput{Action: "delete", Confirmation: orphanConfirmText})
 	require.ErrorContains(t, err, "unsaved editor")
 	require.DirExists(t, filepath.Join(stackRoot, "app"))
 
@@ -117,6 +123,16 @@ func TestOrphanDeleteCreatesBackupAndRefusesDirtyEditor(t *testing.T) {
 	require.NotContains(t, result.Backup, "archives/")
 	require.FileExists(t, filepath.Join(service.backupRoot, filepath.FromSlash(result.Backup)))
 	require.NoDirExists(t, filepath.Join(stackRoot, "app"))
+	settled, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", settled.AutoSyncState)
+	require.Empty(t, settled.AutoSyncError)
+	require.NotEmpty(t, settled.LastAutoSyncCommit)
+}
+
+func TestPreservedDeletionMessageNeverAccumulatesPollingSuffixes(t *testing.T) {
+	message := "2 Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion; no new Git commit, stack scan skipped; no new Git commit, stack scan skipped"
+	require.Equal(t, "2 Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion", preservedDeletionMessage(message))
 }
 
 func TestAutomaticSyncPreservesGitDeletedStackWithoutRepeatedInventory(t *testing.T) {

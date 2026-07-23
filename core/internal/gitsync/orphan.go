@@ -99,6 +99,9 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 		if err != nil {
 			return OrphanActionResult{}, err
 		}
+		if err := s.settleBindingAfterOrphanDecision(bindingID); err != nil {
+			return OrphanActionResult{}, fmt.Errorf("stack restored but synchronization state could not be refreshed: %w", err)
+		}
 		return OrphanActionResult{Action: action, ComposePath: composePath, Message: result.Message}, nil
 	}
 
@@ -153,6 +156,9 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 	if err := s.forgetOrphanedStack(binding, composePath, baseline); err != nil {
 		return OrphanActionResult{}, fmt.Errorf("update synchronization state after local removal: %w", err)
 	}
+	if err := s.settleBindingAfterOrphanDecision(bindingID); err != nil {
+		return OrphanActionResult{}, fmt.Errorf("local orphan removed after backup but synchronization state could not be refreshed: %w", err)
+	}
 	if s.fileChangeNotify != nil {
 		s.fileChangeNotify(binding.Host, filepath.ToSlash(filepath.Join(binding.StackPath, composePath)))
 	}
@@ -161,6 +167,66 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 		message = "Local orphan archived and removed; no Docker action was run"
 	}
 	return OrphanActionResult{Action: action, ComposePath: composePath, Backup: backup, Message: message}, nil
+}
+
+// settleBindingAfterOrphanDecision recomputes the link state after the user
+// has dealt with one orphan. This prevents a stale blocked checkpoint from
+// surviving forever, while retaining a warning if another orphan or conflict
+// still requires a decision.
+func (s *Service) settleBindingAfterOrphanDecision(bindingID string) error {
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if !binding.AutoSyncEnabled {
+		binding.AutoSyncState = "disabled"
+		binding.AutoSyncError = ""
+		return s.store.SaveBinding(&binding)
+	}
+
+	remotePreview, err := s.PreviewBinding(bindingID, "repository_to_stack", TransferInput{})
+	if err != nil {
+		return err
+	}
+	switch {
+	case remotePreview.Conflicts > 0:
+		binding.AutoSyncState = "conflict"
+		binding.AutoSyncError = fmt.Sprintf("%d conflict(s) require a manual decision", remotePreview.Conflicts)
+		binding.LastAutoSyncCommit = ""
+	case remotePreview.Preserved > 0:
+		binding.AutoSyncState = "blocked"
+		binding.AutoSyncError = fmt.Sprintf("%d Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion", remotePreview.Preserved)
+		binding.LastAutoSyncCommit = ""
+	case remotePreview.Changed > 0:
+		binding.AutoSyncState = "watching"
+		binding.AutoSyncError = fmt.Sprintf("%d Git change(s) still waiting for synchronization", remotePreview.Changed)
+		binding.LastAutoSyncCommit = ""
+	default:
+		localPreview, previewErr := s.PreviewBinding(bindingID, "stack_to_repository", TransferInput{})
+		if previewErr != nil {
+			return previewErr
+		}
+		if localPreview.Conflicts > 0 {
+			binding.AutoSyncState = "conflict"
+			binding.AutoSyncError = fmt.Sprintf("%d conflict(s) require a manual decision", localPreview.Conflicts)
+			binding.LastAutoSyncCommit = ""
+		} else if localPreview.Changed > 0 {
+			binding.AutoSyncState = "watching"
+			binding.AutoSyncError = fmt.Sprintf("%d local change(s) waiting to be pushed to Git", localPreview.Changed)
+		} else {
+			status, statusErr := s.RepositoryStatus(binding.RepositoryUUID)
+			if statusErr != nil {
+				return statusErr
+			}
+			binding.AutoSyncState = "up_to_date"
+			binding.AutoSyncError = ""
+			binding.LastAutoSyncCommit = status.Head
+			binding.LastAutoSyncSuccessAt = &now
+		}
+	}
+	binding.LastAutoSyncAt = &now
+	return s.store.SaveBinding(&binding)
 }
 
 func collectOrphanSnapshot(targetFS filesystem.FileSystem, bindingRoot, directory string) (map[string]transferFile, error) {
