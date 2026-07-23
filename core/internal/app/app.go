@@ -166,6 +166,9 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("invalid Git storage configuration")
 	}
 	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, gitWorkspaceRoot)
+	if err := gitSyncSrv.ConfigureRetention(conf.GitHistoryRetentionDays, conf.GitBackupRetentionDays); err != nil {
+		log.Fatal().Err(err).Msg("invalid Git retention configuration")
+	}
 	if err := gitSyncSrv.InitializeGitStackStatuses(); err != nil {
 		log.Fatal().Err(err).Msg("unable to initialize compact Git stack status index")
 	}

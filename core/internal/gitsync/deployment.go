@@ -239,6 +239,9 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			deployError = deployment.Result
 		}
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": deployment.State, "deploy_error": deployError, "last_deploy_at": &now})
+		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+			ComposePath: relative, Type: "stack_deploy", Trigger: "automation", State: deployment.State,
+			CommitSHA: commit, Error: deployError, Details: ActivityDetails{Action: stage, Paths: []string{relative}, DeploymentIDs: []string{deployment.UUID}}})
 		if err != nil {
 			return deployed, fmt.Errorf("%s %s: %w", stage, relative, err)
 		}

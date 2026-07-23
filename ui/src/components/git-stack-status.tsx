@@ -3,13 +3,14 @@ import {
 } from '@mui/material';
 import {
     CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, LinkOffOutlined, OpenInNew,
-    PauseCircleOutlined, PlayCircleOutlined, RocketLaunchOutlined, ScheduleOutlined, Sync,
+    HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, RestoreOutlined, RocketLaunchOutlined, ScheduleOutlined, Sync,
 } from '@mui/icons-material';
 import {useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {withProtectedAPI} from '../lib/api.ts';
 import {useSnackbar} from '../hooks/snackbar.ts';
 import {gitStatusSeverity, type GitStackStatus, refreshGitStackStatuses} from './git-stack-status-store.ts';
+import GitBindingRecovery from './git-binding-recovery.tsx';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
@@ -53,6 +54,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const [confirmPush, setConfirmPush] = useState(false);
     const [deleteGitTarget, setDeleteGitTarget] = useState<GitStackStatus | null>(null);
     const [deleteGitConfirmation, setDeleteGitConfirmation] = useState('');
+    const [recoveryTab, setRecoveryTab] = useState<'activity' | 'backups' | null>(null);
     const {showError, showSuccess} = useSnackbar();
     const navigate = useNavigate();
     const severity = status ? gitStatusSeverity(status) : 'neutral';
@@ -227,9 +229,12 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                     {(status.state === 'local_changes' || status.state === 'orphaned') && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>{status.state === 'orphaned' ? 'Restore to Git' : 'Push to Git'}</Button>}
                     {status.selected && status.state !== 'locally_deleted' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView()}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>}
                     {status.autoSyncEnabled && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused ? 'Resume' : 'Pause'}</Button>}
+                    <Button size="small" startIcon={<HistoryOutlined/>} disabled={busy} onClick={() => { setAnchor(null); setRecoveryTab('activity'); }}>Activity</Button>
+                    <Button size="small" startIcon={<RestoreOutlined/>} disabled={busy} onClick={() => { setAnchor(null); setRecoveryTab('backups'); }}>Backups</Button>
                     <Button size="small" startIcon={<OpenInNew/>} onClick={() => navigate('/settings?tab=2')}>Git settings</Button>
                 </Stack>
             </Stack>}
         </Popover>
+        {recoveryTab && <GitBindingRecovery binding={{id: status.bindingId, stackPath: status.stackPath, repositoryName: status.repositoryName}} initialTab={recoveryTab} onClose={() => setRecoveryTab(null)}/>}
     </>;
 }

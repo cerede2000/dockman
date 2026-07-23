@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
+	"github.com/google/uuid"
 )
 
 const orphanConfirmText = "REMOVE LOCAL ORPHAN"
@@ -102,6 +103,9 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 		if err := s.settleBindingAfterOrphanDecision(bindingID); err != nil {
 			return OrphanActionResult{}, fmt.Errorf("stack restored but synchronization state could not be refreshed: %w", err)
 		}
+		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+			ComposePath: composePath, Type: "orphan_resolve", Trigger: "manual",
+			Details: ActivityDetails{Action: action, Message: result.Message, Paths: []string{composePath}}})
 		return OrphanActionResult{Action: action, ComposePath: composePath, Message: result.Message}, nil
 	}
 
@@ -166,6 +170,9 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 	if action == "archive" {
 		message = "Local orphan archived and removed; no Docker action was run"
 	}
+	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+		ComposePath: composePath, Type: "orphan_resolve", Trigger: "manual", BackupID: backup,
+		Details: ActivityDetails{Action: action, Message: message, Paths: []string{composePath}}})
 	return OrphanActionResult{Action: action, ComposePath: composePath, Backup: backup, Message: message}, nil
 }
 
@@ -389,17 +396,43 @@ func (s *Service) backupOrphanSnapshot(binding StackBinding, composePath string,
 	if err := backupFS.MkdirAll(directory, 0o700); err != nil {
 		return "", err
 	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + "-orphan.tar.gz"
+	backupID := uuid.NewString()
+	createdAt := time.Now().UTC()
+	name := createdAt.Format("20060102T150405.000000000Z") + "-orphan.tar.gz"
 	relativePath := filepath.Join(directory, name)
 	handle, err := backupFS.OpenFile(relativePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err
 	}
+	kind := "pre_orphan_delete"
+	if archived {
+		kind = "orphan_archive"
+	}
+	manifest := backupManifest{Version: 2, BackupID: backupID, BindingID: binding.UUID,
+		RepositoryID: binding.RepositoryUUID, Kind: kind, CreatedAt: createdAt,
+		ComposePaths: []string{composePath}}
+	for _, file := range sortedTransferFiles(files) {
+		manifest.Files = append(manifest.Files, backupManifestFile{Path: file.path, BeforeSHA: file.sha,
+			BeforeExists: true, AfterExists: false, BeforeMode: uint32(safeFileMode(file.mode))})
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		_ = handle.Close()
+		_ = backupFS.Remove(relativePath)
+		return "", err
+	}
 	gzipWriter := gzip.NewWriter(handle)
 	tarWriter := tar.NewWriter(gzipWriter)
 	writeErr := func() error {
+		header := &tar.Header{Name: backupManifestName, Mode: 0o600, Size: int64(len(manifestJSON)), ModTime: createdAt}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+		if _, err := tarWriter.Write(manifestJSON); err != nil {
+			return err
+		}
 		for _, file := range sortedTransferFiles(files) {
-			header := &tar.Header{Name: file.path, Mode: int64(safeFileMode(file.mode)), Size: file.size, ModTime: time.Now().UTC()}
+			header := &tar.Header{Name: file.path, Mode: int64(safeFileMode(file.mode)), Size: file.size, ModTime: createdAt}
 			if err := tarWriter.WriteHeader(header); err != nil {
 				return err
 			}
@@ -407,21 +440,7 @@ func (s *Service) backupOrphanSnapshot(binding StackBinding, composePath string,
 				return err
 			}
 		}
-		manifest, err := json.Marshal(struct {
-			Version     int    `json:"version"`
-			BindingID   string `json:"bindingId"`
-			ComposePath string `json:"composePath"`
-			Archived    bool   `json:"archived"`
-		}{Version: 1, BindingID: binding.UUID, ComposePath: composePath, Archived: archived})
-		if err != nil {
-			return err
-		}
-		header := &tar.Header{Name: ".dockman-backup-manifest.json", Mode: 0o600, Size: int64(len(manifest)), ModTime: time.Now().UTC()}
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return err
-		}
-		_, err = tarWriter.Write(manifest)
-		return err
+		return nil
 	}()
 	errorsToCheck := []error{writeErr, tarWriter.Close(), gzipWriter.Close(), handle.Close()}
 	for _, candidate := range errorsToCheck {
@@ -430,12 +449,12 @@ func (s *Service) backupOrphanSnapshot(binding StackBinding, composePath string,
 			return "", fmt.Errorf("write orphan backup: %w", candidate)
 		}
 	}
-	if !archived {
-		if err := pruneBindingBackups(backupFS, binding.UUID, gitBackupRetention); err != nil {
-			return "", err
-		}
+	row, err := s.registerBackup(binding, backupID, kind, relativePath, "", manifest)
+	if err != nil {
+		_ = backupFS.Remove(relativePath)
+		return "", err
 	}
-	return filepath.ToSlash(relativePath), nil
+	return row.UUID, nil
 }
 
 func detectOrphanedComposePaths(repositoryFiles, stackFiles map[string]transferFile, baseline map[string]string, composePaths []string) []string {

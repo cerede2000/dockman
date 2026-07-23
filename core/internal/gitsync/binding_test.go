@@ -599,7 +599,7 @@ func TestBindingBackupRetentionAndUnlinkCleanup(t *testing.T) {
 	bindingBackupRoot := filepath.Join(service.backupRoot, binding.ID)
 	require.NoError(t, os.MkdirAll(bindingBackupRoot, 0o700))
 	for index := 0; index < gitBackupRetention+2; index++ {
-		name := fmt.Sprintf("20260722T12000%d.000000000Z.tar.gz", index)
+		name := fmt.Sprintf("20260722T1200%02d.000000000Z.tar.gz", index)
 		require.NoError(t, os.WriteFile(filepath.Join(bindingBackupRoot, name), []byte("backup"), 0o600))
 	}
 	root, err := os.OpenRoot(service.backupRoot)
@@ -822,5 +822,29 @@ func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(contents), "alpine:3.23")
 	require.FileExists(t, filepath.Join(stackRoot, "app", "extra.yaml"))
-	require.FileExists(t, filepath.Join(service.backupRoot, imported.Backup))
+	backup, err := service.store.GetBackup(imported.Backup)
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(service.backupRoot, filepath.FromSlash(backup.ArchivePath)))
+	restorePreview, err := service.PreviewBackupRestore(binding.ID, imported.Backup)
+	require.NoError(t, err)
+	require.Equal(t, 2, restorePreview.Restorable)
+	require.Zero(t, restorePreview.Conflicts)
+	restored, err := service.RestoreBackup(context.Background(), binding.ID, imported.Backup, BackupRestoreInput{PreviewToken: restorePreview.Token})
+	require.NoError(t, err)
+	require.NotEmpty(t, restored.SafetyBackupID)
+	require.ElementsMatch(t, []string{"compose.yaml", "extra.yaml"}, restored.RestoredPaths)
+	contents, err = os.ReadFile(stackCompose)
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "alpine:3.22")
+	require.NoFileExists(t, filepath.Join(stackRoot, "app", "extra.yaml"))
+	operations, err := service.ListBindingOperations(binding.ID, 100)
+	require.NoError(t, err)
+	require.Condition(t, func() bool {
+		for _, operation := range operations {
+			if operation.Type == "backup_restore" && operation.BackupID == imported.Backup {
+				return true
+			}
+		}
+		return false
+	})
 }

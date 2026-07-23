@@ -86,6 +86,9 @@ func (s *Service) ResolveLocalStackDeletion(ctx context.Context, bindingID, comp
 		if err := s.settleBindingAfterOrphanDecision(bindingID); err != nil {
 			return LocalDeletionActionResult{}, fmt.Errorf("stack restored but synchronization state could not be refreshed: %w", err)
 		}
+		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+			ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual",
+			Details: ActivityDetails{Action: action, Message: result.Message, Paths: []string{composePath}}})
 		return LocalDeletionActionResult{Action: action, ComposePath: composePath, Message: result.Message}, nil
 	}
 
@@ -125,6 +128,9 @@ func (s *Service) deselectLocallyDeletedStack(binding StackBinding, composePath 
 	if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("stack deselected but synchronization state could not be refreshed: %w", err)
 	}
+	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+		ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual",
+		Details: ActivityDetails{Action: "deselect", Paths: []string{composePath}}})
 	return LocalDeletionActionResult{Action: "deselect", ComposePath: composePath, Message: "Stack removed from synchronization selection; Git files were preserved"}, nil
 }
 
@@ -260,5 +266,8 @@ func (s *Service) deleteLocallyDeletedStackFromGit(ctx context.Context, binding 
 	if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("Git stack deleted but synchronization state could not be refreshed: %w", err)
 	}
+	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+		ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual", CommitSHA: hash.String(),
+		Details: ActivityDetails{Action: "delete_git", Paths: []string{composePath}}})
 	return LocalDeletionActionResult{Action: "delete_git", ComposePath: composePath, CommitSHA: hash.String(), Message: "Stack deleted from Git and committed; no Docker action was run"}, nil
 }

@@ -94,7 +94,12 @@ type Operation struct {
 	UpdatedAt      time.Time
 	UUID           string `gorm:"not null;uniqueIndex"`
 	RepositoryUUID string `gorm:"index"`
-	BindingUUID    string
+	BindingUUID    string `gorm:"index"`
+	ComposePath    string
+	Trigger        string `gorm:"not null;default:system"`
+	Details        string `gorm:"type:text"`
+	CommitSHA      string
+	BackupUUID     string
 	OperationType  string `gorm:"not null"`
 	State          string `gorm:"not null;index"`
 	StartedAt      *time.Time
@@ -103,6 +108,25 @@ type Operation struct {
 }
 
 func (Operation) TableName() string { return "git_operations" }
+
+type GitBackup struct {
+	ID             uint `gorm:"primarykey"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	UUID           string `gorm:"not null;uniqueIndex"`
+	RepositoryUUID string `gorm:"not null;index"`
+	BindingUUID    string `gorm:"not null;index"`
+	Kind           string `gorm:"not null"`
+	ComposePaths   string `gorm:"type:text"`
+	ArchivePath    string `gorm:"not null;uniqueIndex"`
+	CommitSHA      string
+	FileCount      int
+	SizeBytes      int64
+	Restorable     bool       `gorm:"not null;default:false"`
+	ExpiresAt      *time.Time `gorm:"index"`
+}
+
+func (GitBackup) TableName() string { return "git_backups" }
 
 type Deployment struct {
 	ID             uint `gorm:"primarykey"`

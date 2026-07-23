@@ -48,6 +48,12 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
 	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
 	mux.HandleFunc("GET /bindings/{id}/deployments", h.listBindingDeployments)
+	mux.HandleFunc("GET /bindings/{id}/operations", h.bindingOperations)
+	mux.HandleFunc("GET /bindings/{id}/backups", h.listBindingBackups)
+	mux.HandleFunc("GET /bindings/{id}/backups/{backupId}/download", h.downloadBindingBackup)
+	mux.HandleFunc("DELETE /bindings/{id}/backups/{backupId}", h.deleteBindingBackup)
+	mux.HandleFunc("GET /bindings/{id}/backups/{backupId}/restore-preview", h.previewBindingBackupRestore)
+	mux.HandleFunc("POST /bindings/{id}/backups/{backupId}/restore", h.restoreBindingBackup)
 	mux.HandleFunc("POST /bindings/{id}/automation/run", h.runBindingAutomation)
 	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
 	mux.HandleFunc("POST /bindings/{id}/exclusions/batch", h.addBindingExclusions)
@@ -140,6 +146,12 @@ func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Req
 		writeServiceError(w, err)
 		return
 	}
+	action := "pause"
+	if !input.Paused {
+		action = "resume"
+	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.BindingID, ComposePath: row.ComposePath,
+		Type: "stack_automation", Trigger: "manual", Details: ActivityDetails{Action: action, Paths: []string{row.ComposePath}}})
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -152,6 +164,8 @@ func (h *HTTPHandler) enableGitStackSynchronization(w http.ResponseWriter, r *ht
 		writeServiceError(w, err)
 		return
 	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.BindingID, ComposePath: row.ComposePath,
+		Type: "stack_selection", Trigger: "manual", Details: ActivityDetails{Action: "enable", Paths: []string{row.ComposePath}}})
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -169,6 +183,8 @@ func (h *HTTPHandler) updateBindingComposeSelection(w http.ResponseWriter, r *ht
 		writeServiceError(w, err)
 		return
 	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.ID, Type: "stack_selection",
+		Trigger: "manual", Details: ActivityDetails{Action: "update", Paths: row.SelectedComposePaths}})
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -189,6 +205,20 @@ func (h *HTTPHandler) listBindingDeployments(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	rows, err := h.service.ListBindingDeployments(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) bindingOperations(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	rows, err := h.service.ListBindingOperations(r.PathValue("id"), limit, offset)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -273,6 +303,8 @@ func (h *HTTPHandler) updateBindingPolicy(w http.ResponseWriter, r *http.Request
 		writeServiceError(w, err)
 		return
 	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.ID, Type: "policy_update",
+		Trigger: "manual", Details: ActivityDetails{Action: "update"}})
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -307,6 +339,12 @@ func (h *HTTPHandler) updateBindingAutomation(w http.ResponseWriter, r *http.Req
 		writeServiceError(w, err)
 		return
 	}
+	action := "disable"
+	if input.Enabled {
+		action = "enable"
+	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.ID, Type: "automation_config",
+		Trigger: "manual", Details: ActivityDetails{Action: action}})
 	writeJSON(w, http.StatusOK, row)
 }
 
@@ -360,6 +398,8 @@ func (h *HTTPHandler) createBinding(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.ID, Type: "binding_create",
+		Trigger: "manual", Details: ActivityDetails{Action: "create", Paths: row.SelectedComposePaths}})
 	writeJSON(w, http.StatusCreated, row)
 }
 
@@ -367,10 +407,14 @@ func (h *HTTPHandler) deleteBinding(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
 	}
-	if err := h.service.DeleteBinding(r.PathValue("id"), r.URL.Query().Get("forget") == "true"); err != nil {
+	binding, _ := h.service.store.GetBinding(r.PathValue("id"))
+	forget := r.URL.Query().Get("forget") == "true"
+	if err := h.service.DeleteBinding(r.PathValue("id"), forget); err != nil {
 		writeServiceError(w, err)
 		return
 	}
+	h.service.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+		Type: "binding_delete", Trigger: "manual", Details: ActivityDetails{Action: map[bool]string{true: "unlink_and_forget", false: "unlink"}[forget]}})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -553,6 +597,9 @@ func (h *HTTPHandler) status(w http.ResponseWriter, _ *http.Request) {
 		"phase":                   "safe_automation",
 		"repositorySyncAvailable": h.service.Enabled(),
 		"stackSyncAvailable":      h.service.Enabled(),
+		"historyRetentionDays":    h.service.historyRetentionDays,
+		"backupRetentionDays":     h.service.backupRetentionDays,
+		"backupRetentionCount":    gitBackupRetention,
 	})
 }
 

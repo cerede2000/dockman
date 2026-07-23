@@ -62,23 +62,27 @@ type TestResult struct {
 }
 
 type Service struct {
-	enabled          bool
-	store            *Store
-	vault            *Vault
-	http             *http.Client
-	githubAPIBase    string
-	workspaceRoot    string
-	backupRoot       string
-	stackResolver    func(host, stackPath string) (filesystem.FileSystem, string, error)
-	hostLister       func() []string
-	validateCompose  func(context.Context, string, string) error
-	dryRunCompose    func(context.Context, string, string, io.Writer) error
-	deployCompose    func(context.Context, string, string, io.Writer) error
-	lockCompose      func(string, string) (func(), bool)
-	dirtyEditorPaths func(string) []string
-	fileChangeNotify func(string, string)
-	locksMu          sync.Mutex
-	locks            map[string]*sync.Mutex
+	enabled              bool
+	store                *Store
+	vault                *Vault
+	http                 *http.Client
+	githubAPIBase        string
+	workspaceRoot        string
+	backupRoot           string
+	stackResolver        func(host, stackPath string) (filesystem.FileSystem, string, error)
+	hostLister           func() []string
+	validateCompose      func(context.Context, string, string) error
+	dryRunCompose        func(context.Context, string, string, io.Writer) error
+	deployCompose        func(context.Context, string, string, io.Writer) error
+	lockCompose          func(string, string) (func(), bool)
+	dirtyEditorPaths     func(string) []string
+	fileChangeNotify     func(string, string)
+	locksMu              sync.Mutex
+	locks                map[string]*sync.Mutex
+	historyRetentionDays int
+	backupRetentionDays  int
+	maintenanceMu        sync.Mutex
+	lastMaintenanceAt    time.Time
 }
 
 // ConfigureEditorCoherence prevents an incoming transfer from overwriting a
@@ -109,7 +113,18 @@ func NewService(enabled bool, store *Store, vault *Vault, workspaceRoot ...strin
 			return errors.New("GitHub API redirect refused")
 		},
 	}
-	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, backupRoot: strings.TrimSuffix(root, string(os.PathSeparator)) + "-backups", locks: map[string]*sync.Mutex{}}
+	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, backupRoot: strings.TrimSuffix(root, string(os.PathSeparator)) + "-backups", historyRetentionDays: 30, backupRetentionDays: 30, locks: map[string]*sync.Mutex{}}
+}
+
+func (s *Service) ConfigureRetention(historyDays, backupDays int) error {
+	if historyDays < 1 || historyDays > 3650 {
+		return errors.New("Git history retention must be between 1 and 3650 days")
+	}
+	if backupDays < 1 || backupDays > 3650 {
+		return errors.New("Git backup retention must be between 1 and 3650 days")
+	}
+	s.historyRetentionDays, s.backupRetentionDays = historyDays, backupDays
+	return nil
 }
 
 // ConfigureStackAccess connects Git sync to Dockman's host-aware filesystem
@@ -138,23 +153,37 @@ func (s *Service) RecoverInterruptedOperations() (int64, error) {
 		return 0, err
 	}
 	deployments, err := s.store.MarkInterruptedDeployments()
+	if err == nil {
+		_ = s.runRetentionMaintenance(time.Now().UTC(), true)
+	}
 	return operations + deployments, err
 }
 
 func (s *Service) RunRepositoryOperation(ctx context.Context, repositoryID, operationType string, fn func(context.Context) error) error {
-	return s.runOperation(ctx, repositoryID, "", operationType, fn)
+	return s.runOperation(ctx, repositoryID, "", operationType, "manual", fn)
 }
 
 func (s *Service) runBindingOperation(ctx context.Context, repositoryID, bindingID, operationType string, fn func(context.Context) error) error {
-	return s.runOperation(ctx, repositoryID, bindingID, operationType, fn)
+	trigger := "manual"
+	if operationType == "auto_sync" {
+		trigger = "automation"
+	}
+	return s.runOperation(ctx, repositoryID, bindingID, operationType, trigger, fn)
 }
 
-func (s *Service) runOperation(ctx context.Context, repositoryID, bindingID, operationType string, fn func(context.Context) error) error {
+func (s *Service) runBindingOperationWithTrigger(ctx context.Context, repositoryID, bindingID, operationType, trigger string, fn func(context.Context) error) error {
+	if trigger != "automation" {
+		trigger = "manual"
+	}
+	return s.runOperation(ctx, repositoryID, bindingID, operationType, trigger, fn)
+}
+
+func (s *Service) runOperation(ctx context.Context, repositoryID, bindingID, operationType, trigger string, fn func(context.Context) error) error {
 	if !s.enabled {
 		return errors.New("Git synchronization is disabled")
 	}
 	now := time.Now().UTC()
-	op := &Operation{UUID: uuid.NewString(), RepositoryUUID: repositoryID, BindingUUID: bindingID, OperationType: operationType, State: "running", StartedAt: &now}
+	op := &Operation{UUID: uuid.NewString(), RepositoryUUID: repositoryID, BindingUUID: bindingID, OperationType: operationType, Trigger: trigger, State: "running", StartedAt: &now}
 	if err := s.store.StartOperation(op); err != nil {
 		return err
 	}
@@ -166,6 +195,7 @@ func (s *Service) runOperation(ctx context.Context, repositoryID, bindingID, ope
 	if finishErr := s.store.FinishOperation(op.UUID, state, message); finishErr != nil && err == nil {
 		return finishErr
 	}
+	_ = s.runRetentionMaintenance(time.Now().UTC(), false)
 	return err
 }
 

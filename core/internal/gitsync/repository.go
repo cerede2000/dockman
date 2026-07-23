@@ -84,8 +84,14 @@ type RepositoryGitStatus struct {
 type OperationView struct {
 	ID           string     `json:"id"`
 	RepositoryID string     `json:"repositoryId,omitempty"`
+	BindingID    string     `json:"bindingId,omitempty"`
+	ComposePath  string     `json:"composePath,omitempty"`
 	Type         string     `json:"type"`
 	State        string     `json:"state"`
+	Trigger      string     `json:"trigger"`
+	Details      string     `json:"details,omitempty"`
+	CommitSHA    string     `json:"commitSha,omitempty"`
+	BackupID     string     `json:"backupId,omitempty"`
 	StartedAt    *time.Time `json:"startedAt,omitempty"`
 	FinishedAt   *time.Time `json:"finishedAt,omitempty"`
 	ErrorMessage string     `json:"error,omitempty"`
@@ -471,9 +477,31 @@ func (s *Service) ListRepositoryOperations(id string, limit int) ([]OperationVie
 	}
 	views := make([]OperationView, 0, len(rows))
 	for _, row := range rows {
-		views = append(views, OperationView{ID: row.UUID, RepositoryID: row.RepositoryUUID, Type: row.OperationType, State: row.State, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, ErrorMessage: row.ErrorMessage, CreatedAt: row.CreatedAt})
+		views = append(views, operationView(row))
 	}
 	return views, nil
+}
+
+func (s *Service) ListBindingOperations(id string, limit int, offsets ...int) ([]OperationView, error) {
+	if _, err := s.store.GetBinding(id); err != nil {
+		return nil, err
+	}
+	rows, err := s.store.ListBindingOperations(id, limit, offsets...)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]OperationView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, operationView(row))
+	}
+	return views, nil
+}
+
+func operationView(row Operation) OperationView {
+	return OperationView{ID: row.UUID, RepositoryID: row.RepositoryUUID, BindingID: row.BindingUUID,
+		ComposePath: row.ComposePath, Type: row.OperationType, State: row.State, Trigger: row.Trigger,
+		Details: row.Details, CommitSHA: row.CommitSHA, BackupID: row.BackupUUID,
+		StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, ErrorMessage: row.ErrorMessage, CreatedAt: row.CreatedAt}
 }
 
 func (s *Service) validateRepositoryInput(input RepositoryInput) (RepositoryInput, error) {

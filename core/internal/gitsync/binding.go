@@ -1,13 +1,10 @@
 package gitsync
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,7 +38,7 @@ const (
 	maxIgnoreFileSize        = 64 << 10
 	maxIgnoreRules           = 1000
 	maxComparisonFileSize    = 2 << 20
-	gitBackupRetention       = 5
+	gitBackupRetention       = 10
 	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
 	syncProfileComposeConfig = "compose_config"
 	syncProfileAllFiles      = "all_files"
@@ -923,7 +920,11 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 	defer lock.Unlock()
 
 	var result TransferResult
-	err = s.runBindingOperation(ctx, binding.RepositoryUUID, binding.UUID, "stack_export", func(ctx context.Context) error {
+	trigger := "manual"
+	if input.automation {
+		trigger = "automation"
+	}
+	err = s.runBindingOperationWithTrigger(ctx, binding.RepositoryUUID, binding.UUID, "stack_export", trigger, func(ctx context.Context) error {
 		if _, err := s.fetchRepositoryLocked(ctx, binding.RepositoryUUID); err != nil {
 			return err
 		}
@@ -1041,7 +1042,11 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 	defer lock.Unlock()
 
 	var result TransferResult
-	err = s.runBindingOperation(ctx, binding.RepositoryUUID, binding.UUID, "stack_import", func(ctx context.Context) error {
+	trigger := "manual"
+	if input.automation {
+		trigger = "automation"
+	}
+	err = s.runBindingOperationWithTrigger(ctx, binding.RepositoryUUID, binding.UUID, "stack_import", trigger, func(ctx context.Context) error {
 		if _, err := s.fetchRepositoryLocked(ctx, binding.RepositoryUUID); err != nil {
 			return err
 		}
@@ -1099,7 +1104,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		backup, err := s.backupChangedFiles(binding, targetFS, targetRoot, selected, target)
+		backup, err := s.backupChangedFiles(binding, selected, target, "pre_import", status.Head)
 		if err != nil {
 			return err
 		}
@@ -2438,86 +2443,6 @@ func hasTrackedDeletedCompose(source, target map[string]transferFile, baseline m
 	return false
 }
 
-func (s *Service) backupChangedFiles(binding StackBinding, _ filesystem.FileSystem, _ string, source, target map[string]transferFile) (string, error) {
-	if s.backupRoot == "" {
-		return "", errors.New("Git stack backup directory is not configured")
-	}
-	if err := os.MkdirAll(s.backupRoot, 0700); err != nil {
-		return "", fmt.Errorf("create backup directory: %w", err)
-	}
-	rootInfo, err := os.Lstat(s.backupRoot)
-	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("Git stack backup root must be a real directory")
-	}
-	backupFS, err := os.OpenRoot(s.backupRoot)
-	if err != nil {
-		return "", fmt.Errorf("open backup directory: %w", err)
-	}
-	defer backupFS.Close()
-	if err := backupFS.MkdirAll(binding.UUID, 0700); err != nil {
-		return "", fmt.Errorf("create binding backup directory: %w", err)
-	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".tar.gz"
-	relativePath := filepath.Join(binding.UUID, name)
-	handle, err := backupFS.OpenFile(relativePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return "", err
-	}
-	gzipWriter := gzip.NewWriter(handle)
-	tarWriter := tar.NewWriter(gzipWriter)
-	writeErr := func() error {
-		created := make([]string, 0)
-		for _, sourceFile := range sortedTransferFiles(source) {
-			targetFile, exists := target[sourceFile.path]
-			if !exists {
-				if sourceFile.open != nil {
-					created = append(created, sourceFile.path)
-				}
-				continue
-			}
-			if targetFile.open == nil || sourceFile.sha == targetFile.sha {
-				continue
-			}
-			header := &tar.Header{Name: sourceFile.path, Mode: int64(safeFileMode(targetFile.mode)), Size: targetFile.size, ModTime: time.Now().UTC()}
-			if err := tarWriter.WriteHeader(header); err != nil {
-				return err
-			}
-			if err := streamTransferFile(targetFile, tarWriter); err != nil {
-				return err
-			}
-		}
-		manifest, err := json.Marshal(struct {
-			Version      int      `json:"version"`
-			BindingID    string   `json:"bindingId"`
-			CreatedFiles []string `json:"createdFiles"`
-		}{Version: 1, BindingID: binding.UUID, CreatedFiles: created})
-		if err != nil {
-			return err
-		}
-		header := &tar.Header{Name: ".dockman-backup-manifest.json", Mode: 0600, Size: int64(len(manifest)), ModTime: time.Now().UTC()}
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return err
-		}
-		if _, err := tarWriter.Write(manifest); err != nil {
-			return err
-		}
-		return nil
-	}()
-	closeTarErr := tarWriter.Close()
-	closeGzipErr := gzipWriter.Close()
-	closeFileErr := handle.Close()
-	for _, candidate := range []error{writeErr, closeTarErr, closeGzipErr, closeFileErr} {
-		if candidate != nil {
-			_ = backupFS.Remove(relativePath)
-			return "", fmt.Errorf("write stack backup: %w", candidate)
-		}
-	}
-	if err := pruneBindingBackups(backupFS, binding.UUID, gitBackupRetention); err != nil {
-		return "", fmt.Errorf("prune old stack backups: %w", err)
-	}
-	return filepath.ToSlash(relativePath), nil
-}
-
 func pruneBindingBackups(backupFS *os.Root, bindingID string, retain int) error {
 	if retain < 1 {
 		return errors.New("backup retention must keep at least one archive")
@@ -2551,14 +2476,14 @@ func pruneBindingBackups(backupFS *os.Root, bindingID string, retain int) error 
 
 func (s *Service) removeBindingBackups(bindingID string) error {
 	if s.backupRoot == "" {
-		return nil
+		return s.store.DeleteBindingBackups(bindingID)
 	}
 	if _, err := uuid.Parse(bindingID); err != nil {
 		return errors.New("invalid binding identifier for backup cleanup")
 	}
 	info, err := os.Lstat(s.backupRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return s.store.DeleteBindingBackups(bindingID)
 	}
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("Git stack backup root must be a real directory")
@@ -2574,5 +2499,5 @@ func (s *Service) removeBindingBackups(bindingID string) error {
 	if err := backupFS.RemoveAll(filepath.Join("archives", bindingID)); err != nil {
 		return fmt.Errorf("remove binding orphan archives: %w", err)
 	}
-	return nil
+	return s.store.DeleteBindingBackups(bindingID)
 }

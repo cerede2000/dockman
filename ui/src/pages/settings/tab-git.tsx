@@ -16,6 +16,7 @@ import {useSnackbar} from "../../hooks/snackbar.ts";
 import {useCopyButton} from "../../hooks/copy.ts";
 import CopyButton from "../../components/copy-button.tsx";
 import {useSearchParams} from 'react-router-dom';
+import GitBindingRecovery, {type RecoveryBinding} from '../../components/git-binding-recovery.tsx';
 
 type AuthType = "public" | "https_token" | "ssh_key";
 type RepositoryDialogMode = "import" | "github";
@@ -264,6 +265,7 @@ export default function TabGit() {
     const [conflictDecisions, setConflictDecisions] = useState<Record<string, ConflictDecision>>({});
     const commitMessageRef = useRef<HTMLInputElement | null>(null);
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
+	const [recoveryView, setRecoveryView] = useState<{binding: RecoveryBinding; tab: 'activity' | 'backups'} | null>(null);
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
     const [automationBinding, setAutomationBinding] = useState<Binding | null>(null);
@@ -1015,6 +1017,8 @@ export default function TabGit() {
                                 {binding.lastAutoSyncAt && <Typography variant="caption" color="text.secondary">Checked {dateLabel(binding.lastAutoSyncAt)}</Typography>}
                             </TableCell>
                             <TableCell align="right" sx={{whiteSpace: "nowrap"}}>
+								<Tooltip title="Folder-link activity"><IconButton size="small" disabled={busy !== null} onClick={() => setRecoveryView({binding, tab: 'activity'})}><HistoryOutlined fontSize="small"/></IconButton></Tooltip>
+								<Tooltip title="Backups and recovery"><IconButton size="small" disabled={busy !== null} onClick={() => setRecoveryView({binding, tab: 'backups'})}><RestoreOutlined fontSize="small"/></IconButton></Tooltip>
                                 <Tooltip title="Synchronization policy"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingPolicy(binding)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                 <Tooltip title="Preview stack → Git"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "stack_to_repository")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                 <Tooltip title="Preview Git → stack"><span><IconButton size="small" disabled={busy !== null} onClick={() => void previewTransfer(binding, "repository_to_stack")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
@@ -1024,6 +1028,8 @@ export default function TabGit() {
                     </TableBody>
                 </Table></TableContainer>
             </Paper>
+
+			{recoveryView && <GitBindingRecovery binding={recoveryView.binding} initialTab={recoveryView.tab} onClose={() => setRecoveryView(null)}/>}
 
             <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
                 <Stack direction={{xs: "column", md: "row"}} sx={{p: 2.25, justifyContent: "space-between", gap: 2}}>

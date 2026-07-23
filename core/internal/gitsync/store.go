@@ -357,7 +357,67 @@ func (s *Store) ListOperations(repositoryID string, limit int) ([]Operation, err
 	return rows, err
 }
 
+func (s *Store) ListBindingOperations(bindingID string, limit int, offsets ...int) ([]Operation, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := 0
+	if len(offsets) > 0 && offsets[0] > 0 && offsets[0] <= 100_000 {
+		offset = offsets[0]
+	}
+	var rows []Operation
+	err := s.db.Where("binding_uuid = ?", bindingID).Order("created_at DESC").Limit(limit).Offset(offset).Find(&rows).Error
+	return rows, err
+}
+
 func (s *Store) StartOperation(row *Operation) error { return s.db.Create(row).Error }
+
+func (s *Store) SaveBackup(row *GitBackup) error { return s.db.Save(row).Error }
+
+func (s *Store) GetBackup(id string) (GitBackup, error) {
+	var row GitBackup
+	err := s.db.Where("uuid = ?", id).First(&row).Error
+	return row, err
+}
+
+func (s *Store) ListBindingBackups(bindingID string, limit int) ([]GitBackup, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var rows []GitBackup
+	err := s.db.Where("binding_uuid = ?", bindingID).Order("created_at DESC").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) DeleteBackup(id string) error {
+	result := s.db.Where("uuid = ?", id).Delete(&GitBackup{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteBindingBackups(bindingID string) error {
+	return s.db.Where("binding_uuid = ?", bindingID).Delete(&GitBackup{}).Error
+}
+
+func (s *Store) ExpiredBackups(cutoff time.Time) ([]GitBackup, error) {
+	var rows []GitBackup
+	err := s.db.Where("expires_at IS NOT NULL AND expires_at < ?", cutoff).Order("created_at ASC").Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) PruneGitHistory(cutoff time.Time) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("created_at < ?", cutoff).Delete(&Operation{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("created_at < ?", cutoff).Delete(&Deployment{}).Error
+	})
+}
 
 func (s *Store) FinishOperation(id, state, message string) error {
 	now := time.Now().UTC()
