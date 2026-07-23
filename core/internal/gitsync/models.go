@@ -119,3 +119,26 @@ type Deployment struct {
 }
 
 func (Deployment) TableName() string { return "git_deployments" }
+
+// GitStackStatus is a compact, event-driven projection for UI status badges.
+// It deliberately stores no file inventory: displaying status must never scan
+// a stack directory or a Git repository.
+type GitStackStatus struct {
+	ID               uint `gorm:"primarykey"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	BindingUUID      string `gorm:"not null;uniqueIndex:idx_git_stack_status_target"`
+	ComposePath      string `gorm:"not null;uniqueIndex:idx_git_stack_status_target"`
+	State            string `gorm:"not null;default:pending;index"`
+	ErrorMessage     string `gorm:"type:text"`
+	ConflictCount    int    `gorm:"not null;default:0"`
+	AutomationPaused bool   `gorm:"not null;default:false"`
+	LastCheckedAt    *time.Time
+	LastSuccessAt    *time.Time
+	LastCommit       string
+	DeployState      string `gorm:"not null;default:disabled"`
+	DeployError      string `gorm:"type:text"`
+	LastDeployAt     *time.Time
+}
+
+func (GitStackStatus) TableName() string { return "git_stack_statuses" }

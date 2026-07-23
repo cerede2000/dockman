@@ -148,6 +148,9 @@ func (s *Service) registerDiscoveredDeploymentTargets(binding StackBinding, targ
 	if err := s.store.SaveBinding(&binding); err != nil {
 		return binding, err
 	}
+	if err := s.reconcileGitStackStatuses(binding); err != nil {
+		return binding, err
+	}
 	return binding, nil
 }
 
@@ -205,6 +208,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			unlock()
 			return deployed, err
 		}
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "validating", "deploy_error": ""})
 		stage := "validation"
 		err := s.validateCompose(ctx, binding.Host, filename)
 		if err == nil {
@@ -230,6 +234,11 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		}
 		now := time.Now().UTC()
 		_ = s.store.UpdateBindingAutoDeployState(binding.UUID, deployment.State, deployment.Result, &now)
+		deployError := ""
+		if deployment.State == "failed" {
+			deployError = deployment.Result
+		}
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": deployment.State, "deploy_error": deployError, "last_deploy_at": &now})
 		if err != nil {
 			return deployed, fmt.Errorf("%s %s: %w", stage, relative, err)
 		}

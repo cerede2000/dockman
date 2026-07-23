@@ -30,6 +30,8 @@ import {useComposeFileState} from "../state/status.ts";
 import {getContextKey} from "../../../context/tab-context.tsx";
 import type {Status} from "../../../gen/docker/v1/docker_pb.ts";
 import {stripQueryParams} from "../../../lib/strings.ts";
+import GitStackStatusIndicator from "../../../components/git-stack-status.tsx";
+import {useGitFolderIssue, useGitStackStatus} from "../../../components/git-stack-status-store.ts";
 
 
 export const useFileDnD = (entry: FsEntry) => {
@@ -155,7 +157,7 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
 
     const {isDragOver, dndProps} = useFileDnD(entry);
 
-    const {host} = useHostStore.getState();
+    const host = useHostStore(state => state.host);
     const {alias} = useAliasStore.getState();
     const ctxKey = `${host}/${alias}`;
 
@@ -215,6 +217,8 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
         const context = getContextKey();
         return state.folderStatuses[context]?.[entry.filename] ?? state.openFiles[context]?.[entry.isComposeFolder];
     })
+    const exactGitStatus = useGitStackStatus(host, entry.isComposeFolder ?? '')
+    const aggregateGitStatus = useGitFolderIssue(host, entry.filename)
     useEffect(() => {
         // Track the stack status for any folder that contains a compose file,
         // regardless of the useComposeFolders display mode, so the status dot is
@@ -293,6 +297,7 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                     }}
                 />
 
+                <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={17}/>
                 <StatusIndicator fileStatus={fileStatus}/>
 
                 <IconButton
@@ -363,6 +368,8 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
         const context = getContextKey();
         return state.knownFiles[context]?.[filename] ?? state.openFiles[context]?.[filename];
     })
+    const host = useHostStore(state => state.host)
+    const gitStatus = useGitStackStatus(host, filename)
     useEffect(() => {
         if (isComposeFile(filename)) {
             trackComposeStatus(filename);
@@ -420,6 +427,7 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
                     }}
                 />
 
+                <GitStackStatusIndicator status={gitStatus} size={17}/>
                 <StatusIndicator fileStatus={fileStatus}/>
             </ListItemButton>
             <Menu

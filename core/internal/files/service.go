@@ -28,6 +28,7 @@ type Service struct {
 	Fs             FSProvider
 	dockYml        DockyamlProvider
 	templateFolder string
+	changeNotifier func(host, path string)
 }
 
 func New(
@@ -39,6 +40,16 @@ func New(
 		dockYml: dockYml,
 		// todo load from env
 		templateFolder: "templates",
+	}
+}
+
+func (s *Service) ConfigureChangeNotifier(notifier func(host, path string)) {
+	s.changeNotifier = notifier
+}
+
+func (s *Service) NotifyChange(host, path string) {
+	if s.changeNotifier != nil {
+		s.changeNotifier(host, path)
 	}
 }
 

@@ -27,6 +27,7 @@ import {useComposeFileState} from "../state/status.ts";
 import {callRPC, useHostClient} from "../../../lib/api.ts";
 import {DockerService} from "../../../gen/docker/v1/docker_pb.ts";
 import {useDockerEvents} from "../../../hooks/docker-events.ts";
+import {useGitStatusWatcher} from '../../../components/git-stack-status-store.ts';
 
 export function FileList() {
     const showSearch = useFileSearch(state => state.open)
@@ -42,6 +43,9 @@ export function FileList() {
 
     const {listFiles} = useFiles()
     const {host, alias} = useFileComponents()
+    // One compact Git watcher for the entire tree. Individual rows subscribe
+    // only to their exact stable projection and never create timers/listeners.
+    useGitStatusWatcher(host)
 
     const showFileAdd = useCallback(() => {
         fileCreate(`${alias}`)

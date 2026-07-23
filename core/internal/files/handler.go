@@ -147,6 +147,7 @@ func (h *Handler) Create(ctx context.Context, req *connect.Request[v1.File]) (*c
 	if err != nil {
 		return nil, err
 	}
+	h.srv.NotifyChange(hostname, filename)
 
 	return &connect.Response[v1.Empty]{}, nil
 }
@@ -165,6 +166,7 @@ func (h *Handler) Copy(ctx context.Context, req *connect.Request[v1.CopyRequest]
 	if err != nil {
 		return nil, err
 	}
+	h.srv.NotifyChange(hostname, dest)
 
 	return &connect.Response[v1.CopyResponse]{}, nil
 }
@@ -196,6 +198,7 @@ func (h *Handler) Delete(ctx context.Context, req *connect.Request[v1.File]) (*c
 	if err := h.srv.Delete(filename, hostname); err != nil {
 		return nil, err
 	}
+	h.srv.NotifyChange(hostname, filename)
 
 	return &connect.Response[v1.Empty]{}, nil
 }
@@ -210,6 +213,8 @@ func (h *Handler) Rename(ctx context.Context, req *connect.Request[v1.RenameFile
 	if err != nil {
 		return nil, err
 	}
+	h.srv.NotifyChange(hostname, req.Msg.OldFilePath)
+	h.srv.NotifyChange(hostname, req.Msg.NewFilePath)
 	return &connect.Response[v1.Empty]{}, nil
 }
 

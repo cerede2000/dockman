@@ -15,6 +15,7 @@ import {formatBytes} from "../../lib/editor.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 import {useCopyButton} from "../../hooks/copy.ts";
 import CopyButton from "../../components/copy-button.tsx";
+import {useSearchParams} from 'react-router-dom';
 
 type AuthType = "public" | "https_token" | "ssh_key";
 type RepositoryDialogMode = "import" | "github";
@@ -279,6 +280,8 @@ export default function TabGit() {
     const [previewStatus, setPreviewStatus] = useState<"all" | PreviewStatus>("all");
     const [previewPageInput, setPreviewPageInput] = useState("1");
     const [selectedPreviewPaths, setSelectedPreviewPaths] = useState<Set<string>>(() => new Set());
+    const [searchParams, setSearchParams] = useSearchParams();
+    const openedGitDeepLink = useRef('');
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
     const deferredPreviewSearch = useDeferredValue(previewSearch);
     const previewStatusCounts = useMemo(() => {
@@ -725,6 +728,44 @@ export default function TabGit() {
         }
         if (binding.autoSyncState === "error") openBindingAutomation(binding);
     };
+
+    useEffect(() => {
+        if (loading || bindings.length === 0) return;
+        const bindingID = searchParams.get('gitBinding') || '';
+        const action = searchParams.get('gitAction') || '';
+        const composePath = searchParams.get('gitCompose') || '';
+        const key = `${bindingID}:${action}:${composePath}`;
+        if (!bindingID || openedGitDeepLink.current === key) return;
+        const binding = bindings.find((item) => item.id === bindingID);
+        if (!binding) return;
+        openedGitDeepLink.current = key;
+        if (action === 'details') {
+            setAutomationBinding(binding);
+            setAutomationForm({enabled: binding.autoSyncEnabled, autoReconcile: binding.autoReconcileEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployComposePaths: binding.autoDeployComposePaths || []});
+            setDeployments([]);
+            void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
+        } else {
+            const direction: TransferDirection = action === 'conflicts' || action === 'preview_git' || binding.autoSyncState === 'conflict'
+                ? 'repository_to_stack'
+                : 'stack_to_repository';
+            const conflictMode = action === 'conflicts' || binding.autoSyncState === 'conflict';
+            setConflictResolutionMode(conflictMode);
+            setConflictDecisions({});
+            setBusy(`preview-${binding.id}`);
+            void api<TransferPreview>(`/bindings/${binding.id}/preview/${direction}`, {
+                method: 'POST', body: JSON.stringify({}),
+            }).then((preview) => {
+                setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
+                setPreviewStatus(conflictMode ? 'conflict' : 'all'); setPreviewPageInput('1'); setSelectedPreviewPaths(new Set());
+                setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set());
+                const separator = composePath.lastIndexOf('/');
+                setPreviewSearch(separator >= 0 ? composePath.slice(0, separator) : '');
+            }).catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
+        }
+        const next = new URLSearchParams(searchParams);
+        next.delete('gitBinding'); next.delete('gitAction'); next.delete('gitCompose');
+        setSearchParams(next, {replace: true});
+    }, [bindings, loading, searchParams, setSearchParams, showError]);
 
     const saveBindingAutomation = async () => {
         if (!automationBinding) return;

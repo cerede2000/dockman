@@ -36,6 +36,8 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("DELETE /repositories/{id}", h.deleteRepository)
 	mux.HandleFunc("GET /stack-targets", h.listStackTargets)
 	mux.HandleFunc("GET /bindings", h.listBindings)
+	mux.HandleFunc("GET /stack-statuses", h.listGitStackStatuses)
+	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
@@ -59,6 +61,35 @@ func NewHTTPHandler(service *Service) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) listGitStackStatuses(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	rows, err := h.service.ListGitStackStatusViews(r.URL.Query().Get("host"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input GitStackPauseInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.SetGitStackAutomationPause(r.PathValue("id"), r.PathValue("composePath"), input.Paused)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
 }
 
 func (h *HTTPHandler) updateBindingComposeSelection(w http.ResponseWriter, r *http.Request) {

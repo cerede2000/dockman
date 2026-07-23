@@ -136,6 +136,7 @@ type TransferInput struct {
 	ResolvedPaths         []string `json:"resolvedPaths"`
 	SelectedPaths         []string `json:"selectedPaths"`
 	compactResult         bool
+	automation            bool
 }
 
 type PreviewEntry struct {
@@ -158,7 +159,8 @@ type TransferPreview struct {
 	Skipped      int            `json:"skipped"`
 	Conflicts    int            `json:"conflicts"`
 	DeletionMode string         `json:"deletionMode"`
-	PreviewToken string         `json:"previewToken"`
+	automation   bool
+	PreviewToken string `json:"previewToken"`
 }
 
 type TransferResult struct {
@@ -294,6 +296,9 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 			if err := s.store.RestoreBinding(&archived); err != nil {
 				return BindingView{}, err
 			}
+			if err := s.reconcileGitStackStatuses(archived); err != nil {
+				return BindingView{}, err
+			}
 			return s.initializeBinding(ctx, archived, initialSync)
 		}
 		if err := s.store.DeleteBinding(archived.UUID, true); err != nil {
@@ -310,6 +315,9 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 		AutoReconcileEnabled: autoReconcile, InitialSyncState: "checking",
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingView{}, err
+	}
+	if err := s.reconcileGitStackStatuses(row); err != nil {
 		return BindingView{}, err
 	}
 	return s.initializeBinding(ctx, row, initialSync)
@@ -362,6 +370,19 @@ func (s *Service) initializeBinding(ctx context.Context, row StackBinding, direc
 	if err := s.store.UpdateBindingInitialSyncState(row.UUID, state, message, &now); err != nil {
 		return BindingView{}, err
 	}
+	stackState := stackSyncPending
+	success := false
+	switch state {
+	case "reconciled", "imported", "exported":
+		stackState, success = stackSyncUpToDate, true
+	case "error":
+		stackState = stackSyncError
+	}
+	updates := map[string]any{"state": stackState, "error_message": message, "last_checked_at": &now}
+	if success {
+		updates["last_success_at"] = &now
+	}
+	_ = s.store.UpdateGitStackStatuses(row.UUID, selectedComposePaths(row), updates)
 	updated, err := s.store.GetBinding(row.UUID)
 	if err != nil {
 		return BindingView{}, err
@@ -445,6 +466,9 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 		}
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingView{}, err
+	}
+	if err := s.reconcileGitStackStatuses(row); err != nil {
 		return BindingView{}, err
 	}
 	return s.bindingView(row)
@@ -618,7 +642,10 @@ func (s *Service) PreviewBinding(id, direction string, input TransferInput) (Tra
 	if err != nil {
 		return TransferPreview{}, err
 	}
-	return buildPreview(binding.UUID, direction, source, target, baseline), nil
+	preview := buildPreview(binding.UUID, direction, source, target, baseline)
+	preview.automation = input.automation
+	s.recordPreviewStackStatuses(binding, preview)
+	return preview, nil
 }
 
 func (s *Service) CompareBindingFile(id, direction string, input ComparisonInput) (FileComparison, error) {
@@ -727,6 +754,8 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		result.Preview = buildPreview(binding.UUID, "stack_to_repository", source, target, baseline)
+		result.Preview.automation = input.automation
+		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
 		}
@@ -802,6 +831,14 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
+	if err == nil && result.Preview.Conflicts == 0 {
+		paths := selectedComposePaths(binding)
+		if input.automation {
+			paths = s.activeAutomationComposePaths(binding)
+		}
+		now := time.Now().UTC()
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now, "last_commit": result.CommitSHA})
+	}
 	return result, err
 }
 
@@ -838,6 +875,8 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		result.Preview = buildPreview(binding.UUID, "repository_to_stack", source, target, baseline)
+		result.Preview.automation = input.automation
+		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
 		}
@@ -882,6 +921,14 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
+	if err == nil && result.Preview.Conflicts == 0 {
+		paths := selectedComposePaths(binding)
+		if input.automation {
+			paths = s.activeAutomationComposePaths(binding)
+		}
+		now := time.Now().UTC()
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now})
+	}
 	if input.compactResult {
 		result.Preview.Entries = nil
 	}
@@ -1055,6 +1102,11 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	binding, err := s.store.GetBinding(id)
 	if err != nil {
 		return StackBinding{}, nil, nil, err
+	}
+	if input.automation {
+		active := s.activeAutomationComposePaths(binding)
+		binding.ComposeSelectionMode = composeSelectionSelected
+		binding.SelectedComposePaths = strings.Join(active, "\n")
 	}
 	repositoryRow, err := s.store.GetRepository(binding.RepositoryUUID)
 	if err != nil {

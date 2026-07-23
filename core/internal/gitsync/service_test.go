@@ -23,7 +23,7 @@ func testService(t *testing.T, enabled bool) (*Service, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Credential{}, &Repository{}, &StackBinding{}, &BindingBaseline{}, &Operation{}, &Deployment{}))
+	require.NoError(t, db.AutoMigrate(&Credential{}, &Repository{}, &StackBinding{}, &BindingBaseline{}, &Operation{}, &Deployment{}, &GitStackStatus{}))
 	vault, err := NewVault(bytes.Repeat([]byte{0x13}, 32))
 	require.NoError(t, err)
 	return NewService(enabled, NewStore(db), vault, filepath.Join(t.TempDir(), "repositories")), db

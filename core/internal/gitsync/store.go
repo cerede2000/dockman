@@ -2,6 +2,7 @@ package gitsync
 
 import (
 	"errors"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -56,6 +57,15 @@ func (s *Store) GetRepository(id string) (Repository, error) {
 	return row, err
 }
 
+func (s *Store) RepositoriesByIDs(ids []string) ([]Repository, error) {
+	if len(ids) == 0 {
+		return []Repository{}, nil
+	}
+	var rows []Repository
+	err := s.db.Where("uuid IN ?", ids).Find(&rows).Error
+	return rows, err
+}
+
 func (s *Store) SaveRepository(row *Repository) error { return s.db.Save(row).Error }
 
 func (s *Store) DeleteRepository(id string) error {
@@ -65,6 +75,9 @@ func (s *Store) DeleteRepository(id string) error {
 			return err
 		}
 		if len(bindingIDs) > 0 {
+			if err := tx.Where("binding_uuid IN ?", bindingIDs).Delete(&GitStackStatus{}).Error; err != nil {
+				return err
+			}
 			if err := tx.Where("binding_uuid IN ?", bindingIDs).Delete(&BindingBaseline{}).Error; err != nil {
 				return err
 			}
@@ -104,6 +117,15 @@ func (s *Store) ListBindings() ([]StackBinding, error) {
 	return rows, err
 }
 
+func (s *Store) ListBindingsForHost(host string) ([]StackBinding, error) {
+	if host == "" {
+		return s.ListBindings()
+	}
+	var rows []StackBinding
+	err := s.db.Where("host = ?", host).Order("stack_path COLLATE NOCASE ASC").Find(&rows).Error
+	return rows, err
+}
+
 func (s *Store) GetBinding(id string) (StackBinding, error) {
 	var row StackBinding
 	err := s.db.Where("uuid = ?", id).First(&row).Error
@@ -118,6 +140,102 @@ func (s *Store) ListAutoSyncBindings() ([]StackBinding, error) {
 }
 
 func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
+
+func (s *Store) ReconcileGitStackStatuses(binding StackBinding, composePaths []string, initialState string) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var existing []GitStackStatus
+		if err := tx.Where("binding_uuid = ?", binding.UUID).Find(&existing).Error; err != nil {
+			return err
+		}
+		keep := make(map[string]struct{}, len(composePaths))
+		known := make(map[string]struct{}, len(existing))
+		for _, row := range existing {
+			known[row.ComposePath] = struct{}{}
+		}
+		for _, composePath := range composePaths {
+			keep[composePath] = struct{}{}
+			if _, ok := known[composePath]; ok {
+				continue
+			}
+			row := GitStackStatus{BindingUUID: binding.UUID, ComposePath: composePath, State: initialState, DeployState: "disabled"}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		remove := make([]string, 0)
+		for _, row := range existing {
+			if _, ok := keep[row.ComposePath]; !ok {
+				remove = append(remove, row.ComposePath)
+			}
+		}
+		if len(remove) > 0 {
+			return tx.Where("binding_uuid = ? AND compose_path IN ?", binding.UUID, remove).Delete(&GitStackStatus{}).Error
+		}
+		return nil
+	})
+}
+
+func (s *Store) ListGitStackStatuses(host string) ([]GitStackStatus, error) {
+	var rows []GitStackStatus
+	query := s.db.Table("git_stack_statuses").
+		Joins("JOIN git_stack_bindings ON git_stack_bindings.uuid = git_stack_statuses.binding_uuid AND git_stack_bindings.deleted_at IS NULL")
+	if host != "" {
+		query = query.Where("git_stack_bindings.host = ?", host)
+	}
+	err := query.Select("git_stack_statuses.*").Order("git_stack_statuses.binding_uuid, git_stack_statuses.compose_path").Scan(&rows).Error
+	return rows, err
+}
+
+func (s *Store) GitStackStatuses(bindingID string) ([]GitStackStatus, error) {
+	var rows []GitStackStatus
+	err := s.db.Where("binding_uuid = ?", bindingID).Order("compose_path").Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) PausedComposePaths(bindingID string) ([]string, error) {
+	var paths []string
+	err := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ? AND automation_paused = ?", bindingID, true).Pluck("compose_path", &paths).Error
+	sort.Strings(paths)
+	return paths, err
+}
+
+func (s *Store) SetGitStackPause(bindingID, composePath string, paused bool) error {
+	result := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ? AND compose_path = ?", bindingID, composePath).Update("automation_paused", paused)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpdateGitStackStatuses(bindingID string, composePaths []string, updates map[string]any) error {
+	query := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ?", bindingID)
+	if composePaths != nil {
+		// A non-nil empty selection means that every stack is paused. It must
+		// never fall through to an update of all rows for the binding.
+		if len(composePaths) == 0 {
+			return nil
+		}
+		query = query.Where("compose_path IN ?", composePaths)
+	}
+	return query.Updates(updates).Error
+}
+
+func (s *Store) UpdateGitStackStatusesExcept(bindingID string, composePaths []string, excludedStates []string, updates map[string]any) error {
+	if composePaths != nil && len(composePaths) == 0 {
+		return nil
+	}
+	query := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ?", bindingID)
+	if composePaths != nil {
+		query = query.Where("compose_path IN ?", composePaths)
+	}
+	if len(excludedStates) > 0 {
+		query = query.Where("state NOT IN ?", excludedStates)
+	}
+	return query.Updates(updates).Error
+}
 
 func (s *Store) SaveDeployment(row *Deployment) error { return s.db.Save(row).Error }
 
@@ -187,6 +305,9 @@ func (s *Store) DeleteBinding(id string, forget bool) error {
 			return gorm.ErrRecordNotFound
 		}
 		if forget {
+			if err := tx.Where("binding_uuid = ?", id).Delete(&GitStackStatus{}).Error; err != nil {
+				return err
+			}
 			return tx.Where("binding_uuid = ?", id).Delete(&BindingBaseline{}).Error
 		}
 		return nil

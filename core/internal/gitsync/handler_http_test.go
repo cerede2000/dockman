@@ -53,3 +53,24 @@ func TestCredentialAPIResponseDoesNotContainSecret(t *testing.T) {
 	require.Equal(t, http.StatusOK, list.Code)
 	require.NotContains(t, list.Body.String(), "test-token-never-return-me")
 }
+
+func TestGitStackStatusAPIListsAndPausesNestedStack(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	handler := NewHTTPHandler(service)
+
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/stack-statuses?host=local", nil))
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	var statuses []GitStackStatusView
+	require.NoError(t, json.Unmarshal(list.Body.Bytes(), &statuses))
+	require.Len(t, statuses, 2)
+
+	pause := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/bindings/"+binding.ID+"/stack-status/alpha/compose.yml", strings.NewReader(`{"paused":true}`))
+	handler.ServeHTTP(pause, request)
+	require.Equal(t, http.StatusOK, pause.Code, pause.Body.String())
+	var updated GitStackStatusView
+	require.NoError(t, json.Unmarshal(pause.Body.Bytes(), &updated))
+	require.Equal(t, "alpha/compose.yml", updated.ComposePath)
+	require.True(t, updated.AutomationPaused)
+}

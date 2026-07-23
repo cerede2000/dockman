@@ -6,9 +6,10 @@ import {useUploadProgress} from "../hooks/upload-progress.ts";
 import {FileService, type FsEntry} from '../gen/files/v1/files_pb.ts';
 import {useTabs} from "./tab-context.tsx";
 import {useEditorUrl} from "../lib/editor.ts";
-import {useOpenFiles} from "../pages/compose/state/files.ts";
+import {useHostStore, useOpenFiles} from "../pages/compose/state/files.ts";
 import {useFileComponents} from "../pages/compose/state/terminal.tsx";
 import {debugError} from "../lib/debug.ts";
+import {markGitStackLocal} from '../components/git-stack-status-store.ts';
 
 // btoa only accepts Latin1, so a path with accents, curly quotes or any other
 // non-Latin1 character throws. Encode the UTF-8 bytes instead; the backend
@@ -54,6 +55,7 @@ function FilesProvider({children}: { children: ReactNode }) {
     const client = useHostClient(FileService)
     const {showError, showSuccess} = useSnackbar()
     const navigate = useNavigate()
+    const host = useHostStore(state => state.host)
 
     const {closeTab, renameTab} = useTabs()
 
@@ -109,6 +111,7 @@ function FilesProvider({children}: { children: ReactNode }) {
             showError(err)
             return
         } else {
+            markGitStackLocal(host, filename)
             if (!isDir) {
                 navigate(fileUrl(filename))
             }
@@ -116,7 +119,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         await fetchFiles()
-    }, [client, fetchFiles, fileUrl, navigate, showError, showSuccess])
+    }, [client, fetchFiles, fileUrl, host, navigate, showError, showSuccess])
 
     const copyFile = useCallback(async (srcFilename: string, destFilename: string, isDir: boolean) => {
         const {err} = await callRPC(() => client.copy({
@@ -133,6 +136,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         if (err) {
             showError(err)
         } else {
+            markGitStackLocal(host, destFilename)
             if (!isDir) {
                 navigate(fileUrl(destFilename))
             }
@@ -140,7 +144,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         await fetchFiles()
-    }, [client, fetchFiles, fileUrl, navigate, showError, showSuccess])
+    }, [client, fetchFiles, fileUrl, host, navigate, showError, showSuccess])
 
 
     const deleteFile = async (
@@ -150,6 +154,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         if (err) {
             showError(err)
         } else {
+            markGitStackLocal(host, filename)
             showSuccess(`Deleted ${filename}`)
             closeFolder(filename)
             closeTab(filename)
@@ -169,6 +174,8 @@ function FilesProvider({children}: { children: ReactNode }) {
         if (err) {
             showError(err)
         } else {
+            markGitStackLocal(host, oldFilename)
+            markGitStackLocal(host, newFileName)
             showSuccess(`${oldFilename} renamed to ${newFileName}`)
             renameTab(oldFilename, newFileName)
         }
@@ -212,6 +219,7 @@ function FilesProvider({children}: { children: ReactNode }) {
 
                 xhr.onload = () => {
                     if (xhr.status >= 200 && xhr.status < 300) {
+                        markGitStackLocal(host, fullPath);
                         resolve("");
                     } else {
                         resolve(`Error: ${xhr.status} - ${xhr.responseText}`);
@@ -228,7 +236,7 @@ function FilesProvider({children}: { children: ReactNode }) {
                 resolve("Network error");
             }
         });
-    }, [getUrl])
+    }, [getUrl, host])
 
     const uploadFilesFromPC = async (targetDir: string, files: File[]) => {
         const cleanDir = targetDir.endsWith('/') ? targetDir.slice(0, -1) : targetDir;

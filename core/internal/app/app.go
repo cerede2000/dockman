@@ -166,6 +166,10 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("invalid Git storage configuration")
 	}
 	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, gitWorkspaceRoot)
+	if err := gitSyncSrv.InitializeGitStackStatuses(); err != nil {
+		log.Fatal().Err(err).Msg("unable to initialize compact Git stack status index")
+	}
+	fileSrv.ConfigureChangeNotifier(gitSyncSrv.MarkLocalChange)
 	gitSyncSrv.ConfigureStackAccess(
 		func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
 			stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)

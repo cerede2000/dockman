@@ -168,6 +168,9 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 	if !binding.AutoSyncEnabled {
 		return AutoSyncResult{}, errors.New("automatic synchronization is disabled for this folder link")
 	}
+	if err := s.reconcileGitStackStatuses(binding); err != nil {
+		return AutoSyncResult{}, err
+	}
 	automationLock := s.repositoryLock("automation:" + id)
 	if !automationLock.TryLock() {
 		return AutoSyncResult{}, errors.New("automatic synchronization is already running for this folder link")
@@ -175,9 +178,18 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 	defer automationLock.Unlock()
 
 	attemptedAt := time.Now().UTC()
+	if len(s.activeAutomationComposePaths(binding)) == 0 && !(binding.AutoDeployEnabled && binding.AutoDeployNewStacks) {
+		message := "All selected stacks are paused; Git synchronization was skipped"
+		_ = s.store.UpdateBindingAutoSyncState(id, "watching", message, "", &attemptedAt, nil)
+		return AutoSyncResult{BindingID: id, State: "paused", Message: message}, nil
+	}
 	_ = s.store.UpdateBindingAutoSyncState(id, "syncing", "", "", &attemptedAt, nil)
+	// A file save already gives us authoritative local-dirty state. Preserve it
+	// while checking Git so an unchanged remote commit cannot paint it green.
+	s.updateActiveStackStatusesPreservingLocal(binding, stackSyncChecking, "", "", false)
 	result := AutoSyncResult{BindingID: id, State: "syncing"}
 	var synchronizedCommit string
+	skippedStackScan := false
 	err = s.runBindingOperation(ctx, binding.RepositoryUUID, binding.UUID, "auto_sync", func(ctx context.Context) error {
 		status, fetchErr := s.FetchRepository(ctx, binding.RepositoryUUID)
 		if fetchErr != nil {
@@ -214,12 +226,13 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			}
 		}
 		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head {
+			skippedStackScan = true
 			result.State = "up_to_date"
 			result.Message = "No new Git commit; stack scan skipped"
 			return nil
 		}
 
-		preview, previewErr := s.PreviewBinding(id, "repository_to_stack", TransferInput{})
+		preview, previewErr := s.PreviewBinding(id, "repository_to_stack", TransferInput{automation: true})
 		if previewErr != nil {
 			return previewErr
 		}
@@ -245,8 +258,13 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 				return registerErr
 			}
 		}
+		if len(newTargets) == 0 && len(s.activeAutomationComposePaths(binding)) == 0 {
+			result.State = "paused"
+			result.Message = "All selected stacks are paused; no new Git stack was discovered"
+			return nil
+		}
 
-		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: previewToken, compactResult: true})
+		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: previewToken, compactResult: true, automation: true})
 		if importErr != nil {
 			return importErr
 		}
@@ -275,13 +293,26 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 	if err != nil {
 		message := safeGitError(err)
 		_ = s.store.UpdateBindingAutoSyncState(id, "error", message, "", &attemptedAt, nil)
+		s.updateActiveStackStatuses(binding, stackSyncError, message, "", false)
 		return AutoSyncResult{BindingID: id, State: "error", Message: message}, err
 	}
 	if result.State == "conflict" || result.State == "blocked" {
 		_ = s.store.UpdateBindingAutoSyncState(id, result.State, result.Message, "", &attemptedAt, nil)
+		if result.State == "blocked" {
+			s.updateActiveStackStatuses(binding, stackSyncRemoteChanges, result.Message, "", false)
+		}
+		return result, nil
+	}
+	if result.State == "paused" {
+		_ = s.store.UpdateBindingAutoSyncState(id, "watching", result.Message, "", &attemptedAt, nil)
 		return result, nil
 	}
 	succeededAt := time.Now().UTC()
 	_ = s.store.UpdateBindingAutoSyncState(id, "up_to_date", "", synchronizedCommit, &attemptedAt, &succeededAt)
+	if skippedStackScan {
+		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncUpToDate, "", synchronizedCommit, true)
+	} else {
+		s.updateActiveStackStatuses(binding, stackSyncUpToDate, "", synchronizedCommit, true)
+	}
 	return result, nil
 }

@@ -146,6 +146,7 @@ func (h *FileHandler) saveFile(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		h.srv.NotifyChange(getHost, string(decodedFileName))
 		_ = part.Close()
 		return
 	}

@@ -48,6 +48,7 @@ import {
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import ContainerDetailsDialog from './container-details-dialog.tsx';
 import ExecLaunchPopover, {type ExecLaunch} from './exec-launch-popover.tsx';
+import {useGitStackStatuses} from '../../components/git-stack-status-store.ts';
 
 type ContainerActionRpc = 'containerStart' | 'containerStop' | 'containerRestart' | 'containerPause'
     | 'containerUnpause' | 'containerRemove';
@@ -186,6 +187,7 @@ function MonitorPage() {
     const {search, setSearch, searchInputRef} = useSearch();
     const navigate = useNavigate();
     const host = useHostStore(state => state.host);
+    const gitStatuses = useGitStackStatuses(host);
     const {dockYaml} = useConfig();
     // dockman.yml → monitor.stackRows: "compact" drops the stack rows' charts
     const compactStacks = (dockYaml?.monitorPage?.stackRows ?? '').trim().toLowerCase() === 'compact';
@@ -293,7 +295,10 @@ function MonitorPage() {
         for (const c of list) {
             const key = monitorStackKey(c);
             const group = byStack.get(key) ?? {key, stack: c.stackName, servicePath: '', rows: [], stats: null};
-            if (c.servicePath) group.servicePath = c.servicePath;
+            if (c.servicePath) {
+                group.servicePath = c.servicePath;
+                group.gitStatus = gitStatuses[c.servicePath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')];
+            }
             // a row frozen by a lifecycle action renders pending metrics
             // instead of the stream's stale pre-action sample
             const exposesMetrics = ['running', 'restarting', 'paused'].includes(c.state);
@@ -330,7 +335,7 @@ function MonitorPage() {
                 }
                 return a.stack.localeCompare(b.stack) || a.key.localeCompare(b.key);
             });
-    }, [containers, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows]);
+    }, [containers, gitStatuses, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows]);
 
     const flatRows = useMemo(() => {
         const rows = groups.flatMap(group => group.rows);

@@ -52,6 +52,8 @@ import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes, getUsageColor} from '../../lib/editor.ts';
 import {ContainerInfoPort} from '../compose/components/container-info-port.tsx';
+import GitStackStatusIndicator from '../../components/git-stack-status.tsx';
+import type {GitStackStatus} from '../../components/git-stack-status-store.ts';
 
 export interface MonitorRow {
     info: ContainerList;
@@ -87,6 +89,7 @@ export interface StackGroup {
     rows: MonitorRow[];
     // null until at least one member delivered real stats
     stats: StackStats | null;
+    gitStatus?: GitStackStatus;
 }
 
 export type RowAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'update' | 'remove';
@@ -387,7 +390,10 @@ function StackRow(props: MonitorTableProps & { group: StackGroup, boundaryColor:
                     </span>
                 </Tooltip>
             </TableCell>
-            <TableCell sx={{...bodyCell, width: 32, minWidth: 32, maxWidth: 32, p: 0}}/>
+            <TableCell onClick={e => e.stopPropagation()}
+                       sx={{...bodyCell, width: 32, minWidth: 32, maxWidth: 32, p: 0, textAlign: 'center'}}>
+                <GitStackStatusIndicator status={group.gitStatus} size={17}/>
+            </TableCell>
             <TableCell colSpan={3} sx={{...bodyCell, py: 0.25}}>
                 <Stack
                     direction="row"
