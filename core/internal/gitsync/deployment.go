@@ -202,12 +202,15 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			unlock()
 			return deployed, err
 		}
+		stage := "validation"
 		err := s.validateCompose(ctx, binding.Host, filename)
 		if err == nil {
+			stage = "dry-run"
 			deployment.State = "dry_run"
 			err = s.dryRunCompose(ctx, binding.Host, filename, logs)
 		}
 		if err == nil {
+			stage = "deployment"
 			deployment.State = "deploying"
 			err = s.deployCompose(ctx, binding.Host, filename, logs)
 		}
@@ -216,7 +219,8 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		deployment.Result = "deployed"
 		deployment.State = "success"
 		if err != nil {
-			deployment.State, deployment.Result = "failed", safeGitError(err)
+			deployment.State = "failed"
+			deployment.Result = safeGitError(fmt.Errorf("%s failed: %w", stage, err))
 		}
 		if saveErr := s.store.SaveDeployment(&deployment); saveErr != nil && err == nil {
 			err = saveErr
@@ -224,7 +228,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		now := time.Now().UTC()
 		_ = s.store.UpdateBindingAutoDeployState(binding.UUID, deployment.State, deployment.Result, &now)
 		if err != nil {
-			return deployed, fmt.Errorf("deploy %s: %w", relative, err)
+			return deployed, fmt.Errorf("%s %s: %w", stage, relative, err)
 		}
 		deployed = append(deployed, relative)
 	}

@@ -9,6 +9,12 @@ cd /app
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
 
+# Docker Compose/BuildKit writes CLI state even for a dry-run. Keep that state
+# in Dockman's writable configuration volume instead of the read-only rootfs.
+# An explicit DOCKER_CONFIG remains supported for advanced deployments.
+DOCKER_CONFIG=${DOCKER_CONFIG:-${DOCKMAN_CONFIG:-/config}/docker-cli}
+export DOCKER_CONFIG
+
 # If Root (PUID 0)
 if [ "$PUID" -eq 0 ]; then
     echo "Running as root..."
@@ -46,7 +52,7 @@ if [ -S /var/run/docker.sock ]; then
     addgroup appuser "$DOCKER_GROUP"
 fi
 
-APP_DIRS="DOCKMAN_COMPOSE_ROOT DOCKMAN_CONFIG DOCKMAN_UI_PATH"
+APP_DIRS="DOCKMAN_COMPOSE_ROOT DOCKMAN_CONFIG DOCKMAN_UI_PATH DOCKER_CONFIG"
 
 # Initialize Directories
 # loop through the env variables

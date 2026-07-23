@@ -160,7 +160,11 @@ func (c *Service) withCmd(
 	errWriter := new(bytes.Buffer)
 	err = c.runner.Run(ctx, cleanCmd, fileParts.Fs.Root(), stream, errWriter)
 	if err != nil {
-		return fmt.Errorf("%s", errWriter.String())
+		message := strings.TrimSpace(errWriter.String())
+		if message != "" {
+			return fmt.Errorf("%s", message)
+		}
+		return fmt.Errorf("compose command failed: %w", err)
 	}
 	return nil
 }

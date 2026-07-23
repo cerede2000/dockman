@@ -41,7 +41,10 @@ func (l *LocalRunner) Run(
 	ins := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
 	ins.Dir = wd
 	ins.Stdout = out
-	ins.Stderr = out
+	// Keep stderr visible in the live action stream while also retaining it for
+	// the API error. Previously local Compose failures were displayed to the
+	// terminal but returned as an empty error message to Git automation.
+	ins.Stderr = combineWriters(out, errWriter)
 	ins.Stdin = nil
 
 	err := ins.Run()
@@ -78,7 +81,7 @@ func (r *RemoteRunner) Run(
 	)
 
 	session.Stdout = out
-	session.Stderr = errWriter
+	session.Stderr = combineWriters(out, errWriter)
 	session.Stdin = nil
 
 	done := make(chan struct{})
@@ -93,4 +96,20 @@ func (r *RemoteRunner) Run(
 	close(done)
 
 	return session.Run(fullCmd)
+}
+
+func combineWriters(writers ...io.Writer) io.Writer {
+	valid := make([]io.Writer, 0, len(writers))
+	for _, writer := range writers {
+		if writer != nil {
+			valid = append(valid, writer)
+		}
+	}
+	if len(valid) == 0 {
+		return io.Discard
+	}
+	if len(valid) == 1 {
+		return valid[0]
+	}
+	return io.MultiWriter(valid...)
 }
