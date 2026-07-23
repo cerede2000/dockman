@@ -29,6 +29,27 @@ func testService(t *testing.T, enabled bool) (*Service, *gorm.DB) {
 	return NewService(enabled, NewStore(db), vault, filepath.Join(t.TempDir(), "repositories")), db
 }
 
+func requireGitFileContent(t *testing.T, repo *gitclient.Repository, branch, name, expected string) {
+	t.Helper()
+	tree, err := repositoryCommitTree(repo, branch)
+	require.NoError(t, err)
+	file, err := tree.File(filepath.ToSlash(name))
+	require.NoError(t, err)
+	contents, err := file.Contents()
+	require.NoError(t, err)
+	require.Equal(t, expected, contents)
+}
+
+func compactTestCheckout(t *testing.T, repo *gitclient.Repository, branch string) (*gitclient.Repository, string, func()) {
+	t.Helper()
+	temporary, path, cleanup, err := temporaryRepositoryWorktree(repo, t.TempDir())
+	require.NoError(t, err)
+	worktree, err := temporary.Worktree()
+	require.NoError(t, err)
+	require.NoError(t, worktree.Checkout(&gitclient.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(branch), Force: true}))
+	return temporary, path, cleanup
+}
+
 func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	service, _ := testService(t, true)
 	remotePath, _ := createTestRemote(t)
@@ -40,6 +61,10 @@ func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	require.NoError(t, service.cloneRepository(context.Background(), row))
 	row.Status = "ready"
 	require.NoError(t, service.store.SaveRepository(&row))
+	workspace, err := service.repositoryPath(row.UUID)
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(workspace, ".git", compactStorageMarker))
+	require.NoFileExists(t, filepath.Join(workspace, "README.md"))
 
 	status, err := service.RepositoryStatus(row.UUID)
 	require.NoError(t, err)
@@ -63,11 +88,11 @@ func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "up-to-date", status.State)
 
-	workspace, err := service.repositoryPath(row.UUID)
-	require.NoError(t, err)
 	local, err := gitclient.PlainOpen(workspace)
 	require.NoError(t, err)
-	commitTestFile(t, local, workspace, "local.txt", "local change")
+	temporary, temporaryPath, cleanup := compactTestCheckout(t, local, row.DefaultBranch)
+	commitTestFile(t, temporary, temporaryPath, "local.txt", "local change")
+	cleanup()
 	status, err = service.RepositoryStatus(row.UUID)
 	require.NoError(t, err)
 	require.Equal(t, "ahead", status.State)
@@ -91,12 +116,53 @@ func TestRepositoryPullRefusesDirtyWorkspace(t *testing.T) {
 	remotePath, _ := createTestRemote(t)
 	row := Repository{UUID: uuid.NewString(), Name: "dirty", Provider: "test", RemoteURL: remotePath, DefaultBranch: "main", Mode: "managed", Status: "ready"}
 	require.NoError(t, service.store.SaveRepository(&row))
-	require.NoError(t, service.cloneRepository(context.Background(), row))
 	workspace, err := service.repositoryPath(row.UUID)
+	require.NoError(t, err)
+	_, err = gitclient.PlainClone(workspace, false, &gitclient.CloneOptions{URL: remotePath, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, "dirty.txt"), []byte("not committed"), 0o600))
 	_, err = service.PullRepository(context.Background(), row.UUID)
-	require.ErrorContains(t, err, "uncommitted changes")
+	require.ErrorContains(t, err, "migration refused")
+	require.FileExists(t, filepath.Join(workspace, "dirty.txt"))
+}
+
+func TestCompactMigrationPreservesIgnoredUntrackedData(t *testing.T) {
+	service, _ := testService(t, true)
+	remotePath, seedPath := createTestRemote(t)
+	seed, err := gitclient.PlainOpen(seedPath)
+	require.NoError(t, err)
+	commitTestFile(t, seed, seedPath, ".gitignore", "ignored.tmp\n")
+	require.NoError(t, seed.Push(&gitclient.PushOptions{}))
+	row := Repository{UUID: uuid.NewString(), Name: "ignored", Provider: "test", RemoteURL: remotePath, DefaultBranch: "main", Mode: "managed", Status: "ready"}
+	require.NoError(t, service.store.SaveRepository(&row))
+	workspace, err := service.repositoryPath(row.UUID)
+	require.NoError(t, err)
+	_, err = gitclient.PlainClone(workspace, false, &gitclient.CloneOptions{URL: remotePath, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "ignored.tmp"), []byte("must survive"), 0o600))
+
+	_, err = service.openRepository(row)
+	require.ErrorContains(t, err, "untracked or ignored data")
+	require.FileExists(t, filepath.Join(workspace, "ignored.tmp"))
+	require.NoFileExists(t, filepath.Join(workspace, ".git", compactStorageMarker))
+}
+
+func TestLegacyRepositoryMigratesWithoutLosingGitData(t *testing.T) {
+	service, _ := testService(t, true)
+	remotePath, _ := createTestRemote(t)
+	row := Repository{UUID: uuid.NewString(), Name: "legacy", Provider: "test", RemoteURL: remotePath, DefaultBranch: "main", Mode: "managed", Status: "ready"}
+	require.NoError(t, service.store.SaveRepository(&row))
+	workspace, err := service.repositoryPath(row.UUID)
+	require.NoError(t, err)
+	_, err = gitclient.PlainClone(workspace, false, &gitclient.CloneOptions{URL: remotePath, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(workspace, "README.md"))
+
+	repo, err := service.openRepository(row)
+	require.NoError(t, err)
+	require.NoFileExists(t, filepath.Join(workspace, "README.md"))
+	require.FileExists(t, filepath.Join(workspace, ".git", compactStorageMarker))
+	requireGitFileContent(t, repo, "main", "README.md", "test repository")
 }
 
 func TestRepositoryPathAndDeleteAreBounded(t *testing.T) {

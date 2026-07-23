@@ -24,6 +24,8 @@ import (
 	"github.com/RA341/dockman/internal/host/filesystem"
 	"github.com/bmatcuk/doublestar/v4"
 	gitclient "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/goccy/go-yaml"
 	"github.com/google/uuid"
@@ -198,21 +200,6 @@ var composeConfigRules = mustRules([]string{
 	"*.txt", "*.md", "*.crt", ".env", ".env.*", ".gitignore", ".dockerignore",
 	".dockmanignore", "Dockerfile*", "Containerfile*", "Caddyfile", "Makefile",
 })
-
-type rootedReadCloser struct {
-	file *os.File
-	root *os.Root
-}
-
-func (r *rootedReadCloser) Read(p []byte) (int, error) { return r.file.Read(p) }
-func (r *rootedReadCloser) Close() error {
-	fileErr := r.file.Close()
-	rootErr := r.root.Close()
-	if fileErr != nil {
-		return fileErr
-	}
-	return rootErr
-}
 
 func (s *Service) ListBindings() ([]BindingView, error) {
 	rows, err := s.store.ListBindings()
@@ -578,13 +565,6 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if len(selected) == 0 {
 			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
 		}
-		repoPath, err := s.repositoryPath(binding.RepositoryUUID)
-		if err != nil {
-			return err
-		}
-		if err := writeRepositoryFiles(repoPath, binding.SubPath, selected); err != nil {
-			return err
-		}
 		row, err := s.store.GetRepository(binding.RepositoryUUID)
 		if err != nil {
 			return err
@@ -593,8 +573,19 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		worktree, err := repo.Worktree()
+		temporaryRepo, checkoutPath, cleanup, err := temporaryRepositoryWorktree(repo, s.workspaceRoot)
 		if err != nil {
+			return err
+		}
+		defer cleanup()
+		worktree, err := temporaryRepo.Worktree()
+		if err != nil {
+			return err
+		}
+		if err := worktree.Checkout(&gitclient.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(row.DefaultBranch), Force: true}); err != nil {
+			return fmt.Errorf("prepare temporary Git checkout: %w", err)
+		}
+		if err := writeRepositoryFiles(checkoutPath, binding.SubPath, selected); err != nil {
 			return err
 		}
 		stagePath := binding.SubPath
@@ -895,11 +886,15 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return binding, nil, nil, fmt.Errorf("read stack files: %w", err)
 	}
-	repositoryRoot, err := s.repositoryPath(binding.RepositoryUUID)
+	repositoryRow, err := s.store.GetRepository(binding.RepositoryUUID)
 	if err != nil {
 		return binding, nil, nil, err
 	}
-	repositoryFiles, err := collectRepositoryFiles(repositoryRoot, binding.SubPath, input.IncludeSensitive, policy)
+	repository, err := s.openRepository(repositoryRow)
+	if err != nil {
+		return binding, nil, nil, err
+	}
+	repositoryFiles, err := collectRepositoryFiles(repository, repositoryRow.DefaultBranch, binding.SubPath, input.IncludeSensitive, policy)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return binding, nil, nil, fmt.Errorf("read repository files: %w", err)
 	}
@@ -1010,117 +1005,106 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 	return result, walk(root, "")
 }
 
-func collectRepositoryFiles(repositoryRoot, subPath string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
-	safeRoot, err := os.OpenRoot(repositoryRoot)
+func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
+	tree, err := repositoryCommitTree(repo, branch)
 	if err != nil {
 		return nil, err
 	}
-	defer safeRoot.Close()
-	baseRelative := "."
-	if subPath != "." {
-		baseRelative = filepath.FromSlash(subPath)
+	tree, err = repositorySubtree(tree, subPath)
+	if err != nil {
+		return nil, err
 	}
 	result := map[string]transferFile{}
 	policy := defaultSyncPolicy()
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
-	ignoreRules, err := loadRepositoryIgnoreRules(safeRoot, baseRelative)
+	ignoreRules, err := loadRepositoryTreeIgnoreRules(tree)
 	if err != nil {
 		return nil, err
 	}
 	excludeRules := append(append([]ignoreRule(nil), policy.excludes...), ignoreRules...)
 	var total int64
-	err = fs.WalkDir(safeRoot.FS(), filepath.ToSlash(baseRelative), func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(filepath.ToSlash(baseRelative), path)
-		if err != nil || rel == "." {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if shouldSkipPath(rel, entry.IsDir()) {
-			if entry.IsDir() {
-				return filepath.SkipDir
+	var walk func(*object.Tree, string) error
+	walk = func(current *object.Tree, parent string) error {
+		for _, entry := range current.Entries {
+			if entry.Name == "" || entry.Name == "." || entry.Name == ".." || strings.ContainsAny(entry.Name, `/\\`) {
+				return fmt.Errorf("repository contains unsafe Git tree entry %q", entry.Name)
 			}
-			return nil
-		}
-		if matchesIgnoreRule(excludeRules, rel, entry.IsDir()) && !policy.protectsCompose(rel) {
-			if entry.IsDir() && policy.containsCompose(rel) {
-				return nil
+			rel := path.Join(parent, entry.Name)
+			if err := validateRelativePath(rel, false); err != nil {
+				return fmt.Errorf("repository contains unsafe Git tree path %q: %w", rel, err)
 			}
-			result[rel] = transferFile{path: rel, skipReason: "excluded", directory: entry.IsDir()}
-			if entry.IsDir() {
-				return filepath.SkipDir
+			isDirectory := entry.Mode == filemode.Dir
+			if shouldSkipPath(rel, isDirectory) {
+				continue
 			}
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
+			if matchesIgnoreRule(excludeRules, rel, isDirectory) && !policy.protectsCompose(rel) {
+				if isDirectory && policy.containsCompose(rel) {
+					subtree, err := current.Tree(entry.Name)
+					if err != nil {
+						return err
+					}
+					if err := walk(subtree, rel); err != nil {
+						return err
+					}
+					continue
+				}
+				result[rel] = transferFile{path: rel, skipReason: "excluded", directory: isDirectory}
+				continue
 			}
-			return nil
+			if isDirectory {
+				subtree, err := current.Tree(entry.Name)
+				if err != nil {
+					return err
+				}
+				if err := walk(subtree, rel); err != nil {
+					return err
+				}
+				continue
+			}
+			if entry.Mode == filemode.Symlink || entry.Mode == filemode.Submodule || !entry.Mode.IsFile() {
+				continue
+			}
+			blob, err := repo.BlobObject(entry.Hash)
+			if err != nil {
+				return err
+			}
+			size := blob.Size
+			if len(result)+1 > maxBindingFiles {
+				return fmt.Errorf("repository folder contains more than %d files; exclude generated folders with .dockmanignore", maxBindingFiles)
+			}
+			sensitive := isSensitivePath(rel)
+			if sensitive && !includeSensitive {
+				result[rel] = transferFile{path: rel, size: size, sensitive: true, skipReason: "sensitive"}
+				continue
+			}
+			if size > maxBindingFileSize {
+				log.Warn().Str("file", rel).Int64("size_bytes", size).Int64("limit_bytes", maxBindingFileSize).Msg("Git stack sync skipped oversized file")
+				result[rel] = transferFile{path: rel, size: size, skipReason: "oversized"}
+				continue
+			}
+			if !policy.includesFile(rel) {
+				result[rel] = transferFile{path: rel, size: size, skipReason: "type"}
+				continue
+			}
+			if total+size > maxBindingTotalSize {
+				return fmt.Errorf("repository files exceed the %d MiB total limit at %s (%d MiB accumulated); exclude this file or a generated folder with .dockmanignore", maxBindingTotalSize>>20, rel, (total+size)>>20)
+			}
+			if err := checkTransferLimit(len(result)+1, size, total+size); err != nil {
+				return err
+			}
+			total += size
+			file := transferFile{path: rel, size: size, mode: gitFileMode(entry.Mode), sensitive: sensitive, open: gitBlobOpener(repo, entry.Hash)}
+			file.sha, err = hashTransferFile(file)
+			if err != nil {
+				return err
+			}
+			result[rel] = file
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !isTransferFile(info.Mode()) {
-			return nil
-		}
-		if len(result)+1 > maxBindingFiles {
-			return fmt.Errorf("repository folder contains more than %d files; exclude generated folders with .dockmanignore", maxBindingFiles)
-		}
-		sensitive := isSensitivePath(rel)
-		if sensitive && !includeSensitive {
-			result[rel] = transferFile{path: rel, size: info.Size(), sensitive: true, skipReason: "sensitive"}
-			return nil
-		}
-		if info.Size() > maxBindingFileSize {
-			log.Warn().Str("file", rel).Int64("size_bytes", info.Size()).Int64("limit_bytes", maxBindingFileSize).Msg("Git stack sync skipped oversized file")
-			result[rel] = transferFile{path: rel, size: info.Size(), skipReason: "oversized"}
-			return nil
-		}
-		if !policy.includesFile(rel) {
-			result[rel] = transferFile{path: rel, size: info.Size(), skipReason: "type"}
-			return nil
-		}
-		if total+info.Size() > maxBindingTotalSize {
-			return fmt.Errorf("repository files exceed the %d MiB total limit at %s (%d MiB accumulated); exclude this file or a generated folder with .dockmanignore", maxBindingTotalSize>>20, rel, (total+info.Size())>>20)
-		}
-		if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
-			return err
-		}
-		total += info.Size()
-		repositoryRelative := filepath.Join(baseRelative, filepath.FromSlash(rel))
-		file := transferFile{path: rel, size: info.Size(), mode: info.Mode().Perm(), sensitive: sensitive, open: repositoryFileOpener(repositoryRoot, repositoryRelative)}
-		file.sha, err = hashTransferFile(file)
-		if err != nil {
-			return err
-		}
-		result[rel] = file
 		return nil
-	})
-	return result, err
-}
-
-func repositoryFileOpener(repositoryRoot, relativePath string) func() (io.ReadCloser, error) {
-	return func() (io.ReadCloser, error) {
-		root, err := os.OpenRoot(repositoryRoot)
-		if err != nil {
-			return nil, err
-		}
-		file, err := root.Open(relativePath)
-		if err != nil {
-			_ = root.Close()
-			return nil, err
-		}
-		return &rootedReadCloser{file: file, root: root}, nil
 	}
+	return result, walk(tree, "")
 }
 
 func hashTransferFile(file transferFile) (string, error) {
@@ -1329,13 +1313,17 @@ func loadStackIgnoreRules(targetFS filesystem.FileSystem, root string) ([]ignore
 	return parseIgnoreRules(reader)
 }
 
-func loadRepositoryIgnoreRules(root *os.Root, base string) ([]ignoreRule, error) {
-	reader, err := root.Open(filepath.Join(base, ".dockmanignore"))
+func loadRepositoryTreeIgnoreRules(tree *object.Tree) ([]ignoreRule, error) {
+	file, err := tree.File(".dockmanignore")
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, object.ErrFileNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("open .dockmanignore: %w", err)
+		return nil, fmt.Errorf("open .dockmanignore from Git tree: %w", err)
+	}
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("open .dockmanignore from Git tree: %w", err)
 	}
 	return parseIgnoreRules(reader)
 }

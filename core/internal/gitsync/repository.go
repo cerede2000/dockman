@@ -61,6 +61,7 @@ type RepositoryView struct {
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
 	WorkspacePresent bool       `json:"workspacePresent"`
+	StorageMode      string     `json:"storageMode"`
 }
 
 type RepositoryGitStatus struct {
@@ -269,15 +270,7 @@ func (s *Service) RepositoryStatus(id string) (RepositoryGitStatus, error) {
 	if err != nil {
 		return RepositoryGitStatus{}, err
 	}
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return RepositoryGitStatus{}, err
-	}
-	worktreeStatus, err := worktree.Status()
-	if err != nil {
-		return RepositoryGitStatus{}, err
-	}
-	result := RepositoryGitStatus{RepositoryID: id, Branch: row.DefaultBranch, Clean: worktreeStatus.IsClean(), State: "unknown"}
+	result := RepositoryGitStatus{RepositoryID: id, Branch: row.DefaultBranch, Clean: true, State: "unknown"}
 	localRef, err := repo.Reference(plumbing.NewBranchReferenceName(row.DefaultBranch), true)
 	if err != nil {
 		return result, fmt.Errorf("local branch %q is unavailable: %w", row.DefaultBranch, err)
@@ -355,22 +348,11 @@ func (s *Service) PullRepository(ctx context.Context, id string) (RepositoryGitS
 		if err != nil {
 			return err
 		}
-		worktree, err := repo.Worktree()
+		remote, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", row.DefaultBranch), true)
 		if err != nil {
-			return err
+			return fmt.Errorf("resolve fetched branch: %w", err)
 		}
-		auth, err := s.authForRepository(ctx, row)
-		if err != nil {
-			return err
-		}
-		err = worktree.PullContext(ctx, &gitclient.PullOptions{
-			RemoteName: "origin", ReferenceName: plumbing.NewBranchReferenceName(row.DefaultBranch),
-			SingleBranch: true, Auth: auth,
-		})
-		if errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
-			return nil
-		}
-		return err
+		return repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(row.DefaultBranch), remote.Hash()))
 	})
 	if err != nil {
 		s.recordRepositoryError(&row, err)
@@ -546,9 +528,13 @@ func (s *Service) cloneRepository(ctx context.Context, row Repository) error {
 	_, err = gitclient.PlainCloneContext(ctx, temporary, false, &gitclient.CloneOptions{
 		URL: row.RemoteURL, RemoteName: "origin", Auth: auth,
 		ReferenceName: plumbing.NewBranchReferenceName(row.DefaultBranch), SingleBranch: true, Tags: gitclient.NoTags,
+		NoCheckout: true,
 	})
 	if err != nil {
 		return fmt.Errorf("clone repository: %w", err)
+	}
+	if err := markCompactRepository(temporary); err != nil {
+		return fmt.Errorf("mark compact Git storage: %w", err)
 	}
 	if err := os.Rename(temporary, destination); err != nil {
 		return fmt.Errorf("activate repository workspace: %w", err)
@@ -694,6 +680,13 @@ func (s *Service) openRepository(row Repository) (*gitclient.Repository, error) 
 	if err := s.validateExistingRepositoryPath(path); err != nil {
 		return nil, err
 	}
+	wasCompact := markerExists(filepath.Join(path, ".git", compactStorageMarker))
+	if err := ensureCompactRepository(path); err != nil {
+		return nil, err
+	}
+	if !wasCompact {
+		log.Info().Str("repository_id", row.UUID).Msg("Migrated Git repository to compact object storage")
+	}
 	repo, err := gitclient.PlainOpen(path)
 	if err != nil {
 		return nil, fmt.Errorf("open repository workspace: %w", err)
@@ -726,16 +719,20 @@ func (s *Service) validateExistingRepositoryPath(path string) error {
 
 func (s *Service) repositoryView(row Repository) RepositoryView {
 	present := false
+	storageMode := "legacy"
 	if path, err := s.repositoryPath(row.UUID); err == nil {
 		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 			present = true
+			if markerExists(filepath.Join(path, ".git", compactStorageMarker)) {
+				storageMode = repositoryStorageMode
+			}
 		}
 	}
 	return RepositoryView{
 		ID: row.UUID, Name: row.Name, Provider: row.Provider, RemoteURL: row.RemoteURL,
 		DefaultBranch: row.DefaultBranch, Mode: row.Mode, CredentialID: row.CredentialUUID,
 		Status: row.Status, LastError: row.LastError, LastFetchedAt: row.LastFetchedAt,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, WorkspacePresent: present,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, WorkspacePresent: present, StorageMode: storageMode,
 	}
 }
 

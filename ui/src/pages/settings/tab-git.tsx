@@ -55,6 +55,7 @@ interface Repository {
     lastError?: string;
     lastFetchedAt?: string;
     workspacePresent: boolean;
+    storageMode: "compact" | "legacy";
 }
 
 interface RepositoryStatus {
@@ -255,7 +256,10 @@ export default function TabGit() {
                 return null;
             }
         }));
-        setRepositoryStatuses(Object.fromEntries(pairs.filter((pair): pair is readonly [string, RepositoryStatus] => pair !== null)));
+        const successful = pairs.filter((pair): pair is readonly [string, RepositoryStatus] => pair !== null);
+        setRepositoryStatuses(Object.fromEntries(successful));
+        const compactRepositories = new Set(successful.map(([id]) => id));
+        setRepositories((current) => current.map((repository) => compactRepositories.has(repository.id) ? {...repository, storageMode: "compact"} : repository));
     }, []);
 
     const load = useCallback(async () => {
@@ -740,6 +744,7 @@ export default function TabGit() {
         <Stack spacing={3}>
             <Alert severity="info" variant="outlined">
                 Git transfers remain non-destructive. Optional automatic monitoring is Git → Dockman only, creates a backup before changes, stops on conflicts, and never deploys or restarts a stack.
+                {" "}Repositories use a compact shared object store; files are checked out temporarily only while exporting Dockman changes.
             </Alert>
 
             <Paper variant="outlined" sx={{borderRadius: 2, overflow: "hidden"}}>
@@ -771,6 +776,7 @@ export default function TabGit() {
                                     <TableCell>
                                         <Stack direction="row" spacing={.75} sx={{alignItems: "center"}}>
                                             <Chip size="small" color={statusColor(state)} variant="outlined" label={state}/>
+                                            <Chip size="small" variant="outlined" label={repository.storageMode === "compact" ? "compact" : "migration pending"}/>
                                             {gitStatus && !gitStatus.clean && <Chip size="small" color="warning" label="dirty"/>}
                                             {gitStatus && (gitStatus.ahead > 0 || gitStatus.behind > 0) && <Typography variant="caption" color="text.secondary">↑{gitStatus.ahead} ↓{gitStatus.behind}</Typography>}
                                         </Stack>
