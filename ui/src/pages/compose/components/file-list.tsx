@@ -229,8 +229,13 @@ const FileListInner = () => {
     // whole openFiles object re-armed this effect on every status write, and
     // each run fires a request whose response writes statuses — a feedback
     // loop hammering ComposeFileStatus every 150ms.
-    const trackedKeys = useComposeFileState(state =>
-        Object.keys(state.openFiles[`${host}/${alias}`] ?? {}).sort().join('|'))
+    const trackedKeys = useComposeFileState(state => {
+        const context = `${host}/${alias}`;
+        return [...new Set([
+            ...Object.keys(state.openFiles[context] ?? {}),
+            ...Object.keys(state.knownFiles[context] ?? {}),
+        ])].sort().join('|');
+    })
     const setStatus = useComposeFileState(state => state.setStatus)
     const dockerSrv = useHostClient(DockerService)
     // container lifecycle events refresh the stack dots instantly; the
@@ -243,7 +248,6 @@ const FileListInner = () => {
 
         const refresh = async () => {
             const keys = trackedKeys ? trackedKeys.split('|') : []
-            if (keys.length === 0) return;
 
             const {val} = await callRPC(() => dockerSrv.composeFileStatus({ files: keys }))
             if (val && !cancelled) {

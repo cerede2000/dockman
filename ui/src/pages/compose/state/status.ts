@@ -7,8 +7,11 @@ import {create} from "zustand";
 interface OpenFilesState {
     // contextKey -> Set of directory paths
     openFiles: Record<string, Record<string, Status>>;
-    // Aggregate of the currently tracked compose statuses for every ancestor.
-    // This lets a folder reflect stacks located several levels below it.
+    // Runtime index returned from Docker labels. Unlike openFiles, this is not
+    // pruned when folders collapse, so nested stacks continue to be monitored.
+    knownFiles: Record<string, Record<string, Status>>;
+    // Aggregate of the indexed compose statuses for every ancestor. This lets
+    // a folder reflect stacks located several levels below it while collapsed.
     folderStatuses: Record<string, Record<string, Status>>;
     delete: (dir: string, keep?: string) => void;
     trackComposeStatus: (path: string) => void;
@@ -18,6 +21,7 @@ interface OpenFilesState {
 export const useComposeFileState = create<OpenFilesState>()(
     immer((set) => ({
         openFiles: {},
+        knownFiles: {},
         folderStatuses: {},
 
         delete: (dir: string, keep?: string) => {
@@ -60,7 +64,29 @@ export const useComposeFileState = create<OpenFilesState>()(
             set((state) => {
                 const key = getContextKey();
 
-                if (!state.openFiles[key]) return;
+                if (!state.openFiles[key]) {
+                    state.openFiles[key] = {};
+                }
+
+                // ComposeFileStatus also returns every deployed stack found in
+                // Docker labels. Keep only the alias displayed by this tree and
+                // replace its index so removed containers cannot leave stale dots.
+                const alias = key.slice(key.lastIndexOf('/') + 1);
+                const prefix = `${alias}/`;
+                const previousKnown = state.knownFiles[key] ?? {};
+                const nextKnown: Record<string, Status> = {};
+                for (const [file, value] of Object.entries(input)) {
+                    if (file !== alias && !file.startsWith(prefix)) continue;
+                    const previous = previousKnown[file];
+                    nextKnown[file] = previous && equals(StatusSchema, previous as Status, value)
+                        ? previous as Status
+                        : value;
+                }
+                const knownChanged = Object.keys(previousKnown).length !== Object.keys(nextKnown).length
+                    || Object.entries(nextKnown).some(([file, value]) => previousKnown[file] !== value);
+                if (knownChanged) {
+                    state.knownFiles[key] = nextKnown;
+                }
 
                 for (const [file, value] of Object.entries(input)) {
                     // Only update tracked files whose status ACTUALLY changed:
@@ -74,7 +100,8 @@ export const useComposeFileState = create<OpenFilesState>()(
                 }
 
                 const aggregates: Record<string, {servicesUp: number; servicesDown: number; servicesHealthy: number; servicesUnHealthy: number}> = {};
-                for (const [file, status] of Object.entries(state.openFiles[key])) {
+                const knownStatuses = knownChanged ? nextKnown : previousKnown;
+                for (const [file, status] of Object.entries(knownStatuses)) {
                     const parts = file.replaceAll('\\', '/').split('/').filter(Boolean);
                     parts.pop();
                     while (parts.length > 0) {
@@ -87,7 +114,20 @@ export const useComposeFileState = create<OpenFilesState>()(
                         parts.pop();
                     }
                 }
-                state.folderStatuses[key] = Object.fromEntries(Object.entries(aggregates).map(([directory, status]) => [directory, createMessage(StatusSchema, status)]));
+                const previousFolders = state.folderStatuses[key] ?? {};
+                const nextFolders: Record<string, Status> = {};
+                for (const [directory, aggregate] of Object.entries(aggregates)) {
+                    const value = createMessage(StatusSchema, aggregate);
+                    const previous = previousFolders[directory];
+                    nextFolders[directory] = previous && equals(StatusSchema, previous as Status, value)
+                        ? previous as Status
+                        : value;
+                }
+                const foldersChanged = Object.keys(previousFolders).length !== Object.keys(nextFolders).length
+                    || Object.entries(nextFolders).some(([directory, value]) => previousFolders[directory] !== value);
+                if (foldersChanged) {
+                    state.folderStatuses[key] = nextFolders;
+                }
             })
         }
     }))

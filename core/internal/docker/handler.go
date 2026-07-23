@@ -76,39 +76,21 @@ func (h *Handler) ComposeFileStatus(ctx context.Context, c *connect.Request[v1.C
 			return err
 		}
 
-		byFile := make(map[string]*stackStatus)
-		for i := range containers {
-			ct := containers[i]
-			cfg := ct.Labels[api.ConfigFilesLabel]
-			if cfg == "" {
-				continue
-			}
-			// config_files may list several files (compose + overrides)
-			for _, p := range strings.Split(cfg, ",") {
-				if p = strings.TrimSpace(p); p == "" {
-					continue
-				}
-				st := byFile[p]
-				if st == nil {
-					st = &stackStatus{}
-					byFile[p] = st
-				}
-				st.add(ct)
-			}
-		}
+		byFile, primaryFiles := buildComposeStatusIndex(containers)
 
 		for _, file := range c.Msg.Files {
-			absPath, resolveErr := dkSrv.Compose.ComposeAbsPath(file)
-			if resolveErr != nil {
-				log.Debug().Str("file", file).Err(resolveErr).Msg("could not resolve compose path for status")
-				finalResults[file] = &v1.Status{}
-				continue
-			}
-			if st, ok := byFile[absPath]; ok {
-				finalResults[file] = st.toProto()
-			} else {
-				// no containers for this stack -> stopped
-				finalResults[file] = &v1.Status{}
+			// The discovered index below overlays live states. Anything requested
+			// but absent from Docker is a stopped stack; no per-file path lookup is
+			// needed, which keeps the cost independent of the number of stacks.
+			finalResults[file] = &v1.Status{}
+		}
+
+		// Explicitly requested files above include stopped stacks that still
+		// exist on disk. Discovered entries add deployed stacks from every tree
+		// depth; they intentionally win for paths present in both maps.
+		for absPath := range primaryFiles {
+			if file := dkSrv.Compose.DockmanPath(absPath); file != "" {
+				finalResults[file] = byFile[absPath].toProto()
 			}
 		}
 		return nil
@@ -135,15 +117,53 @@ type stackStatus struct {
 	unhealthy int32
 }
 
+// buildComposeStatusIndex is deliberately linear in the container count. It
+// performs no filesystem access and no compose subprocess, and resolves each
+// stack path only once later in ComposeFileStatus.
+func buildComposeStatusIndex(containers []container.Summary) (map[string]*stackStatus, map[string]struct{}) {
+	byFile := make(map[string]*stackStatus)
+	primaryFiles := make(map[string]struct{})
+	for i := range containers {
+		ct := containers[i]
+		cfg := ct.Labels[api.ConfigFilesLabel]
+		if cfg == "" {
+			continue
+		}
+
+		first := ""
+		for _, path := range strings.Split(cfg, ",") {
+			path = strings.TrimSpace(path)
+			if path == "" {
+				continue
+			}
+			if first == "" {
+				first = path
+			}
+			status := byFile[path]
+			if status == nil {
+				status = &stackStatus{}
+				byFile[path] = status
+			}
+			status.add(ct)
+		}
+		if first != "" {
+			primaryFiles[first] = struct{}{}
+		}
+	}
+	return byFile, primaryFiles
+}
+
 func (s *stackStatus) add(ct container.Summary) {
 	switch string(ct.State) {
 	case "running":
 		s.up++
-		switch ct.Health.Status {
-		case container.Healthy:
-			s.healthy++
-		case container.Unhealthy:
-			s.unhealthy++
+		if ct.Health != nil {
+			switch ct.Health.Status {
+			case container.Healthy:
+				s.healthy++
+			case container.Unhealthy:
+				s.unhealthy++
+			}
 		}
 	case "restarting", "dead":
 		s.failed++

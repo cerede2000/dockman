@@ -3,6 +3,8 @@ package docker
 import (
 	"testing"
 
+	"github.com/docker/compose/v5/pkg/api"
+	"github.com/moby/moby/api/types/container"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,4 +42,36 @@ func Test_extractTraefikLabel(t *testing.T) {
 	hostsActual = extractTraefikLabel(labels)
 	expectedHosts = []string{}
 	require.Nil(t, hostsActual, "Host actual should be nil if traefic is disabled")
+}
+
+func TestBuildComposeStatusIndexIncludesNestedPrimaryPath(t *testing.T) {
+	const primary = "/server/stacks/substacks/whoami/compose.yml"
+	const override = "/server/stacks/substacks/whoami/compose.override.yml"
+	containers := []container.Summary{
+		{
+			Labels: map[string]string{api.ConfigFilesLabel: primary + "," + override},
+			State:  container.StateRunning,
+			Health: &container.HealthSummary{Status: container.Healthy},
+		},
+		{
+			Labels: map[string]string{api.ConfigFilesLabel: primary + "," + override},
+			State:  container.StateExited,
+			Status: "Exited (137) 2 minutes ago",
+		},
+		{State: container.StateRunning}, // not managed by Compose
+	}
+
+	byFile, primaryFiles := buildComposeStatusIndex(containers)
+
+	require.Equal(t, map[string]struct{}{primary: {}}, primaryFiles)
+	require.Equal(t, &stackStatus{up: 1, failed: 1, healthy: 1}, byFile[primary])
+	require.Equal(t, &stackStatus{up: 1, failed: 1, healthy: 1}, byFile[override])
+}
+
+func TestStackStatusAcceptsRunningContainerWithoutHealthcheck(t *testing.T) {
+	status := &stackStatus{}
+	require.NotPanics(t, func() {
+		status.add(container.Summary{State: container.StateRunning})
+	})
+	require.Equal(t, int32(1), status.up)
 }

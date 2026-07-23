@@ -174,9 +174,11 @@ func (s *Service) GetDockerService(name string) (*docker.Service, error) {
 	// reverse of the parser above: map the daemon's absolute compose-file
 	// path back to "alias/relpath" by matching it against the alias roots,
 	// so containers can link back to the dockman file that deployed them
+	// GetDockerService is scoped to one request. Resolve the alias table once
+	// here instead of querying it again for every container/stack path.
+	aliases, aliasesErr := val.As.List()
 	service.Compose.SetPathResolver(func(absPath string) string {
-		aliases, err := val.As.List()
-		if err != nil {
+		if aliasesErr != nil {
 			return ""
 		}
 		for _, alias := range aliases {
