@@ -98,7 +98,22 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 ? <IconButton size="small" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setAnchor(event.currentTarget); }} sx={{position: 'relative', color, p: 0.25}} aria-label={`Git status: ${stateLabel(status)}`}>{icon}</IconButton>
                 : <Box component="span" role="img" aria-label={`Aggregated Git status: ${stateLabel(status)}`} sx={{position: 'relative', color, p: 0.25, display: 'inline-flex', alignItems: 'center'}}>{icon}</Box>}
         </Tooltip>
-        <Popover open={interactive && Boolean(anchor)} anchorEl={anchor} onClose={() => setAnchor(null)} anchorOrigin={{vertical: 'bottom', horizontal: 'left'}} transformOrigin={{vertical: 'top', horizontal: 'left'}} slotProps={{paper: {sx: {width: 390, maxWidth: 'calc(100vw - 24px)', bgcolor: '#17191c', border: '1px solid rgba(255,255,255,.14)', borderRadius: 2}}}}>
+        <Popover
+            open={interactive && Boolean(anchor)}
+            anchorEl={anchor}
+            onClose={() => setAnchor(null)}
+            // Popovers render in a portal but React events still bubble through
+            // the file row that owns this component. Stop every interaction at
+            // the portal boundary so clicking its content/backdrop cannot open
+            // the Compose file or reset its selected editor tab.
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+            anchorOrigin={{vertical: 'bottom', horizontal: 'left'}}
+            transformOrigin={{vertical: 'top', horizontal: 'left'}}
+            slotProps={{paper: {sx: {width: 390, maxWidth: 'calc(100vw - 24px)', bgcolor: '#17191c', border: '1px solid rgba(255,255,255,.14)', borderRadius: 2}}}}
+        >
             <Stack spacing={1.25} sx={{p: 1.75, userSelect: 'text'}}>
                 <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><Sync sx={{color}}/><Box sx={{minWidth: 0}}><Typography noWrap sx={{fontWeight: 700}}>{status.fullComposePath}</Typography><Typography variant="caption" color="text.secondary">{status.repositoryName} · {status.repositoryBranch}</Typography></Box></Stack>
                 <Divider/>
@@ -111,11 +126,12 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 {status.autoSyncEnabled && !status.automationPaused && <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Next check</Typography><Typography variant="body2">{dateLabel(status.nextCheckAt)}</Typography></Stack>}
                 <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Auto-deploy</Typography><Typography variant="body2">{status.autoDeployEnabled ? status.deployState.replaceAll('_', ' ') : 'Off'}</Typography></Stack>
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
+                {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
                 {error && <Alert severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{error}</Alert>}
                 <Divider/>
                 <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap'}}>
                     {status.autoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
-                    <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={openRelevantGitView}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : 'Preview'}</Button>
+                    <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={openRelevantGitView}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' ? 'Review & push' : 'Preview'}</Button>
                     {status.autoSyncEnabled && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused ? 'Resume' : 'Pause'}</Button>}
                     <Button size="small" startIcon={<OpenInNew/>} onClick={() => navigate('/settings?tab=2')}>Git settings</Button>
                 </Stack>
