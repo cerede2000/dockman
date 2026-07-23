@@ -85,6 +85,8 @@ Résultat attendu : les étapes de validation puis le résultat du déploiement 
 
 Résultat attendu : chaque dossier parent affiche en permanence l’état agrégé de ses stacks descendantes, même replié. Il est vert si toutes sont synchronisées et prend automatiquement la couleur de l’état le plus défavorable dès qu’une stack est en attente, en pause, en conflit ou en erreur.
 
+L’indicateur d’un dossier parent est uniquement informatif : il n’ouvre aucune action et n’affiche pas les badges d’automatisation d’une stack arbitraire. Déplier le dossier permet d’accéder aux indicateurs interactifs de chaque stack précise.
+
 ## 9. Isolation par hôte
 
 1. Basculer sur un autre hôte Docker.

@@ -42,7 +42,11 @@ function dateLabel(value?: string) {
     return value ? new Date(value).toLocaleString() : '—';
 }
 
-export default function GitStackStatusIndicator({status, size = 18}: {status?: GitStackStatus; size?: number}) {
+export default function GitStackStatusIndicator({status, size = 18, interactive = true}: {
+    status?: GitStackStatus;
+    size?: number;
+    interactive?: boolean;
+}) {
     const [anchor, setAnchor] = useState<HTMLElement | null>(null);
     const [busy, setBusy] = useState(false);
     const {showError, showSuccess} = useSnackbar();
@@ -52,6 +56,11 @@ export default function GitStackStatusIndicator({status, size = 18}: {status?: G
     const error = status?.deployState === 'failed' ? status.deployError : status?.error;
     const encodedComposePath = useMemo(() => status?.composePath.split('/').map(encodeURIComponent).join('/') ?? '', [status?.composePath]);
     if (!status) return null;
+
+    const icon = <>
+        <Sync sx={{fontSize: size, animation: status.state === 'checking' ? 'dockman-git-spin 1.1s linear infinite' : 'none', '@keyframes dockman-git-spin': {to: {transform: 'rotate(360deg)'}}}}/>
+        {interactive && (status.autoDeployEnabled || status.autoSyncEnabled) && <Box sx={{position: 'absolute', right: -2, bottom: -2, width: 11, height: 11, borderRadius: '50%', bgcolor: '#121212', display: 'grid', placeItems: 'center'}}>{status.autoDeployEnabled ? <RocketLaunchOutlined sx={{fontSize: 9, color}}/> : <ScheduleOutlined sx={{fontSize: 9, color}}/>}</Box>}
+    </>;
 
     const pause = async () => {
         setBusy(true);
@@ -84,13 +93,12 @@ export default function GitStackStatusIndicator({status, size = 18}: {status?: G
     };
 
     return <>
-        <Tooltip title={`${stateLabel(status)} · ${status.repositoryName}`} arrow>
-            <IconButton size="small" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setAnchor(event.currentTarget); }} sx={{position: 'relative', color, p: 0.25}} aria-label={`Git status: ${stateLabel(status)}`}>
-                <Sync sx={{fontSize: size, animation: status.state === 'checking' ? 'dockman-git-spin 1.1s linear infinite' : 'none', '@keyframes dockman-git-spin': {to: {transform: 'rotate(360deg)'}}}}/>
-                {(status.autoDeployEnabled || status.autoSyncEnabled) && <Box sx={{position: 'absolute', right: -2, bottom: -2, width: 11, height: 11, borderRadius: '50%', bgcolor: '#121212', display: 'grid', placeItems: 'center'}}>{status.autoDeployEnabled ? <RocketLaunchOutlined sx={{fontSize: 9, color}}/> : <ScheduleOutlined sx={{fontSize: 9, color}}/>}</Box>}
-            </IconButton>
+        <Tooltip title={interactive ? `${stateLabel(status)} · ${status.repositoryName}` : `${stateLabel(status)} · Open this folder to inspect its stacks`} arrow>
+            {interactive
+                ? <IconButton size="small" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setAnchor(event.currentTarget); }} sx={{position: 'relative', color, p: 0.25}} aria-label={`Git status: ${stateLabel(status)}`}>{icon}</IconButton>
+                : <Box component="span" role="img" aria-label={`Aggregated Git status: ${stateLabel(status)}`} sx={{position: 'relative', color, p: 0.25, display: 'inline-flex', alignItems: 'center'}}>{icon}</Box>}
         </Tooltip>
-        <Popover open={Boolean(anchor)} anchorEl={anchor} onClose={() => setAnchor(null)} anchorOrigin={{vertical: 'bottom', horizontal: 'left'}} transformOrigin={{vertical: 'top', horizontal: 'left'}} slotProps={{paper: {sx: {width: 390, maxWidth: 'calc(100vw - 24px)', bgcolor: '#17191c', border: '1px solid rgba(255,255,255,.14)', borderRadius: 2}}}}>
+        <Popover open={interactive && Boolean(anchor)} anchorEl={anchor} onClose={() => setAnchor(null)} anchorOrigin={{vertical: 'bottom', horizontal: 'left'}} transformOrigin={{vertical: 'top', horizontal: 'left'}} slotProps={{paper: {sx: {width: 390, maxWidth: 'calc(100vw - 24px)', bgcolor: '#17191c', border: '1px solid rgba(255,255,255,.14)', borderRadius: 2}}}}>
             <Stack spacing={1.25} sx={{p: 1.75, userSelect: 'text'}}>
                 <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><Sync sx={{color}}/><Box sx={{minWidth: 0}}><Typography noWrap sx={{fontWeight: 700}}>{status.fullComposePath}</Typography><Typography variant="caption" color="text.secondary">{status.repositoryName} · {status.repositoryBranch}</Typography></Box></Stack>
                 <Divider/>

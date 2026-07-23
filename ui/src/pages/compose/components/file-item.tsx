@@ -297,7 +297,8 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                     }}
                 />
 
-                <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={17}/>
+                <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={17}
+                                         interactive={Boolean(exactGitStatus)}/>
                 <StatusIndicator fileStatus={fileStatus}/>
 
                 <IconButton
