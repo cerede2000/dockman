@@ -14,6 +14,7 @@ import (
 
 const (
 	stackSyncPending       = "pending"
+	stackSyncUnselected    = "unselected"
 	stackSyncUpToDate      = "up_to_date"
 	stackSyncChecking      = "checking"
 	stackSyncLocalChanges  = "local_changes"
@@ -34,6 +35,7 @@ type GitStackStatusView struct {
 	RepositoryBranch  string     `json:"repositoryBranch"`
 	RepositorySubPath string     `json:"repositorySubPath"`
 	State             string     `json:"state"`
+	Selected          bool       `json:"selected"`
 	Error             string     `json:"error,omitempty"`
 	ConflictCount     int        `json:"conflictCount"`
 	AutoSyncEnabled   bool       `json:"autoSyncEnabled"`
@@ -146,12 +148,38 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			ComposePath: row.ComposePath, FullComposePath: filepath.ToSlash(filepath.Join(binding.StackPath, row.ComposePath)),
 			RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 			RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, row.ComposePath)),
-			State:             state, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
+			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
 			AutoSyncEnabled: binding.AutoSyncEnabled, AutomationPaused: row.AutomationPaused,
 			AutoDeployEnabled: deployEnabled, AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
 			LastCheckedAt: row.LastCheckedAt, LastSuccessAt: row.LastSuccessAt, NextCheckAt: nextCheck,
 			LastCommit: row.LastCommit, DeployState: deployState, DeployError: row.DeployError, LastDeployAt: row.LastDeployAt,
 		})
+	}
+	existing := make(map[string]struct{}, len(result))
+	for _, view := range result {
+		existing[view.BindingID+"\x00"+view.ComposePath] = struct{}{}
+	}
+	for _, binding := range bindings {
+		repository := repositoryByID[binding.RepositoryUUID]
+		selected := make(map[string]struct{})
+		for _, path := range selectedComposePaths(binding) {
+			selected[path] = struct{}{}
+		}
+		for _, composePath := range splitPatternLines(binding.ComposePaths) {
+			if _, approved := selected[composePath]; approved {
+				continue
+			}
+			if _, present := existing[binding.UUID+"\x00"+composePath]; present {
+				continue
+			}
+			result = append(result, GitStackStatusView{
+				BindingID: binding.UUID, Host: binding.Host, StackPath: binding.StackPath,
+				ComposePath: composePath, FullComposePath: filepath.ToSlash(filepath.Join(binding.StackPath, composePath)),
+				RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
+				RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, composePath)),
+				State:             stackSyncUnselected, Selected: false, DeployState: "disabled",
+			})
+		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Host != result[j].Host {
@@ -160,6 +188,56 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 		return result[i].FullComposePath < result[j].FullComposePath
 	})
 	return result, nil
+}
+
+// EnableGitStackSynchronization atomically approves a catalogued local stack.
+// It does not export, import, deploy, or otherwise touch the stack files.
+func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (GitStackStatusView, error) {
+	automationLock := s.repositoryLock("automation:" + bindingID)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	composePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(composePath))))
+	if err := validateRelativePath(composePath, false); err != nil {
+		return GitStackStatusView{}, fmt.Errorf("invalid Compose path: %w", err)
+	}
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return GitStackStatusView{}, err
+	}
+	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
+	repositoryLock.Lock()
+	defer repositoryLock.Unlock()
+	if !stringInSlice(composePath, splitPatternLines(binding.ComposePaths)) {
+		return GitStackStatusView{}, errors.New("stack is not present in this folder link catalog; refresh its files and retry")
+	}
+	selected := uniqueSortedStrings(append(selectedComposePaths(binding), composePath))
+	binding.ComposeSelectionMode = composeSelectionSelected
+	if len(selected) == len(splitPatternLines(binding.ComposePaths)) {
+		binding.ComposeSelectionMode = composeSelectionAll
+	}
+	binding.SelectedComposePaths = strings.Join(selected, "\n")
+	if err := s.store.SaveBinding(&binding); err != nil {
+		return GitStackStatusView{}, err
+	}
+	if err := s.reconcileGitStackStatuses(binding); err != nil {
+		return GitStackStatusView{}, err
+	}
+	now := time.Now().UTC()
+	if err := s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{
+		"state": stackSyncLocalChanges, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
+	}); err != nil {
+		return GitStackStatusView{}, err
+	}
+	views, err := s.ListGitStackStatusViews(binding.Host)
+	if err != nil {
+		return GitStackStatusView{}, err
+	}
+	for _, view := range views {
+		if view.BindingID == bindingID && view.ComposePath == composePath {
+			return view, nil
+		}
+	}
+	return GitStackStatusView{}, gorm.ErrRecordNotFound
 }
 
 func (s *Service) SetGitStackAutomationPause(bindingID, composePath string, paused bool) (GitStackStatusView, error) {
@@ -393,8 +471,10 @@ func stringInSlice(value string, values []string) bool {
 	return false
 }
 
-// MarkLocalChange is called after successful user-driven file mutations. It
-// performs only path comparisons and compact DB updates; it never reads files.
+// MarkLocalChange is called after successful user-driven file mutations. Most
+// changes only require path comparisons and compact DB updates. Compose-file
+// and directory mutations trigger one bounded catalog refresh so folder
+// creation, copy, rename, and deletion cannot leave stale stack choices.
 func (s *Service) MarkLocalChange(host, changedPath string) {
 	if !s.enabled {
 		return
@@ -411,10 +491,79 @@ func (s *Service) MarkLocalChange(host, changedPath string) {
 			continue
 		}
 		relative := strings.TrimPrefix(strings.TrimPrefix(changedPath, prefix), "/")
+		if composeCatalogMayHaveChanged(s, binding, relative) {
+			fresh, changed := s.reconcileLocalComposeCatalog(binding.UUID)
+			if changed {
+				binding = fresh
+			}
+		}
 		for _, composePath := range composePathsForFile(selectedComposePaths(binding), relative) {
 			_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{
 				"state": stackSyncLocalChanges, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
 			})
 		}
 	}
+}
+
+func isComposeCatalogPath(path string) bool {
+	switch strings.ToLower(filepath.Base(filepath.FromSlash(path))) {
+	case "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml":
+		return true
+	default:
+		return false
+	}
+}
+
+func composeCatalogMayHaveChanged(s *Service, binding StackBinding, composePath string) bool {
+	known := splitPatternLines(binding.ComposePaths)
+	if isComposeCatalogPath(composePath) {
+		if !stringInSlice(composePath, known) {
+			return true
+		}
+		targetFS, targetRoot, err := s.resolveBindingStack(binding)
+		if err != nil {
+			return false
+		}
+		info, err := targetFS.Stat(targetFS.Join(targetRoot, filepath.FromSlash(composePath)))
+		return err != nil || !info.Mode().IsRegular()
+	}
+
+	// Deleting or renaming a stack directory reports the directory itself,
+	// not every Compose file it used to contain.
+	prefix := strings.Trim(composePath, "/")
+	for _, knownCompose := range known {
+		if prefix == "" || strings.HasPrefix(knownCompose, prefix+"/") {
+			return true
+		}
+	}
+
+	// Copying or renaming a directory into a linked root can introduce one or
+	// more Compose files at once. Stat only this user-mutated path; no periodic
+	// filesystem scan is added.
+	targetFS, targetRoot, err := s.resolveBindingStack(binding)
+	if err != nil {
+		return false
+	}
+	info, err := targetFS.Stat(targetFS.Join(targetRoot, filepath.FromSlash(composePath)))
+	return err == nil && info.IsDir()
+}
+
+func (s *Service) reconcileLocalComposeCatalog(bindingID string) (StackBinding, bool) {
+	automationLock := s.repositoryLock("automation:" + bindingID)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return binding, false
+	}
+	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
+	repositoryLock.Lock()
+	defer repositoryLock.Unlock()
+	before := binding.ComposePaths + "\x00" + binding.SelectedComposePaths + "\x00" + binding.ComposeSelectionMode
+	binding, _, err = s.refreshBindingComposeCatalogLocked(binding)
+	if err != nil {
+		return binding, false
+	}
+	after := binding.ComposePaths + "\x00" + binding.SelectedComposePaths + "\x00" + binding.ComposeSelectionMode
+	return binding, before != after
 }

@@ -52,6 +52,94 @@ func TestGitStackStatusIndexTracksExactNestedStack(t *testing.T) {
 	require.Equal(t, binding.ID, views[0].BindingID)
 }
 
+func TestNewComposeCreatedByEditorIsCataloguedUnselectedAndCanBeEnabled(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	gammaDir := filepath.Join(stackRoot, "gamma")
+	require.NoError(t, os.MkdirAll(gammaDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(gammaDir, "compose.yml"), []byte("services: {}\n"), 0o644))
+
+	service.MarkLocalChange("local", "compose/gamma/compose.yml")
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, splitPatternLines(updated.ComposePaths), "gamma/compose.yml")
+	require.NotContains(t, selectedComposePaths(updated), "gamma/compose.yml")
+
+	views, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.Len(t, views, 3)
+	var grey GitStackStatusView
+	for _, view := range views {
+		if view.ComposePath == "gamma/compose.yml" {
+			grey = view
+		}
+	}
+	require.Equal(t, stackSyncUnselected, grey.State)
+	require.False(t, grey.Selected)
+
+	enabled, err := service.EnableGitStackSynchronization(binding.ID, "gamma/compose.yml")
+	require.NoError(t, err)
+	require.True(t, enabled.Selected)
+	require.Equal(t, stackSyncLocalChanges, enabled.State)
+	updated, err = service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, selectedComposePaths(updated), "gamma/compose.yml")
+
+	require.NoError(t, os.Remove(filepath.Join(gammaDir, "compose.yml")))
+	service.MarkLocalChange("local", "compose/gamma/compose.yml")
+	updated, err = service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.NotContains(t, splitPatternLines(updated.ComposePaths), "gamma/compose.yml")
+	views, err = service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.Len(t, views, 2)
+}
+
+func TestDeletingStackDirectoryRemovesStaleComposeChoice(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(stackRoot, "beta")))
+	service.MarkLocalChange("local", "compose/beta")
+
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/compose.yml"}, splitPatternLines(updated.ComposePaths))
+	require.Equal(t, []string{"alpha/compose.yml"}, selectedComposePaths(updated))
+	views, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	require.Equal(t, "alpha/compose.yml", views[0].ComposePath)
+}
+
+func TestCopiedStackDirectoryIsCataloguedWithoutPageRefresh(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "gamma"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "gamma", "compose.yaml"), []byte("services: {}\n"), 0o644))
+
+	service.MarkLocalChange("local", "compose/gamma")
+
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, splitPatternLines(updated.ComposePaths), "gamma/compose.yaml")
+	require.NotContains(t, selectedComposePaths(updated), "gamma/compose.yaml")
+}
+
+func TestLocalDeletionKeepsStackCataloguedWhenGitStillContainsIt(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	repository, err := service.store.GetRepository(binding.RepositoryID)
+	require.NoError(t, err)
+	remoteChange(t, repository.RemoteURL, "stacks/beta/compose.yml", "services: {}\n")
+	_, err = service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(stackRoot, "beta")))
+	service.MarkLocalChange("local", "compose/beta")
+
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, splitPatternLines(updated.ComposePaths), "beta/compose.yml",
+		"a Git-only stack must remain selectable so it can be imported or automatically deployed")
+}
+
 func TestGitStackPauseOnlyExcludesThatStackFromAutomation(t *testing.T) {
 	service, _, binding := prepareMultiStackBinding(t)
 

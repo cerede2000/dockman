@@ -12,7 +12,8 @@ export interface GitStackStatus {
     repositoryName: string;
     repositoryBranch: string;
     repositorySubPath: string;
-    state: 'pending' | 'up_to_date' | 'checking' | 'local_changes' | 'remote_changes' | 'orphaned' | 'conflict' | 'error';
+    state: 'unselected' | 'pending' | 'up_to_date' | 'checking' | 'local_changes' | 'remote_changes' | 'orphaned' | 'conflict' | 'error';
+    selected: boolean;
     error?: string;
     conflictCount: number;
     autoSyncEnabled: boolean;
@@ -57,7 +58,7 @@ export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | und
         if (status.state === 'orphaned') return 5;
         if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending') return 4;
         if (status.state === 'checking') return 3;
-        if (status.automationPaused || status.state === 'pending') return 2;
+        if (!status.selected || status.automationPaused || status.state === 'pending') return 2;
         return 1;
     };
     return statuses.reduce<GitStackStatus | undefined>((worst, current) => {
@@ -99,6 +100,7 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
 }));
 
 const watchers = new Map<string, {references: number; timer?: ReturnType<typeof setInterval>; running: boolean; onVisible?: () => void}>();
+const mutationRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
 
 export async function refreshGitStackStatuses(host: string) {
     if (!host) return;
@@ -121,7 +123,17 @@ export async function refreshGitStackStatuses(host: string) {
 export function markGitStackLocal(host: string, changedPath: string) {
     const rows = Object.values(useGitStatusStore.getState().byHost[host] ?? {});
     const path = normalizePath(changedPath);
-    const candidates = rows.map((row) => {
+    // The server has already processed the successful file mutation before
+    // this callback runs. Coalesce bursts (upload/copy/rename) into one compact
+    // status read so added and removed stacks appear immediately, including
+    // operations reported by their directory path rather than compose.yml.
+    const pendingRefresh = mutationRefreshes.get(host);
+    if (pendingRefresh) clearTimeout(pendingRefresh);
+    mutationRefreshes.set(host, setTimeout(() => {
+        mutationRefreshes.delete(host);
+        void refreshGitStackStatuses(host);
+    }, 100));
+    const candidates = rows.filter((row) => row.selected).map((row) => {
         const compose = normalizePath(row.fullComposePath);
         const separator = compose.lastIndexOf('/');
         const root = separator < 0 ? '' : compose.slice(0, separator);

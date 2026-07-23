@@ -38,6 +38,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("GET /stack-statuses", h.listGitStackStatuses)
 	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
+	mux.HandleFunc("POST /bindings/{id}/stack-select/{composePath...}", h.enableGitStackSynchronization)
 	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
 	mux.HandleFunc("POST /bindings/{id}/orphan/{composePath...}", h.resolveGitOrphan)
 	mux.HandleFunc("POST /bindings", h.createBinding)
@@ -117,6 +118,18 @@ func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Req
 		return
 	}
 	row, err := h.service.SetGitStackAutomationPause(r.PathValue("id"), r.PathValue("composePath"), input.Paused)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) enableGitStackSynchronization(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	row, err := h.service.EnableGitStackSynchronization(r.PathValue("id"), r.PathValue("composePath"))
 	if err != nil {
 		writeServiceError(w, err)
 		return

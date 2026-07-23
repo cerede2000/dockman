@@ -264,6 +264,12 @@ func TestRefreshComposeCatalogAddsNewLocalStackUnselected(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, composeSelectionAll, approved.ComposeSelectionMode)
 	require.Contains(t, approved.SelectedComposePaths, "gamma/compose.yml")
+
+	require.NoError(t, os.RemoveAll(gamma))
+	withoutGamma, err := service.RefreshBindingComposeCatalog(binding.ID)
+	require.NoError(t, err)
+	require.NotContains(t, withoutGamma.ComposePaths, "gamma/compose.yml")
+	require.NotContains(t, withoutGamma.SelectedComposePaths, "gamma/compose.yml")
 }
 
 func TestBindingAppliesComposeSelectionBeforeInitialExport(t *testing.T) {

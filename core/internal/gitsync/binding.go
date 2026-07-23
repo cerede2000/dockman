@@ -514,7 +514,16 @@ func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBin
 	if err != nil {
 		return row, nil, err
 	}
-	discovered := discoverComposeFiles(targetFS, targetRoot)
+	localCompose := discoverComposeFiles(targetFS, targetRoot)
+	repository, err := s.store.GetRepository(row.RepositoryUUID)
+	if err != nil {
+		return row, nil, err
+	}
+	remoteCompose, err := s.repositoryComposeCatalog(repository, row.SubPath)
+	if err != nil {
+		return row, nil, err
+	}
+	discovered := uniqueSortedStrings(append(localCompose, remoteCompose...))
 	known := splitPatternLines(row.ComposePaths)
 	knownSet := make(map[string]struct{}, len(known))
 	for _, path := range known {
@@ -527,20 +536,86 @@ func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBin
 		}
 		added = append(added, path)
 	}
-	if len(added) == 0 {
+	discoveredSet := make(map[string]struct{}, len(discovered))
+	for _, path := range discovered {
+		discoveredSet[path] = struct{}{}
+	}
+	removed := make([]string, 0)
+	for _, path := range known {
+		if _, exists := discoveredSet[path]; !exists {
+			removed = append(removed, path)
+		}
+	}
+	if len(added) == 0 && len(removed) == 0 {
 		return row, nil, nil
 	}
 	// Capture the effective selection before extending the catalog. An old
 	// "all" selection therefore becomes an explicit selection of the stacks
 	// the user already approved, leaving every newly found stack grey.
 	selected := selectedComposePaths(row)
-	row.ComposePaths = strings.Join(uniqueSortedStrings(append(known, added...)), "\n")
-	row.ComposeSelectionMode = composeSelectionSelected
+	selected = keepCataloguedPaths(selected, discoveredSet)
+	row.ComposePaths = strings.Join(discovered, "\n")
+	if len(added) > 0 {
+		row.ComposeSelectionMode = composeSelectionSelected
+	}
+	if len(selected) == len(discovered) && len(added) == 0 {
+		row.ComposeSelectionMode = composeSelectionAll
+	}
 	row.SelectedComposePaths = strings.Join(uniqueSortedStrings(selected), "\n")
+	row.AutoDeployComposePaths = strings.Join(keepCataloguedPaths(splitPatternLines(row.AutoDeployComposePaths), discoveredSet), "\n")
 	if err := s.store.SaveBinding(&row); err != nil {
 		return row, nil, err
 	}
+	if len(removed) > 0 {
+		baseline, baselineErr := s.store.BindingBaseline(row.UUID)
+		if baselineErr != nil {
+			return row, nil, baselineErr
+		}
+		for path := range baseline {
+			for _, removedCompose := range removed {
+				if stringInSlice(removedCompose, composePathsForFile(known, path)) {
+					delete(baseline, path)
+					break
+				}
+			}
+		}
+		if err := s.store.ReplaceBindingBaseline(row.UUID, baseline); err != nil {
+			return row, nil, err
+		}
+	}
+	if err := s.reconcileGitStackStatuses(row); err != nil {
+		return row, nil, err
+	}
 	return row, added, nil
+}
+
+func keepCataloguedPaths(paths []string, catalog map[string]struct{}) []string {
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, exists := catalog[path]; exists {
+			result = append(result, path)
+		}
+	}
+	return uniqueSortedStrings(result)
+}
+
+func (s *Service) repositoryComposeCatalog(repository Repository, subPath string) ([]string, error) {
+	repo, err := s.openRepository(repository)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := repositoryCommitTree(repo, repository.DefaultBranch)
+	if err != nil {
+		return nil, err
+	}
+	tree, err = repositorySubtree(tree, subPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return discoverRepositoryComposeFiles(tree), nil
 }
 
 func (s *Service) AddBindingExclusion(id string, input BindingExclusionInput) (BindingView, error) {
