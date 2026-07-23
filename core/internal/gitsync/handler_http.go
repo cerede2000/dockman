@@ -38,6 +38,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("GET /stack-statuses", h.listGitStackStatuses)
 	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
+	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
@@ -61,6 +62,18 @@ func NewHTTPHandler(service *Service) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) pushGitStack(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.PushGitStack(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) listGitStackStatuses(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +138,7 @@ func isMemoryIntensiveGitRequest(r *http.Request) bool {
 	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
 		return false
 	}
-	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/repositories"} {
+	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/repositories"} {
 		if strings.Contains(r.URL.Path, marker) {
 			return true
 		}

@@ -1,6 +1,7 @@
 package gitsync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -194,6 +195,62 @@ func (s *Service) SetGitStackAutomationPause(bindingID, composePath string, paus
 		}
 	}
 	return GitStackStatusView{}, gorm.ErrRecordNotFound
+}
+
+// PushGitStack performs the same preview-token protected export as the full
+// Git settings view, but limits the transfer to the stack represented by one
+// status indicator. It never auto-resolves conflicts or includes skipped
+// sensitive/excluded files.
+func (s *Service) PushGitStack(ctx context.Context, bindingID, composePath string) (TransferResult, error) {
+	composePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(composePath))))
+	if err := validateRelativePath(composePath, false); err != nil {
+		return TransferResult{}, fmt.Errorf("invalid Compose path: %w", err)
+	}
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return TransferResult{}, err
+	}
+	if !stringInSlice(composePath, selectedComposePaths(binding)) {
+		return TransferResult{}, errors.New("stack is not selected for Git synchronization")
+	}
+	preview, err := s.PreviewBinding(bindingID, "stack_to_repository", TransferInput{})
+	if err != nil {
+		return TransferResult{}, err
+	}
+	selected, conflicts := stackTransferPaths(preview, selectedComposePaths(binding), composePath)
+	if conflicts > 0 {
+		return TransferResult{}, errors.New("push refused: this stack has a conflict; review and resolve it before pushing")
+	}
+	if len(selected) == 0 {
+		return TransferResult{}, errors.New("no transferable local change was found for this stack")
+	}
+	result, err := s.ExportBinding(ctx, bindingID, TransferInput{PreviewToken: preview.PreviewToken, SelectedPaths: selected, compactResult: true})
+	if err != nil {
+		return TransferResult{}, err
+	}
+	// Re-evaluate every compact badge after the partial export so unrelated
+	// local changes in the same folder link remain visible.
+	_, _ = s.PreviewBinding(bindingID, "stack_to_repository", TransferInput{})
+	result.Message = fmt.Sprintf("Stack pushed to Git (%d file(s))", len(selected))
+	return result, nil
+}
+
+func stackTransferPaths(preview TransferPreview, composePaths []string, targetCompose string) ([]string, int) {
+	selected := make([]string, 0)
+	conflicts := 0
+	for _, entry := range preview.Entries {
+		if !stringInSlice(targetCompose, composePathsForFile(composePaths, entry.Path)) {
+			continue
+		}
+		switch entry.Status {
+		case "add", "modify":
+			selected = append(selected, entry.Path)
+		case "conflict":
+			conflicts++
+		}
+	}
+	sort.Strings(selected)
+	return selected, conflicts
 }
 
 func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview TransferPreview) {

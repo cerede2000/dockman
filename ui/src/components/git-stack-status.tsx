@@ -2,7 +2,7 @@ import {
     Alert, Box, Button, CircularProgress, Divider, IconButton, Popover, Stack, Tooltip, Typography,
 } from '@mui/material';
 import {
-    CompareArrowsOutlined, OpenInNew, PauseCircleOutlined, PlayCircleOutlined, RocketLaunchOutlined,
+    CloudUploadOutlined, CompareArrowsOutlined, OpenInNew, PauseCircleOutlined, PlayCircleOutlined, RocketLaunchOutlined,
     ScheduleOutlined, Sync,
 } from '@mui/icons-material';
 import {useMemo, useState} from 'react';
@@ -49,6 +49,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
 }) {
     const [anchor, setAnchor] = useState<HTMLElement | null>(null);
     const [busy, setBusy] = useState(false);
+    const [confirmPush, setConfirmPush] = useState(false);
     const {showError, showSuccess} = useSnackbar();
     const navigate = useNavigate();
     const severity = status ? gitStatusSeverity(status) : 'neutral';
@@ -92,6 +93,27 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
         navigate(`/settings?tab=2&gitBinding=${encodeURIComponent(status.bindingId)}&gitAction=${action}&gitCompose=${encodeURIComponent(status.composePath)}`);
     };
 
+    const closePopover = () => {
+        setAnchor(null);
+        setConfirmPush(false);
+    };
+
+    const pushStack = async () => {
+        setBusy(true);
+        try {
+            const result = await request<{message: string}>(`/bindings/${status.bindingId}/stack-push/${encodedComposePath}`, {method: 'POST'});
+            await refreshGitStackStatuses(status.host);
+            showSuccess(result.message);
+            closePopover();
+        } catch (reason) {
+            showError((reason as Error).message);
+            await refreshGitStackStatuses(status.host);
+        } finally {
+            setBusy(false);
+            setConfirmPush(false);
+        }
+    };
+
     return <>
         <Tooltip title={interactive ? `${stateLabel(status)} · ${status.repositoryName}` : `${stateLabel(status)} · Open this folder to inspect its stacks`} arrow>
             {interactive
@@ -101,7 +123,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
         <Popover
             open={interactive && Boolean(anchor)}
             anchorEl={anchor}
-            onClose={() => setAnchor(null)}
+            onClose={closePopover}
             // Popovers render in a portal but React events still bubble through
             // the file row that owns this component. Stop every interaction at
             // the portal boundary so clicking its content/backdrop cannot open
@@ -127,11 +149,13 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Auto-deploy</Typography><Typography variant="body2">{status.autoDeployEnabled ? status.deployState.replaceAll('_', ' ') : 'Off'}</Typography></Stack>
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
                 {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
+                {confirmPush && <Alert severity="warning" action={<Stack direction="row" spacing={.5}><Button size="small" color="inherit" disabled={busy} onClick={() => setConfirmPush(false)}>Cancel</Button><Button size="small" color="warning" variant="contained" disabled={busy} onClick={() => void pushStack()}>{busy ? <CircularProgress size={14}/> : 'Confirm push'}</Button></Stack>}>Push every transferable local change belonging to this stack with Dockman's default commit message?</Alert>}
                 {error && <Alert severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{error}</Alert>}
                 <Divider/>
                 <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap'}}>
                     {status.autoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
-                    <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={openRelevantGitView}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' ? 'Review & push' : 'Preview'}</Button>
+                    {status.state === 'local_changes' && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>Push to Git</Button>}
+                    <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={openRelevantGitView}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' ? 'Review details' : 'Preview'}</Button>
                     {status.autoSyncEnabled && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused ? 'Resume' : 'Pause'}</Button>}
                     <Button size="small" startIcon={<OpenInNew/>} onClick={() => navigate('/settings?tab=2')}>Git settings</Button>
                 </Stack>
