@@ -83,7 +83,7 @@ Résultat attendu : les étapes de validation puis le résultat du déploiement 
 2. Créer un conflit ou une erreur sur cette stack.
 3. Replier toute l’arborescence.
 
-Résultat attendu : les dossiers parents signalent l’anomalie même repliés. Ils ne dupliquent pas les indicateurs verts en régime nominal.
+Résultat attendu : chaque dossier parent affiche en permanence l’état agrégé de ses stacks descendantes, même replié. Il est vert si toutes sont synchronisées et prend automatiquement la couleur de l’état le plus défavorable dès qu’une stack est en attente, en pause, en conflit ou en erreur.
 
 ## 9. Isolation par hôte
 

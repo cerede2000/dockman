@@ -30,7 +30,7 @@ export interface GitStackStatus {
 
 interface GitStatusStore {
     byHost: Record<string, Record<string, GitStackStatus>>;
-    issuesByHost: Record<string, Record<string, GitStackStatus>>;
+    aggregateByHost: Record<string, Record<string, GitStackStatus>>;
     setHost: (host: string, rows: GitStackStatus[]) => void;
 }
 
@@ -51,31 +51,35 @@ export function gitStatusSeverity(status: GitStackStatus): 'neutral' | 'info' | 
 }
 
 export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | undefined {
-    const rank = {error: 5, conflict: 5, local_changes: 3, remote_changes: 3, checking: 2, pending: 1, up_to_date: 0};
+    const rank = (status: GitStackStatus) => {
+        if (status.deployState === 'failed') return 7;
+        if (status.state === 'error' || status.state === 'conflict') return 6;
+        if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending') return 4;
+        if (status.state === 'checking') return 3;
+        if (status.automationPaused || status.state === 'pending') return 2;
+        return 1;
+    };
     return statuses.reduce<GitStackStatus | undefined>((worst, current) => {
-        const currentRank = current.deployState === 'failed' ? 6 : rank[current.state] ?? 0;
-        const worstRank = worst ? (worst.deployState === 'failed' ? 6 : rank[worst.state] ?? 0) : -1;
-        return currentRank > worstRank ? current : worst;
+        return !worst || rank(current) > rank(worst) ? current : worst;
     }, undefined);
 }
 
-function issueFolders(rows: Record<string, GitStackStatus>) {
-    const issues: Record<string, GitStackStatus> = {};
+function aggregateFolders(rows: Record<string, GitStackStatus>) {
+    const aggregates: Record<string, GitStackStatus> = {};
     for (const status of Object.values(rows)) {
-        if (!['warning', 'error'].includes(gitStatusSeverity(status))) continue;
         let folder = normalizePath(status.fullComposePath).split('/').slice(0, -1);
         while (folder.length > 0) {
             const path = folder.join('/');
-            issues[path] = worstGitStatus([issues[path], status].filter(Boolean) as GitStackStatus[])!;
+            aggregates[path] = worstGitStatus([aggregates[path], status].filter(Boolean) as GitStackStatus[])!;
             folder = folder.slice(0, -1);
         }
     }
-    return issues;
+    return aggregates;
 }
 
 const useGitStatusStore = create<GitStatusStore>((set) => ({
     byHost: {},
-    issuesByHost: {},
+    aggregateByHost: {},
     setHost: (host, rows) => set((state) => {
         const previous = state.byHost[host] ?? {};
         const next = Object.fromEntries(rows.map((row) => {
@@ -88,7 +92,7 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
         if (currentKeys.length === nextKeys.length && nextKeys.every((key) => previous[key] === next[key])) return state;
         return {
             byHost: {...state.byHost, [host]: next},
-            issuesByHost: {...state.issuesByHost, [host]: issueFolders(next)},
+            aggregateByHost: {...state.aggregateByHost, [host]: aggregateFolders(next)},
         };
     }),
 }));
@@ -166,7 +170,7 @@ export function useGitStackStatus(host: string, composePath: string) {
     return useGitStatusStore((state) => state.byHost[host]?.[normalized]);
 }
 
-export function useGitFolderIssue(host: string, folderPath: string) {
+export function useGitFolderStatus(host: string, folderPath: string) {
     const normalized = normalizePath(folderPath);
-    return useGitStatusStore((state) => state.issuesByHost[host]?.[normalized]);
+    return useGitStatusStore((state) => state.aggregateByHost[host]?.[normalized]);
 }

@@ -31,7 +31,7 @@ import {getContextKey} from "../../../context/tab-context.tsx";
 import type {Status} from "../../../gen/docker/v1/docker_pb.ts";
 import {stripQueryParams} from "../../../lib/strings.ts";
 import GitStackStatusIndicator from "../../../components/git-stack-status.tsx";
-import {useGitFolderIssue, useGitStackStatus} from "../../../components/git-stack-status-store.ts";
+import {useGitFolderStatus, useGitStackStatus} from "../../../components/git-stack-status-store.ts";
 
 
 export const useFileDnD = (entry: FsEntry) => {
@@ -218,7 +218,7 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
         return state.folderStatuses[context]?.[entry.filename] ?? state.openFiles[context]?.[entry.isComposeFolder];
     })
     const exactGitStatus = useGitStackStatus(host, entry.isComposeFolder ?? '')
-    const aggregateGitStatus = useGitFolderIssue(host, entry.filename)
+    const aggregateGitStatus = useGitFolderStatus(host, entry.filename)
     useEffect(() => {
         // Track the stack status for any folder that contains a compose file,
         // regardless of the useComposeFolders display mode, so the status dot is

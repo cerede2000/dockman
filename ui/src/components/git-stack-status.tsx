@@ -26,13 +26,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const colors = {neutral: '#9e9e9e', info: '#64b5f6', warning: '#ffb74d', error: '#ef5350', success: '#66bb6a'};
 
 function stateLabel(status: GitStackStatus) {
-    if (status.automationPaused) return 'Automatic synchronization paused';
     if (status.deployState === 'failed') return 'Automatic deployment failed';
-    return ({
+    const label = ({
         pending: 'Synchronization not checked yet', up_to_date: 'Synchronized', checking: 'Synchronization in progress',
         local_changes: 'Local changes waiting', remote_changes: 'Git changes waiting', conflict: 'Conflict requires a decision',
         error: 'Synchronization failed',
     } as Record<string, string>)[status.state] ?? status.state;
+    if (!status.automationPaused) return label;
+    return status.state === 'up_to_date' || status.state === 'pending'
+        ? 'Automatic synchronization paused'
+        : `Automatic synchronization paused · ${label}`;
 }
 
 function dateLabel(value?: string) {
@@ -45,7 +48,7 @@ export default function GitStackStatusIndicator({status, size = 18}: {status?: G
     const {showError, showSuccess} = useSnackbar();
     const navigate = useNavigate();
     const severity = status ? gitStatusSeverity(status) : 'neutral';
-    const color = status?.automationPaused ? colors.neutral : colors[severity];
+    const color = status?.automationPaused && (severity === 'success' || severity === 'neutral') ? colors.neutral : colors[severity];
     const error = status?.deployState === 'failed' ? status.deployError : status?.error;
     const encodedComposePath = useMemo(() => status?.composePath.split('/').map(encodeURIComponent).join('/') ?? '', [status?.composePath]);
     if (!status) return null;
