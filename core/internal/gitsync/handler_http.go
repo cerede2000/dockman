@@ -39,6 +39,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /stack-statuses", h.listGitStackStatuses)
 	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
 	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
+	mux.HandleFunc("POST /bindings/{id}/orphan/{composePath...}", h.resolveGitOrphan)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
@@ -69,6 +70,23 @@ func (h *HTTPHandler) pushGitStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.service.PushGitStack(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) resolveGitOrphan(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input OrphanActionInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.ResolveGitOrphan(r.Context(), r.PathValue("id"), r.PathValue("composePath"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -138,7 +156,7 @@ func isMemoryIntensiveGitRequest(r *http.Request) bool {
 	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
 		return false
 	}
-	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/repositories"} {
+	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/orphan/", "/repositories"} {
 		if strings.Contains(r.URL.Path, marker) {
 			return true
 		}

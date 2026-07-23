@@ -30,7 +30,7 @@ function stateLabel(status: GitStackStatus) {
     const label = ({
         pending: 'Synchronization not checked yet', up_to_date: 'Synchronized', checking: 'Synchronization in progress',
         local_changes: 'Local changes waiting', remote_changes: 'Git changes waiting', conflict: 'Conflict requires a decision',
-        error: 'Synchronization failed',
+        orphaned: 'Deleted on Git · preserved locally', error: 'Synchronization failed',
     } as Record<string, string>)[status.state] ?? status.state;
     if (!status.automationPaused) return label;
     return status.state === 'up_to_date' || status.state === 'pending'
@@ -89,7 +89,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const openRelevantGitView = () => {
         const action = status.state === 'conflict' ? 'conflicts'
             : status.state === 'error' || status.deployState === 'failed' ? 'details'
-                : status.state === 'remote_changes' ? 'preview_git' : 'preview_stack';
+                : status.state === 'remote_changes' || status.state === 'orphaned' ? 'preview_git' : 'preview_stack';
         navigate(`/settings?tab=2&gitBinding=${encodeURIComponent(status.bindingId)}&gitAction=${action}&gitCompose=${encodeURIComponent(status.composePath)}`);
     };
 
@@ -149,13 +149,14 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Auto-deploy</Typography><Typography variant="body2">{status.autoDeployEnabled ? status.deployState.replaceAll('_', ' ') : 'Off'}</Typography></Stack>
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
                 {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
-                {confirmPush && <Alert severity="warning" action={<Stack direction="row" spacing={.5}><Button size="small" color="inherit" disabled={busy} onClick={() => setConfirmPush(false)}>Cancel</Button><Button size="small" color="warning" variant="contained" disabled={busy} onClick={() => void pushStack()}>{busy ? <CircularProgress size={14}/> : 'Confirm push'}</Button></Stack>}>Push every transferable local change belonging to this stack with Dockman's default commit message?</Alert>}
+                {status.state === 'orphaned' && <Alert severity="warning">This stack disappeared completely from Git and was preserved locally. Restore it to Git here, or open the detailed view to archive or explicitly remove the local folder after backup.</Alert>}
+                {confirmPush && <Alert severity="warning" action={<Stack direction="row" spacing={.5}><Button size="small" color="inherit" disabled={busy} onClick={() => setConfirmPush(false)}>Cancel</Button><Button size="small" color="warning" variant="contained" disabled={busy} onClick={() => void pushStack()}>{busy ? <CircularProgress size={14}/> : status.state === 'orphaned' ? 'Confirm restore' : 'Confirm push'}</Button></Stack>}>{status.state === 'orphaned' ? 'Restore every transferable file belonging to this stack back to Git?' : "Push every transferable local change belonging to this stack with Dockman's default commit message?"}</Alert>}
                 {error && <Alert severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{error}</Alert>}
                 <Divider/>
                 <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap'}}>
                     {status.autoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
-                    {status.state === 'local_changes' && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>Push to Git</Button>}
-                    <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={openRelevantGitView}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' ? 'Review details' : 'Preview'}</Button>
+                    {(status.state === 'local_changes' || status.state === 'orphaned') && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>{status.state === 'orphaned' ? 'Restore to Git' : 'Push to Git'}</Button>}
+                    <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={openRelevantGitView}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>
                     {status.autoSyncEnabled && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused ? 'Resume' : 'Pause'}</Button>}
                     <Button size="small" startIcon={<OpenInNew/>} onClick={() => navigate('/settings?tab=2')}>Git settings</Button>
                 </Stack>

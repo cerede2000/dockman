@@ -12,7 +12,7 @@ export interface GitStackStatus {
     repositoryName: string;
     repositoryBranch: string;
     repositorySubPath: string;
-    state: 'pending' | 'up_to_date' | 'checking' | 'local_changes' | 'remote_changes' | 'conflict' | 'error';
+    state: 'pending' | 'up_to_date' | 'checking' | 'local_changes' | 'remote_changes' | 'orphaned' | 'conflict' | 'error';
     error?: string;
     conflictCount: number;
     autoSyncEnabled: boolean;
@@ -45,7 +45,7 @@ const EMPTY_GIT_STACK_STATUSES: Record<string, GitStackStatus> = Object.freeze({
 export function gitStatusSeverity(status: GitStackStatus): 'neutral' | 'info' | 'warning' | 'error' | 'success' {
     if (status.deployState === 'failed' || status.state === 'conflict' || status.state === 'error') return 'error';
     if (status.state === 'checking') return 'info';
-    if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending') return 'warning';
+    if (status.state === 'local_changes' || status.state === 'remote_changes' || status.state === 'orphaned' || status.deployState === 'pending') return 'warning';
     if (status.state === 'up_to_date') return 'success';
     return 'neutral';
 }
@@ -54,6 +54,7 @@ export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | und
     const rank = (status: GitStackStatus) => {
         if (status.deployState === 'failed') return 7;
         if (status.state === 'error' || status.state === 'conflict') return 6;
+        if (status.state === 'orphaned') return 5;
         if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending') return 4;
         if (status.state === 'checking') return 3;
         if (status.automationPaused || status.state === 'pending') return 2;

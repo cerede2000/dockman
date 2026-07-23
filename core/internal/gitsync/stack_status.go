@@ -18,6 +18,7 @@ const (
 	stackSyncChecking      = "checking"
 	stackSyncLocalChanges  = "local_changes"
 	stackSyncRemoteChanges = "remote_changes"
+	stackSyncOrphaned      = "orphaned"
 	stackSyncConflict      = "conflict"
 	stackSyncError         = "error"
 )
@@ -264,6 +265,10 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 		conflicts int
 	}
 	states := make(map[string]aggregate, len(paths))
+	orphans := make(map[string]struct{}, len(preview.OrphanedComposePaths))
+	for _, composePath := range preview.OrphanedComposePaths {
+		orphans[composePath] = struct{}{}
+	}
 	for _, composePath := range paths {
 		states[composePath] = aggregate{state: stackSyncUpToDate}
 	}
@@ -274,8 +279,19 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 			case "conflict":
 				current.state = stackSyncConflict
 				current.conflicts++
+			case "deleted_on_git":
+				if current.state != stackSyncConflict {
+					if _, orphaned := orphans[composePath]; orphaned {
+						current.state = stackSyncOrphaned
+					} else {
+						current.state = stackSyncLocalChanges
+					}
+				}
 			case "add", "modify":
 				if current.state != stackSyncConflict {
+					if current.state == stackSyncOrphaned {
+						break
+					}
 					if preview.Direction == "stack_to_repository" {
 						current.state = stackSyncLocalChanges
 					} else {
@@ -320,7 +336,7 @@ func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding,
 		updates["last_success_at"] = &now
 		updates["last_commit"] = commit
 	}
-	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, []string{stackSyncLocalChanges}, updates)
+	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, []string{stackSyncLocalChanges, stackSyncOrphaned}, updates)
 }
 
 func (s *Service) activeAutomationComposePaths(binding StackBinding) []string {

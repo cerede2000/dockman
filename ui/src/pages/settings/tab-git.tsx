@@ -7,8 +7,8 @@ import {
     TablePagination, TextField, Tooltip, Typography,
 } from "@mui/material";
 import {
-    Add, BlockOutlined, CheckCircleOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
-    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined,
+    Add, ArchiveOutlined, BlockOutlined, CheckCircleOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
+    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined,
 } from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
 import {formatBytes} from "../../lib/editor.ts";
@@ -106,12 +106,12 @@ interface Binding {
 interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; message: string; }
 interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
 interface PreviewEntry {
-    path: string; status: "add" | "modify" | "conflict" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
-    targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed";
+    path: string; status: "add" | "modify" | "conflict" | "deleted_on_git" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
+    targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed" | "source_deleted_destination_changed";
 }
 interface TransferPreview {
     bindingId: string; direction: TransferDirection; entries: PreviewEntry[]; changed: number;
-    unchanged: number; skipped: number; conflicts: number; deletionMode: string;
+    unchanged: number; skipped: number; conflicts: number; preserved: number; orphanedComposePaths?: string[]; deletionMode: string;
     previewToken: string;
 }
 interface TransferResult { preview: TransferPreview; commitSha?: string; backup?: string; message: string; }
@@ -121,7 +121,7 @@ type TransferDirection = "stack_to_repository" | "repository_to_stack";
 type PreviewStatus = PreviewEntry["status"];
 type ConflictDecision = "git" | "dockman";
 
-const previewStatuses: PreviewStatus[] = ["conflict", "add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
+const previewStatuses: PreviewStatus[] = ["conflict", "deleted_on_git", "add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
@@ -280,6 +280,8 @@ export default function TabGit() {
     const [previewStatus, setPreviewStatus] = useState<"all" | PreviewStatus>("all");
     const [previewPageInput, setPreviewPageInput] = useState("1");
     const [selectedPreviewPaths, setSelectedPreviewPaths] = useState<Set<string>>(() => new Set());
+    const [orphanDecision, setOrphanDecision] = useState<{composePath: string; action: "archive" | "delete"} | null>(null);
+    const [orphanConfirmation, setOrphanConfirmation] = useState("");
     const [searchParams, setSearchParams] = useSearchParams();
     const openedGitDeepLink = useRef('');
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
@@ -298,11 +300,12 @@ export default function TabGit() {
         previewPage * previewRowsPerPage,
         previewPage * previewRowsPerPage + previewRowsPerPage,
     ), [filteredPreviewEntries, previewPage, previewRowsPerPage]);
-    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict");
+    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict" && entry.status !== "deleted_on_git");
     const selectedVisibleCount = selectablePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).length;
     const allowableSelectedEntries = visiblePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path) && entry.status === "skipped_type");
-    const safeTransferCount = Math.max(0, (transferPreview?.changed || 0) - (transferPreview?.conflicts || 0));
+    const safeTransferCount = (transferPreview?.entries || []).filter((entry) => entry.status === "add" || entry.status === "modify").length;
     const unresolvedConflictCount = Math.max(0, (transferPreview?.conflicts || 0) - resolvedConflictPaths.size);
+    const orphanComposePaths = useMemo(() => new Set(transferPreview?.orphanedComposePaths || []), [transferPreview?.orphanedComposePaths]);
 
     useEffect(() => {
         setPreviewPage((current) => Math.min(current, previewPageCount - 1));
@@ -577,6 +580,22 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
+    const runOrphanAction = async (composePath: string, action: "restore" | "archive" | "delete") => {
+        if (!transferBinding) return;
+        setBusy(`orphan-${action}-${composePath}`);
+        try {
+            const encoded = composePath.split("/").map(encodeURIComponent).join("/");
+            const result = await api<{message: string; backup?: string}>(`/bindings/${transferBinding.id}/orphan/${encoded}`, {
+                method: "POST", body: JSON.stringify({action, confirmation: action === "restore" ? "" : orphanConfirmation}),
+            });
+            showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
+            setOrphanDecision(null); setOrphanConfirmation(""); closeTransfer(); await load();
+        } catch (error) {
+            showError((error as Error).message);
+            await previewTransfer(transferBinding, "repository_to_stack", false);
+        } finally { setBusy(null); }
+    };
+
     const compareConflict = async (entry: PreviewEntry) => {
         if (!transferBinding) return;
         setBusy(`compare-${entry.path}`);
@@ -724,6 +743,10 @@ export default function TabGit() {
     const openBindingState = (binding: Binding) => {
         if (binding.autoSyncState === "conflict") {
             void previewTransfer(binding, "repository_to_stack", false, undefined, undefined, true);
+            return;
+        }
+        if (binding.autoSyncState === "blocked") {
+            void previewTransfer(binding, "repository_to_stack");
             return;
         }
         if (binding.autoSyncState === "error") openBindingAutomation(binding);
@@ -964,7 +987,7 @@ export default function TabGit() {
                             <TableCell>{binding.composePaths.length ? <Tooltip title="View and choose synchronized stacks"><Chip size="small" clickable color={(binding.selectedComposePaths || []).length === binding.composePaths.length ? "info" : "warning"} variant="outlined" onClick={() => openComposeSelection(binding)} label={(binding.selectedComposePaths || []).length}/></Tooltip> : <Chip size="small" color="warning" variant="outlined" label="0"/>}</TableCell>
                             <TableCell sx={{minWidth: 190}}>
                                 <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
-                                    <Tooltip title={binding.autoSyncState === "conflict" ? "Open and resolve conflicts" : binding.autoSyncState === "error" ? "Open error details" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict" || binding.autoSyncState === "error"} onClick={() => openBindingState(binding)} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
+                                    <Tooltip title={binding.autoSyncState === "conflict" ? "Open and resolve conflicts" : binding.autoSyncState === "blocked" ? "Open preserved changes and Git deletions" : binding.autoSyncState === "error" ? "Open error details" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict" || binding.autoSyncState === "blocked" || binding.autoSyncState === "error"} onClick={() => openBindingState(binding)} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
                                     <Tooltip title="Configure automatic monitoring"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingAutomation(binding)}><SyncOutlined fontSize="small"/></IconButton></Tooltip>
                                     {binding.autoSyncEnabled && <Tooltip title="Check and synchronize now"><span><IconButton size="small" disabled={busy !== null} onClick={() => void runBindingAutomation(binding)}>{busy === `binding-auto-run-${binding.id}` ? <CircularProgress size={17}/> : <RefreshOutlined fontSize="small"/>}</IconButton></span></Tooltip>}
                                     {binding.autoDeployEnabled && <Tooltip title={binding.autoDeployState === "failed" ? "Open deployment error details" : binding.autoDeployError || `${binding.autoDeployComposePaths.length} controlled deployment target(s)`}><Chip size="small" variant="outlined" clickable={binding.autoDeployState === "failed"} onClick={binding.autoDeployState === "failed" ? () => openBindingAutomation(binding) : undefined} color={binding.autoDeployState === "failed" ? "error" : "warning"} label={binding.autoDeployState === "success" ? "deployed" : "auto deploy"}/></Tooltip>}
@@ -1057,10 +1080,12 @@ export default function TabGit() {
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
                     <Chip label={`${transferPreview?.changed || 0} changed`} color={transferPreview?.changed ? "warning" : "success"}/>
                     <Chip label={`${transferPreview?.skipped || 0} skipped`} variant="outlined" color={transferPreview?.skipped ? "warning" : "default"}/>
+                    {!!transferPreview?.preserved && <Chip label={`${transferPreview.preserved} preserved Git deletion${transferPreview.preserved === 1 ? "" : "s"}`} variant="outlined" color="warning"/>}
                     {!!transferPreview?.conflicts && <Chip label={`${transferPreview.conflicts} conflict${transferPreview.conflicts === 1 ? "" : "s"}`} color="error"/>}
                     <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
                 </Stack>
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Files skipped only by type can be permanently allowed here. Oversized, unavailable, sensitive, and explicitly excluded files keep their dedicated protection.</Alert>}
+                {!!transferPreview?.preserved && <Alert severity="warning">Files deleted on Git remain local by default. For a whole orphaned stack, restore it to Git, archive it, or explicitly delete its local folder after a backup. Dockman never runs Compose down and never removes Docker volumes here.</Alert>}
                 {!!transferPreview?.conflicts && <Alert severity="error">
                     Conflicts are never overwritten automatically. Compare and approve only the files you want to resolve; the others remain pending. An “initial conflict” means that no common synchronization baseline is available.
                 </Alert>}
@@ -1080,7 +1105,24 @@ export default function TabGit() {
                 </Stack>
                 <TableContainer component={Paper} variant="outlined" sx={{maxHeight: 340}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell padding="checkbox"><Checkbox size="small" disabled={busy !== null || selectablePreviewEntries.length === 0} checked={selectablePreviewEntries.length > 0 && selectedVisibleCount === selectablePreviewEntries.length} indeterminate={selectedVisibleCount > 0 && selectedVisibleCount < selectablePreviewEntries.length} onChange={(_, checked) => toggleVisiblePreviewEntries(checked)} slotProps={{input: {"aria-label": "Select all items on this page"}}}/></TableCell><TableCell>File</TableCell><TableCell>Status</TableCell><TableCell>Size</TableCell><TableCell>Resolution</TableCell><TableCell align="right">Exclude</TableCell></TableRow></TableHead><TableBody>
                     {!filteredPreviewEntries.length && <TableRow><TableCell colSpan={6} align="center" sx={{py: 4, color: "text.secondary"}}>{previewSearch ? "No item matches this search." : "No difference."}</TableCell></TableRow>}
-                    {visiblePreviewEntries.map((entry) => <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}><TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell><TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell><TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell><TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell><TableCell>{entry.status === "conflict" && (conflictResolutionMode ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button><Button size="small" color="warning" variant={conflictDecisions[entry.path] === "git" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "git")}>Keep Git</Button><Button size="small" color="primary" variant={conflictDecisions[entry.path] === "dockman" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "dockman")}>Keep Dockman</Button></Stack> : <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button>{resolvedConflictPaths.has(entry.path) ? <Button size="small" color="warning" startIcon={<UndoOutlined/>} onClick={() => leaveConflictPending(entry.path)}>Pending</Button> : <Button size="small" color="error" variant="contained" onClick={() => keepCurrentSource(entry.path)}>{transferDirection === "stack_to_repository" ? "Keep Dockman" : "Keep Git"}</Button>}</Stack>)}</TableCell><TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell></TableRow>)}
+                    {visiblePreviewEntries.map((entry) => {
+                        const orphanCompose = orphanComposePaths.has(entry.path);
+                        const rootOrphan = orphanCompose && !entry.path.includes("/");
+                        const deletedConflict = entry.conflictKind === "source_deleted_destination_changed";
+                        return <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}>
+                            <TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell>
+                            <TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell>
+                            <TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status === "deleted_on_git" || entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={deletedConflict ? "deleted on Git · local changed" : entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell>
+                            <TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell>
+                            <TableCell>{orphanCompose ? <Stack direction="row" spacing={.5} sx={{alignItems: "center", flexWrap: "wrap"}}>
+                                <Button size="small" color="success" variant="outlined" startIcon={<RestoreOutlined/>} disabled={busy !== null} onClick={() => void runOrphanAction(entry.path, "restore")}>Restore to Git</Button>
+                                {!rootOrphan && <Button size="small" color="warning" variant="outlined" startIcon={<ArchiveOutlined/>} disabled={busy !== null} onClick={() => { setOrphanConfirmation(""); setOrphanDecision({composePath: entry.path, action: "archive"}); }}>Archive local</Button>}
+                                {!rootOrphan && <Button size="small" color="error" variant="outlined" startIcon={<DeleteOutlined/>} disabled={busy !== null} onClick={() => { setOrphanConfirmation(""); setOrphanDecision({composePath: entry.path, action: "delete"}); }}>Delete local</Button>}
+                                {rootOrphan && <Typography variant="caption" color="text.secondary">Local removal is unavailable at the folder-link root.</Typography>}
+                            </Stack> : deletedConflict ? <Typography variant="caption" color="warning.main">Handled by the orphaned stack decision.</Typography> : entry.status === "conflict" && (conflictResolutionMode ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button><Button size="small" color="warning" variant={conflictDecisions[entry.path] === "git" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "git")}>Keep Git</Button><Button size="small" color="primary" variant={conflictDecisions[entry.path] === "dockman" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "dockman")}>Keep Dockman</Button></Stack> : <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button>{resolvedConflictPaths.has(entry.path) ? <Button size="small" color="warning" startIcon={<UndoOutlined/>} onClick={() => leaveConflictPending(entry.path)}>Pending</Button> : <Button size="small" color="error" variant="contained" onClick={() => keepCurrentSource(entry.path)}>{transferDirection === "stack_to_repository" ? "Keep Dockman" : "Keep Git"}</Button>}</Stack>)}</TableCell>
+                            <TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell>
+                        </TableRow>;
+                    })}
                 </TableBody></Table></TableContainer>
                 <Stack direction={{xs: "column", md: "row"}} sx={{alignItems: {md: "center"}, border: 1, borderColor: "divider", borderTop: 0, borderRadius: "0 0 4px 4px"}}>
                     <TablePagination component="div" count={filteredPreviewEntries.length} page={previewPage} onPageChange={(_, page) => changePreviewPage(page)} rowsPerPage={previewRowsPerPage} onRowsPerPageChange={(event) => { setPreviewRowsPerPage(Number(event.target.value)); changePreviewPage(0); }} rowsPerPageOptions={[25, 50, 100]} labelRowsPerPage="Rows" showFirstButton showLastButton sx={{flex: 1, border: 0}}/>
@@ -1105,6 +1147,17 @@ export default function TabGit() {
                 {!conflictResolutionMode && transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
             </Stack></DialogContent>
             <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button>{conflictResolutionMode ? <Button variant="contained" disabled={busy !== null || Object.keys(conflictDecisions).length === 0} onClick={() => void resolveAutomationConflicts()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}Resolve selected decisions</Button> : <Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.changed > 0 && safeTransferCount === 0 && resolvedConflictPaths.size === 0) || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit selected and push" : "Backup and import selected"}</Button>}</DialogActions>
+        </Dialog>
+
+        <Dialog open={orphanDecision !== null} onClose={() => busy === null && setOrphanDecision(null)} fullWidth maxWidth="sm">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}>{orphanDecision?.action === "archive" ? <ArchiveOutlined/> : <DeleteOutlined/>}{orphanDecision?.action === "archive" ? "Archive local orphan" : "Delete local orphan"}</DialogTitle>
+            <DialogContent dividers><Stack spacing={2}>
+                <Alert severity="error">Git no longer contains this complete stack directory. Dockman will create a backup first, then remove only its local folder. It will not run Compose down and will never remove Docker volumes.</Alert>
+                <Typography sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{orphanDecision?.composePath}</Typography>
+                <TextField autoFocus fullWidth label='Type "REMOVE LOCAL ORPHAN"' value={orphanConfirmation} onChange={(event) => setOrphanConfirmation(event.target.value)} slotProps={{htmlInput: {autoComplete: "off"}}}/>
+                {orphanDecision?.action === "archive" && <Alert severity="info">The archive is kept separately from rotating synchronization backups.</Alert>}
+            </Stack></DialogContent>
+            <DialogActions><Button disabled={busy !== null} onClick={() => { setOrphanDecision(null); setOrphanConfirmation(""); }}>Cancel</Button><Button variant="contained" color={orphanDecision?.action === "archive" ? "warning" : "error"} disabled={busy !== null || orphanConfirmation !== "REMOVE LOCAL ORPHAN"} onClick={() => orphanDecision && void runOrphanAction(orphanDecision.composePath, orphanDecision.action)}>{busy?.startsWith("orphan-") && <CircularProgress size={16} sx={{mr: 1}}/>}{orphanDecision?.action === "archive" ? "Archive and remove" : "Backup and delete"}</Button></DialogActions>
         </Dialog>
 
         <Dialog open={comparison !== null} onClose={() => busy === null && setComparison(null)} fullWidth maxWidth="lg">

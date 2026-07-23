@@ -151,16 +151,18 @@ type PreviewEntry struct {
 }
 
 type TransferPreview struct {
-	BindingID    string         `json:"bindingId"`
-	Direction    string         `json:"direction"`
-	Entries      []PreviewEntry `json:"entries"`
-	Changed      int            `json:"changed"`
-	Unchanged    int            `json:"unchanged"`
-	Skipped      int            `json:"skipped"`
-	Conflicts    int            `json:"conflicts"`
-	DeletionMode string         `json:"deletionMode"`
-	automation   bool
-	PreviewToken string `json:"previewToken"`
+	BindingID            string         `json:"bindingId"`
+	Direction            string         `json:"direction"`
+	Entries              []PreviewEntry `json:"entries"`
+	Changed              int            `json:"changed"`
+	Unchanged            int            `json:"unchanged"`
+	Skipped              int            `json:"skipped"`
+	Conflicts            int            `json:"conflicts"`
+	Preserved            int            `json:"preserved"`
+	OrphanedComposePaths []string       `json:"orphanedComposePaths,omitempty"`
+	DeletionMode         string         `json:"deletionMode"`
+	automation           bool
+	PreviewToken         string `json:"previewToken"`
 }
 
 type TransferResult struct {
@@ -644,6 +646,9 @@ func (s *Service) PreviewBinding(id, direction string, input TransferInput) (Tra
 		return TransferPreview{}, err
 	}
 	preview := buildPreview(binding.UUID, direction, source, target, baseline)
+	if direction == "repository_to_stack" {
+		preview.OrphanedComposePaths = detectOrphanedComposePaths(source, target, baseline, selectedComposePaths(binding))
+	}
 	preview.automation = input.automation
 	s.recordPreviewStackStatuses(binding, preview)
 	return preview, nil
@@ -868,14 +873,17 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if err := validateComposeFiles(source); err != nil {
-			return err
-		}
 		baseline, err := s.store.BindingBaseline(binding.UUID)
 		if err != nil {
 			return err
 		}
+		if err := validateComposeFiles(source); err != nil {
+			if !hasTrackedDeletedCompose(source, target, baseline, selectedComposePaths(binding)) {
+				return err
+			}
+		}
 		result.Preview = buildPreview(binding.UUID, "repository_to_stack", source, target, baseline)
+		result.Preview.OrphanedComposePaths = detectOrphanedComposePaths(source, target, baseline, selectedComposePaths(binding))
 		result.Preview.automation = input.automation
 		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
@@ -893,6 +901,10 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		if len(selected) == 0 {
+			if result.Preview.Preserved > 0 && pendingConflicts == 0 {
+				result.Message = fmt.Sprintf("%d Git deletion(s) preserved locally; choose an explicit orphan action", result.Preview.Preserved)
+				return nil
+			}
 			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
 		}
 		selected, result.EditorBlocked = s.excludeDirtyEditorStacks(binding, selected)
@@ -932,7 +944,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
-	if err == nil && result.Preview.Conflicts == 0 && len(result.EditorBlocked) == 0 {
+	if err == nil && result.Preview.Conflicts == 0 && result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0 {
 		paths := selectedComposePaths(binding)
 		if input.automation {
 			paths = s.activeAutomationComposePaths(binding)
@@ -1906,6 +1918,34 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 		preview.Entries = append(preview.Entries, entry)
 		preview.Changed++
 	}
+	// A Git -> Dockman preview must also expose files that existed at the
+	// common baseline but disappeared from Git. They are preserved locally by
+	// default and are never fed to the regular transfer writer.
+	if direction == "repository_to_stack" {
+		preservedPaths := make([]string, 0)
+		for path, dst := range target {
+			if _, exists := source[path]; exists || dst.open == nil {
+				continue
+			}
+			baseSHA, tracked := baseline[path]
+			if !tracked {
+				continue
+			}
+			entry := PreviewEntry{Path: path, Status: "deleted_on_git", TargetSHA: dst.sha, Size: dst.size, Sensitive: dst.sensitive}
+			if dst.sha != baseSHA {
+				entry.Status = "conflict"
+				entry.ConflictKind = "source_deleted_destination_changed"
+				preview.Conflicts++
+			}
+			preservedPaths = append(preservedPaths, path)
+			preview.Entries = append(preview.Entries, entry)
+			preview.Changed++
+			preview.Preserved++
+		}
+		if len(preservedPaths) > 0 {
+			sort.SliceStable(preview.Entries, func(i, j int) bool { return preview.Entries[i].Path < preview.Entries[j].Path })
+		}
+	}
 	preview.PreviewToken = previewToken(preview)
 	return preview
 }
@@ -2172,6 +2212,20 @@ func validateComposeFiles(files map[string]transferFile) error {
 	return nil
 }
 
+func hasTrackedDeletedCompose(source, target map[string]transferFile, baseline map[string]string, composePaths []string) bool {
+	for _, composePath := range composePaths {
+		if sourceFile, exists := source[composePath]; exists && sourceFile.open != nil {
+			return false
+		}
+		targetFile, local := target[composePath]
+		_, tracked := baseline[composePath]
+		if local && targetFile.open != nil && tracked {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) backupChangedFiles(binding StackBinding, _ filesystem.FileSystem, _ string, source, target map[string]transferFile) (string, error) {
 	if s.backupRoot == "" {
 		return "", errors.New("Git stack backup directory is not configured")
@@ -2304,6 +2358,9 @@ func (s *Service) removeBindingBackups(bindingID string) error {
 	defer backupFS.Close()
 	if err := backupFS.RemoveAll(bindingID); err != nil {
 		return fmt.Errorf("remove binding backups: %w", err)
+	}
+	if err := backupFS.RemoveAll(filepath.Join("archives", bindingID)); err != nil {
+		return fmt.Errorf("remove binding orphan archives: %w", err)
 	}
 	return nil
 }

@@ -33,6 +33,7 @@ type AutoSyncResult struct {
 	State     string   `json:"state"`
 	Changed   int      `json:"changed"`
 	Conflicts int      `json:"conflicts"`
+	Preserved int      `json:"preserved"`
 	Backup    string   `json:"backup,omitempty"`
 	Deployed  []string `json:"deployed,omitempty"`
 	Message   string   `json:"message"`
@@ -228,8 +229,13 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		}
 		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head {
 			skippedStackScan = true
-			result.State = "up_to_date"
-			result.Message = "No new Git commit; stack scan skipped"
+			if binding.AutoSyncState == "blocked" && strings.Contains(binding.AutoSyncError, "Git deletion") {
+				result.State = "blocked"
+				result.Message = binding.AutoSyncError + "; no new Git commit, stack scan skipped"
+			} else {
+				result.State = "up_to_date"
+				result.Message = "No new Git commit; stack scan skipped"
+			}
 			return nil
 		}
 
@@ -237,8 +243,8 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		if previewErr != nil {
 			return previewErr
 		}
-		changed, conflicts, previewToken := preview.Changed, preview.Conflicts, preview.PreviewToken
-		result.Changed, result.Conflicts = changed, conflicts
+		changed, conflicts, preserved, previewToken := preview.Changed, preview.Conflicts, preview.Preserved, preview.PreviewToken
+		result.Changed, result.Conflicts, result.Preserved = changed, conflicts, preserved
 		// A folder can contain many thousands of entries. Do not retain the first
 		// inventory while ImportBinding builds and validates its fresh inventory.
 		changedPaths := changedPreviewPaths(preview)
@@ -276,7 +282,10 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			result.State = "blocked"
 			result.Message = fmt.Sprintf("%d stack(s) kept unchanged while edited in Dockman; other safe changes were synchronized", len(transfer.EditorBlocked))
 		}
-		if changed == 0 {
+		if preserved > 0 && len(transfer.EditorBlocked) == 0 {
+			result.State = "blocked"
+			result.Message = fmt.Sprintf("%d Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion", preserved)
+		} else if changed == 0 {
 			result.Message = "Stack already matches Git"
 		} else if len(transfer.EditorBlocked) == 0 {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
@@ -303,9 +312,19 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		return AutoSyncResult{BindingID: id, State: "error", Message: message}, err
 	}
 	if result.State == "conflict" || result.State == "blocked" {
-		_ = s.store.UpdateBindingAutoSyncState(id, result.State, result.Message, "", &attemptedAt, nil)
+		preservedBlock := result.Preserved > 0 || (skippedStackScan && binding.AutoSyncState == "blocked" && strings.Contains(binding.AutoSyncError, "Git deletion"))
+		commit := ""
+		if preservedBlock {
+			// The commit was inspected successfully. Remember it so subsequent
+			// intervals stay fetch-only until Git changes again, while the compact
+			// per-stack orphan status remains visible.
+			commit = synchronizedCommit
+		}
+		_ = s.store.UpdateBindingAutoSyncState(id, result.State, result.Message, commit, &attemptedAt, nil)
 		if result.State == "blocked" {
-			s.updateActiveStackStatuses(binding, stackSyncRemoteChanges, result.Message, "", false)
+			if !preservedBlock {
+				s.updateActiveStackStatuses(binding, stackSyncRemoteChanges, result.Message, "", false)
+			}
 		}
 		return result, nil
 	}

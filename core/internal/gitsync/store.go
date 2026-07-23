@@ -263,6 +263,8 @@ func (s *Store) UpdateBindingAutoSyncState(id, state, message, commit string, at
 	}
 	if succeededAt != nil {
 		updates["last_auto_sync_success_at"] = succeededAt
+	}
+	if commit != "" {
 		updates["last_auto_sync_commit"] = commit
 	}
 	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error

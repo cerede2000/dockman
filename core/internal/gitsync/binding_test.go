@@ -2,6 +2,8 @@ package gitsync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -388,6 +390,35 @@ func TestPreviewBlocksOverwritingAChangedSynchronizationTarget(t *testing.T) {
 	require.Equal(t, "no_baseline", unknownBaseline.Entries[0].ConflictKind)
 }
 
+func TestPreviewPreservesGitDeletionAndFlagsModifiedLocalOrphan(t *testing.T) {
+	available := func(content string) transferFile {
+		hash := sha256.Sum256([]byte(content))
+		return transferFile{sha: hex.EncodeToString(hash[:]), size: int64(len(content)), open: func() (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(content)), nil
+		}}
+	}
+	baseSHA := available("base").sha
+	baseline := map[string]string{"alpha/compose.yml": baseSHA, "alpha/config.yml": baseSHA}
+	local := map[string]transferFile{
+		"alpha/compose.yml": available("base"),
+		"alpha/config.yml":  available("locally modified"),
+		"local-only.txt":    available("never synchronized"),
+	}
+	preview := buildPreview("binding", "repository_to_stack", map[string]transferFile{}, local, baseline)
+
+	require.Equal(t, 2, preview.Preserved)
+	require.Equal(t, 2, preview.Changed)
+	require.Equal(t, 1, preview.Conflicts)
+	entries := map[string]PreviewEntry{}
+	for _, entry := range preview.Entries {
+		require.NotEqual(t, "local-only.txt", entry.Path)
+		entries[entry.Path] = entry
+	}
+	require.Equal(t, "deleted_on_git", entries["alpha/compose.yml"].Status)
+	require.Equal(t, "conflict", entries["alpha/config.yml"].Status)
+	require.Equal(t, "source_deleted_destination_changed", entries["alpha/config.yml"].ConflictKind)
+}
+
 func TestTransferSelectionLeavesUnresolvedConflictsPending(t *testing.T) {
 	available := func(sha string) transferFile {
 		return transferFile{sha: sha, open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("content")), nil }}
@@ -537,9 +568,14 @@ func TestBindingBackupRetentionAndUnlinkCleanup(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, gitBackupRetention)
 	require.Equal(t, "20260722T120002.000000000Z.tar.gz", entries[0].Name())
+	archiveRoot := filepath.Join(service.backupRoot, "archives", binding.ID)
+	require.NoError(t, os.MkdirAll(archiveRoot, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(archiveRoot, "orphan.tar.gz"), []byte("archive"), 0o600))
 
 	require.NoError(t, service.DeleteBinding(binding.ID, false))
 	_, err = os.Stat(bindingBackupRoot)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(archiveRoot)
 	require.ErrorIs(t, err, os.ErrNotExist)
 
 	// Repository deletion also cleans backups belonging to a previously
