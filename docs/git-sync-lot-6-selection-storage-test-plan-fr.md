@@ -1,4 +1,4 @@
-# Cahier de test — lot 6 Git : sélection des stacks et stockage dédié
+# Cahier de test — lot 6 Git : sélection, stockage, statuts et éditeur
 
 ## 1. Objectifs du lot
 
@@ -316,3 +316,113 @@ Résultats attendus : un bail abandonné expire automatiquement et ne bloque jam
 Résultats attendus : le flux d'événements reste dormant sans modification, aucun timer serveur de polling n'est créé, le seul renouvellement navigateur est actif uniquement pendant un brouillon sale, et Dockman revient à son niveau de repos habituel.
 
 Le lot est accepté si tous les résultats attendus sont obtenus, si aucun fichier non sélectionné n'est modifié et si l'utilisation CPU au repos ne présente pas de hausse durable par rapport à l'image précédente.
+
+## 18. Statuts Git dans la vue Files
+
+Préparer un dossier parent contenant au moins deux stacks sélectionnées par un même folder link, puis replier toute l'arborescence.
+
+1. Vérifier que le dossier parent replié affiche un indicateur Git agrégé.
+2. Déplier le parent et vérifier l'indicateur de chaque sous-dossier puis de chaque fichier Compose.
+3. Mettre toutes les stacks à jour : tous les indicateurs doivent être verts.
+4. Modifier uniquement une stack dans Dockman : sa stack et ses parents doivent signaler un changement local.
+5. Provoquer une erreur ou un conflit sur une autre stack : le parent doit refléter l'état le plus grave.
+6. Replier puis déplier plusieurs fois les dossiers.
+7. Cliquer sur l'indicateur agrégé d'un dossier parent.
+
+Résultats attendus :
+
+- le statut reste visible même lorsque l'arborescence est repliée ;
+- le fichier Compose porte le statut exact de sa stack ;
+- un parent agrège tous ses descendants et ne dépend pas de leur état ouvert/fermé ;
+- l'indicateur agrégé du parent est uniquement informatif et n'ouvre ni stack, ni popup arbitraire ;
+- aucun label Docker et aucun polling supplémentaire ne sont nécessaires.
+
+## 19. Statuts Git dans la vue Monitor
+
+1. Ouvrir **Monitor** en mode stacks.
+2. Vérifier la présence des stacks situées dans des sous-dossiers et sous-sous-dossiers.
+3. Vérifier l'indicateur Git placé entre la case à cocher et le nom de chaque stack synchronisée.
+4. Contrôler successivement une stack à jour, avec changement local, avec changement Git, en conflit et en erreur.
+5. Passer en mode liste de conteneurs puis revenir en mode stacks.
+
+Résultats attendus : toutes les stacks imbriquées sont présentes, les états concordent avec **Files** et le changement de mode n'altère ni les filtres ni les actions des conteneurs.
+
+## 20. Popup de statut et isolation des clics
+
+Réaliser ce test depuis **Files**, directement sur l'indicateur du fichier `compose.yml`.
+
+1. Cliquer sur l'indicateur Git.
+2. Cliquer dans plusieurs zones de la popup, sur ses textes et ses boutons.
+3. Fermer la popup en cliquant à l'extérieur.
+4. Vérifier **Check now**, puis **Pause** et **Resume** si l'auto-sync est configuré.
+5. Cliquer sur **Review details**, **Resolve conflicts** ou **Details** selon l'état présenté.
+
+Résultats attendus :
+
+- aucun clic dans la popup ou sur son fond ne sélectionne le fichier Compose et ne change l'onglet actif ;
+- **Check now** actualise l'état sans recharger toute la page ;
+- pause/reprise ne concerne que la stack choisie ;
+- l'ouverture des détails pointe vers le bon folder link et la bonne stack.
+
+## 21. Push direct depuis la popup
+
+Préparer deux stacks sélectionnées `stack-a` et `stack-b`, toutes deux initialement synchronisées.
+
+### 21.1 Confirmation et annulation
+
+1. Modifier un fichier autorisé de `stack-a` dans Dockman et attendre l'état **Local changes waiting**.
+2. Ouvrir la popup : le bouton vert **Push to Git** doit être présent.
+3. Cliquer dessus puis choisir **Cancel**.
+4. Vérifier le dépôt distant et le statut de la stack.
+
+Résultat attendu : aucun commit ni push n'a lieu et le changement local reste en attente.
+
+### 21.2 Push limité à une seule stack
+
+1. Modifier un fichier autorisé différent dans `stack-a` et `stack-b`.
+2. Depuis la popup de `stack-a`, cliquer sur **Push to Git**, puis **Confirm push**.
+3. Examiner le nouveau commit sur Git.
+4. Rafraîchir les statuts des deux stacks.
+
+Résultats attendus :
+
+- le commit utilise le message Dockman par défaut ;
+- seuls les fichiers transférables rattachés à `stack-a` sont présents dans le commit ;
+- `stack-a` redevient synchronisée ;
+- `stack-b` reste en **Local changes waiting** et peut être poussée séparément ;
+- aucun fichier skipped, sensible ou explicitement exclu n'est poussé.
+
+### 21.3 Protection contre un dépôt distant avancé
+
+1. Ouvrir la popup d'une stack avec un changement local.
+2. Avant de confirmer, créer et pousser un commit distant depuis Git.
+3. Confirmer le push dans Dockman.
+
+Résultat attendu : Dockman refait un fetch, refuse le push si le dépôt est en retard ou divergent, conserve les fichiers locaux et affiche une erreur exploitable. Après pull/résolution, le push peut être retenté.
+
+### 21.4 Conflit et changement d'état pendant la confirmation
+
+1. Provoquer un conflit sur un fichier de la stack.
+2. Vérifier que le parcours normal propose **Resolve conflicts**, et non un écrasement direct.
+3. Si la popup était déjà ouverte avant l'apparition du conflit, tenter de confirmer l'ancien push.
+
+Résultat attendu : le backend recalcule un preview frais, refuse tout conflit et n'écrit rien sur Git. La résolution détaillée reste obligatoire.
+
+### 21.5 Stack racine et stacks imbriquées
+
+1. Répéter le push avec une stack située à la racine du folder link et une stack dans un sous-dossier.
+2. Vérifier le contenu de chaque commit.
+
+Résultat attendu : les fichiers d'une stack imbriquée ne sont jamais attribués par erreur à la stack racine ; chaque push reste strictement isolé.
+
+## 22. Recette finale du lot
+
+Après tous les scénarios précédents :
+
+1. redémarrer Dockman et recontrôler les sélections, pauses, cibles de déploiement et statuts ;
+2. vérifier qu'un changement Git automatique actualise un fichier ouvert mais non modifié ;
+3. vérifier qu'un brouillon actif n'est jamais écrasé ;
+4. laisser Dockman au repos dix minutes avec **Files** et **Monitor** fermés, puis dix minutes avec une vue ouverte ;
+5. relever CPU/RAM et vérifier les logs.
+
+Le lot est validé si les états restent cohérents après redémarrage, si aucune stack hors périmètre n'est transférée ou déployée, si aucune erreur React n'apparaît dans la console et si l'overhead CPU/RAM revient au niveau de repos habituel.
