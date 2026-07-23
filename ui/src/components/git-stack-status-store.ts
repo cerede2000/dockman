@@ -36,6 +36,11 @@ interface GitStatusStore {
 
 const normalizePath = (value: string) => value.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
 const statusFingerprint = (row: GitStackStatus) => JSON.stringify(row);
+// Zustand uses React's useSyncExternalStore. Returning a freshly allocated
+// fallback from a selector makes the snapshot look different on every read and
+// React correctly stops the resulting render loop with error #185. Keep the
+// empty snapshot referentially stable until the first response for this host.
+const EMPTY_GIT_STACK_STATUSES: Record<string, GitStackStatus> = Object.freeze({});
 
 export function gitStatusSeverity(status: GitStackStatus): 'neutral' | 'info' | 'warning' | 'error' | 'success' {
     if (status.deployState === 'failed' || status.state === 'conflict' || status.state === 'error') return 'error';
@@ -153,7 +158,7 @@ export function useGitStatusWatcher(host: string) {
 
 export function useGitStackStatuses(host: string) {
     useGitStatusWatcher(host);
-    return useGitStatusStore((state) => state.byHost[host] ?? {});
+    return useGitStatusStore((state) => state.byHost[host] ?? EMPTY_GIT_STACK_STATUSES);
 }
 
 export function useGitStackStatus(host: string, composePath: string) {
