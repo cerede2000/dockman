@@ -56,6 +56,68 @@ func TestBindingRejectsTraversalAndGitMetadata(t *testing.T) {
 	require.ErrorContains(t, err, ".git paths are forbidden")
 }
 
+func TestRepositoryExclusionsAreRootAnchoredAcrossBindings(t *testing.T) {
+	repository := Repository{ExcludePatterns: "/README.md\n/shared/**"}
+	policy, err := policyFromBinding(StackBinding{SubPath: ".", SyncProfile: syncProfileAllFiles}, repository)
+	require.NoError(t, err)
+	require.True(t, policy.excludesPath("README.md", false, nil))
+	require.False(t, policy.excludesPath("nested/README.md", false, nil))
+	require.True(t, policy.excludesPath("shared/cache.json", false, nil))
+
+	nestedPolicy, err := policyFromBinding(StackBinding{SubPath: "stacks/app", SyncProfile: syncProfileAllFiles}, repository)
+	require.NoError(t, err)
+	require.False(t, nestedPolicy.excludesPath("README.md", false, nil), "a root-anchored rule must not hide a linked folder README")
+}
+
+func TestBindingAutomaticallyReconcilesIdenticalTrees(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	contents := "services:\n  app:\n    image: alpine:3.23\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte(contents), 0o644))
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", contents)
+
+	binding, err := service.CreateBindingContext(context.Background(), BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	require.Equal(t, "reconciled", binding.InitialSyncState)
+	baseline, err := service.store.BindingBaseline(binding.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, baseline["compose.yaml"])
+}
+
+func TestBindingCanInitializeFromDockmanOrGit(t *testing.T) {
+	t.Run("Dockman to Git", func(t *testing.T) {
+		service, _ := testService(t, true)
+		stackRoot := configureTestStack(t, service)
+		repository := prepareBindingRepository(t, service)
+		contents := "services:\n  app:\n    image: alpine:3.23\n"
+		require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte(contents), 0o644))
+		binding, err := service.CreateBindingContext(context.Background(), BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app", InitialSync: "stack_to_repository"})
+		require.NoError(t, err)
+		require.Equal(t, "exported", binding.InitialSyncState)
+		check, err := gitclient.PlainClone(t.TempDir(), false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+		require.NoError(t, err)
+		requireGitFileContent(t, check, "main", "stacks/app/compose.yaml", contents)
+	})
+
+	t.Run("Git to Dockman", func(t *testing.T) {
+		service, _ := testService(t, true)
+		stackRoot := configureTestStack(t, service)
+		repository := prepareBindingRepository(t, service)
+		contents := "services:\n  app:\n    image: alpine:3.24\n"
+		remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", contents)
+		require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+		binding, err := service.CreateBindingContext(context.Background(), BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app", InitialSync: "repository_to_stack"})
+		require.NoError(t, err)
+		require.Equal(t, "imported", binding.InitialSyncState)
+		actual, err := os.ReadFile(filepath.Join(stackRoot, "app", "compose.yaml"))
+		require.NoError(t, err)
+		require.Equal(t, contents, string(actual))
+	})
+}
+
 func TestPreviewSkipsSensitiveFilesUnlessExplicitlyConfirmed(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)
@@ -447,7 +509,7 @@ func TestBindingExclusionsCanBeAddedFromPreviewPaths(t *testing.T) {
 
 	updated, err := service.AddBindingExclusion(binding.ID, BindingExclusionInput{Path: "cache[1]", Directory: true})
 	require.NoError(t, err)
-	require.Equal(t, []string{`cache\[1\]/`}, updated.ExcludePatterns)
+	require.Equal(t, []string{`/cache\[1\]/`}, updated.ExcludePatterns)
 	policy, err := policyFromBinding(StackBinding{SyncProfile: updated.SyncProfile, IncludePatterns: strings.Join(updated.IncludePatterns, "\n"), ExcludePatterns: strings.Join(updated.ExcludePatterns, "\n"), ComposePaths: strings.Join(updated.ComposePaths, "\n")})
 	require.NoError(t, err)
 	require.True(t, matchesIgnoreRule(policy.excludes, "cache[1]", true))
@@ -474,13 +536,13 @@ func TestBindingExclusionsCanBeAddedInOneBatch(t *testing.T) {
 		{Path: "settings.json"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"cache/", "settings.json"}, updated.ExcludePatterns)
+	require.Equal(t, []string{"/cache/", "/settings.json"}, updated.ExcludePatterns)
 
 	_, err = service.AddBindingExclusions(binding.ID, []BindingExclusionInput{{Path: "compose.yaml"}, {Path: "other.json"}})
 	require.ErrorContains(t, err, "cannot be excluded")
 	unchanged, err := service.ListBindings()
 	require.NoError(t, err)
-	require.Equal(t, []string{"cache/", "settings.json"}, unchanged[0].ExcludePatterns)
+	require.Equal(t, []string{"/cache/", "/settings.json"}, unchanged[0].ExcludePatterns)
 
 	_, err = service.AddBindingExclusions(binding.ID, nil)
 	require.ErrorContains(t, err, "at least one")

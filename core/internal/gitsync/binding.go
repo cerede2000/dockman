@@ -50,10 +50,12 @@ const (
 var transferBufferPool = sync.Pool{New: func() any { return make([]byte, transferBufferSize) }}
 
 type BindingInput struct {
-	RepositoryID string `json:"repositoryId"`
-	Host         string `json:"host"`
-	StackPath    string `json:"stackPath"`
-	SubPath      string `json:"subPath"`
+	RepositoryID  string `json:"repositoryId"`
+	Host          string `json:"host"`
+	StackPath     string `json:"stackPath"`
+	SubPath       string `json:"subPath"`
+	AutoReconcile *bool  `json:"autoReconcile"`
+	InitialSync   string `json:"initialSync"`
 }
 
 type BindingView struct {
@@ -80,6 +82,10 @@ type BindingView struct {
 	AutoDeployState         string     `json:"autoDeployState"`
 	AutoDeployError         string     `json:"autoDeployError,omitempty"`
 	LastAutoDeployAt        *time.Time `json:"lastAutoDeployAt,omitempty"`
+	AutoReconcileEnabled    bool       `json:"autoReconcileEnabled"`
+	InitialSyncState        string     `json:"initialSyncState"`
+	InitialSyncError        string     `json:"initialSyncError,omitempty"`
+	InitialSyncAt           *time.Time `json:"initialSyncAt,omitempty"`
 	CreatedAt               time.Time  `json:"createdAt"`
 	UpdatedAt               time.Time  `json:"updatedAt"`
 }
@@ -188,10 +194,12 @@ type ignoreRule struct {
 }
 
 type syncPolicy struct {
-	profile  string
-	includes []ignoreRule
-	excludes []ignoreRule
-	compose  map[string]struct{}
+	profile            string
+	includes           []ignoreRule
+	excludes           []ignoreRule
+	repositoryExcludes []ignoreRule
+	repositorySubPath  string
+	compose            map[string]struct{}
 }
 
 var composeConfigRules = mustRules([]string{
@@ -218,6 +226,10 @@ func (s *Service) ListBindings() ([]BindingView, error) {
 }
 
 func (s *Service) CreateBinding(input BindingInput) (BindingView, error) {
+	return s.CreateBindingContext(context.Background(), input)
+}
+
+func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) (BindingView, error) {
 	if !s.enabled {
 		return BindingView{}, errors.New("Git synchronization is disabled")
 	}
@@ -226,14 +238,28 @@ func (s *Service) CreateBinding(input BindingInput) (BindingView, error) {
 		return BindingView{}, err
 	}
 	compose := discoverComposeFiles(targetFS, targetRoot)
+	autoReconcile := true
+	if clean.AutoReconcile != nil {
+		autoReconcile = *clean.AutoReconcile
+	}
+	initialSync := strings.TrimSpace(clean.InitialSync)
+	if initialSync == "" {
+		initialSync = "none"
+	}
+	if initialSync != "none" && initialSync != "stack_to_repository" && initialSync != "repository_to_stack" {
+		return BindingView{}, errors.New("initial sync must be none, stack_to_repository, or repository_to_stack")
+	}
 	archived, archiveErr := s.store.ArchivedBinding(clean.Host, clean.StackPath)
 	if archiveErr == nil {
 		if archived.RepositoryUUID == clean.RepositoryID && archived.SubPath == clean.SubPath {
 			archived.ComposePaths = strings.Join(compose, "\n")
+			archived.AutoReconcileEnabled = autoReconcile
+			archived.InitialSyncState = "checking"
+			archived.InitialSyncError = ""
 			if err := s.store.RestoreBinding(&archived); err != nil {
 				return BindingView{}, err
 			}
-			return s.bindingView(archived)
+			return s.initializeBinding(ctx, archived, initialSync)
 		}
 		if err := s.store.DeleteBinding(archived.UUID, true); err != nil {
 			return BindingView{}, err
@@ -246,11 +272,87 @@ func (s *Service) CreateBinding(input BindingInput) (BindingView, error) {
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
 		ComposePaths: strings.Join(compose, "\n"), SyncProfile: syncProfileComposeConfig, Enabled: true,
 		AutoSyncIntervalMinutes: defaultAutoSyncIntervalMinutes, AutoSyncState: "disabled",
+		AutoReconcileEnabled: autoReconcile, InitialSyncState: "checking",
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
 	}
-	return s.bindingView(row)
+	return s.initializeBinding(ctx, row, initialSync)
+}
+
+func (s *Service) initializeBinding(ctx context.Context, row StackBinding, direction string) (BindingView, error) {
+	state, message := "pending", ""
+	if !row.AutoReconcileEnabled && direction == "none" {
+		// Link only: leave both sides untouched until the user previews a direction.
+	} else if _, err := s.PullRepository(ctx, row.RepositoryUUID); err != nil {
+		state, message = "error", safeGitError(err)
+	} else {
+		identical := false
+		var reconcileErr error
+		if row.AutoReconcileEnabled {
+			identical, reconcileErr = s.reconcileBindingIfIdentical(row.UUID)
+		}
+		if reconcileErr != nil {
+			state, message = "error", safeGitError(reconcileErr)
+		} else if identical && row.AutoReconcileEnabled {
+			state = "reconciled"
+		} else if direction != "none" {
+			preview, previewErr := s.PreviewBinding(row.UUID, direction, TransferInput{})
+			if previewErr != nil {
+				state, message = "error", safeGitError(previewErr)
+			} else {
+				resolved := make([]string, 0, preview.Conflicts)
+				for _, entry := range preview.Entries {
+					if entry.Status == "conflict" {
+						resolved = append(resolved, entry.Path)
+					}
+				}
+				input := TransferInput{PreviewToken: preview.PreviewToken, ResolvedPaths: resolved}
+				var transferErr error
+				if direction == "stack_to_repository" {
+					input.CommitMessage = "chore(stack): initialize " + row.StackPath + " from Dockman"
+					_, transferErr = s.ExportBinding(ctx, row.UUID, input)
+					state = "exported"
+				} else {
+					_, transferErr = s.ImportBinding(ctx, row.UUID, input)
+					state = "imported"
+				}
+				if transferErr != nil {
+					state, message = "error", safeGitError(transferErr)
+				}
+			}
+		}
+	}
+	now := time.Now().UTC()
+	if err := s.store.UpdateBindingInitialSyncState(row.UUID, state, message, &now); err != nil {
+		return BindingView{}, err
+	}
+	updated, err := s.store.GetBinding(row.UUID)
+	if err != nil {
+		return BindingView{}, err
+	}
+	return s.bindingView(updated)
+}
+
+func (s *Service) reconcileBindingIfIdentical(id string) (bool, error) {
+	binding, stackFiles, repositoryFiles, err := s.loadTransferTrees(id, "stack_to_repository", TransferInput{})
+	if err != nil {
+		return false, err
+	}
+	stackHashes := baselineFromSource(stackFiles)
+	repositoryHashes := baselineFromSource(repositoryFiles)
+	if len(stackHashes) != len(repositoryHashes) {
+		return false, nil
+	}
+	for filePath, stackSHA := range stackHashes {
+		if repositoryHashes[filePath] != stackSHA {
+			return false, nil
+		}
+	}
+	if err := s.store.ReplaceBindingBaseline(binding.UUID, stackHashes); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (BindingView, error) {
@@ -303,7 +405,7 @@ func (s *Service) AddBindingExclusions(id string, inputs []BindingExclusionInput
 		if _, compose := composePaths[relative]; compose && !input.Directory {
 			return BindingView{}, fmt.Errorf("Compose files cannot be excluded from synchronization: %q", relative)
 		}
-		pattern := escapeGlobLiteral(relative)
+		pattern := "/" + escapeGlobLiteral(relative)
 		if input.Directory {
 			pattern += "/"
 		}
@@ -814,6 +916,8 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
 		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployNewStacks: row.AutoDeployNewStacks, AutoDeployComposePaths: splitPatternLines(row.AutoDeployComposePaths),
 		AutoDeployState: row.AutoDeployState, AutoDeployError: row.AutoDeployError, LastAutoDeployAt: row.LastAutoDeployAt,
+		AutoReconcileEnabled: row.AutoReconcileEnabled, InitialSyncState: row.InitialSyncState,
+		InitialSyncError: row.InitialSyncError, InitialSyncAt: row.InitialSyncAt,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }
@@ -874,7 +978,11 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	if err != nil {
 		return StackBinding{}, nil, nil, err
 	}
-	policy, err := policyFromBinding(binding)
+	repositoryRow, err := s.store.GetRepository(binding.RepositoryUUID)
+	if err != nil {
+		return binding, nil, nil, err
+	}
+	policy, err := policyFromBinding(binding, repositoryRow)
 	if err != nil {
 		return binding, nil, nil, err
 	}
@@ -885,10 +993,6 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	stackFiles, err := collectStackFiles(targetFS, targetRoot, input.IncludeSensitive, policy)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return binding, nil, nil, fmt.Errorf("read stack files: %w", err)
-	}
-	repositoryRow, err := s.store.GetRepository(binding.RepositoryUUID)
-	if err != nil {
-		return binding, nil, nil, err
 	}
 	repository, err := s.openRepository(repositoryRow)
 	if err != nil {
@@ -925,7 +1029,6 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 	if err != nil {
 		return nil, err
 	}
-	excludeRules := append(append([]ignoreRule(nil), policy.excludes...), ignoreRules...)
 	var total int64
 	var walk func(string, string) error
 	walk = func(dir, rel string) error {
@@ -938,7 +1041,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if shouldSkipPath(childRel, entry.IsDir()) {
 				continue
 			}
-			if matchesIgnoreRule(excludeRules, childRel, entry.IsDir()) && !policy.protectsCompose(childRel) {
+			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.protectsCompose(childRel) {
 				if entry.IsDir() && policy.containsCompose(childRel) {
 					child := targetFS.Join(dir, entry.Name())
 					if err := walk(child, childRel); err != nil {
@@ -1023,7 +1126,6 @@ func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, 
 	if err != nil {
 		return nil, err
 	}
-	excludeRules := append(append([]ignoreRule(nil), policy.excludes...), ignoreRules...)
 	var total int64
 	var walk func(*object.Tree, string) error
 	walk = func(current *object.Tree, parent string) error {
@@ -1039,7 +1141,7 @@ func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, 
 			if shouldSkipPath(rel, isDirectory) {
 				continue
 			}
-			if matchesIgnoreRule(excludeRules, rel, isDirectory) && !policy.protectsCompose(rel) {
+			if policy.excludesPath(rel, isDirectory, ignoreRules) && !policy.protectsCompose(rel) {
 				if isDirectory && policy.containsCompose(rel) {
 					subtree, err := current.Tree(entry.Name)
 					if err != nil {
@@ -1149,7 +1251,7 @@ func defaultSyncPolicy() syncPolicy {
 	return syncPolicy{profile: syncProfileComposeConfig}
 }
 
-func policyFromBinding(binding StackBinding) (syncPolicy, error) {
+func policyFromBinding(binding StackBinding, repositories ...Repository) (syncPolicy, error) {
 	profile := binding.SyncProfile
 	if profile == "" {
 		profile = syncProfileComposeConfig
@@ -1172,7 +1274,14 @@ func policyFromBinding(binding StackBinding) (syncPolicy, error) {
 	for _, relative := range splitPatternLines(binding.ComposePaths) {
 		compose[filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))] = struct{}{}
 	}
-	return syncPolicy{profile: profile, includes: includeRules, excludes: excludeRules, compose: compose}, nil
+	policy := syncPolicy{profile: profile, includes: includeRules, excludes: excludeRules, compose: compose, repositorySubPath: binding.SubPath}
+	if len(repositories) > 0 {
+		policy.repositoryExcludes, err = rulesFromPatterns(splitPatternLines(repositories[0].ExcludePatterns))
+		if err != nil {
+			return syncPolicy{}, fmt.Errorf("invalid repository policy: %w", err)
+		}
+	}
+	return policy, nil
 }
 
 func normalizeBindingPolicy(input BindingPolicyInput) (string, []string, []string, error) {
@@ -1213,6 +1322,7 @@ func normalizePatterns(values []string) ([]string, []ignoreRule, error) {
 		if strings.HasPrefix(line, "!") {
 			return nil, nil, fmt.Errorf("line %d: negation rules are not supported", index+1)
 		}
+		anchored := strings.HasPrefix(line, "/")
 		directory := strings.HasSuffix(line, "/")
 		line = strings.Trim(line, "/")
 		if err := validateRelativePath(line, false); err != nil {
@@ -1226,11 +1336,14 @@ func normalizePatterns(values []string) ([]string, []ignoreRule, error) {
 			return nil, nil, fmt.Errorf("patterns exceed %d KiB", maxIgnoreFileSize>>10)
 		}
 		normalizedLine := line
+		if anchored {
+			normalizedLine = "/" + normalizedLine
+		}
 		if directory {
 			normalizedLine += "/"
 		}
 		normalized = append(normalized, normalizedLine)
-		rules = append(rules, ignoreRule{pattern: line, directory: directory, basename: !strings.Contains(line, "/")})
+		rules = append(rules, ignoreRule{pattern: line, directory: directory, basename: !anchored && !strings.Contains(line, "/")})
 		if len(rules) > maxIgnoreRules {
 			return nil, nil, fmt.Errorf("more than %d rules", maxIgnoreRules)
 		}
@@ -1271,6 +1384,17 @@ func (policy syncPolicy) includesFile(relative string) bool {
 		return true
 	}
 	return matchesIgnoreRule(composeConfigRules, relative, false)
+}
+
+func (policy syncPolicy) excludesPath(relative string, directory bool, localRules []ignoreRule) bool {
+	if matchesIgnoreRule(policy.excludes, relative, directory) || matchesIgnoreRule(localRules, relative, directory) {
+		return true
+	}
+	repositoryRelative := relative
+	if subPath := strings.Trim(policy.repositorySubPath, "/"); subPath != "" && subPath != "." {
+		repositoryRelative = path.Join(subPath, relative)
+	}
+	return matchesIgnoreRule(policy.repositoryExcludes, repositoryRelative, directory)
 }
 
 func (policy syncPolicy) protectsCompose(relative string) bool {

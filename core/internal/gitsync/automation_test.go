@@ -37,6 +37,31 @@ func TestBindingAutomationConfigurationIsOptInAndBounded(t *testing.T) {
 	require.Equal(t, "disabled", archived.AutoSyncState)
 }
 
+func TestAutoSyncReconcilesIdenticalTreesBeforeCommitShortcut(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	contents := "services: {}\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte(contents), 0o644))
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", contents)
+	autoReconcile := false
+	binding, err := service.CreateBindingContext(context.Background(), BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app", AutoReconcile: &autoReconcile})
+	require.NoError(t, err)
+	require.Equal(t, "pending", binding.InitialSyncState)
+	autoReconcile = true
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, AutoReconcile: &autoReconcile, IntervalMinutes: 5})
+	require.NoError(t, err)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+	require.Contains(t, result.Message, "baseline established automatically")
+	baseline, err := service.store.BindingBaseline(binding.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, baseline["compose.yaml"])
+}
+
 func TestNextAutoSyncDelayTracksExactDeadline(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

@@ -78,3 +78,31 @@ Résultat attendu : Dockman ne supprime jamais silencieusement une donnée local
 5. Recréer le dépôt avec une URL acceptée par Dockman et relier le folder link.
 
 Résultat attendu : le cycle complet fonctionne sans doublon de fichiers, sans résidu temporaire et sans impact sur les autres dépôts.
+
+## 8. Exclusions globales du dépôt
+
+1. Dans **Settings → Git**, ouvrir les exclusions globales d'un dépôt avec le bouton de réglage.
+2. Ajouter `/README.md`, enregistrer, puis ouvrir les previews des folder links du dépôt dans les deux sens.
+3. Vérifier que le `README.md` situé à la racine du dépôt est ignoré.
+4. Ajouter un `README.md` dans un sous-dossier lié et vérifier qu'il reste synchronisable.
+5. Tester ensuite une règle globale telle que `**/*.log` et vérifier qu'elle s'applique à tous les folder links du dépôt.
+
+Résultat attendu : une règle commençant par `/` est ancrée à la racine du dépôt ; les autres règles s'appliquent à tous les chemins. Les fichiers Compose restent protégés.
+
+## 9. Réconciliation et initialisation à la création du lien
+
+1. Préparer un dossier Dockman et un dossier Git strictement identiques, puis créer le lien en conservant **Automatically reconcile** activé et **Link only**.
+2. Vérifier que le lien affiche l'état **reconciled** et que les deux previews ne signalent aucun conflit.
+3. Refaire le test avec des contenus différents et choisir **Dockman → Git** : vérifier le commit et le push, sans suppression des fichiers présents uniquement sur Git.
+4. Refaire le test avec **Git → Dockman** : vérifier l'import et le backup, sans déploiement automatique ni suppression des fichiers présents uniquement dans Dockman.
+
+Résultat attendu : l'identité crée seulement une baseline, sans copie. Une direction explicite traite les différences en considérant la source choisie comme autorité initiale.
+
+## 10. Réconciliation pendant l'auto-sync
+
+1. Créer un lien sans baseline entre deux dossiers identiques, puis activer l'auto-sync et **Automatically establish a baseline**.
+2. Lancer **Check now** et vérifier le message de réconciliation automatique.
+3. Ajouter un nouveau fichier autorisé uniquement sur Git et relancer : il doit être importé directement avec un backup.
+4. Modifier différemment le même fichier des deux côtés et relancer.
+
+Résultat attendu : les fichiers identiques et les ajouts Git sûrs avancent automatiquement. Une divergence réelle du même fichier reste bloquée en conflit et aucun fichier du lot n'est modifié.

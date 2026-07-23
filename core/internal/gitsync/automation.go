@@ -20,6 +20,7 @@ const (
 
 type BindingAutomationInput struct {
 	Enabled            bool     `json:"enabled"`
+	AutoReconcile      *bool    `json:"autoReconcile"`
 	IntervalMinutes    int      `json:"intervalMinutes"`
 	DeployEnabled      bool     `json:"deployEnabled"`
 	DeployNewStacks    bool     `json:"deployNewStacks"`
@@ -58,6 +59,9 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		return BindingView{}, fmt.Errorf("automatic synchronization interval must be between %d and %d minutes", minAutoSyncIntervalMinutes, maxAutoSyncIntervalMinutes)
 	}
 	row.AutoSyncEnabled = input.Enabled
+	if input.AutoReconcile != nil {
+		row.AutoReconcileEnabled = *input.AutoReconcile
+	}
 	row.AutoSyncIntervalMinutes = input.IntervalMinutes
 	row.AutoSyncError = ""
 	if input.Enabled {
@@ -192,6 +196,23 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			status = pulledStatus
 		}
 		synchronizedCommit = status.Head
+		if binding.AutoReconcileEnabled {
+			baseline, baselineErr := s.store.BindingBaseline(binding.UUID)
+			if baselineErr != nil {
+				return baselineErr
+			}
+			if len(baseline) == 0 {
+				reconciled, reconcileErr := s.reconcileBindingIfIdentical(binding.UUID)
+				if reconcileErr != nil {
+					return reconcileErr
+				}
+				if reconciled {
+					result.State = "up_to_date"
+					result.Message = "Dockman and Git were identical; synchronization baseline established automatically"
+					return nil
+				}
+			}
+		}
 		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head {
 			result.State = "up_to_date"
 			result.Message = "No new Git commit; stack scan skipped"

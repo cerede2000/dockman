@@ -27,6 +27,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /repositories", h.listRepositories)
 	mux.HandleFunc("POST /repositories", h.createRepository)
 	mux.HandleFunc("POST /repositories/github", h.createGitHubRepository)
+	mux.HandleFunc("PUT /repositories/{id}/policy", h.updateRepositoryPolicy)
 	mux.HandleFunc("GET /repositories/{id}/status", h.repositoryStatus)
 	mux.HandleFunc("POST /repositories/{id}/fetch", h.fetchRepository)
 	mux.HandleFunc("POST /repositories/{id}/pull", h.pullRepository)
@@ -151,6 +152,23 @@ func (h *HTTPHandler) updateBindingPolicy(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, row)
 }
 
+func (h *HTTPHandler) updateRepositoryPolicy(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input RepositoryPolicyInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	row, err := h.service.UpdateRepositoryPolicy(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
 func (h *HTTPHandler) updateBindingAutomation(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
@@ -213,7 +231,7 @@ func (h *HTTPHandler) createBinding(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	row, err := h.service.CreateBinding(input)
+	row, err := h.service.CreateBindingContext(r.Context(), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return

@@ -27,16 +27,17 @@ func (Credential) TableName() string { return "git_credentials" }
 
 type Repository struct {
 	gorm.Model
-	UUID           string `gorm:"not null;uniqueIndex"`
-	Name           string `gorm:"not null;uniqueIndex"`
-	Provider       string `gorm:"not null;default:generic"`
-	RemoteURL      string `gorm:"not null"`
-	DefaultBranch  string `gorm:"not null;default:main"`
-	Mode           string `gorm:"not null;default:managed"`
-	CredentialUUID *string
-	Status         string `gorm:"not null;default:uninitialized"`
-	LastError      string
-	LastFetchedAt  *time.Time
+	UUID            string `gorm:"not null;uniqueIndex"`
+	Name            string `gorm:"not null;uniqueIndex"`
+	Provider        string `gorm:"not null;default:generic"`
+	RemoteURL       string `gorm:"not null"`
+	DefaultBranch   string `gorm:"not null;default:main"`
+	Mode            string `gorm:"not null;default:managed"`
+	CredentialUUID  *string
+	Status          string `gorm:"not null;default:uninitialized"`
+	ExcludePatterns string `gorm:"type:text"`
+	LastError       string
+	LastFetchedAt   *time.Time
 }
 
 func (Repository) TableName() string { return "git_repositories" }
@@ -66,6 +67,10 @@ type StackBinding struct {
 	AutoDeployState         string `gorm:"not null;default:disabled"`
 	AutoDeployError         string `gorm:"type:text"`
 	LastAutoDeployAt        *time.Time
+	InitialSyncState        string `gorm:"not null;default:pending"`
+	InitialSyncError        string `gorm:"type:text"`
+	InitialSyncAt           *time.Time
+	AutoReconcileEnabled    bool `gorm:"not null"`
 }
 
 func (StackBinding) TableName() string { return "git_stack_bindings" }

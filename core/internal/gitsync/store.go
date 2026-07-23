@@ -157,6 +157,14 @@ func (s *Store) UpdateBindingAutoSyncState(id, state, message, commit string, at
 	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error
 }
 
+func (s *Store) UpdateBindingInitialSyncState(id, state, message string, at *time.Time) error {
+	updates := map[string]any{"initial_sync_state": state, "initial_sync_error": message}
+	if at != nil {
+		updates["initial_sync_at"] = at
+	}
+	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error
+}
+
 func (s *Store) ArchivedBinding(host, stackPath string) (StackBinding, error) {
 	var row StackBinding
 	err := s.db.Unscoped().Where("host = ? AND stack_path = ? AND deleted_at IS NOT NULL", host, stackPath).First(&row).Error
@@ -166,6 +174,8 @@ func (s *Store) ArchivedBinding(host, stackPath string) (StackBinding, error) {
 func (s *Store) RestoreBinding(row *StackBinding) error {
 	return s.db.Unscoped().Model(&StackBinding{}).Where("uuid = ?", row.UUID).Updates(map[string]any{
 		"deleted_at": nil, "compose_paths": row.ComposePaths, "enabled": true,
+		"auto_reconcile_enabled": row.AutoReconcileEnabled, "initial_sync_state": row.InitialSyncState,
+		"initial_sync_error": row.InitialSyncError,
 	}).Error
 }
 

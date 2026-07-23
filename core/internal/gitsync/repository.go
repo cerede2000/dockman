@@ -47,6 +47,10 @@ type GitHubRepositoryInput struct {
 	CredentialUUID string `json:"credentialId"`
 }
 
+type RepositoryPolicyInput struct {
+	ExcludePatterns []string `json:"excludePatterns"`
+}
+
 type RepositoryView struct {
 	ID               string     `json:"id"`
 	Name             string     `json:"name"`
@@ -62,6 +66,7 @@ type RepositoryView struct {
 	UpdatedAt        time.Time  `json:"updatedAt"`
 	WorkspacePresent bool       `json:"workspacePresent"`
 	StorageMode      string     `json:"storageMode"`
+	ExcludePatterns  []string   `json:"excludePatterns"`
 }
 
 type RepositoryGitStatus struct {
@@ -97,6 +102,22 @@ func (s *Service) ListRepositories() ([]RepositoryView, error) {
 		views = append(views, s.repositoryView(row))
 	}
 	return views, nil
+}
+
+func (s *Service) UpdateRepositoryPolicy(id string, input RepositoryPolicyInput) (RepositoryView, error) {
+	row, err := s.store.GetRepository(id)
+	if err != nil {
+		return RepositoryView{}, err
+	}
+	patterns, _, err := normalizePatterns(input.ExcludePatterns)
+	if err != nil {
+		return RepositoryView{}, fmt.Errorf("invalid repository exclude patterns: %w", err)
+	}
+	row.ExcludePatterns = strings.Join(patterns, "\n")
+	if err := s.store.SaveRepository(&row); err != nil {
+		return RepositoryView{}, err
+	}
+	return s.repositoryView(row), nil
 }
 
 func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (RepositoryView, error) {
@@ -733,6 +754,7 @@ func (s *Service) repositoryView(row Repository) RepositoryView {
 		DefaultBranch: row.DefaultBranch, Mode: row.Mode, CredentialID: row.CredentialUUID,
 		Status: row.Status, LastError: row.LastError, LastFetchedAt: row.LastFetchedAt,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, WorkspacePresent: present, StorageMode: storageMode,
+		ExcludePatterns: splitPatternLines(row.ExcludePatterns),
 	}
 }
 

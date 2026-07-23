@@ -56,6 +56,7 @@ interface Repository {
     lastFetchedAt?: string;
     workspacePresent: boolean;
     storageMode: "compact" | "legacy";
+    excludePatterns: string[];
 }
 
 interface RepositoryStatus {
@@ -98,6 +99,7 @@ interface Binding {
     autoSyncError?: string; lastAutoSyncAt?: string; lastAutoSyncSuccessAt?: string;
     autoDeployEnabled: boolean; autoDeployNewStacks: boolean; autoDeployComposePaths: string[]; autoDeployState: string;
     autoDeployError?: string; lastAutoDeployAt?: string;
+    autoReconcileEnabled: boolean; initialSyncState: string; initialSyncError?: string; initialSyncAt?: string;
 }
 interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; message: string; }
 interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
@@ -193,7 +195,7 @@ export default function TabGit() {
     const [bindings, setBindings] = useState<Binding[]>([]);
     const [stackTargets, setStackTargets] = useState<StackTarget[]>([]);
     const [bindingDialogOpen, setBindingDialogOpen] = useState(false);
-    const [bindingForm, setBindingForm] = useState({repositoryId: "", host: "", stackPath: "", subPath: "stacks", targetMode: "repository_folder" as "repository_folder" | "repository_root"});
+    const [bindingForm, setBindingForm] = useState({repositoryId: "", host: "", stackPath: "", subPath: "stacks", targetMode: "repository_folder" as "repository_folder" | "repository_root", autoReconcile: true, initialSync: "none" as "none" | TransferDirection});
     const [transferBinding, setTransferBinding] = useState<Binding | null>(null);
     const [transferDirection, setTransferDirection] = useState<TransferDirection>("stack_to_repository");
     const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
@@ -210,7 +212,9 @@ export default function TabGit() {
     const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
     const [automationBinding, setAutomationBinding] = useState<Binding | null>(null);
     const [deployments, setDeployments] = useState<Deployment[]>([]);
-    const [automationForm, setAutomationForm] = useState({enabled: false, intervalMinutes: 15, deployEnabled: false, deployNewStacks: false, deployComposePaths: [] as string[]});
+    const [automationForm, setAutomationForm] = useState({enabled: false, autoReconcile: true, intervalMinutes: 15, deployEnabled: false, deployNewStacks: false, deployComposePaths: [] as string[]});
+    const [policyRepository, setPolicyRepository] = useState<Repository | null>(null);
+    const [repositoryExcludePatterns, setRepositoryExcludePatterns] = useState("");
     const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
     const [previewPage, setPreviewPage] = useState(0);
     const [previewRowsPerPage, setPreviewRowsPerPage] = useState(50);
@@ -442,15 +446,19 @@ export default function TabGit() {
 
     const openBindingCreate = () => {
         const first = stackTargets[0];
-        setBindingForm({repositoryId: repositories[0]?.id || "", host: first?.host || "", stackPath: first?.path || "", subPath: "stacks", targetMode: "repository_folder"});
+        setBindingForm({repositoryId: repositories[0]?.id || "", host: first?.host || "", stackPath: first?.path || "", subPath: "stacks", targetMode: "repository_folder", autoReconcile: true, initialSync: "none"});
         setBindingDialogOpen(true);
     };
 
     const saveBinding = async () => {
         setBusy("binding-save");
         try {
-            await api<Binding>("/bindings", {method: "POST", body: JSON.stringify({repositoryId: bindingForm.repositoryId, host: bindingForm.host, stackPath: bindingForm.stackPath, subPath: bindingForm.subPath})});
-            showSuccess("Complete folder linked to the Git repository.");
+            const binding = await api<Binding>("/bindings", {method: "POST", body: JSON.stringify({repositoryId: bindingForm.repositoryId, host: bindingForm.host, stackPath: bindingForm.stackPath, subPath: bindingForm.subPath, autoReconcile: bindingForm.autoReconcile, initialSync: bindingForm.initialSync})});
+            if (binding.initialSyncState === "error") showError(`Folder linked, but initialization failed: ${binding.initialSyncError || "unknown error"}`);
+            else if (binding.initialSyncState === "reconciled") showSuccess("Folder linked: Dockman and Git were identical, so the synchronization baseline was established automatically.");
+            else if (binding.initialSyncState === "exported") showSuccess("Folder linked and initialized from Dockman to Git.");
+            else if (binding.initialSyncState === "imported") showSuccess("Folder linked and initialized from Git to Dockman with a backup.");
+            else showSuccess("Complete folder linked to the Git repository.");
             setBindingDialogOpen(false);
             await load();
         } catch (error) {
@@ -605,9 +613,26 @@ export default function TabGit() {
 
     const openBindingAutomation = (binding: Binding) => {
         setAutomationBinding(binding);
-        setAutomationForm({enabled: binding.autoSyncEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployComposePaths: binding.autoDeployComposePaths || []});
+        setAutomationForm({enabled: binding.autoSyncEnabled, autoReconcile: binding.autoReconcileEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployComposePaths: binding.autoDeployComposePaths || []});
         setDeployments([]);
         void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
+    };
+
+    const openRepositoryPolicy = (repository: Repository) => {
+        setPolicyRepository(repository);
+        setRepositoryExcludePatterns((repository.excludePatterns || []).join("\n"));
+    };
+
+    const saveRepositoryPolicy = async () => {
+        if (!policyRepository) return;
+        setBusy(`repository-policy-${policyRepository.id}`);
+        try {
+            await api<Repository>(`/repositories/${policyRepository.id}/policy`, {method: "PUT", body: JSON.stringify({excludePatterns: repositoryExcludePatterns.split("\n")})});
+            showSuccess("Repository-wide exclusions updated.");
+            setPolicyRepository(null);
+            await load();
+        } catch (error) { showError((error as Error).message); }
+        finally { setBusy(null); }
     };
 
     const openBindingState = (binding: Binding) => {
@@ -786,6 +811,7 @@ export default function TabGit() {
                                         <Tooltip title="Fetch remote state"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "fetch")}><RefreshOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         <Tooltip title="Pull fast-forward changes"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "pull")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         <Tooltip title="Push local commits"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "push")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                        <Tooltip title="Repository-wide exclusions"><IconButton size="small" disabled={busy !== null} onClick={() => openRepositoryPolicy(repository)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Operation history"><IconButton size="small" disabled={busy !== null} onClick={() => void openHistory(repository)}><HistoryOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Remove local workspace"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteRepository(repository)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
                                     </TableCell>
@@ -810,7 +836,7 @@ export default function TabGit() {
                         {bindings.length === 0 && <TableRow><TableCell colSpan={5} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
                         {bindings.map((binding) => <TableRow key={binding.id} hover>
                             <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Complete folder on {binding.host}</Typography></TableCell>
-                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Box sx={{mt: .5}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : "Configuration files"}/></Box></TableCell>
+                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Stack direction="row" spacing={.5} sx={{mt: .5, alignItems: "center"}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : "Configuration files"}/><Tooltip title={binding.initialSyncError || "Initial link state"}><Chip size="small" variant="outlined" color={binding.initialSyncState === "error" ? "error" : binding.initialSyncState === "reconciled" || binding.initialSyncState === "imported" || binding.initialSyncState === "exported" ? "success" : "default"} label={(binding.initialSyncState || "pending").replaceAll("_", " ")}/></Tooltip></Stack></TableCell>
                             <TableCell>{binding.composePaths.length ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>{binding.composePaths.slice(0, 2).map((path) => <Chip key={path} size="small" variant="outlined" label={path}/>)}{binding.composePaths.length > 2 && <Chip size="small" color="info" variant="outlined" label={`+${binding.composePaths.length - 2}`}/>}</Stack> : <Chip size="small" color="warning" variant="outlined" label="Import target"/>}</TableCell>
                             <TableCell sx={{minWidth: 190}}>
                                 <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
@@ -858,6 +884,15 @@ export default function TabGit() {
             </Paper>
         </Stack>
 
+        <Dialog open={policyRepository !== null} onClose={() => busy === null && setPolicyRepository(null)} fullWidth maxWidth="sm">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Repository-wide exclusions</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <Alert severity="info">These rules apply to every folder link in this repository and in both synchronization directions. Compose files remain protected.</Alert>
+                <TextField label="Exclude rules" value={repositoryExcludePatterns} onChange={(event) => setRepositoryExcludePatterns(event.target.value)} multiline minRows={7} maxRows={16} placeholder={"/README.md\n/docs/**\n**/*.log"} helperText="One glob per line. Start with / to anchor a rule at the repository root; /README.md ignores only the root README." sx={{"& textarea": {fontFamily: "monospace"}}}/>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setPolicyRepository(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveRepositoryPolicy()} disabled={busy !== null}>{busy?.startsWith("repository-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save exclusions</Button></DialogActions>
+        </Dialog>
+
         <Dialog open={bindingDialogOpen} onClose={() => busy === null && setBindingDialogOpen(false)} fullWidth maxWidth="sm">
             <DialogTitle>Link a complete stacks folder to Git</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
@@ -874,7 +909,13 @@ export default function TabGit() {
                     setBindingForm({...bindingForm, targetMode, subPath: targetMode === "repository_root" ? "." : (bindingForm.subPath === "." ? "stacks" : bindingForm.subPath)});
                 }}><MenuItem value="repository_folder">A folder inside a shared repository</MenuItem><MenuItem value="repository_root">The root of a dedicated repository</MenuItem></Select></FormControl>
                 {bindingForm.targetMode === "repository_folder" && <TextField label="Repository folder" value={bindingForm.subPath} onChange={(event) => setBindingForm({...bindingForm, subPath: event.target.value})} placeholder="stacks" helperText="Every stack subfolder is preserved below this destination." required/>}
-                <Alert severity="info">All subfolders and compose stacks below this source are handled by one link. Creating it copies nothing; every transfer still requires a preview and confirmation.</Alert>
+                <FormControlLabel control={<Switch checked={bindingForm.autoReconcile} onChange={(event) => setBindingForm({...bindingForm, autoReconcile: event.target.checked})}/>} label="Automatically reconcile when Dockman and Git are already identical"/>
+                <FormControl><InputLabel>Link initialization</InputLabel><Select label="Link initialization" value={bindingForm.initialSync} onChange={(event) => setBindingForm({...bindingForm, initialSync: event.target.value as "none" | TransferDirection})}>
+                    <MenuItem value="none">Link only — decide after preview</MenuItem>
+                    <MenuItem value="stack_to_repository">Dockman → Git — commit and push allowed files</MenuItem>
+                    <MenuItem value="repository_to_stack">Git → Dockman — backup and import allowed files</MenuItem>
+                </Select></FormControl>
+                <Alert severity={bindingForm.initialSync === "none" ? "info" : "warning"}>{bindingForm.initialSync === "none" ? "The link remains non-destructive. If both sides are identical, automatic reconciliation records their common baseline without copying anything." : bindingForm.initialSync === "stack_to_repository" ? "Dockman becomes the explicit source for differing files. Git-only files are preserved; allowed changes are committed and pushed." : "Git becomes the explicit source for differing files. Dockman-only files are preserved; changed files are backed up before import. Nothing is deployed automatically."}</Alert>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setBindingDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBinding()} disabled={busy !== null || !bindingForm.repositoryId || !bindingForm.host.trim() || !bindingForm.stackPath.trim() || !bindingForm.subPath.trim()}>{busy === "binding-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Link</Button></DialogActions>
         </Dialog>
@@ -968,8 +1009,9 @@ export default function TabGit() {
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><SyncOutlined/>Automatic Git monitoring</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
                 <FormControlLabel control={<Switch checked={automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, enabled: event.target.checked, ...(!event.target.checked ? {deployEnabled: false, deployNewStacks: false, deployComposePaths: []} : {})})}/>} label="Synchronize changes from Git automatically"/>
+                <FormControlLabel control={<Switch checked={automationForm.autoReconcile} onChange={(event) => setAutomationForm({...automationForm, autoReconcile: event.target.checked})}/>} label="Automatically establish a baseline when both sides are identical"/>
                 <TextField label="Check interval (minutes)" type="number" value={automationForm.intervalMinutes} onChange={(event) => setAutomationForm({...automationForm, intervalMinutes: Number(event.target.value)})} disabled={!automationForm.enabled} slotProps={{htmlInput: {min: 5, max: 1440, step: 5}}} helperText="Between 5 minutes and 24 hours."/>
-                <Alert severity="info">Dockman fetches Git and fast-forwards the managed repository, then imports allowed files with a backup. Missing source files are not deleted.</Alert>
+                <Alert severity="info">Dockman fetches Git and fast-forwards the managed repository. Identical files are reconciled automatically, safe Git additions are imported directly with a backup, and a true same-file divergence remains blocked as a conflict. Missing source files are not deleted.</Alert>
                 <FormControlLabel control={<Switch checked={automationForm.deployEnabled} disabled={!automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, deployEnabled: event.target.checked, ...(!event.target.checked ? {deployNewStacks: false} : {})})}/>} label="Deploy affected stacks after a successful import"/>
                 {automationForm.deployEnabled && <FormControlLabel control={<Switch checked={automationForm.deployNewStacks} onChange={(event) => setAutomationForm({...automationForm, deployNewStacks: event.target.checked})}/>} label="Automatically deploy newly discovered Git stacks"/>}
                 {automationForm.deployEnabled && automationForm.deployNewStacks && <Alert severity="warning">A newly added compose.yml/docker-compose.yml inside this folder link will be validated, dry-run, deployed, then retained as an authorized target. At most 10 new stack folders are accepted per synchronization.</Alert>}
