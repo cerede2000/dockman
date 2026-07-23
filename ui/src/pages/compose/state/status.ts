@@ -55,7 +55,8 @@ export const useComposeFileState = create<OpenFilesState>()(
                 // must not reset an already-known status to empty, otherwise the
                 // dot flickers to grey until the next poll.
                 if (!state.openFiles[key][path]) {
-                    state.openFiles[key][path] = createMessage(StatusSchema);
+                    state.openFiles[key][path] = state.knownFiles[key]?.[path]
+                        ?? createMessage(StatusSchema);
                 }
             });
         },

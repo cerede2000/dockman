@@ -359,7 +359,10 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
     const filePath = editorUrl(filename)
 
     const trackComposeStatus = useComposeFileState(state => state.trackComposeStatus)
-    const fileStatus = useComposeFileState(state => state.openFiles[getContextKey()]?.[filename])
+    const fileStatus = useComposeFileState(state => {
+        const context = getContextKey();
+        return state.knownFiles[context]?.[filename] ?? state.openFiles[context]?.[filename];
+    })
     useEffect(() => {
         if (isComposeFile(filename)) {
             trackComposeStatus(filename);
