@@ -211,7 +211,10 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
 
     const trackComposeStatus = useComposeFileState(state => state.trackComposeStatus)
 
-    const fileStatus = useComposeFileState(state => state.openFiles[getContextKey()]?.[entry.isComposeFolder])
+    const fileStatus = useComposeFileState(state => {
+        const context = getContextKey();
+        return state.folderStatuses[context]?.[entry.filename] ?? state.openFiles[context]?.[entry.isComposeFolder];
+    })
     useEffect(() => {
         // Track the stack status for any folder that contains a compose file,
         // regardless of the useComposeFolders display mode, so the status dot is

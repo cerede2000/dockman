@@ -56,6 +56,9 @@ import {ContainerInfoPort} from '../compose/components/container-info-port.tsx';
 export interface MonitorRow {
     info: ContainerList;
     stats?: ContainerStats;
+    // Stable parent identity. Compose project names are not unique: two
+    // nested folders can legitimately deploy projects with the same name.
+    stackKey: string;
 }
 
 // per-stack aggregation of the member containers' live metrics
@@ -74,6 +77,8 @@ export interface StackStats {
 export type MonitorSortField = 'name' | 'uptime' | 'cpu' | 'mem' | 'net';
 
 export interface StackGroup {
+    // Unique UI identity, based on the resolved compose path when available.
+    key: string;
     // display name; empty for containers outside any compose stack
     stack: string;
     // compose file in dockman's namespace, empty when unknown — stack-level
@@ -225,7 +230,7 @@ export function MonitorTable(props: MonitorTableProps) {
 
     // header checkbox drives stack selection (containers are picked row by
     // row); standalone containers have no stack to select
-    const selectableStacks = groups.filter(g => g.stack && g.servicePath).map(g => g.stack);
+    const selectableStacks = groups.filter(g => g.stack && g.servicePath).map(g => g.key);
     const allStacksSelected = selectableStacks.length > 0 && selectableStacks.every(s => selectedStacks.includes(s));
     const someStacksSelected = selectableStacks.some(s => selectedStacks.includes(s));
     const visibleContainerIDs = props.flatRows.map(row => row.info.id);
@@ -313,9 +318,9 @@ export function MonitorTable(props: MonitorTableProps) {
                         : groups.map(group => {
                             const boundaryColor = stackStatusColor(group.rows);
                             return (
-                                <Fragment key={group.stack || '(standalone)'}>
+                                <Fragment key={group.key}>
                                     <StackRow {...props} group={group} boundaryColor={boundaryColor}/>
-                                    {(props.expanded[group.stack] ?? false) && group.rows.map(row => (
+                                    {(props.expanded[group.key] ?? false) && group.rows.map(row => (
                                         <ContainerRow {...props} key={row.info.id} row={row}
                                                       boundaryColor={subduedColor(boundaryColor)}/>
                                     ))}
@@ -335,7 +340,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup, boundaryColor:
         onStackAction, onStackRedeploy, onStackLogs, onStackEdit, onStackOutput,
     } = props;
 
-    const isExpanded = expanded[group.stack] ?? false;
+    const isExpanded = expanded[group.key] ?? false;
     const isStack = group.stack !== '';
     const hasFile = group.servicePath !== '';
     const busy = runningStacks[group.servicePath] ?? false;
@@ -348,7 +353,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup, boundaryColor:
     // selecting a stack checks the stack AND (visually) all its containers;
     // the two selection kinds never mix, so the other kind's boxes disable
     const checked = isStack && hasFile
-        ? selectedStacks.includes(group.stack)
+        ? selectedStacks.includes(group.key)
         : ids.length > 0 && ids.every(id => selectedContainers.includes(id));
     const indeterminate = !(isStack && hasFile)
         && !checked && ids.some(id => selectedContainers.includes(id));
@@ -363,7 +368,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup, boundaryColor:
     return (
         // the whole row toggles expand/collapse; the checkbox and the action
         // cluster opt out via stopPropagation
-        <TableRow onClick={() => onToggleExpand(group.stack)}
+        <TableRow onClick={() => onToggleExpand(group.key)}
                   sx={{bgcolor: t.header, cursor: 'pointer'}}>
             <TableCell padding="checkbox" onClick={e => e.stopPropagation()}
                        sx={{...bodyCell, borderLeft: `3px solid ${props.boundaryColor}`, cursor: 'default', width: 40, minWidth: 40, maxWidth: 40, px: 0.5}}>
@@ -375,7 +380,7 @@ function StackRow(props: MonitorTableProps & { group: StackGroup, boundaryColor:
                             indeterminate={indeterminate}
                             disabled={disabled}
                             onChange={e => isStack && hasFile
-                                ? onToggleStack(group.stack, e.target.checked)
+                                ? onToggleStack(group.key, e.target.checked)
                                 : onToggleContainers(ids, e.target.checked)}
                             sx={{color: t.textDim, p: 0.5}}
                         />
@@ -400,6 +405,11 @@ function StackRow(props: MonitorTableProps & { group: StackGroup, boundaryColor:
                     <Typography sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.72rem'}}>
                         {running}/{group.rows.length} running
                     </Typography>
+                    {group.servicePath && (
+                        <Typography noWrap sx={{color: t.textDim, fontFamily: t.mono, fontSize: '0.65rem', maxWidth: 260}}>
+                            {group.servicePath}
+                        </Typography>
+                    )}
                     {busy && <CircularProgress size={12} sx={{color: t.textDim}}/>}
                 </Stack>
             </TableCell>
@@ -549,7 +559,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
     const spinner = <CircularProgress size={14} sx={{color: t.textDim}}/>;
     // a selected stack shows all its members checked; while stacks are
     // selected, individual container boxes are frozen (kinds never mix)
-    const stackSelected = c.stackName !== '' && selectedStacks.includes(c.stackName);
+    const stackSelected = c.stackName !== '' && selectedStacks.includes(row.stackKey);
     const isChecked = stackSelected || selectedContainers.includes(c.id);
     const updRun = updateRuns[c.name];
 

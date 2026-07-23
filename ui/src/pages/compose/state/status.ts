@@ -7,6 +7,9 @@ import {create} from "zustand";
 interface OpenFilesState {
     // contextKey -> Set of directory paths
     openFiles: Record<string, Record<string, Status>>;
+    // Aggregate of the currently tracked compose statuses for every ancestor.
+    // This lets a folder reflect stacks located several levels below it.
+    folderStatuses: Record<string, Record<string, Status>>;
     delete: (dir: string, keep?: string) => void;
     trackComposeStatus: (path: string) => void;
     setStatus: (status: { [p: string]: Status }) => void
@@ -15,6 +18,7 @@ interface OpenFilesState {
 export const useComposeFileState = create<OpenFilesState>()(
     immer((set) => ({
         openFiles: {},
+        folderStatuses: {},
 
         delete: (dir: string, keep?: string) => {
             const key = getContextKey();
@@ -68,6 +72,22 @@ export const useComposeFileState = create<OpenFilesState>()(
                         state.openFiles[key][file] = value;
                     }
                 }
+
+                const aggregates: Record<string, {servicesUp: number; servicesDown: number; servicesHealthy: number; servicesUnHealthy: number}> = {};
+                for (const [file, status] of Object.entries(state.openFiles[key])) {
+                    const parts = file.replaceAll('\\', '/').split('/').filter(Boolean);
+                    parts.pop();
+                    while (parts.length > 0) {
+                        const directory = parts.join('/');
+                        const aggregate = aggregates[directory] ??= {servicesUp: 0, servicesDown: 0, servicesHealthy: 0, servicesUnHealthy: 0};
+                        aggregate.servicesUp += status.servicesUp;
+                        aggregate.servicesDown += status.servicesDown;
+                        aggregate.servicesHealthy += status.servicesHealthy;
+                        aggregate.servicesUnHealthy += status.servicesUnHealthy;
+                        parts.pop();
+                    }
+                }
+                state.folderStatuses[key] = Object.fromEntries(Object.entries(aggregates).map(([directory, status]) => [directory, createMessage(StatusSchema, status)]));
             })
         }
     }))

@@ -81,6 +81,14 @@ function viewMemoryFor(host: string) {
     return entry;
 }
 
+// A compose project name alone is not an identity: separate nested folders
+// can use the same project name. The resolved compose path is host-relative
+// and uniquely identifies the deployed stack without changing its label.
+function monitorStackKey(container: {stackName: string; servicePath: string}): string {
+    if (!container.stackName) return '#standalone';
+    return container.servicePath ? `compose:${container.servicePath}` : `project:${container.stackName}`;
+}
+
 // per-row sort key; -Number.MAX_VALUE sinks rows without a usable value.
 // 'name' is compared as text in the comparators, not through this function.
 function rowSortValue(r: MonitorRow, field: MonitorSortField): number {
@@ -265,8 +273,8 @@ function MonitorPage() {
         const query = search.trim().toLowerCase();
         const list = (containers?.list ?? []).filter(c => {
             // This search lives in the NAME column, so only values displayed
-            // there participate (container/service and stack names).
-            const matchesSearch = !query || [c.name, c.stackName, c.serviceName]
+            // there participate (container/service, stack and compose path).
+            const matchesSearch = !query || [c.name, c.stackName, c.serviceName, c.servicePath]
                 .some(f => f.toLowerCase().includes(query));
             if (!matchesSearch) return false;
             if (stateFilters.length === 0) return true;
@@ -283,8 +291,8 @@ function MonitorPage() {
 
         const byStack = new Map<string, StackGroup>();
         for (const c of list) {
-            const key = c.stackName;
-            const group = byStack.get(key) ?? {stack: key, servicePath: '', rows: [], stats: null};
+            const key = monitorStackKey(c);
+            const group = byStack.get(key) ?? {key, stack: c.stackName, servicePath: '', rows: [], stats: null};
             if (c.servicePath) group.servicePath = c.servicePath;
             // a row frozen by a lifecycle action renders pending metrics
             // instead of the stream's stale pre-action sample
@@ -292,6 +300,7 @@ function MonitorPage() {
             group.rows = [...group.rows, {
                 info: c,
                 stats: staleRows[c.name] || !exposesMetrics ? undefined : statsByName.get(c.name),
+                stackKey: key,
             }];
             byStack.set(key, group);
         }
@@ -319,7 +328,7 @@ function MonitorPage() {
                     const diff = (groupSortValue(a, sortField) - groupSortValue(b, sortField)) * dir;
                     if (diff !== 0) return diff;
                 }
-                return a.stack.localeCompare(b.stack);
+                return a.stack.localeCompare(b.stack) || a.key.localeCompare(b.key);
             });
     }, [containers, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows]);
 
@@ -342,7 +351,11 @@ function MonitorPage() {
         const info = (containers?.list ?? []).find(c => c.id === detailsContainerID);
         if (!info) return null;
         const exposesMetrics = ['running', 'restarting', 'paused'].includes(info.state);
-        return {info, stats: staleRows[info.name] || !exposesMetrics ? undefined : statsByName.get(info.name)};
+        return {
+            info,
+            stats: staleRows[info.name] || !exposesMetrics ? undefined : statsByName.get(info.name),
+            stackKey: monitorStackKey(info),
+        };
     }, [detailsContainerID, containers, staleRows, statsByName]);
 
     // a live search opens every matching stack so the hits are visible;
@@ -350,7 +363,7 @@ function MonitorPage() {
     const effectiveExpanded = useMemo(() => {
         if (!search.trim() && stateFilters.length === 0) return expanded;
         const all: Record<string, boolean> = {};
-        for (const g of groups) all[g.stack] = true;
+        for (const g of groups) all[g.key] = true;
         return all;
     }, [search, stateFilters, expanded, groups]);
 
@@ -426,7 +439,7 @@ function MonitorPage() {
         return map;
     }, [stackRuns]);
 
-    const allExpanded = groups.length > 0 && groups.every(g => effectiveExpanded[g.stack] ?? false);
+    const allExpanded = groups.length > 0 && groups.every(g => effectiveExpanded[g.key] ?? false);
 
     // the list is event-driven, so a manual refresh often changes nothing
     // visible: give the button its own spinner so the fetch is observable
@@ -626,8 +639,8 @@ function MonitorPage() {
     // async to satisfy the shared ActionButtons handler contract; the stack
     // runs themselves are fire-and-forget background actions
     const bulkStackAction = async (action: StackAction) => {
-        for (const stackName of selectedStacks) {
-            const group = groups.find(g => g.stack === stackName);
+        for (const stackKey of selectedStacks) {
+            const group = groups.find(g => g.key === stackKey);
             if (group?.servicePath) runStack(group.stack, group.servicePath, action);
         }
         setSelectedStacks([]);
@@ -641,7 +654,7 @@ function MonitorPage() {
             [{id: row.info.id, name: row.info.name}]);
 
     const handleStackLogs = (group: StackGroup) =>
-        openLogs(`logs:${host}/monitor#stack:${group.stack || 'standalone'}`,
+        openLogs(`logs:${host}/monitor#stack:${group.key}`,
             `${group.stack || 'standalone'}: stack logs`,
             group.rows.map(r => ({id: r.info.id, name: r.info.name})));
 
@@ -856,7 +869,7 @@ function MonitorPage() {
                                 size="small"
                                 onClick={() => setExpanded(allExpanded
                                     ? {}
-                                    : Object.fromEntries(groups.map(g => [g.stack, true])))}
+                                    : Object.fromEntries(groups.map(g => [g.key, true])))}
                                 sx={{
                                     px: 0.5,
                                     minWidth: 34,
