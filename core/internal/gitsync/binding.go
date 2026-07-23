@@ -159,6 +159,7 @@ type TransferPreview struct {
 	Skipped              int            `json:"skipped"`
 	Conflicts            int            `json:"conflicts"`
 	Preserved            int            `json:"preserved"`
+	LocalDeletions       int            `json:"localDeletions"`
 	OrphanedComposePaths []string       `json:"orphanedComposePaths,omitempty"`
 	DeletionMode         string         `json:"deletionMode"`
 	automation           bool
@@ -514,6 +515,11 @@ func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBin
 	if err != nil {
 		return row, nil, err
 	}
+	if info, statErr := targetFS.Stat(targetRoot); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return row, nil, fmt.Errorf("inspect linked stack folder: %w", statErr)
+	} else if statErr == nil && !info.IsDir() {
+		return row, nil, errors.New("linked stack path is no longer a directory")
+	}
 	localCompose := discoverComposeFiles(targetFS, targetRoot)
 	repository, err := s.store.GetRepository(row.RepositoryUUID)
 	if err != nil {
@@ -547,6 +553,7 @@ func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBin
 		}
 	}
 	if len(added) == 0 && len(removed) == 0 {
+		s.recordMissingLocalComposeStatuses(row, localCompose)
 		return row, nil, nil
 	}
 	// Capture the effective selection before extending the catalog. An old
@@ -586,7 +593,42 @@ func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBin
 	if err := s.reconcileGitStackStatuses(row); err != nil {
 		return row, nil, err
 	}
+	s.recordMissingLocalComposeStatuses(row, localCompose)
 	return row, added, nil
+}
+
+func (s *Service) recordMissingLocalComposeStatuses(binding StackBinding, localCompose []string) {
+	local := make(map[string]struct{}, len(localCompose))
+	for _, path := range localCompose {
+		local[path] = struct{}{}
+	}
+	baseline, _ := s.store.BindingBaseline(binding.UUID)
+	rows, _ := s.store.GitStackStatuses(binding.UUID)
+	current := make(map[string]string, len(rows))
+	for _, row := range rows {
+		current[row.ComposePath] = row.State
+	}
+	now := time.Now().UTC()
+	locallyDeleted := make([]string, 0)
+	remoteOnly := make([]string, 0)
+	for _, composePath := range selectedComposePaths(binding) {
+		if _, exists := local[composePath]; exists {
+			continue
+		}
+		if current[composePath] == stackSyncConflict || current[composePath] == stackSyncError {
+			continue
+		}
+		if _, tracked := baseline[composePath]; tracked {
+			locallyDeleted = append(locallyDeleted, composePath)
+		} else {
+			remoteOnly = append(remoteOnly, composePath)
+		}
+	}
+	for state, paths := range map[string][]string{stackSyncLocalDeleted: locallyDeleted, stackSyncRemoteChanges: remoteOnly} {
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{
+			"state": state, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
+		})
+	}
 }
 
 func keepCataloguedPaths(paths []string, catalog map[string]struct{}) []string {
@@ -2055,9 +2097,38 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 				entry.ConflictKind = "destination_changed"
 				preview.Conflicts++
 			}
+		} else if direction == "repository_to_stack" {
+			if baseSHA, tracked := baseline[path]; tracked && baseSHA == src.sha {
+				entry.ConflictKind = "destination_deleted"
+				preview.LocalDeletions++
+			}
 		}
 		preview.Entries = append(preview.Entries, entry)
 		preview.Changed++
+	}
+	// Stack -> Git must expose tracked files that disappeared locally. They
+	// remain on Git until an explicit stack-level decision is made; a regular
+	// export can therefore never turn a local deletion into a remote deletion.
+	if direction == "stack_to_repository" {
+		for path, dst := range target {
+			if _, exists := source[path]; exists || dst.open == nil {
+				continue
+			}
+			baseSHA, tracked := baseline[path]
+			if !tracked {
+				continue
+			}
+			entry := PreviewEntry{Path: path, Status: "deleted_locally", TargetSHA: dst.sha, Size: dst.size, Sensitive: dst.sensitive}
+			if dst.sha != baseSHA {
+				entry.Status = "conflict"
+				entry.ConflictKind = "source_deleted_destination_changed"
+				preview.Conflicts++
+			}
+			preview.Entries = append(preview.Entries, entry)
+			preview.Changed++
+			preview.LocalDeletions++
+		}
+		sort.SliceStable(preview.Entries, func(i, j int) bool { return preview.Entries[i].Path < preview.Entries[j].Path })
 	}
 	// A Git -> Dockman preview must also expose files that existed at the
 	// common baseline but disappeared from Git. They are preserved locally by

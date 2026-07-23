@@ -192,6 +192,7 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 	result := AutoSyncResult{BindingID: id, State: "syncing"}
 	var synchronizedCommit string
 	skippedStackScan := false
+	localDeletionBlock := false
 	err = s.runBindingOperation(ctx, binding.RepositoryUUID, binding.UUID, "auto_sync", func(ctx context.Context) error {
 		status, fetchErr := s.FetchRepository(ctx, binding.RepositoryUUID)
 		if fetchErr != nil {
@@ -229,7 +230,11 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		}
 		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head {
 			skippedStackScan = true
-			if binding.AutoSyncState == "blocked" && strings.Contains(binding.AutoSyncError, "Git deletion") {
+			if s.bindingHasActiveStackState(binding, stackSyncLocalDeleted) {
+				localDeletionBlock = true
+				result.State = "blocked"
+				result.Message = "A synchronized stack was deleted locally; choose restore from Git, delete from Git, or stop synchronizing it"
+			} else if binding.AutoSyncState == "blocked" && strings.Contains(binding.AutoSyncError, "Git deletion") {
 				result.State = "blocked"
 				result.Message = preservedDeletionMessage(binding.AutoSyncError) + "; no new Git commit, stack scan skipped"
 			} else {
@@ -243,7 +248,7 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		if previewErr != nil {
 			return previewErr
 		}
-		changed, conflicts, preserved, previewToken := preview.Changed, preview.Conflicts, preview.Preserved, preview.PreviewToken
+		changed, conflicts, preserved, localDeletions, previewToken := preview.Changed, preview.Conflicts, preview.Preserved, preview.LocalDeletions, preview.PreviewToken
 		result.Changed, result.Conflicts, result.Preserved = changed, conflicts, preserved
 		// A folder can contain many thousands of entries. Do not retain the first
 		// inventory while ImportBinding builds and validates its fresh inventory.
@@ -256,6 +261,12 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		if conflicts > 0 {
 			result.State = "conflict"
 			result.Message = fmt.Sprintf("%d conflict(s) require a manual decision; no file was changed", conflicts)
+			return nil
+		}
+		if localDeletions > 0 {
+			localDeletionBlock = true
+			result.State = "blocked"
+			result.Message = fmt.Sprintf("%d locally deleted synchronized file(s) require an explicit stack decision; no file was restored", localDeletions)
 			return nil
 		}
 		if len(newTargets) > 0 {
@@ -322,7 +333,7 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		}
 		_ = s.store.UpdateBindingAutoSyncState(id, result.State, result.Message, commit, &attemptedAt, nil)
 		if result.State == "blocked" {
-			if !preservedBlock {
+			if !preservedBlock && !localDeletionBlock {
 				s.updateActiveStackStatuses(binding, stackSyncRemoteChanges, result.Message, "", false)
 			}
 		}

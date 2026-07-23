@@ -41,6 +41,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings/{id}/stack-select/{composePath...}", h.enableGitStackSynchronization)
 	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
 	mux.HandleFunc("POST /bindings/{id}/orphan/{composePath...}", h.resolveGitOrphan)
+	mux.HandleFunc("POST /bindings/{id}/local-deletion/{composePath...}", h.resolveLocalStackDeletion)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("POST /bindings/{id}/refresh-compose", h.refreshBindingComposeCatalog)
@@ -89,6 +90,23 @@ func (h *HTTPHandler) resolveGitOrphan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.service.ResolveGitOrphan(r.Context(), r.PathValue("id"), r.PathValue("composePath"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) resolveLocalStackDeletion(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input LocalDeletionActionInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.ResolveLocalStackDeletion(r.Context(), r.PathValue("id"), r.PathValue("composePath"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -182,7 +200,7 @@ func isMemoryIntensiveGitRequest(r *http.Request) bool {
 	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
 		return false
 	}
-	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/orphan/", "/repositories"} {
+	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/orphan/", "/local-deletion/", "/repositories"} {
 		if strings.Contains(r.URL.Path, marker) {
 			return true
 		}

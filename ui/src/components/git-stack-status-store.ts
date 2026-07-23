@@ -12,7 +12,7 @@ export interface GitStackStatus {
     repositoryName: string;
     repositoryBranch: string;
     repositorySubPath: string;
-    state: 'unselected' | 'pending' | 'up_to_date' | 'checking' | 'local_changes' | 'remote_changes' | 'orphaned' | 'conflict' | 'error';
+    state: 'unselected' | 'pending' | 'up_to_date' | 'checking' | 'local_changes' | 'locally_deleted' | 'remote_changes' | 'orphaned' | 'conflict' | 'error';
     selected: boolean;
     error?: string;
     conflictCount: number;
@@ -32,6 +32,7 @@ export interface GitStackStatus {
 interface GitStatusStore {
     byHost: Record<string, Record<string, GitStackStatus>>;
     aggregateByHost: Record<string, Record<string, GitStackStatus>>;
+    folderStatusesByHost: Record<string, Record<string, GitStackStatus[]>>;
     setHost: (host: string, rows: GitStackStatus[]) => void;
 }
 
@@ -42,11 +43,12 @@ const statusFingerprint = (row: GitStackStatus) => JSON.stringify(row);
 // React correctly stops the resulting render loop with error #185. Keep the
 // empty snapshot referentially stable until the first response for this host.
 const EMPTY_GIT_STACK_STATUSES: Record<string, GitStackStatus> = Object.freeze({});
+const EMPTY_GIT_STATUS_LIST: GitStackStatus[] = [];
 
 export function gitStatusSeverity(status: GitStackStatus): 'neutral' | 'info' | 'warning' | 'error' | 'success' {
     if (status.deployState === 'failed' || status.state === 'conflict' || status.state === 'error') return 'error';
     if (status.state === 'checking') return 'info';
-    if (status.state === 'local_changes' || status.state === 'remote_changes' || status.state === 'orphaned' || status.deployState === 'pending') return 'warning';
+    if (status.state === 'local_changes' || status.state === 'locally_deleted' || status.state === 'remote_changes' || status.state === 'orphaned' || status.deployState === 'pending') return 'warning';
     if (status.state === 'up_to_date') return 'success';
     return 'neutral';
 }
@@ -55,7 +57,7 @@ export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | und
     const rank = (status: GitStackStatus) => {
         if (status.deployState === 'failed') return 7;
         if (status.state === 'error' || status.state === 'conflict') return 6;
-        if (status.state === 'orphaned') return 5;
+        if (status.state === 'orphaned' || status.state === 'locally_deleted') return 5;
         if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending') return 4;
         if (status.state === 'checking') return 3;
         if (!status.selected || status.automationPaused || status.state === 'pending') return 2;
@@ -66,22 +68,25 @@ export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | und
     }, undefined);
 }
 
-function aggregateFolders(rows: Record<string, GitStackStatus>) {
+function projectFolders(rows: Record<string, GitStackStatus>) {
     const aggregates: Record<string, GitStackStatus> = {};
+    const lists: Record<string, GitStackStatus[]> = {};
     for (const status of Object.values(rows)) {
         let folder = normalizePath(status.fullComposePath).split('/').slice(0, -1);
         while (folder.length > 0) {
             const path = folder.join('/');
             aggregates[path] = worstGitStatus([aggregates[path], status].filter(Boolean) as GitStackStatus[])!;
+            (lists[path] ??= []).push(status);
             folder = folder.slice(0, -1);
         }
     }
-    return aggregates;
+    return {aggregates, lists};
 }
 
 const useGitStatusStore = create<GitStatusStore>((set) => ({
     byHost: {},
     aggregateByHost: {},
+    folderStatusesByHost: {},
     setHost: (host, rows) => set((state) => {
         const previous = state.byHost[host] ?? {};
         const next = Object.fromEntries(rows.map((row) => {
@@ -92,9 +97,11 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
         const currentKeys = Object.keys(previous);
         const nextKeys = Object.keys(next);
         if (currentKeys.length === nextKeys.length && nextKeys.every((key) => previous[key] === next[key])) return state;
+        const folders = projectFolders(next);
         return {
             byHost: {...state.byHost, [host]: next},
-            aggregateByHost: {...state.aggregateByHost, [host]: aggregateFolders(next)},
+            aggregateByHost: {...state.aggregateByHost, [host]: folders.aggregates},
+            folderStatusesByHost: {...state.folderStatusesByHost, [host]: folders.lists},
         };
     }),
 }));
@@ -186,4 +193,9 @@ export function useGitStackStatus(host: string, composePath: string) {
 export function useGitFolderStatus(host: string, folderPath: string) {
     const normalized = normalizePath(folderPath);
     return useGitStatusStore((state) => state.aggregateByHost[host]?.[normalized]);
+}
+
+export function useGitFolderStatuses(host: string, folderPath: string) {
+    const normalized = normalizePath(folderPath);
+    return useGitStatusStore((state) => state.folderStatusesByHost[host]?.[normalized] ?? EMPTY_GIT_STATUS_LIST);
 }

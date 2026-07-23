@@ -31,7 +31,7 @@ import {getContextKey} from "../../../context/tab-context.tsx";
 import type {Status} from "../../../gen/docker/v1/docker_pb.ts";
 import {stripQueryParams} from "../../../lib/strings.ts";
 import GitStackStatusIndicator from "../../../components/git-stack-status.tsx";
-import {useGitFolderStatus, useGitStackStatus} from "../../../components/git-stack-status-store.ts";
+import {useGitFolderStatus, useGitFolderStatuses, useGitStackStatus} from "../../../components/git-stack-status-store.ts";
 
 
 export const useFileDnD = (entry: FsEntry) => {
@@ -219,6 +219,14 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
     })
     const exactGitStatus = useGitStackStatus(host, entry.isComposeFolder ?? '')
     const aggregateGitStatus = useGitFolderStatus(host, entry.filename)
+    const aggregateGitStatuses = useGitFolderStatuses(host, entry.filename)
+    const normalizedFolder = entry.filename.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
+    const containsDirectStack = aggregateGitStatuses.some((status) => {
+        const compose = status.fullComposePath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
+        return compose.slice(0, Math.max(0, compose.lastIndexOf('/'))) === normalizedFolder
+    })
+    const actionableFolderStatuses = !exactGitStatus && !containsDirectStack && aggregateGitStatuses.length > 0
+        ? aggregateGitStatuses : undefined
     useEffect(() => {
         // Track the stack status for any folder that contains a compose file,
         // regardless of the useComposeFolders display mode, so the status dot is
@@ -298,7 +306,8 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                 />
 
                 <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={17}
-                                         interactive={Boolean(exactGitStatus)}/>
+                                         interactive={Boolean(exactGitStatus) || Boolean(actionableFolderStatuses)}
+                                         aggregateStatuses={actionableFolderStatuses}/>
                 <StatusIndicator fileStatus={fileStatus}/>
 
                 <IconButton

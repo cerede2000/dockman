@@ -18,6 +18,7 @@ const (
 	stackSyncUpToDate      = "up_to_date"
 	stackSyncChecking      = "checking"
 	stackSyncLocalChanges  = "local_changes"
+	stackSyncLocalDeleted  = "locally_deleted"
 	stackSyncRemoteChanges = "remote_changes"
 	stackSyncOrphaned      = "orphaned"
 	stackSyncConflict      = "conflict"
@@ -223,8 +224,17 @@ func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (
 		return GitStackStatusView{}, err
 	}
 	now := time.Now().UTC()
+	state := stackSyncLocalChanges
+	if !bindingComposeExistsLocally(s, binding, composePath) {
+		state = stackSyncRemoteChanges
+		if baseline, baselineErr := s.store.BindingBaseline(binding.UUID); baselineErr == nil {
+			if _, tracked := baseline[composePath]; tracked {
+				state = stackSyncLocalDeleted
+			}
+		}
+	}
 	if err := s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{
-		"state": stackSyncLocalChanges, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
+		"state": state, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
 	}); err != nil {
 		return GitStackStatusView{}, err
 	}
@@ -367,13 +377,23 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 				}
 			case "add", "modify":
 				if current.state != stackSyncConflict {
-					if current.state == stackSyncOrphaned {
+					if current.state == stackSyncOrphaned || current.state == stackSyncLocalDeleted {
 						break
 					}
-					if preview.Direction == "stack_to_repository" {
+					if preview.Direction == "repository_to_stack" && entry.ConflictKind == "destination_deleted" && entry.Path == composePath {
+						current.state = stackSyncLocalDeleted
+					} else if preview.Direction == "stack_to_repository" {
 						current.state = stackSyncLocalChanges
 					} else {
 						current.state = stackSyncRemoteChanges
+					}
+				}
+			case "deleted_locally":
+				if current.state != stackSyncConflict {
+					if entry.Path == composePath {
+						current.state = stackSyncLocalDeleted
+					} else if current.state != stackSyncLocalDeleted {
+						current.state = stackSyncLocalChanges
 					}
 				}
 			}
@@ -414,7 +434,7 @@ func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding,
 		updates["last_success_at"] = &now
 		updates["last_commit"] = commit
 	}
-	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, []string{stackSyncLocalChanges, stackSyncOrphaned}, updates)
+	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, []string{stackSyncLocalChanges, stackSyncLocalDeleted, stackSyncOrphaned}, updates)
 }
 
 func (s *Service) activeAutomationComposePaths(binding StackBinding) []string {
@@ -434,6 +454,25 @@ func (s *Service) activeAutomationComposePaths(binding StackBinding) []string {
 		}
 	}
 	return active
+}
+
+func (s *Service) bindingHasActiveStackState(binding StackBinding, state string) bool {
+	active := make(map[string]struct{})
+	for _, path := range s.activeAutomationComposePaths(binding) {
+		active[path] = struct{}{}
+	}
+	rows, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if row.State == state {
+			if _, selected := active[row.ComposePath]; selected {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func composePathsForFile(composePaths []string, filePath string) []string {
@@ -498,11 +537,24 @@ func (s *Service) MarkLocalChange(host, changedPath string) {
 			}
 		}
 		for _, composePath := range composePathsForFile(selectedComposePaths(binding), relative) {
+			state := stackSyncLocalChanges
+			if !bindingComposeExistsLocally(s, binding, composePath) {
+				state = stackSyncLocalDeleted
+			}
 			_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{
-				"state": stackSyncLocalChanges, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
+				"state": state, "error_message": "", "conflict_count": 0, "last_checked_at": &now,
 			})
 		}
 	}
+}
+
+func bindingComposeExistsLocally(s *Service, binding StackBinding, composePath string) bool {
+	targetFS, targetRoot, err := s.resolveBindingStack(binding)
+	if err != nil {
+		return false
+	}
+	info, err := targetFS.Stat(targetFS.Join(targetRoot, filepath.FromSlash(composePath)))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func isComposeCatalogPath(path string) bool {
