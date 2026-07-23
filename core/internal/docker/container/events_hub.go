@@ -108,16 +108,21 @@ func (h *eventsHub) run(ctx context.Context, cli *client.Client) {
 			select {
 			case <-ctx.Done():
 				return
-			case msg := <-res.Messages:
+			case msg, ok := <-res.Messages:
+				if !ok {
+					break stream
+				}
 				backoff = time.Second
 				if ev, ok := h.filter(msg); ok {
 					h.broadcast(ev)
 				}
-			case err := <-res.Err:
+			case err, ok := <-res.Err:
 				if ctx.Err() != nil {
 					return
 				}
-				log.Warn().Err(err).Msg("docker events stream interrupted, reconnecting")
+				if ok && err != nil {
+					log.Warn().Err(err).Msg("docker events stream interrupted, reconnecting")
+				}
 				break stream
 			}
 		}

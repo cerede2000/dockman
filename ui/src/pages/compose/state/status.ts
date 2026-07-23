@@ -15,7 +15,7 @@ interface OpenFilesState {
     folderStatuses: Record<string, Record<string, Status>>;
     delete: (dir: string, keep?: string) => void;
     trackComposeStatus: (path: string) => void;
-    setStatus: (status: { [p: string]: Status }) => void
+    setStatus: (status: { [p: string]: Status }, contextKey?: string) => void
 }
 
 export const useComposeFileState = create<OpenFilesState>()(
@@ -61,9 +61,9 @@ export const useComposeFileState = create<OpenFilesState>()(
             });
         },
 
-        setStatus(input: { [p: string]: Status }) {
+        setStatus(input: { [p: string]: Status }, contextKey?: string) {
             set((state) => {
-                const key = getContextKey();
+                const key = contextKey ?? getContextKey();
 
                 if (!state.openFiles[key]) {
                     state.openFiles[key] = {};

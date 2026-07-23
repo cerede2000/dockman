@@ -1,4 +1,4 @@
-import {useCallback, useEffect} from 'react'
+import {useCallback, useEffect, useRef} from 'react'
 import {Box, CircularProgress, Divider, IconButton, List, Tooltip, Typography} from '@mui/material'
 import {
     Add as AddIcon,
@@ -242,17 +242,38 @@ const FileListInner = () => {
     // interval is only a safety net
     const eventBump = useDockerEvents()
 
+    // Container actions emit bursts of lifecycle events. Never run several
+    // ContainerList-backed status requests concurrently: one pending refresh
+    // after the current request is enough to observe the final state.
+    const statusContext = `${host}/${alias}`
+    const refreshStates = useRef(new Map<string, {running: boolean; pending: boolean}>())
+    const refreshStatuses = useCallback(async () => {
+        const state = refreshStates.current.get(statusContext) ?? {running: false, pending: false}
+        refreshStates.current.set(statusContext, state)
+        if (state.running) {
+            state.pending = true
+            return
+        }
+
+        state.running = true
+        try {
+            do {
+                state.pending = false
+                const keys = trackedKeys ? trackedKeys.split('|') : []
+                const {val} = await callRPC(() => dockerSrv.composeFileStatus({files: keys}))
+                if (val) setStatus(val.status, statusContext)
+            } while (state.pending)
+        } finally {
+            state.running = false
+        }
+    }, [dockerSrv, setStatus, statusContext, trackedKeys])
+
 
     useEffect(() => {
         let cancelled = false
 
         const refresh = async () => {
-            const keys = trackedKeys ? trackedKeys.split('|') : []
-
-            const {val} = await callRPC(() => dockerSrv.composeFileStatus({ files: keys }))
-            if (val && !cancelled) {
-                setStatus(val.status)
-            }
+            if (!cancelled) await refreshStatuses()
         }
 
         // Re-runs whenever the tracked file set changes (the tree registers
@@ -267,7 +288,7 @@ const FileListInner = () => {
             clearTimeout(initial)
             clearInterval(interval)
         }
-    }, [trackedKeys, host, alias, dockerSrv, setStatus, eventBump])
+    }, [trackedKeys, host, alias, eventBump, refreshStatuses])
 
     if (isLoading && files.length < 1) {
         return (
