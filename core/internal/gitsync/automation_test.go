@@ -2,6 +2,8 @@ package gitsync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -24,6 +26,7 @@ func TestBindingAutomationConfigurationIsOptInAndBounded(t *testing.T) {
 	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
 	require.NoError(t, err)
 	require.False(t, binding.AutoSyncEnabled)
+	require.False(t, binding.AutoDeployRollbackEnabled)
 	require.Equal(t, defaultAutoSyncIntervalMinutes, binding.AutoSyncIntervalMinutes)
 
 	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 4})
@@ -37,6 +40,115 @@ func TestBindingAutomationConfigurationIsOptInAndBounded(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, archived.AutoSyncEnabled, "relinking must never resume automation implicitly")
 	require.Equal(t, "disabled", archived.AutoSyncState)
+}
+
+func TestAutoSyncRestoresPreviousStackWhenHealthCheckedDeploymentFails(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	stackPath := filepath.Join(stackRoot, "app", "compose.yaml")
+	previous := "services:\n  app:\n    image: alpine:3.22\n"
+	imported := "services:\n  app:\n    image: alpine:3.23\n"
+	require.NoError(t, os.MkdirAll(filepath.Dir(stackPath), 0o755))
+	require.NoError(t, os.WriteFile(stackPath, []byte(previous), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", imported)
+
+	var deployments []string
+	service.ConfigureDeployment(
+		func(_ context.Context, _, _ string) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error {
+			return errors.New("non-wait deployment must not be used with rollback protection")
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error {
+			contents, readErr := os.ReadFile(stackPath)
+			if readErr != nil {
+				return readErr
+			}
+			deployments = append(deployments, string(contents))
+			if string(contents) == imported {
+				return errors.New("service did not become healthy before timeout")
+			}
+			return nil
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	updated, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployRollback: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+	require.True(t, updated.AutoDeployRollbackEnabled)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", result.State)
+	require.Equal(t, []string{"compose.yaml"}, result.DeployFailed)
+	require.Equal(t, []string{"compose.yaml"}, result.RolledBack)
+	require.Empty(t, result.RollbackFailed)
+	require.Equal(t, []string{imported, previous}, deployments, "the imported version is checked first, then the restored version")
+
+	contents, err := os.ReadFile(stackPath)
+	require.NoError(t, err)
+	require.Equal(t, previous, string(contents))
+	baseline, err := service.store.BindingBaseline(binding.ID)
+	require.NoError(t, err)
+	previousHash := sha256.Sum256([]byte(previous))
+	require.Equal(t, hex.EncodeToString(previousHash[:]), baseline["compose.yaml"])
+	deploymentsView, err := service.ListBindingDeployments(binding.ID)
+	require.NoError(t, err)
+	require.Len(t, deploymentsView, 1)
+	require.Equal(t, "rolled_back", deploymentsView[0].State)
+	require.Contains(t, deploymentsView[0].Result, "previous version restored safely")
+}
+
+func TestAutoRollbackRefusesToOverwriteAFileChangedAfterImport(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	stackPath := filepath.Join(stackRoot, "app", "compose.yaml")
+	previous := "services:\n  app:\n    image: alpine:3.22\n"
+	imported := "services:\n  app:\n    image: alpine:3.23\n"
+	external := "services:\n  app:\n    image: editor-change\n"
+	require.NoError(t, os.MkdirAll(filepath.Dir(stackPath), 0o755))
+	require.NoError(t, os.WriteFile(stackPath, []byte(previous), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", imported)
+
+	service.ConfigureDeployment(
+		func(_ context.Context, _, _ string) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error {
+			require.NoError(t, os.WriteFile(stackPath, []byte(external), 0o644))
+			return errors.New("service did not become healthy before timeout")
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployRollback: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", result.State)
+	require.Equal(t, []string{"compose.yaml"}, result.RollbackFailed)
+	contents, err := os.ReadFile(stackPath)
+	require.NoError(t, err)
+	require.Equal(t, external, string(contents), "an external change must always win over automatic recovery")
+	deploymentsView, err := service.ListBindingDeployments(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "rollback_failed", deploymentsView[0].State)
+	require.Contains(t, deploymentsView[0].Result, "changed after import")
 }
 
 func TestAutoSyncReconcilesIdenticalTreesBeforeCommitShortcut(t *testing.T) {
@@ -160,6 +272,14 @@ func TestBindingAutomationDiscoversAndDeploysNewGitStack(t *testing.T) {
 			actions = append(actions, "deploy:"+filename)
 			return nil
 		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy-wait:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "cleanup:"+filename)
+			return nil
+		},
 		func(_, _ string) (func(), bool) { return func() {}, true },
 	)
 	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
@@ -181,6 +301,56 @@ func TestBindingAutomationDiscoversAndDeploysNewGitStack(t *testing.T) {
 	require.Contains(t, splitPatternLines(updated.ComposePaths), "new-stack/compose.yml")
 	require.Contains(t, splitPatternLines(updated.SelectedComposePaths), "new-stack/compose.yml")
 	require.Contains(t, splitPatternLines(updated.AutoDeployComposePaths), "new-stack/compose.yml")
+}
+
+func TestAutoRollbackCleansUpFailedFirstDeploymentOfNewGitStack(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	binding, err = service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{Mode: composeSelectionSelected})
+	require.NoError(t, err)
+	remoteChange(t, repository.RemoteURL, "stacks/new-stack/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
+
+	var actions []string
+	service.ConfigureDeployment(
+		func(_ context.Context, _, filename string) error {
+			actions = append(actions, "validate:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "dry-run:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error {
+			return errors.New("non-wait deployment must not be used with rollback protection")
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy-wait:"+filename)
+			return errors.New("first deployment did not become healthy")
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "cleanup:"+filename)
+			return nil
+		},
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployNewStacks: true, DeployRollback: true,
+	})
+	require.NoError(t, err)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"new-stack/compose.yml"}, result.RolledBack)
+	require.Equal(t, []string{
+		"validate:compose/new-stack/compose.yml",
+		"dry-run:compose/new-stack/compose.yml",
+		"deploy-wait:compose/new-stack/compose.yml",
+		"cleanup:compose/new-stack/compose.yml",
+	}, actions)
+	require.NoFileExists(t, filepath.Join(stackRoot, "new-stack", "compose.yml"))
 }
 
 func TestAutoSyncDeploysNewStackWhenExistingStackValidationFails(t *testing.T) {
@@ -217,6 +387,14 @@ func TestAutoSyncDeploysNewStackWhenExistingStackValidationFails(t *testing.T) {
 		},
 		func(_ context.Context, _, filename string, _ io.Writer) error {
 			actions = append(actions, "deploy:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy-wait:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "cleanup:"+filename)
 			return nil
 		},
 		func(_, _ string) (func(), bool) { return func() {}, true },

@@ -35,6 +35,8 @@ interface LocalDeletionView {
 interface AutoSyncResult { state: string; message: string }
 
 function stateLabel(status: GitStackStatus) {
+    if (status.deployState === 'rollback_failed') return 'Deployment and automatic rollback failed';
+    if (status.deployState === 'rolled_back') return 'Deployment failed · previous version restored';
     if (status.deployState === 'failed') return 'Automatic deployment failed';
     const label = ({
         unselected: 'Not selected for Git synchronization', pending: 'Synchronization not checked yet', up_to_date: 'Synchronized', checking: 'Synchronization in progress',
@@ -70,7 +72,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const navigate = useNavigate();
     const severity = status ? gitStatusSeverity(status) : 'neutral';
     const color = status?.automationPaused && (severity === 'success' || severity === 'neutral') ? colors.neutral : colors[severity];
-    const error = status?.deployState === 'failed' ? status.deployError : status?.error;
+    const error = status?.deployState === 'failed' || status?.deployState === 'rollback_failed' || status?.deployState === 'rolled_back' ? status.deployError : status?.error;
     const encodedComposePath = useMemo(() => status?.composePath.split('/').map(encodeURIComponent).join('/') ?? '', [status?.composePath]);
 
     useEffect(() => {
@@ -161,7 +163,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
 
     const openRelevantGitView = (target = status) => {
         const action = target.state === 'conflict' ? 'conflicts'
-            : target.state === 'error' || target.deployState === 'failed' ? 'details'
+            : target.state === 'error' || target.deployState === 'failed' || target.deployState === 'rollback_failed' || target.deployState === 'rolled_back' ? 'details'
                 : target.state === 'remote_changes' || target.state === 'orphaned' ? 'preview_git' : 'preview_stack';
         navigate(`/settings?tab=2&gitBinding=${encodeURIComponent(target.bindingId)}&gitAction=${action}&gitCompose=${encodeURIComponent(target.composePath)}`);
     };
@@ -247,7 +249,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                     {status.lastCommit && <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Commit</Typography><Typography variant="body2" sx={{fontFamily: 'monospace'}}>{status.lastCommit.slice(0, 12)}</Typography></Stack>}
                     <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Automation</Typography><Typography variant="body2">{!status.autoSyncEnabled ? 'Manual' : status.automationPaused ? status.pauseReason === 'recovery' ? 'Paused after recovery' : 'Paused manually' : `Every ${status.autoSyncIntervalMinutes} min`}</Typography></Stack>
                     {status.autoSyncEnabled && !status.automationPaused && <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Next check</Typography><Typography variant="body2">{dateLabel(status.nextCheckAt)}</Typography></Stack>}
-                    <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Auto-deploy</Typography><Typography variant="body2">{status.autoDeployEnabled ? status.deployState.replaceAll('_', ' ') : 'Off'}</Typography></Stack>
+                    <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Auto-deploy</Typography><Typography variant="body2">{status.autoDeployEnabled ? status.deployState.replaceAll('_', ' ') : 'Off'}{status.autoDeployEnabled && status.autoDeployRollbackEnabled ? ' · rollback protected' : ''}</Typography></Stack>
                 </>}
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
                 {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
@@ -272,7 +274,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                     {status.state === 'locally_deleted' && localDeletion?.wholeStack && <><Button size="small" color="success" startIcon={<CloudDownloadOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'restore')}>Restore from Git</Button><Button size="small" startIcon={<LinkOffOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'deselect')}>Stop synchronizing</Button><Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy || Boolean(deleteGitTarget)} onClick={() => { setDeleteGitTarget(status); setDeleteGitPath(''); }}>Delete from Git</Button></>}
                     {status.selected && status.autoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
                     {(status.state === 'local_changes' || status.state === 'orphaned') && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>{status.state === 'orphaned' ? (status.pauseReason === 'recovery' ? 'Restore & resume' : 'Restore to Git') : (status.pauseReason === 'recovery' ? 'Push & resume' : 'Push to Git')}</Button>}
-                    {status.selected && status.state !== 'locally_deleted' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView()}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>}
+                    {status.selected && status.state !== 'locally_deleted' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView()}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || ['failed', 'rollback_failed', 'rolled_back'].includes(status.deployState) ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>}
                     {status.autoSyncEnabled && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused && (status.state === 'local_changes' || status.state === 'orphaned') ? 'Push & resume' : status.automationPaused ? 'Resume' : 'Pause'}</Button>}
                     <Button size="small" startIcon={<HistoryOutlined/>} disabled={busy} onClick={() => { setAnchor(null); setRecoveryTab('activity'); }}>Activity</Button>
                     <Button size="small" startIcon={<RestoreOutlined/>} disabled={busy} onClick={() => { setAnchor(null); setRecoveryTab('backups'); }}>Backups</Button>

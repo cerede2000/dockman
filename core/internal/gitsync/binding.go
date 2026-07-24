@@ -60,37 +60,38 @@ type BindingInput struct {
 }
 
 type BindingView struct {
-	ID                      string     `json:"id"`
-	RepositoryID            string     `json:"repositoryId"`
-	RepositoryName          string     `json:"repositoryName"`
-	Host                    string     `json:"host"`
-	StackPath               string     `json:"stackPath"`
-	SubPath                 string     `json:"subPath"`
-	ComposePaths            []string   `json:"composePaths"`
-	ComposeSelectionMode    string     `json:"composeSelectionMode"`
-	SelectedComposePaths    []string   `json:"selectedComposePaths"`
-	SyncProfile             string     `json:"syncProfile"`
-	IncludePatterns         []string   `json:"includePatterns"`
-	ExcludePatterns         []string   `json:"excludePatterns"`
-	Enabled                 bool       `json:"enabled"`
-	AutoSyncEnabled         bool       `json:"autoSyncEnabled"`
-	AutoSyncIntervalMinutes int        `json:"autoSyncIntervalMinutes"`
-	AutoSyncState           string     `json:"autoSyncState"`
-	AutoSyncError           string     `json:"autoSyncError,omitempty"`
-	LastAutoSyncAt          *time.Time `json:"lastAutoSyncAt,omitempty"`
-	LastAutoSyncSuccessAt   *time.Time `json:"lastAutoSyncSuccessAt,omitempty"`
-	AutoDeployEnabled       bool       `json:"autoDeployEnabled"`
-	AutoDeployNewStacks     bool       `json:"autoDeployNewStacks"`
-	AutoDeployComposePaths  []string   `json:"autoDeployComposePaths"`
-	AutoDeployState         string     `json:"autoDeployState"`
-	AutoDeployError         string     `json:"autoDeployError,omitempty"`
-	LastAutoDeployAt        *time.Time `json:"lastAutoDeployAt,omitempty"`
-	AutoReconcileEnabled    bool       `json:"autoReconcileEnabled"`
-	InitialSyncState        string     `json:"initialSyncState"`
-	InitialSyncError        string     `json:"initialSyncError,omitempty"`
-	InitialSyncAt           *time.Time `json:"initialSyncAt,omitempty"`
-	CreatedAt               time.Time  `json:"createdAt"`
-	UpdatedAt               time.Time  `json:"updatedAt"`
+	ID                        string     `json:"id"`
+	RepositoryID              string     `json:"repositoryId"`
+	RepositoryName            string     `json:"repositoryName"`
+	Host                      string     `json:"host"`
+	StackPath                 string     `json:"stackPath"`
+	SubPath                   string     `json:"subPath"`
+	ComposePaths              []string   `json:"composePaths"`
+	ComposeSelectionMode      string     `json:"composeSelectionMode"`
+	SelectedComposePaths      []string   `json:"selectedComposePaths"`
+	SyncProfile               string     `json:"syncProfile"`
+	IncludePatterns           []string   `json:"includePatterns"`
+	ExcludePatterns           []string   `json:"excludePatterns"`
+	Enabled                   bool       `json:"enabled"`
+	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
+	AutoSyncIntervalMinutes   int        `json:"autoSyncIntervalMinutes"`
+	AutoSyncState             string     `json:"autoSyncState"`
+	AutoSyncError             string     `json:"autoSyncError,omitempty"`
+	LastAutoSyncAt            *time.Time `json:"lastAutoSyncAt,omitempty"`
+	LastAutoSyncSuccessAt     *time.Time `json:"lastAutoSyncSuccessAt,omitempty"`
+	AutoDeployEnabled         bool       `json:"autoDeployEnabled"`
+	AutoDeployNewStacks       bool       `json:"autoDeployNewStacks"`
+	AutoDeployRollbackEnabled bool       `json:"autoDeployRollbackEnabled"`
+	AutoDeployComposePaths    []string   `json:"autoDeployComposePaths"`
+	AutoDeployState           string     `json:"autoDeployState"`
+	AutoDeployError           string     `json:"autoDeployError,omitempty"`
+	LastAutoDeployAt          *time.Time `json:"lastAutoDeployAt,omitempty"`
+	AutoReconcileEnabled      bool       `json:"autoReconcileEnabled"`
+	InitialSyncState          string     `json:"initialSyncState"`
+	InitialSyncError          string     `json:"initialSyncError,omitempty"`
+	InitialSyncAt             *time.Time `json:"initialSyncAt,omitempty"`
+	CreatedAt                 time.Time  `json:"createdAt"`
+	UpdatedAt                 time.Time  `json:"updatedAt"`
 }
 
 type BindingPolicyInput struct {
@@ -474,6 +475,7 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 		row.AutoDeployComposePaths = strings.Join(deploy, "\n")
 		if row.AutoDeployEnabled && len(deploy) == 0 && !row.AutoDeployNewStacks {
 			row.AutoDeployEnabled = false
+			row.AutoDeployRollbackEnabled = false
 			row.AutoDeployState = "disabled"
 			row.AutoDeployError = ""
 		}
@@ -775,6 +777,7 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	row.AutoSyncError = ""
 	row.AutoDeployEnabled = false
 	row.AutoDeployNewStacks = false
+	row.AutoDeployRollbackEnabled = false
 	row.AutoDeployState = "disabled"
 	row.AutoDeployError = ""
 	if err := s.store.SaveBinding(&row); err != nil {
@@ -1396,7 +1399,8 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
 		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
 		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
-		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployNewStacks: row.AutoDeployNewStacks, AutoDeployComposePaths: splitPatternLines(row.AutoDeployComposePaths),
+		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployNewStacks: row.AutoDeployNewStacks,
+		AutoDeployRollbackEnabled: row.AutoDeployRollbackEnabled, AutoDeployComposePaths: splitPatternLines(row.AutoDeployComposePaths),
 		AutoDeployState: row.AutoDeployState, AutoDeployError: row.AutoDeployError, LastAutoDeployAt: row.LastAutoDeployAt,
 		AutoReconcileEnabled: row.AutoReconcileEnabled, InitialSyncState: row.InitialSyncState,
 		InitialSyncError: row.InitialSyncError, InitialSyncAt: row.InitialSyncAt,

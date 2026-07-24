@@ -25,20 +25,23 @@ type BindingAutomationInput struct {
 	IntervalMinutes    int      `json:"intervalMinutes"`
 	DeployEnabled      bool     `json:"deployEnabled"`
 	DeployNewStacks    bool     `json:"deployNewStacks"`
+	DeployRollback     bool     `json:"deployRollback"`
 	DeployComposePaths []string `json:"deployComposePaths"`
 }
 
 type AutoSyncResult struct {
-	BindingID    string   `json:"bindingId"`
-	State        string   `json:"state"`
-	Changed      int      `json:"changed"`
-	Conflicts    int      `json:"conflicts"`
-	Preserved    int      `json:"preserved"`
-	Backup       string   `json:"backup,omitempty"`
-	Deployed     []string `json:"deployed,omitempty"`
-	DeployFailed []string `json:"deployFailed,omitempty"`
-	SyncFailed   []string `json:"syncFailed,omitempty"`
-	Message      string   `json:"message"`
+	BindingID      string   `json:"bindingId"`
+	State          string   `json:"state"`
+	Changed        int      `json:"changed"`
+	Conflicts      int      `json:"conflicts"`
+	Preserved      int      `json:"preserved"`
+	Backup         string   `json:"backup,omitempty"`
+	Deployed       []string `json:"deployed,omitempty"`
+	DeployFailed   []string `json:"deployFailed,omitempty"`
+	RolledBack     []string `json:"rolledBack,omitempty"`
+	RollbackFailed []string `json:"rollbackFailed,omitempty"`
+	SyncFailed     []string `json:"syncFailed,omitempty"`
+	Message        string   `json:"message"`
 }
 
 func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInput) (BindingView, error) {
@@ -54,10 +57,12 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	}
 	if !input.Enabled {
 		input.DeployEnabled = false
+		input.DeployRollback = false
 		input.DeployComposePaths = nil
 	}
 	if !input.DeployEnabled {
 		input.DeployNewStacks = false
+		input.DeployRollback = false
 	}
 	if input.IntervalMinutes < minAutoSyncIntervalMinutes || input.IntervalMinutes > maxAutoSyncIntervalMinutes {
 		return BindingView{}, fmt.Errorf("automatic synchronization interval must be between %d and %d minutes", minAutoSyncIntervalMinutes, maxAutoSyncIntervalMinutes)
@@ -79,6 +84,7 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	}
 	row.AutoDeployEnabled = input.DeployEnabled
 	row.AutoDeployNewStacks = input.DeployNewStacks
+	row.AutoDeployRollbackEnabled = input.DeployRollback
 	row.AutoDeployComposePaths = strings.Join(deployPaths, "\n")
 	row.AutoDeployError = ""
 	if input.DeployEnabled {
@@ -327,18 +333,29 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
 		}
 		if len(changedPaths) > 0 && binding.AutoDeployEnabled {
-			deployment, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths)
+			deployment, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths, transfer.Backup)
 			if deployErr != nil {
 				return deployErr
 			}
 			result.Deployed = deployment.Deployed
 			result.DeployFailed = deployment.Failed
+			result.RolledBack = deployment.RolledBack
+			result.RollbackFailed = deployment.RollbackFailed
+			if len(deployment.Failed) > 0 {
+				result.State = "partial"
+			}
 			if len(transfer.ComposeBlocked) > 0 && len(deployment.Failed) > 0 {
 				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d stack(s) deployed and %d additional stack(s) failed deployment", len(transfer.ComposeBlocked), len(deployment.Deployed), len(deployment.Failed))
 			} else if len(transfer.ComposeBlocked) > 0 {
 				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d independent stack(s) deployed successfully", len(transfer.ComposeBlocked), len(deployment.Deployed))
 			} else if len(deployment.Failed) > 0 {
 				result.Message = fmt.Sprintf("%d file(s) synchronized; %d stack(s) deployed and %d stack(s) failed independently", changed, len(deployment.Deployed), len(deployment.Failed))
+				if len(deployment.RolledBack) > 0 {
+					result.Message += fmt.Sprintf("; %d previous stack version(s) restored safely", len(deployment.RolledBack))
+				}
+				if len(deployment.RollbackFailed) > 0 {
+					result.Message += fmt.Sprintf("; %d automatic rollback(s) require manual recovery", len(deployment.RollbackFailed))
+				}
 			} else if len(deployment.Deployed) > 0 {
 				result.Message = fmt.Sprintf("%d file(s) synchronized and %d stack(s) deployed", changed, len(deployment.Deployed))
 			}

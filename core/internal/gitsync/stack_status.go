@@ -30,33 +30,34 @@ const (
 var errNoTransferableLocalChanges = errors.New("no transferable local change was found for this stack")
 
 type GitStackStatusView struct {
-	BindingID         string     `json:"bindingId"`
-	Host              string     `json:"host"`
-	StackPath         string     `json:"stackPath"`
-	ComposePath       string     `json:"composePath"`
-	FullComposePath   string     `json:"fullComposePath"`
-	RepositoryID      string     `json:"repositoryId"`
-	RepositoryName    string     `json:"repositoryName"`
-	RepositoryBranch  string     `json:"repositoryBranch"`
-	RepositorySubPath string     `json:"repositorySubPath"`
-	State             string     `json:"state"`
-	Selected          bool       `json:"selected"`
-	Error             string     `json:"error,omitempty"`
-	ConflictCount     int        `json:"conflictCount"`
-	AutoSyncEnabled   bool       `json:"autoSyncEnabled"`
-	BindingSyncState  string     `json:"bindingSyncState"`
-	BindingSyncError  string     `json:"bindingSyncError,omitempty"`
-	AutomationPaused  bool       `json:"automationPaused"`
-	PauseReason       string     `json:"pauseReason,omitempty"`
-	AutoDeployEnabled bool       `json:"autoDeployEnabled"`
-	AutoSyncInterval  int        `json:"autoSyncIntervalMinutes"`
-	LastCheckedAt     *time.Time `json:"lastCheckedAt,omitempty"`
-	LastSuccessAt     *time.Time `json:"lastSuccessAt,omitempty"`
-	NextCheckAt       *time.Time `json:"nextCheckAt,omitempty"`
-	LastCommit        string     `json:"lastCommit,omitempty"`
-	DeployState       string     `json:"deployState"`
-	DeployError       string     `json:"deployError,omitempty"`
-	LastDeployAt      *time.Time `json:"lastDeployAt,omitempty"`
+	BindingID                 string     `json:"bindingId"`
+	Host                      string     `json:"host"`
+	StackPath                 string     `json:"stackPath"`
+	ComposePath               string     `json:"composePath"`
+	FullComposePath           string     `json:"fullComposePath"`
+	RepositoryID              string     `json:"repositoryId"`
+	RepositoryName            string     `json:"repositoryName"`
+	RepositoryBranch          string     `json:"repositoryBranch"`
+	RepositorySubPath         string     `json:"repositorySubPath"`
+	State                     string     `json:"state"`
+	Selected                  bool       `json:"selected"`
+	Error                     string     `json:"error,omitempty"`
+	ConflictCount             int        `json:"conflictCount"`
+	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
+	BindingSyncState          string     `json:"bindingSyncState"`
+	BindingSyncError          string     `json:"bindingSyncError,omitempty"`
+	AutomationPaused          bool       `json:"automationPaused"`
+	PauseReason               string     `json:"pauseReason,omitempty"`
+	AutoDeployEnabled         bool       `json:"autoDeployEnabled"`
+	AutoDeployRollbackEnabled bool       `json:"autoDeployRollbackEnabled"`
+	AutoSyncInterval          int        `json:"autoSyncIntervalMinutes"`
+	LastCheckedAt             *time.Time `json:"lastCheckedAt,omitempty"`
+	LastSuccessAt             *time.Time `json:"lastSuccessAt,omitempty"`
+	NextCheckAt               *time.Time `json:"nextCheckAt,omitempty"`
+	LastCommit                string     `json:"lastCommit,omitempty"`
+	DeployState               string     `json:"deployState"`
+	DeployError               string     `json:"deployError,omitempty"`
+	LastDeployAt              *time.Time `json:"lastDeployAt,omitempty"`
 }
 
 type GitStackPauseInput struct {
@@ -159,8 +160,9 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
 			AutoSyncEnabled: binding.AutoSyncEnabled, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
 			AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
-			AutoDeployEnabled: deployEnabled, AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
-			LastCheckedAt: row.LastCheckedAt, LastSuccessAt: row.LastSuccessAt, NextCheckAt: nextCheck,
+			AutoDeployEnabled: deployEnabled, AutoDeployRollbackEnabled: deployEnabled && binding.AutoDeployRollbackEnabled,
+			AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
+			LastCheckedAt:    row.LastCheckedAt, LastSuccessAt: row.LastSuccessAt, NextCheckAt: nextCheck,
 			LastCommit: row.LastCommit, DeployState: deployState, DeployError: row.DeployError, LastDeployAt: row.LastDeployAt,
 		})
 	}

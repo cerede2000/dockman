@@ -22,6 +22,7 @@ export interface GitStackStatus {
     automationPaused: boolean;
     pauseReason?: 'manual' | 'recovery';
     autoDeployEnabled: boolean;
+    autoDeployRollbackEnabled: boolean;
     autoSyncIntervalMinutes: number;
     lastCheckedAt?: string;
     lastSuccessAt?: string;
@@ -49,19 +50,19 @@ const EMPTY_GIT_STACK_STATUSES: Record<string, GitStackStatus> = Object.freeze({
 const EMPTY_GIT_STATUS_LIST: GitStackStatus[] = [];
 
 export function gitStatusSeverity(status: GitStackStatus): 'neutral' | 'info' | 'warning' | 'error' | 'success' {
-    if (status.deployState === 'failed' || status.state === 'conflict' || status.state === 'error') return 'error';
+    if (status.deployState === 'failed' || status.deployState === 'rollback_failed' || status.state === 'conflict' || status.state === 'error') return 'error';
     if (status.state === 'checking') return 'info';
-    if (status.state === 'local_changes' || status.state === 'locally_deleted' || status.state === 'remote_changes' || status.state === 'orphaned' || status.deployState === 'pending') return 'warning';
+    if (status.state === 'local_changes' || status.state === 'locally_deleted' || status.state === 'remote_changes' || status.state === 'orphaned' || status.deployState === 'pending' || status.deployState === 'rolled_back') return 'warning';
     if (status.state === 'up_to_date') return 'success';
     return 'neutral';
 }
 
 export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | undefined {
     const rank = (status: GitStackStatus) => {
-        if (status.deployState === 'failed') return 7;
+        if (status.deployState === 'failed' || status.deployState === 'rollback_failed') return 7;
         if (status.state === 'error' || status.state === 'conflict') return 6;
         if (status.state === 'orphaned' || status.state === 'locally_deleted') return 5;
-        if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending') return 4;
+        if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending' || status.deployState === 'rolled_back') return 4;
         if (status.state === 'checking') return 3;
         if (!status.selected || status.automationPaused || status.state === 'pending') return 2;
         return 1;

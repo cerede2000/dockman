@@ -74,6 +74,8 @@ type Service struct {
 	validateCompose      func(context.Context, string, string) error
 	dryRunCompose        func(context.Context, string, string, io.Writer) error
 	deployCompose        func(context.Context, string, string, io.Writer) error
+	deployComposeWait    func(context.Context, string, string, io.Writer) error
+	cleanupCompose       func(context.Context, string, string, io.Writer) error
 	lockCompose          func(string, string) (func(), bool)
 	dirtyEditorPaths     func(string) []string
 	fileChangeNotify     func(string, string)
@@ -96,9 +98,13 @@ func (s *Service) ConfigureDeployment(
 	validate func(context.Context, string, string) error,
 	dryRun func(context.Context, string, string, io.Writer) error,
 	deploy func(context.Context, string, string, io.Writer) error,
+	deployWait func(context.Context, string, string, io.Writer) error,
+	cleanup func(context.Context, string, string, io.Writer) error,
 	lock func(string, string) (func(), bool),
 ) {
 	s.validateCompose, s.dryRunCompose, s.deployCompose = validate, dryRun, deploy
+	s.deployComposeWait = deployWait
+	s.cleanupCompose = cleanup
 	s.lockCompose = lock
 }
 

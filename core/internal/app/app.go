@@ -207,6 +207,20 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 			}
 			return dkSrv.Compose.Up(ctx, filename, out)
 		},
+		func(ctx context.Context, hostname, filename string, out io.Writer) error {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return getErr
+			}
+			return dkSrv.Compose.UpWait(ctx, filename, out)
+		},
+		func(ctx context.Context, hostname, filename string, out io.Writer) error {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return getErr
+			}
+			return dkSrv.Compose.Down(ctx, filename, out)
+		},
 		compose.TryLockStack,
 	)
 	if interrupted, recoverErr := gitSyncSrv.RecoverInterruptedOperations(); recoverErr != nil {

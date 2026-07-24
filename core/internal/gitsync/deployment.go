@@ -29,8 +29,10 @@ type DeploymentView struct {
 }
 
 type deploymentBatchResult struct {
-	Deployed []string
-	Failed   []string
+	Deployed       []string
+	Failed         []string
+	RolledBack     []string
+	RollbackFailed []string
 }
 
 func (s *Service) ListBindingDeployments(bindingID string) ([]DeploymentView, error) {
@@ -192,15 +194,22 @@ func deploymentTargetsForChanges(binding StackBinding, changed []string) []strin
 	return result
 }
 
-func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding, commit string, changed []string) (deploymentBatchResult, error) {
+func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding, commit string, changed []string, backupID ...string) (deploymentBatchResult, error) {
 	if s.validateCompose == nil || s.dryRunCompose == nil || s.deployCompose == nil || s.lockCompose == nil {
 		return deploymentBatchResult{}, errors.New("automatic deployment is not configured")
+	}
+	if binding.AutoDeployRollbackEnabled && (s.deployComposeWait == nil || s.cleanupCompose == nil) {
+		return deploymentBatchResult{}, errors.New("automatic deployment rollback health check is not configured")
 	}
 	targets := deploymentTargetsForChanges(binding, changed)
 	if len(targets) == 0 {
 		return deploymentBatchResult{}, nil
 	}
-	result := deploymentBatchResult{Deployed: make([]string, 0, len(targets)), Failed: make([]string, 0)}
+	result := deploymentBatchResult{Deployed: make([]string, 0, len(targets)), Failed: make([]string, 0), RolledBack: make([]string, 0), RollbackFailed: make([]string, 0)}
+	rollbackBackupID := ""
+	if len(backupID) > 0 {
+		rollbackBackupID = backupID[0]
+	}
 	for _, relative := range targets {
 		filename := filepath.ToSlash(filepath.Join(binding.StackPath, relative))
 		unlock, locked := s.lockCompose(binding.Host, filename)
@@ -227,13 +236,55 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		if err == nil {
 			stage = "deployment"
 			deployment.State = "deploying"
-			err = s.deployCompose(ctx, binding.Host, filename, logs)
+			deploy := s.deployCompose
+			if binding.AutoDeployRollbackEnabled {
+				deploy = s.deployComposeWait
+			}
+			err = deploy(ctx, binding.Host, filename, logs)
+		}
+		if err != nil && binding.AutoDeployRollbackEnabled {
+			originalErr := safeGitError(fmt.Errorf("%s failed: %w", stage, err))
+			deployment.State = "rolling_back"
+			_, _ = fmt.Fprintf(logs, "\n[dockman] %s; restoring the pre-import stack files\n", originalErr)
+			hadPreviousCompose, rollbackErr := s.deploymentHadPreviousCompose(binding, rollbackBackupID, relative)
+			if rollbackErr == nil && stage == "deployment" && !hadPreviousCompose {
+				_, _ = fmt.Fprintln(logs, "[dockman] first deployment failed; removing its partial containers and networks before restoring the absent stack")
+				rollbackErr = s.cleanupCompose(ctx, binding.Host, filename, logs)
+			}
+			var restored []string
+			if rollbackErr == nil {
+				restored, rollbackErr = s.rollbackDeploymentFiles(binding, rollbackBackupID, relative)
+			}
+			if rollbackErr == nil && hadPreviousCompose {
+				rollbackErr = s.validateCompose(ctx, binding.Host, filename)
+			}
+			// Validation/dry-run failures never touched Docker. A real deployment
+			// (including --wait/health failure) is rolled forward to the restored
+			// configuration so partially changed containers are repaired.
+			if rollbackErr == nil && stage == "deployment" && hadPreviousCompose {
+				_, _ = fmt.Fprintln(logs, "[dockman] restored files validated; checking the previous deployment plan")
+				rollbackErr = s.dryRunCompose(ctx, binding.Host, filename, logs)
+			}
+			if rollbackErr == nil && stage == "deployment" && hadPreviousCompose {
+				_, _ = fmt.Fprintln(logs, "[dockman] redeploying the previous stack version and waiting for health")
+				rollbackErr = s.deployComposeWait(ctx, binding.Host, filename, logs)
+			}
+			if rollbackErr == nil {
+				deployment.State = "rolled_back"
+				deployment.Result = fmt.Sprintf("%s; previous version restored safely (%d file(s))", originalErr, len(restored))
+				result.RolledBack = append(result.RolledBack, relative)
+			} else {
+				deployment.State = "rollback_failed"
+				deployment.Result = fmt.Sprintf("%s; automatic rollback failed: %s", originalErr, safeGitError(rollbackErr))
+				result.RollbackFailed = append(result.RollbackFailed, relative)
+			}
 		}
 		unlock()
 		deployment.Logs = logs.String()
-		deployment.Result = "deployed"
-		deployment.State = "success"
-		if err != nil {
+		if err == nil {
+			deployment.Result = "deployed"
+			deployment.State = "success"
+		} else if deployment.State != "rolled_back" && deployment.State != "rollback_failed" {
 			deployment.State = "failed"
 			deployment.Result = safeGitError(fmt.Errorf("%s failed: %w", stage, err))
 		}
@@ -242,14 +293,14 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		}
 		now := time.Now().UTC()
 		deployError := ""
-		if deployment.State == "failed" {
+		if deployment.State != "success" {
 			deployError = deployment.Result
 		}
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": deployment.State, "deploy_error": deployError, "last_deploy_at": &now})
 		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
 			ComposePath: relative, Type: "stack_deploy", Trigger: "automation", State: deployment.State,
 			CommitSHA: commit, Error: deployError, Details: ActivityDetails{Action: stage, Paths: []string{relative}, DeploymentIDs: []string{deployment.UUID}}})
-		if err != nil {
+		if deployment.State != "success" {
 			result.Failed = append(result.Failed, relative)
 			continue
 		}
@@ -259,10 +310,16 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 	state, message := "success", "deployed"
 	if len(result.Failed) > 0 {
 		state = "failed"
-		message = fmt.Sprintf("%d stack(s) failed", len(result.Failed))
-		if len(result.Deployed) > 0 {
+		if len(result.Deployed) > 0 || len(result.RolledBack) > 0 {
 			state = "partial"
-			message = fmt.Sprintf("%d stack(s) deployed; %d stack(s) failed", len(result.Deployed), len(result.Failed))
+		}
+		message = fmt.Sprintf("%d stack(s) deployed; %d stack(s) failed", len(result.Deployed), len(result.Failed))
+		if len(result.RolledBack) > 0 {
+			message += fmt.Sprintf(" (%d restored automatically)", len(result.RolledBack))
+		}
+		if len(result.RollbackFailed) > 0 {
+			state = "failed"
+			message += fmt.Sprintf("; %d rollback(s) failed", len(result.RollbackFailed))
 		}
 		if len(result.Failed) > 0 {
 			message += ": " + strings.Join(result.Failed, ", ")

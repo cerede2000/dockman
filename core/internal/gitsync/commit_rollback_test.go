@@ -46,6 +46,8 @@ func TestCommitRollbackPreviewsAndRestoresLocallyWithoutDeployment(t *testing.T)
 		func(context.Context, string, string) error { deployCalls++; return nil },
 		func(context.Context, string, string, io.Writer) error { deployCalls++; return nil },
 		func(context.Context, string, string, io.Writer) error { deployCalls++; return nil },
+		func(context.Context, string, string, io.Writer) error { deployCalls++; return nil },
+		func(context.Context, string, string, io.Writer) error { deployCalls++; return nil },
 		func(string, string) (func(), bool) { return func() {}, true },
 	)
 	commits, err := service.ListBindingCommits(binding.ID, 20)

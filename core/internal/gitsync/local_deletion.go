@@ -332,6 +332,7 @@ func (s *Service) deselectLocallyDeletedStack(binding StackBinding, composePath 
 	binding.AutoDeployComposePaths = strings.Join(deploy, "\n")
 	if binding.AutoDeployEnabled && len(deploy) == 0 && !binding.AutoDeployNewStacks {
 		binding.AutoDeployEnabled = false
+		binding.AutoDeployRollbackEnabled = false
 		binding.AutoDeployState = "disabled"
 		binding.AutoDeployError = ""
 	}

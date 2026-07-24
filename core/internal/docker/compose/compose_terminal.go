@@ -225,6 +225,16 @@ func (c *Service) DryRunUp(ctx context.Context, filename string, out io.Writer) 
 	}, nil)
 }
 
+// UpWait applies the same controlled deployment as Up and asks Compose to wait
+// until services are running or healthy. It is reserved for Git deployments
+// with automatic rollback enabled; regular interactive actions keep their
+// existing non-blocking behaviour.
+func (c *Service) UpWait(ctx context.Context, filename string, out io.Writer) error {
+	return c.withCmd(ctx, filename, out, func(cmdList []string) []string {
+		return append(cmdList, "up", "-d", "-y", "--build", "--remove-orphans", "--wait", "--wait-timeout", "60")
+	}, nil)
+}
+
 // Redeploy runs `up -d` with explicit force flags so a stack can be
 // re-rolled in one action: pull images, rebuild, or recreate containers
 // even when nothing changed.

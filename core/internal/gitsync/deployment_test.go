@@ -89,6 +89,14 @@ func TestDeployChangedStacksContinuesAfterIndependentFailure(t *testing.T) {
 			actions = append(actions, "deploy:"+filename)
 			return nil
 		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy-wait:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "cleanup:"+filename)
+			return nil
+		},
 		func(_, _ string) (func(), bool) { return func() {}, true },
 	)
 

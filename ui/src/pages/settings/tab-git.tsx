@@ -117,11 +117,11 @@ interface Binding {
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
     autoSyncEnabled: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
     autoSyncError?: string; lastAutoSyncAt?: string; lastAutoSyncSuccessAt?: string;
-    autoDeployEnabled: boolean; autoDeployNewStacks: boolean; autoDeployComposePaths: string[]; autoDeployState: string;
+    autoDeployEnabled: boolean; autoDeployNewStacks: boolean; autoDeployRollbackEnabled: boolean; autoDeployComposePaths: string[]; autoDeployState: string;
     autoDeployError?: string; lastAutoDeployAt?: string;
     autoReconcileEnabled: boolean; initialSyncState: string; initialSyncError?: string; initialSyncAt?: string;
 }
-interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; deployFailed?: string[]; syncFailed?: string[]; message: string; }
+interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; deployFailed?: string[]; rolledBack?: string[]; rollbackFailed?: string[]; syncFailed?: string[]; message: string; }
 interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
 interface PreviewEntry {
     path: string; status: "add" | "modify" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
@@ -260,7 +260,7 @@ function ComposePathSelector({paths, selectedPaths, onChange, selectedLabel = "s
 }
 
 export default function TabGit() {
-    const {showError, showSuccess} = useSnackbar();
+    const {showError, showSuccess, showWarning} = useSnackbar();
     const [feature, setFeature] = useState<GitFeatureStatus | null>(null);
     const [credentials, setCredentials] = useState<Credential[]>([]);
     const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -305,7 +305,7 @@ export default function TabGit() {
     const [selectedComposePaths, setSelectedComposePaths] = useState<Set<string>>(() => new Set());
     const [composePathStates, setComposePathStates] = useState<Record<string, string>>({});
     const [deployments, setDeployments] = useState<Deployment[]>([]);
-    const [automationForm, setAutomationForm] = useState({enabled: false, autoReconcile: true, intervalMinutes: 15, deployEnabled: false, deployNewStacks: false, deployComposePaths: [] as string[]});
+    const [automationForm, setAutomationForm] = useState({enabled: false, autoReconcile: true, intervalMinutes: 15, deployEnabled: false, deployNewStacks: false, deployRollback: false, deployComposePaths: [] as string[]});
     const automationDeploySelection = useMemo(() => new Set(automationForm.deployComposePaths), [automationForm.deployComposePaths]);
     const [policyRepository, setPolicyRepository] = useState<Repository | null>(null);
     const [repositoryExcludePatterns, setRepositoryExcludePatterns] = useState("");
@@ -815,7 +815,7 @@ export default function TabGit() {
         try {
             const refreshed = await refreshBindingComposeCatalog(binding);
             setAutomationBinding(refreshed);
-            setAutomationForm({enabled: refreshed.autoSyncEnabled, autoReconcile: refreshed.autoReconcileEnabled, intervalMinutes: refreshed.autoSyncIntervalMinutes || 15, deployEnabled: refreshed.autoDeployEnabled, deployNewStacks: refreshed.autoDeployNewStacks, deployComposePaths: refreshed.autoDeployComposePaths || []});
+            setAutomationForm({enabled: refreshed.autoSyncEnabled, autoReconcile: refreshed.autoReconcileEnabled, intervalMinutes: refreshed.autoSyncIntervalMinutes || 15, deployEnabled: refreshed.autoDeployEnabled, deployNewStacks: refreshed.autoDeployNewStacks, deployRollback: refreshed.autoDeployRollbackEnabled, deployComposePaths: refreshed.autoDeployComposePaths || []});
             setDeployments([]);
             void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
         } catch (error) { showError((error as Error).message); }
@@ -863,7 +863,7 @@ export default function TabGit() {
         openedGitDeepLink.current = key;
         if (action === 'details') {
             setAutomationBinding(binding);
-            setAutomationForm({enabled: binding.autoSyncEnabled, autoReconcile: binding.autoReconcileEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployComposePaths: binding.autoDeployComposePaths || []});
+            setAutomationForm({enabled: binding.autoSyncEnabled, autoReconcile: binding.autoReconcileEnabled, intervalMinutes: binding.autoSyncIntervalMinutes || 15, deployEnabled: binding.autoDeployEnabled, deployNewStacks: binding.autoDeployNewStacks, deployRollback: binding.autoDeployRollbackEnabled, deployComposePaths: binding.autoDeployComposePaths || []});
             setDeployments([]);
             void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
         } else {
@@ -907,7 +907,8 @@ export default function TabGit() {
         setBusy(`binding-auto-run-${binding.id}`);
         try {
             const result = await api<AutoSyncResult>(`/bindings/${binding.id}/automation/run`, {method: "POST"});
-            if (result.state === "conflict" || result.state === "blocked") showError(result.message);
+            if (result.state === "conflict" || result.state === "blocked" || result.state === "error") showError(result.message);
+            else if (result.state === "partial") showWarning(result.message);
             else showSuccess(result.message);
             await load();
         } catch (error) { showError((error as Error).message); await load(); }
@@ -1318,18 +1319,20 @@ export default function TabGit() {
         <Dialog open={automationBinding !== null} onClose={() => busy === null && setAutomationBinding(null)} fullWidth maxWidth="md">
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><SyncOutlined/>Automatic Git monitoring</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
-                <FormControlLabel control={<Switch checked={automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, enabled: event.target.checked, ...(!event.target.checked ? {deployEnabled: false, deployNewStacks: false, deployComposePaths: []} : {})})}/>} label="Synchronize changes from Git automatically"/>
+                <FormControlLabel control={<Switch checked={automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, enabled: event.target.checked, ...(!event.target.checked ? {deployEnabled: false, deployNewStacks: false, deployRollback: false, deployComposePaths: []} : {})})}/>} label="Synchronize changes from Git automatically"/>
                 <FormControlLabel control={<Switch checked={automationForm.autoReconcile} onChange={(event) => setAutomationForm({...automationForm, autoReconcile: event.target.checked})}/>} label="Automatically establish a baseline when both sides are identical"/>
                 <TextField label="Check interval (minutes)" type="number" value={automationForm.intervalMinutes} onChange={(event) => setAutomationForm({...automationForm, intervalMinutes: Number(event.target.value)})} disabled={!automationForm.enabled} slotProps={{htmlInput: {min: 5, max: 1440, step: 5}}} helperText="Between 5 minutes and 24 hours."/>
                 <Alert severity="info">Dockman fetches Git and fast-forwards the managed repository. Identical files are reconciled automatically, safe Git additions are imported directly with a backup, and a true same-file divergence remains blocked as a conflict. Missing source files are not deleted.</Alert>
-                <FormControlLabel control={<Switch checked={automationForm.deployEnabled} disabled={!automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, deployEnabled: event.target.checked, ...(!event.target.checked ? {deployNewStacks: false} : {})})}/>} label="Deploy affected stacks after a successful import"/>
+                <FormControlLabel control={<Switch checked={automationForm.deployEnabled} disabled={!automationForm.enabled} onChange={(event) => setAutomationForm({...automationForm, deployEnabled: event.target.checked, ...(!event.target.checked ? {deployNewStacks: false, deployRollback: false} : {})})}/>} label="Deploy affected stacks after a successful import"/>
                 {automationForm.deployEnabled && <FormControlLabel control={<Switch checked={automationForm.deployNewStacks} onChange={(event) => setAutomationForm({...automationForm, deployNewStacks: event.target.checked})}/>} label="Automatically deploy newly discovered Git stacks"/>}
+                {automationForm.deployEnabled && <FormControlLabel control={<Switch checked={automationForm.deployRollback} onChange={(event) => setAutomationForm({...automationForm, deployRollback: event.target.checked})}/>} label="Restore the previous stack automatically when deployment or health checks fail"/>}
+                {automationForm.deployEnabled && automationForm.deployRollback && <Alert severity="info">Dockman waits up to 60 seconds for Compose services to become running/healthy. On failure, only that stack is restored from its pre-import backup; its previous configuration is validated and, if Docker was already touched, redeployed and checked again.</Alert>}
                 {automationForm.deployEnabled && automationForm.deployNewStacks && <Alert severity="warning">A newly added compose.yml/docker-compose.yml inside this folder link will be validated, dry-run, deployed, then retained as an authorized target. At most 10 new stack folders are accepted per synchronization.</Alert>}
                 {automationForm.deployEnabled && <Box><Typography variant="subtitle2" sx={{mb: 1}}>Compose deployment targets</Typography><ComposePathSelector key={`${automationBinding?.id || "automation"}-deploy`} paths={automationBinding?.selectedComposePaths || []} selectedPaths={automationDeploySelection} onChange={(next) => setAutomationForm({...automationForm, deployComposePaths: (automationBinding?.selectedComposePaths || []).filter((path) => next.has(path))})} selectedLabel="authorized" unselectedLabel="not authorized" maxHeight="34vh"/></Box>}
-                <Alert severity="warning">Deployment is disabled by default. When enabled, Dockman validates the Compose configuration, performs a dry-run, then runs the normal Compose up only for selected stacks affected by changed files. Any conflict or failed check blocks deployment.</Alert>
+                <Alert severity="warning">Deployment and rollback are disabled by default. Dockman validates the Compose configuration and performs a dry-run before touching Docker. Automatic rollback never affects another stack and refuses to overwrite a file changed after import.</Alert>
                 {automationBinding?.lastAutoSyncSuccessAt && <Typography variant="body2" color="text.secondary">Last successful synchronization: {dateLabel(automationBinding.lastAutoSyncSuccessAt)}</Typography>}
                 {automationBinding?.autoSyncError && <Alert severity="error" sx={{whiteSpace: "pre-wrap", overflowWrap: "anywhere", userSelect: "text"}}>{automationBinding.autoSyncError}</Alert>}
-                {deployments.length > 0 && <Box><Typography variant="subtitle2" sx={{mb: 1}}>Recent controlled deployments</Typography><Stack spacing={1}>{deployments.map((deployment) => <Paper key={deployment.id} variant="outlined" sx={{p: 1.25}}><Stack direction="row" sx={{justifyContent: "space-between", gap: 1}}><Typography variant="body2" sx={{fontFamily: "monospace"}}>{deployment.composePath}</Typography><Chip size="small" color={deployment.state === "success" ? "success" : "error"} label={deployment.state}/></Stack><Typography variant="caption" color="text.secondary">{dateLabel(deployment.createdAt)} · {deployment.commitSha.slice(0, 12)}</Typography>{deployment.result && deployment.state !== "success" && <Alert severity="error" sx={{mt: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere", userSelect: "text"}}>{deployment.result}</Alert>}{deployment.logs && <Box component="pre" sx={{mt: 1, mb: 0, p: 1, maxHeight: 140, overflow: "auto", bgcolor: "#050607", color: "grey.300", fontSize: 11, whiteSpace: "pre-wrap", userSelect: "text"}}>{deployment.logs}</Box>}</Paper>)}</Stack></Box>}
+                {deployments.length > 0 && <Box><Typography variant="subtitle2" sx={{mb: 1}}>Recent controlled deployments</Typography><Stack spacing={1}>{deployments.map((deployment) => { const rolledBack = deployment.state === "rolled_back"; const failed = deployment.state === "failed" || deployment.state === "rollback_failed"; return <Paper key={deployment.id} variant="outlined" sx={{p: 1.25}}><Stack direction="row" sx={{justifyContent: "space-between", gap: 1}}><Typography variant="body2" sx={{fontFamily: "monospace"}}>{deployment.composePath}</Typography><Chip size="small" color={deployment.state === "success" ? "success" : rolledBack ? "warning" : "error"} label={deployment.state.replaceAll("_", " ")}/></Stack><Typography variant="caption" color="text.secondary">{dateLabel(deployment.createdAt)} · {deployment.commitSha.slice(0, 12)}</Typography>{deployment.result && deployment.state !== "success" && <Alert severity={rolledBack ? "warning" : "error"} sx={{mt: 1, whiteSpace: "pre-wrap", overflowWrap: "anywhere", userSelect: "text"}}>{deployment.result}</Alert>}{failed && deployment.state === "rollback_failed" && <Alert severity="error" sx={{mt: 1}}>The imported version and its automatic rollback both failed. Use Backups or Commits for explicit recovery before another deployment.</Alert>}{deployment.logs && <Box component="pre" sx={{mt: 1, mb: 0, p: 1, maxHeight: 140, overflow: "auto", bgcolor: "#050607", color: "grey.300", fontSize: 11, whiteSpace: "pre-wrap", userSelect: "text"}}>{deployment.logs}</Box>}</Paper>;})}</Stack></Box>}
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setAutomationBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingAutomation()} disabled={busy !== null || (automationForm.enabled && (automationForm.intervalMinutes < 5 || automationForm.intervalMinutes > 1440)) || (automationForm.deployEnabled && !automationForm.deployNewStacks && automationForm.deployComposePaths.length === 0)}>{busy?.startsWith("binding-automation-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
         </Dialog>
