@@ -1557,6 +1557,19 @@ func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, 
 	if err != nil {
 		return nil, err
 	}
+	return collectRepositoryTreeFiles(repo, tree, subPath, includeSensitive, policies...)
+}
+
+func collectRepositoryFilesAtCommit(repo *gitclient.Repository, commit plumbing.Hash, subPath string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
+	tree, err := repositoryCommitTreeAtHash(repo, commit)
+	if err != nil {
+		return nil, err
+	}
+	return collectRepositoryTreeFiles(repo, tree, subPath, includeSensitive, policies...)
+}
+
+func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, subPath string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
+	var err error
 	tree, err = repositorySubtree(tree, subPath)
 	if err != nil {
 		return nil, err

@@ -50,6 +50,10 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings/{id}/deployments", h.listBindingDeployments)
 	mux.HandleFunc("GET /bindings/{id}/operations", h.bindingOperations)
 	mux.HandleFunc("GET /bindings/{id}/backups", h.listBindingBackups)
+	mux.HandleFunc("GET /bindings/{id}/commits", h.listBindingCommits)
+	mux.HandleFunc("POST /bindings/{id}/rollback-preview", h.previewBindingCommitRollback)
+	mux.HandleFunc("POST /bindings/{id}/rollback-compare/{path...}", h.compareBindingCommitRollback)
+	mux.HandleFunc("POST /bindings/{id}/rollback", h.applyBindingCommitRollback)
 	mux.HandleFunc("GET /bindings/{id}/backups/{backupId}/download", h.downloadBindingBackup)
 	mux.HandleFunc("DELETE /bindings/{id}/backups/{backupId}", h.deleteBindingBackup)
 	mux.HandleFunc("GET /bindings/{id}/backups/{backupId}/restore-preview", h.previewBindingBackupRestore)
@@ -230,7 +234,7 @@ func isMemoryIntensiveGitRequest(r *http.Request) bool {
 	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
 		return false
 	}
-	for _, marker := range []string{"/preview/", "/compare/", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/orphan/", "/local-deletion/", "/repositories"} {
+	for _, marker := range []string{"/preview/", "/compare/", "/rollback", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/orphan/", "/local-deletion/", "/repositories"} {
 		if strings.Contains(r.URL.Path, marker) {
 			return true
 		}

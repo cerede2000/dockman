@@ -19,6 +19,70 @@ func (h *HTTPHandler) listBindingBackups(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, rows)
 }
 
+func (h *HTTPHandler) listBindingCommits(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rows, err := h.service.ListBindingCommits(r.PathValue("id"), limit)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) previewBindingCommitRollback(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input CommitRollbackInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	preview, err := h.service.PreviewCommitRollback(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (h *HTTPHandler) compareBindingCommitRollback(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input CommitRollbackInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	comparison, err := h.service.CompareCommitRollbackFile(r.PathValue("id"), input, r.PathValue("path"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, comparison)
+}
+
+func (h *HTTPHandler) applyBindingCommitRollback(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input CommitRollbackInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.ApplyCommitRollback(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *HTTPHandler) downloadBindingBackup(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return

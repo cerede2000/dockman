@@ -219,6 +219,18 @@ func repositoryCommitTree(repo *gitclient.Repository, branch string) (*object.Tr
 	return tree, nil
 }
 
+func repositoryCommitTreeAtHash(repo *gitclient.Repository, hash plumbing.Hash) (*object.Tree, error) {
+	commit, err := repo.CommitObject(hash)
+	if err != nil {
+		return nil, fmt.Errorf("read repository commit: %w", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("read repository tree: %w", err)
+	}
+	return tree, nil
+}
+
 func repositorySubtree(tree *object.Tree, subPath string) (*object.Tree, error) {
 	if subPath == "." || strings.TrimSpace(subPath) == "" {
 		return tree, nil
