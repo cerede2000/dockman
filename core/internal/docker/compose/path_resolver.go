@@ -1,6 +1,8 @@
 package compose
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 )
@@ -29,4 +31,24 @@ func (c *Service) DockmanPath(configFilesLabel string) string {
 		return ""
 	}
 	return c.pathResolver(filepath.ToSlash(first))
+}
+
+// ComposeFileExists verifies that a Docker-discovered compose path still
+// belongs to a real file in the configured host filesystem. Containers can
+// outlive a deleted or renamed compose file, so their config-files label alone
+// is not an authoritative stack index.
+func (c *Service) ComposeFileExists(filename string) (bool, error) {
+	parts, err := c.parser(filename, c.hostname)
+	if err != nil {
+		return false, err
+	}
+
+	info, err := parts.Fs.Stat(parts.Relpath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !info.IsDir(), nil
 }

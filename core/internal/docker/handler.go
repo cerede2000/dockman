@@ -85,10 +85,21 @@ func (h *Handler) ComposeFileStatus(ctx context.Context, c *connect.Request[v1.C
 		}
 
 		// Explicitly requested files above include stopped stacks that still
-		// exist on disk. Discovered entries add deployed stacks from every tree
-		// depth; they intentionally win for paths present in both maps.
+		// exist on disk. Docker labels also reveal deployed stacks at every tree
+		// depth, but containers may outlive a deleted/renamed compose file. Keep
+		// only paths that still exist so stale Docker metadata cannot pollute a
+		// parent folder aggregate.
 		for absPath := range primaryFiles {
 			if file := dkSrv.Compose.DockmanPath(absPath); file != "" {
+				exists, statErr := dkSrv.Compose.ComposeFileExists(file)
+				if statErr != nil {
+					// A transient filesystem error must not make a live stack vanish.
+					// Retain it for this snapshot and retry on the next normal poll.
+					log.Debug().Err(statErr).Str("compose_file", file).
+						Msg("unable to verify Docker-discovered compose file")
+				} else if !exists {
+					continue
+				}
 				finalResults[file] = byFile[absPath].toProto()
 			}
 		}
