@@ -172,3 +172,23 @@ Résultat attendu : aucune régression fonctionnelle sur les lots précédents e
 13. Refaire enfin le test avec un dépôt totalement vide : seule l'option de branche indépendante doit être disponible.
 
 Résultat attendu : Dockman ne crée jamais une branche silencieusement. Sans droit d'écriture, le message explique que la création automatique est impossible. Un nom Git invalide est refusé proprement, sans clone local résiduel. La variante depuis `main` partage son historique ; la variante indépendante contient seulement le commit racine vide créé par Dockman.
+
+## 18. Isolation d'une stack Compose invalide
+
+1. Partir d'un folder link contenant deux stacks synchronisées et déployées automatiquement.
+2. Dans un même passage côté Git :
+   - rendre volontairement invalide le YAML Compose d'une stack existante ;
+   - ajouter une troisième stack avec un fichier Compose valide.
+3. Déclencher la synchronisation ou attendre son prochain passage automatique.
+4. Contrôler les fichiers locaux, les indicateurs Git, les containers et le détail de l'auto-deploy.
+
+Résultat attendu :
+
+- l'état global devient `partial`, sans masquer la stack en erreur ;
+- la stack invalide conserve intégralement sa dernière version locale valide et son container n'est pas redéployé ;
+- la nouvelle stack est importée puis déployée normalement ;
+- les autres stacks valides ne sont pas bloquées ;
+- un second passage sans nouveau commit ne retente pas en boucle le même Compose invalide ;
+- après correction du YAML sur Git, cette stack est importée et déployée, puis les états Git et auto-sync redeviennent verts.
+
+Le traitement des stacks est isolé mais volontairement séquentiel : une erreur n'interrompt plus le lot, tandis qu'une seule opération Compose est exécutée à la fois afin d'éviter des pics CPU, disque et Docker.

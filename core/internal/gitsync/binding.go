@@ -148,27 +148,29 @@ type PreviewEntry struct {
 }
 
 type TransferPreview struct {
-	BindingID            string         `json:"bindingId"`
-	Direction            string         `json:"direction"`
-	Entries              []PreviewEntry `json:"entries"`
-	Changed              int            `json:"changed"`
-	Unchanged            int            `json:"unchanged"`
-	Skipped              int            `json:"skipped"`
-	Conflicts            int            `json:"conflicts"`
-	Preserved            int            `json:"preserved"`
-	LocalDeletions       int            `json:"localDeletions"`
-	OrphanedComposePaths []string       `json:"orphanedComposePaths,omitempty"`
-	DeletionMode         string         `json:"deletionMode"`
+	BindingID            string            `json:"bindingId"`
+	Direction            string            `json:"direction"`
+	Entries              []PreviewEntry    `json:"entries"`
+	Changed              int               `json:"changed"`
+	Unchanged            int               `json:"unchanged"`
+	Skipped              int               `json:"skipped"`
+	Conflicts            int               `json:"conflicts"`
+	Preserved            int               `json:"preserved"`
+	LocalDeletions       int               `json:"localDeletions"`
+	OrphanedComposePaths []string          `json:"orphanedComposePaths,omitempty"`
+	ComposeErrors        map[string]string `json:"composeErrors,omitempty"`
+	DeletionMode         string            `json:"deletionMode"`
 	automation           bool
 	PreviewToken         string `json:"previewToken"`
 }
 
 type TransferResult struct {
-	Preview       TransferPreview `json:"preview"`
-	CommitSHA     string          `json:"commitSha,omitempty"`
-	Backup        string          `json:"backup,omitempty"`
-	Message       string          `json:"message"`
-	EditorBlocked []string        `json:"editorBlocked,omitempty"`
+	Preview        TransferPreview `json:"preview"`
+	CommitSHA      string          `json:"commitSha,omitempty"`
+	Backup         string          `json:"backup,omitempty"`
+	Message        string          `json:"message"`
+	EditorBlocked  []string        `json:"editorBlocked,omitempty"`
+	ComposeBlocked []string        `json:"composeBlocked,omitempty"`
 }
 
 type ComparisonInput struct {
@@ -828,6 +830,9 @@ func (s *Service) PreviewBinding(id, direction string, input TransferInput) (Tra
 	preview := buildPreview(binding.UUID, direction, source, target, baseline)
 	if direction == "repository_to_stack" {
 		preview.OrphanedComposePaths = detectOrphanedComposePaths(source, target, baseline, selectedComposePaths(binding))
+		if input.automation {
+			preview.ComposeErrors, _ = composeFileErrors(source)
+		}
 	}
 	preview.automation = input.automation
 	s.recordPreviewStackStatuses(binding, preview)
@@ -1065,14 +1070,21 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if err := validateComposeFiles(source); err != nil {
+		composeErrors, composeFound := composeFileErrors(source)
+		if validationErr := firstComposeValidationError(composeErrors, composeFound); validationErr != nil && !input.automation {
 			if !hasTrackedDeletedCompose(source, target, baseline, selectedComposePaths(binding)) {
-				return err
+				return validationErr
 			}
+		}
+		if !composeFound && !hasTrackedDeletedCompose(source, target, baseline, selectedComposePaths(binding)) {
+			return errors.New("repository path contains no compose file")
 		}
 		result.Preview = buildPreview(binding.UUID, "repository_to_stack", source, target, baseline)
 		result.Preview.OrphanedComposePaths = detectOrphanedComposePaths(source, target, baseline, selectedComposePaths(binding))
 		result.Preview.automation = input.automation
+		if input.automation {
+			result.Preview.ComposeErrors = composeErrors
+		}
 		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
@@ -1096,8 +1108,15 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
 		}
 		selected, result.EditorBlocked = s.excludeDirtyEditorStacks(binding, selected)
+		if input.automation && len(composeErrors) > 0 {
+			selected, result.ComposeBlocked = excludeInvalidComposeStacks(selected, source, composeErrors)
+		}
 		if len(selected) == 0 {
-			result.Message = "Synchronization paused for the stack currently being edited; no file was overwritten"
+			if len(result.ComposeBlocked) > 0 {
+				result.Message = fmt.Sprintf("%d stack(s) kept unchanged because their Compose file is invalid", len(result.ComposeBlocked))
+			} else {
+				result.Message = "Synchronization paused for the stack currently being edited; no file was overwritten"
+			}
 			return nil
 		}
 		targetFS, targetRoot, err := s.resolveBindingStack(binding)
@@ -1127,6 +1146,9 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			_ = s.store.UpdateBindingAutoDeployState(binding.UUID, "pending", "Imported changes are waiting for controlled deployment", nil)
 		}
 		result.Backup, result.Message = backup, "Repository files imported with a backup; the stack was not deployed"
+		if len(result.ComposeBlocked) > 0 {
+			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe repository files were imported with a backup", len(result.ComposeBlocked))
+		}
 		if pendingConflicts > 0 {
 			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
 		}
@@ -1138,7 +1160,15 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			paths = s.activeAutomationComposePaths(binding)
 		}
 		now := time.Now().UTC()
-		_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now})
+		safePaths := excludeStringValues(paths, result.ComposeBlocked)
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, safePaths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now})
+		for _, composePath := range result.ComposeBlocked {
+			message := result.Preview.ComposeErrors[composePath]
+			if message == "" {
+				message = "Compose validation failed"
+			}
+			_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{"state": stackSyncError, "error_message": message, "last_checked_at": &now})
+		}
 	}
 	if input.compactResult {
 		result.Preview.Entries = nil
@@ -2398,35 +2428,101 @@ func baselineAfterTransfer(current map[string]string, source, target, selected m
 }
 
 func validateComposeFiles(files map[string]transferFile) error {
+	errorsByPath, found := composeFileErrors(files)
+	return firstComposeValidationError(errorsByPath, found)
+}
+
+func composeFileErrors(files map[string]transferFile) (map[string]string, bool) {
+	errorsByPath := make(map[string]string)
 	found := false
 	for path, file := range files {
 		if isComposePath(path) {
 			found = true
 			if file.open == nil {
-				return fmt.Errorf("compose file %s was skipped (%s); Compose files cannot be excluded from synchronization", path, file.skipReason)
+				errorsByPath[path] = fmt.Sprintf("compose file %s was skipped (%s); Compose files cannot be excluded from synchronization", path, file.skipReason)
+				continue
 			}
 			reader, err := file.open()
 			if err != nil {
-				return fmt.Errorf("open compose YAML %s: %w", path, err)
+				errorsByPath[path] = fmt.Sprintf("open compose YAML %s: %v", path, err)
+				continue
 			}
 			var value any
 			decodeErr := yaml.NewDecoder(io.LimitReader(reader, file.size+1)).Decode(&value)
 			closeErr := reader.Close()
 			if decodeErr != nil {
-				return fmt.Errorf("invalid compose YAML %s: %w", path, decodeErr)
+				errorsByPath[path] = fmt.Sprintf("invalid compose YAML %s: %v", path, decodeErr)
+				continue
 			}
 			if closeErr != nil {
-				return fmt.Errorf("close compose YAML %s: %w", path, closeErr)
+				errorsByPath[path] = fmt.Sprintf("close compose YAML %s: %v", path, closeErr)
+				continue
 			}
 			if value == nil {
-				return fmt.Errorf("invalid compose YAML %s: document is empty", path)
+				errorsByPath[path] = fmt.Sprintf("invalid compose YAML %s: document is empty", path)
 			}
 		}
 	}
+	return errorsByPath, found
+}
+
+func firstComposeValidationError(errorsByPath map[string]string, found bool) error {
 	if !found {
 		return errors.New("repository path contains no compose file")
 	}
-	return nil
+	paths := make([]string, 0, len(errorsByPath))
+	for path := range errorsByPath {
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	sort.Strings(paths)
+	return errors.New(errorsByPath[paths[0]])
+}
+
+func excludeInvalidComposeStacks(selected, allFiles map[string]transferFile, composeErrors map[string]string) (map[string]transferFile, []string) {
+	allCompose := make([]string, 0)
+	for path := range allFiles {
+		if isComposePath(path) {
+			allCompose = append(allCompose, path)
+		}
+	}
+	sort.Strings(allCompose)
+	blocked := make(map[string]struct{})
+	filtered := make(map[string]transferFile, len(selected))
+	for path, file := range selected {
+		invalidOwners := false
+		for _, composePath := range composePathsForFile(allCompose, path) {
+			if _, invalid := composeErrors[composePath]; invalid {
+				blocked[composePath] = struct{}{}
+				invalidOwners = true
+			}
+		}
+		if !invalidOwners {
+			filtered[path] = file
+		}
+	}
+	blockedPaths := make([]string, 0, len(blocked))
+	for composePath := range blocked {
+		blockedPaths = append(blockedPaths, composePath)
+	}
+	sort.Strings(blockedPaths)
+	return filtered, blockedPaths
+}
+
+func excludeStringValues(values, excluded []string) []string {
+	excludedSet := make(map[string]struct{}, len(excluded))
+	for _, value := range excluded {
+		excludedSet[value] = struct{}{}
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, skip := excludedSet[value]; !skip {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func hasTrackedDeletedCompose(source, target map[string]transferFile, baseline map[string]string, composePaths []string) bool {

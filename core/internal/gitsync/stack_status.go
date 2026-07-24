@@ -423,7 +423,7 @@ func (s *Service) updateActiveStackStatuses(binding StackBinding, state, message
 	_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, updates)
 }
 
-func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding, state, message, commit string, success bool) {
+func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding, state, message, commit string, success bool, preservedStates ...string) {
 	paths := s.activeAutomationComposePaths(binding)
 	now := time.Now().UTC()
 	updates := map[string]any{"state": state, "error_message": message, "last_checked_at": &now}
@@ -434,7 +434,8 @@ func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding,
 		updates["last_success_at"] = &now
 		updates["last_commit"] = commit
 	}
-	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, []string{stackSyncLocalChanges, stackSyncLocalDeleted, stackSyncOrphaned}, updates)
+	excludedStates := append([]string{stackSyncLocalChanges, stackSyncLocalDeleted, stackSyncOrphaned}, preservedStates...)
+	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, excludedStates, updates)
 }
 
 func (s *Service) activeAutomationComposePaths(binding StackBinding) []string {

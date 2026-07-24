@@ -2,9 +2,11 @@ package gitsync
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +181,110 @@ func TestBindingAutomationDiscoversAndDeploysNewGitStack(t *testing.T) {
 	require.Contains(t, splitPatternLines(updated.ComposePaths), "new-stack/compose.yml")
 	require.Contains(t, splitPatternLines(updated.SelectedComposePaths), "new-stack/compose.yml")
 	require.Contains(t, splitPatternLines(updated.AutoDeployComposePaths), "new-stack/compose.yml")
+}
+
+func TestAutoSyncDeploysNewStackWhenExistingStackValidationFails(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	existingPath := filepath.Join(stackRoot, "existing", "compose.yml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(existingPath), 0o755))
+	require.NoError(t, os.WriteFile(existingPath, []byte("services:\n  app:\n    image: alpine:3.22\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	remoteChange(t, repository.RemoteURL, "stacks/existing/compose.yml", "services:\n  broken: [\n")
+	remoteChange(t, repository.RemoteURL, "stacks/new-stack/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
+
+	var actions []string
+	service.ConfigureDeployment(
+		func(_ context.Context, _, filename string) error {
+			actions = append(actions, "validate:"+filename)
+			if strings.Contains(filename, "existing/") {
+				contents, readErr := os.ReadFile(existingPath)
+				if readErr != nil {
+					return readErr
+				}
+				if strings.Contains(string(contents), "broken") {
+					return errors.New("invalid compose")
+				}
+			}
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "dry-run:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy:"+filename)
+			return nil
+		},
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployNewStacks: true,
+		DeployComposePaths: []string{"existing/compose.yml"},
+	})
+	require.NoError(t, err)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", result.State)
+	require.Equal(t, []string{"existing/compose.yml"}, result.SyncFailed)
+	require.Empty(t, result.DeployFailed)
+	require.Equal(t, []string{"new-stack/compose.yml"}, result.Deployed)
+	require.Contains(t, result.Message, "1 invalid Compose stack(s) kept unchanged; 1 independent stack(s) deployed successfully")
+	require.FileExists(t, filepath.Join(stackRoot, "new-stack", "compose.yml"))
+	existingContents, err := os.ReadFile(existingPath)
+	require.NoError(t, err)
+	require.Contains(t, string(existingContents), "alpine:3.22", "the running stack must keep its last valid local Compose file")
+	require.Equal(t, []string{
+		"validate:compose/new-stack/compose.yml",
+		"dry-run:compose/new-stack/compose.yml",
+		"deploy:compose/new-stack/compose.yml",
+	}, actions)
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", updated.AutoSyncState)
+	require.Equal(t, "success", updated.AutoDeployState)
+	require.NotEmpty(t, updated.LastAutoSyncCommit)
+	statuses, err := service.store.GitStackStatuses(binding.ID)
+	require.NoError(t, err)
+	states := make(map[string]string, len(statuses))
+	for _, status := range statuses {
+		states[status.ComposePath] = status.State
+	}
+	require.Equal(t, stackSyncError, states["existing/compose.yml"])
+	require.Equal(t, stackSyncUpToDate, states["new-stack/compose.yml"])
+
+	actionCount := len(actions)
+	second, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", second.State)
+	require.Contains(t, second.Message, "no new Git commit, stack scan skipped")
+	require.Len(t, actions, actionCount, "an unchanged failed Compose file must not create a retry loop")
+	statuses, err = service.store.GitStackStatuses(binding.ID)
+	require.NoError(t, err)
+	for _, status := range statuses {
+		if status.ComposePath == "existing/compose.yml" {
+			require.Equal(t, stackSyncError, status.State, "the failed stack must stay visible until a correcting Git commit arrives")
+		}
+	}
+
+	remoteChange(t, repository.RemoteURL, "stacks/existing/compose.yml", "services:\n  app:\n    image: alpine:3.24\n")
+	third, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", third.State)
+	require.Empty(t, third.SyncFailed)
+	require.Equal(t, []string{"existing/compose.yml"}, third.Deployed)
+	updated, err = service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", updated.AutoSyncState)
+	statuses, err = service.store.GitStackStatuses(binding.ID)
+	require.NoError(t, err)
+	for _, status := range statuses {
+		require.Equal(t, stackSyncUpToDate, status.State)
+	}
 }
 
 func establishBindingBaseline(t *testing.T, service *Service, bindingID string) {

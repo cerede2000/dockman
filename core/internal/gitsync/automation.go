@@ -29,14 +29,16 @@ type BindingAutomationInput struct {
 }
 
 type AutoSyncResult struct {
-	BindingID string   `json:"bindingId"`
-	State     string   `json:"state"`
-	Changed   int      `json:"changed"`
-	Conflicts int      `json:"conflicts"`
-	Preserved int      `json:"preserved"`
-	Backup    string   `json:"backup,omitempty"`
-	Deployed  []string `json:"deployed,omitempty"`
-	Message   string   `json:"message"`
+	BindingID    string   `json:"bindingId"`
+	State        string   `json:"state"`
+	Changed      int      `json:"changed"`
+	Conflicts    int      `json:"conflicts"`
+	Preserved    int      `json:"preserved"`
+	Backup       string   `json:"backup,omitempty"`
+	Deployed     []string `json:"deployed,omitempty"`
+	DeployFailed []string `json:"deployFailed,omitempty"`
+	SyncFailed   []string `json:"syncFailed,omitempty"`
+	Message      string   `json:"message"`
 }
 
 func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInput) (BindingView, error) {
@@ -188,7 +190,11 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 	_ = s.store.UpdateBindingAutoSyncState(id, "syncing", "", "", &attemptedAt, nil)
 	// A file save already gives us authoritative local-dirty state. Preserve it
 	// while checking Git so an unchanged remote commit cannot paint it green.
-	s.updateActiveStackStatusesPreservingLocal(binding, stackSyncChecking, "", "", false)
+	if binding.AutoSyncState == "partial" {
+		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncChecking, "", "", false, stackSyncError)
+	} else {
+		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncChecking, "", "", false)
+	}
 	result := AutoSyncResult{BindingID: id, State: "syncing"}
 	var synchronizedCommit string
 	skippedStackScan := false
@@ -237,6 +243,9 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			} else if binding.AutoSyncState == "blocked" && strings.Contains(binding.AutoSyncError, "Git deletion") {
 				result.State = "blocked"
 				result.Message = preservedDeletionMessage(binding.AutoSyncError) + "; no new Git commit, stack scan skipped"
+			} else if binding.AutoSyncState == "partial" {
+				result.State = "partial"
+				result.Message = autoSyncMessageWithoutSkipSuffix(binding.AutoSyncError) + "; no new Git commit, stack scan skipped"
 			} else {
 				result.State = "up_to_date"
 				result.Message = "No new Git commit; stack scan skipped"
@@ -257,6 +266,13 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		if newTargetErr != nil {
 			return newTargetErr
 		}
+		if len(preview.ComposeErrors) > 0 {
+			invalidComposePaths := make([]string, 0, len(preview.ComposeErrors))
+			for composePath := range preview.ComposeErrors {
+				invalidComposePaths = append(invalidComposePaths, composePath)
+			}
+			newTargets = excludeStringValues(newTargets, invalidComposePaths)
+		}
 		preview.Entries = nil
 		if conflicts > 0 {
 			result.State = "conflict"
@@ -276,7 +292,7 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 				return registerErr
 			}
 		}
-		if len(newTargets) == 0 && len(s.activeAutomationComposePaths(binding)) == 0 {
+		if len(newTargets) == 0 && len(s.activeAutomationComposePaths(binding)) == 0 && len(preview.ComposeErrors) == 0 {
 			result.State = "paused"
 			result.Message = "All selected stacks are paused; no new Git stack was discovered"
 			return nil
@@ -288,6 +304,12 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		}
 		result.State = "up_to_date"
 		result.Backup = transfer.Backup
+		result.SyncFailed = transfer.ComposeBlocked
+		if len(transfer.ComposeBlocked) > 0 {
+			result.State = "partial"
+			changedPaths = excludeComposeStackPaths(changedPaths, transfer.ComposeBlocked)
+			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe changes were synchronized", len(transfer.ComposeBlocked))
+		}
 		if len(transfer.EditorBlocked) > 0 {
 			changedPaths = excludeComposeStackPaths(changedPaths, transfer.EditorBlocked)
 			result.State = "blocked"
@@ -298,20 +320,27 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			result.Message = fmt.Sprintf("%d Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion", preserved)
 		} else if changed == 0 {
 			result.Message = "Stack already matches Git"
-		} else if len(transfer.EditorBlocked) == 0 {
+		} else if len(transfer.EditorBlocked) == 0 && len(transfer.ComposeBlocked) == 0 {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
 		}
 		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "pending") {
 			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
 		}
 		if len(changedPaths) > 0 && binding.AutoDeployEnabled {
-			deployed, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths)
+			deployment, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths)
 			if deployErr != nil {
 				return deployErr
 			}
-			result.Deployed = deployed
-			if len(deployed) > 0 {
-				result.Message = fmt.Sprintf("%d file(s) synchronized and %d stack(s) deployed", changed, len(deployed))
+			result.Deployed = deployment.Deployed
+			result.DeployFailed = deployment.Failed
+			if len(transfer.ComposeBlocked) > 0 && len(deployment.Failed) > 0 {
+				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d stack(s) deployed and %d additional stack(s) failed deployment", len(transfer.ComposeBlocked), len(deployment.Deployed), len(deployment.Failed))
+			} else if len(transfer.ComposeBlocked) > 0 {
+				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d independent stack(s) deployed successfully", len(transfer.ComposeBlocked), len(deployment.Deployed))
+			} else if len(deployment.Failed) > 0 {
+				result.Message = fmt.Sprintf("%d file(s) synchronized; %d stack(s) deployed and %d stack(s) failed independently", changed, len(deployment.Deployed), len(deployment.Failed))
+			} else if len(deployment.Deployed) > 0 {
+				result.Message = fmt.Sprintf("%d file(s) synchronized and %d stack(s) deployed", changed, len(deployment.Deployed))
 			}
 		}
 		return nil
@@ -344,9 +373,21 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 		return result, nil
 	}
 	succeededAt := time.Now().UTC()
-	_ = s.store.UpdateBindingAutoSyncState(id, "up_to_date", "", synchronizedCommit, &attemptedAt, &succeededAt)
+	bindingState, bindingMessage := "up_to_date", ""
+	if result.State == "partial" {
+		bindingState, bindingMessage = "partial", result.Message
+	}
+	_ = s.store.UpdateBindingAutoSyncState(id, bindingState, bindingMessage, synchronizedCommit, &attemptedAt, &succeededAt)
 	if skippedStackScan {
-		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncUpToDate, "", synchronizedCommit, true)
+		if result.State == "partial" {
+			s.updateActiveStackStatusesPreservingLocal(binding, stackSyncUpToDate, "", synchronizedCommit, true, stackSyncError)
+		} else {
+			s.updateActiveStackStatusesPreservingLocal(binding, stackSyncUpToDate, "", synchronizedCommit, true)
+		}
+	} else if len(result.SyncFailed) > 0 {
+		safePaths := excludeStringValues(s.activeAutomationComposePaths(binding), result.SyncFailed)
+		now := time.Now().UTC()
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, safePaths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now, "last_commit": synchronizedCommit})
 	} else {
 		s.updateActiveStackStatuses(binding, stackSyncUpToDate, "", synchronizedCommit, true)
 	}
@@ -354,6 +395,10 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 }
 
 func preservedDeletionMessage(message string) string {
+	return autoSyncMessageWithoutSkipSuffix(message)
+}
+
+func autoSyncMessageWithoutSkipSuffix(message string) string {
 	const suffix = "; no new Git commit, stack scan skipped"
 	message = strings.TrimSpace(message)
 	for strings.HasSuffix(message, suffix) {

@@ -28,6 +28,11 @@ type DeploymentView struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
+type deploymentBatchResult struct {
+	Deployed []string
+	Failed   []string
+}
+
 func (s *Service) ListBindingDeployments(bindingID string) ([]DeploymentView, error) {
 	if _, err := s.store.GetBinding(bindingID); err != nil {
 		return nil, err
@@ -187,26 +192,29 @@ func deploymentTargetsForChanges(binding StackBinding, changed []string) []strin
 	return result
 }
 
-func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding, commit string, changed []string) ([]string, error) {
+func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding, commit string, changed []string) (deploymentBatchResult, error) {
 	if s.validateCompose == nil || s.dryRunCompose == nil || s.deployCompose == nil || s.lockCompose == nil {
-		return nil, errors.New("automatic deployment is not configured")
+		return deploymentBatchResult{}, errors.New("automatic deployment is not configured")
 	}
 	targets := deploymentTargetsForChanges(binding, changed)
 	if len(targets) == 0 {
-		return nil, nil
+		return deploymentBatchResult{}, nil
 	}
-	deployed := make([]string, 0, len(targets))
+	result := deploymentBatchResult{Deployed: make([]string, 0, len(targets)), Failed: make([]string, 0)}
 	for _, relative := range targets {
 		filename := filepath.ToSlash(filepath.Join(binding.StackPath, relative))
 		unlock, locked := s.lockCompose(binding.Host, filename)
 		if !locked {
-			return deployed, fmt.Errorf("stack %s already has an action in progress", filename)
+			message := fmt.Sprintf("stack %s already has an action in progress", filename)
+			result.Failed = append(result.Failed, relative)
+			_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "failed", "deploy_error": message})
+			continue
 		}
 		logs := &limitedLogWriter{}
 		deployment := Deployment{UUID: uuid.NewString(), RepositoryUUID: binding.RepositoryUUID, BindingUUID: binding.UUID, CommitSHA: commit, ComposeHash: relative, State: "validating"}
 		if err := s.store.SaveDeployment(&deployment); err != nil {
 			unlock()
-			return deployed, err
+			return result, err
 		}
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "validating", "deploy_error": ""})
 		stage := "validation"
@@ -229,11 +237,10 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			deployment.State = "failed"
 			deployment.Result = safeGitError(fmt.Errorf("%s failed: %w", stage, err))
 		}
-		if saveErr := s.store.SaveDeployment(&deployment); saveErr != nil && err == nil {
-			err = saveErr
+		if saveErr := s.store.SaveDeployment(&deployment); saveErr != nil {
+			return result, saveErr
 		}
 		now := time.Now().UTC()
-		_ = s.store.UpdateBindingAutoDeployState(binding.UUID, deployment.State, deployment.Result, &now)
 		deployError := ""
 		if deployment.State == "failed" {
 			deployError = deployment.Result
@@ -243,11 +250,30 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			ComposePath: relative, Type: "stack_deploy", Trigger: "automation", State: deployment.State,
 			CommitSHA: commit, Error: deployError, Details: ActivityDetails{Action: stage, Paths: []string{relative}, DeploymentIDs: []string{deployment.UUID}}})
 		if err != nil {
-			return deployed, fmt.Errorf("%s %s: %w", stage, relative, err)
+			result.Failed = append(result.Failed, relative)
+			continue
 		}
-		deployed = append(deployed, relative)
+		result.Deployed = append(result.Deployed, relative)
 	}
-	return deployed, nil
+	now := time.Now().UTC()
+	state, message := "success", "deployed"
+	if len(result.Failed) > 0 {
+		state = "failed"
+		message = fmt.Sprintf("%d stack(s) failed", len(result.Failed))
+		if len(result.Deployed) > 0 {
+			state = "partial"
+			message = fmt.Sprintf("%d stack(s) deployed; %d stack(s) failed", len(result.Deployed), len(result.Failed))
+		}
+		if len(result.Failed) > 0 {
+			message += ": " + strings.Join(result.Failed, ", ")
+		}
+	} else if len(result.Deployed) > 0 {
+		message = fmt.Sprintf("%d stack(s) deployed", len(result.Deployed))
+	}
+	if err := s.store.UpdateBindingAutoDeployState(binding.UUID, state, message, &now); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 var _ io.Writer = (*limitedLogWriter)(nil)
