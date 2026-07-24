@@ -116,6 +116,17 @@ func (c *Service) withCmd(
 	addCmd WithCmd,
 	services []string,
 ) error {
+	return c.withCmdProgress(ctx, filename, stream, c.progressOut(), addCmd, services)
+}
+
+func (c *Service) withCmdProgress(
+	ctx context.Context,
+	filename string,
+	stream io.Writer,
+	progress string,
+	addCmd WithCmd,
+	services []string,
+) error {
 	fileParts, err := c.parser(filename, c.hostname)
 	if err != nil {
 		return err
@@ -131,7 +142,7 @@ func (c *Service) withCmd(
 	// docker compose --envfile=... -f some/file/path/compose.yml --progress=<val>
 	fullCmd := append(
 		append(binary, envs...),
-		c.progressOut(),
+		progress,
 		"-f", fileParts.Relpath,
 	)
 
@@ -220,7 +231,7 @@ func (c *Service) Up(
 // networks or images. It uses Compose's global --dry-run mode with the same
 // options as Up so automatic Git deployment cannot skip the real plan check.
 func (c *Service) DryRunUp(ctx context.Context, filename string, out io.Writer) error {
-	return c.withCmd(ctx, filename, out, func(cmdList []string) []string {
+	return c.withCmdProgress(ctx, filename, out, "--progress=plain", func(cmdList []string) []string {
 		return append(cmdList, "--dry-run", "up", "-d", "-y", "--build", "--remove-orphans")
 	}, nil)
 }
@@ -230,7 +241,7 @@ func (c *Service) DryRunUp(ctx context.Context, filename string, out io.Writer) 
 // with automatic rollback enabled; regular interactive actions keep their
 // existing non-blocking behaviour.
 func (c *Service) UpWait(ctx context.Context, filename string, out io.Writer) error {
-	return c.withCmd(ctx, filename, out, func(cmdList []string) []string {
+	return c.withCmdProgress(ctx, filename, out, "--progress=plain", func(cmdList []string) []string {
 		return append(cmdList, "up", "-d", "-y", "--build", "--remove-orphans", "--wait", "--wait-timeout", "60")
 	}, nil)
 }
@@ -278,6 +289,14 @@ func (c *Service) Down(
 		},
 		services,
 	)
+}
+
+// DownPlain is used by background recovery where terminal cursor sequences
+// would otherwise be persisted verbatim in the deployment log.
+func (c *Service) DownPlain(ctx context.Context, filename string, out io.Writer) error {
+	return c.withCmdProgress(ctx, filename, out, "--progress=plain", func(cmdList []string) []string {
+		return append(cmdList, "down", "--remove-orphans")
+	}, nil)
 }
 
 func (c *Service) Start(

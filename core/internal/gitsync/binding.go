@@ -1045,7 +1045,11 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now, "last_commit": result.CommitSHA})
 		}
 		if !input.automation && len(exportedPaths) > 0 {
-			if resumeErr := s.resumeRecoveryPausesAfterExport(binding, result.Preview, exportedPaths); resumeErr != nil {
+			completeStacks := fullyExportedComposePaths(binding, result.Preview, exportedPaths)
+			if clearErr := s.clearResolvedDeploymentStates(binding, completeStacks); clearErr != nil {
+				return result, fmt.Errorf("stack was pushed but its previous deployment warning could not be cleared: %w", clearErr)
+			}
+			if resumeErr := s.resumeRecoveryPausesAfterExport(binding, completeStacks); resumeErr != nil {
 				return result, fmt.Errorf("stack was pushed but automatic synchronization could not be resumed: %w", resumeErr)
 			}
 		}
@@ -1053,11 +1057,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 	return result, err
 }
 
-func (s *Service) resumeRecoveryPausesAfterExport(binding StackBinding, preview TransferPreview, exportedPaths []string) error {
-	statuses, err := s.store.GitStackStatuses(binding.UUID)
-	if err != nil {
-		return err
-	}
+func fullyExportedComposePaths(binding StackBinding, preview TransferPreview, exportedPaths []string) map[string]struct{} {
 	complete := make(map[string]struct{})
 	exported := make(map[string]struct{}, len(exportedPaths))
 	composePaths := selectedComposePaths(binding)
@@ -1081,6 +1081,14 @@ func (s *Service) resumeRecoveryPausesAfterExport(binding StackBinding, preview 
 			}
 		}
 	}
+	return complete
+}
+
+func (s *Service) resumeRecoveryPausesAfterExport(binding StackBinding, complete map[string]struct{}) error {
+	statuses, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		return err
+	}
 	for _, status := range statuses {
 		if _, ok := complete[status.ComposePath]; !ok || !status.AutomationPaused || status.PauseReason != stackPauseRecovery {
 			continue
@@ -1090,6 +1098,68 @@ func (s *Service) resumeRecoveryPausesAfterExport(binding StackBinding, preview 
 		}
 	}
 	return nil
+}
+
+// A successful complete push makes the rollback incident historical: the
+// corrected local state is now the Git baseline. Clear only the stacks fully
+// covered by that push and retain failures belonging to every other stack.
+func (s *Service) clearResolvedDeploymentStates(binding StackBinding, complete map[string]struct{}) error {
+	if !binding.AutoDeployEnabled || len(complete) == 0 {
+		return nil
+	}
+	statuses, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		return err
+	}
+	cleared := make(map[string]struct{})
+	for _, status := range statuses {
+		if _, ok := complete[status.ComposePath]; !ok {
+			continue
+		}
+		switch status.DeployState {
+		case "failed", "rolled_back", "rollback_failed":
+			cleared[status.ComposePath] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(cleared))
+	for path := range cleared {
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	if err := s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"deploy_state": "idle", "deploy_error": ""}); err != nil {
+		return err
+	}
+
+	state, message := "watching", ""
+	attention := 0
+	for _, status := range statuses {
+		if _, ok := cleared[status.ComposePath]; ok {
+			continue
+		}
+		if !stringInSlice(status.ComposePath, splitPatternLines(binding.AutoDeployComposePaths)) {
+			continue
+		}
+		switch status.DeployState {
+		case "rollback_failed", "failed":
+			state = "failed"
+			attention++
+		case "rolled_back":
+			if state != "failed" {
+				state = "partial"
+			}
+			attention++
+		case "pending", "validating", "dry_run", "deploying", "rolling_back":
+			if state == "watching" {
+				state = "pending"
+			}
+		}
+	}
+	if attention > 0 {
+		message = fmt.Sprintf("%d stack(s) still require deployment attention", attention)
+	}
+	return s.store.UpdateBindingAutoDeployState(binding.UUID, state, message, nil)
 }
 
 func (s *Service) ImportBinding(ctx context.Context, id string, input TransferInput) (TransferResult, error) {

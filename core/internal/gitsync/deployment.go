@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,8 @@ func (s *Service) ListBindingDeployments(bindingID string) ([]DeploymentView, er
 
 type limitedLogWriter struct{ data []byte }
 
+var deploymentANSISequence = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+
 func (w *limitedLogWriter) Write(p []byte) (int, error) {
 	n := len(p)
 	if len(w.data) < maxDeploymentLogSize {
@@ -64,7 +67,22 @@ func (w *limitedLogWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (w *limitedLogWriter) String() string { return string(w.data) }
+func (w *limitedLogWriter) String() string { return sanitizeDeploymentOutput(string(w.data)) }
+
+func sanitizeDeploymentOutput(value string) string {
+	value = deploymentANSISequence.ReplaceAllString(value, "")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	value = strings.Map(func(character rune) rune {
+		if character == '\n' || character == '\t' || character >= 0x20 {
+			return character
+		}
+		return -1
+	}, value)
+	for strings.Contains(value, "\n\n\n") {
+		value = strings.ReplaceAll(value, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(value)
+}
 
 func validateDeploymentTargets(binding StackBinding, enabled, allowNew bool, requested []string) ([]string, error) {
 	if !enabled {
@@ -243,7 +261,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			err = deploy(ctx, binding.Host, filename, logs)
 		}
 		if err != nil && binding.AutoDeployRollbackEnabled {
-			originalErr := safeGitError(fmt.Errorf("%s failed: %w", stage, err))
+			originalErr := sanitizeDeploymentOutput(safeGitError(fmt.Errorf("%s failed: %w", stage, err)))
 			deployment.State = "rolling_back"
 			_, _ = fmt.Fprintf(logs, "\n[dockman] %s; restoring the pre-import stack files\n", originalErr)
 			hadPreviousCompose, rollbackErr := s.deploymentHadPreviousCompose(binding, rollbackBackupID, relative)
@@ -275,7 +293,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 				result.RolledBack = append(result.RolledBack, relative)
 			} else {
 				deployment.State = "rollback_failed"
-				deployment.Result = fmt.Sprintf("%s; automatic rollback failed: %s", originalErr, safeGitError(rollbackErr))
+				deployment.Result = fmt.Sprintf("%s; automatic rollback failed: %s", originalErr, sanitizeDeploymentOutput(safeGitError(rollbackErr)))
 				result.RollbackFailed = append(result.RollbackFailed, relative)
 			}
 		}
@@ -286,7 +304,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			deployment.State = "success"
 		} else if deployment.State != "rolled_back" && deployment.State != "rollback_failed" {
 			deployment.State = "failed"
-			deployment.Result = safeGitError(fmt.Errorf("%s failed: %w", stage, err))
+			deployment.Result = sanitizeDeploymentOutput(safeGitError(fmt.Errorf("%s failed: %w", stage, err)))
 		}
 		if saveErr := s.store.SaveDeployment(&deployment); saveErr != nil {
 			return result, saveErr

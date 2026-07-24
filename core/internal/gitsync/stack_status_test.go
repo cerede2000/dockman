@@ -195,6 +195,37 @@ func TestManualPauseIsNotClearedByPushAlone(t *testing.T) {
 	require.Equal(t, stackPauseManual, status.PauseReason)
 }
 
+func TestCompletePushClearsOnlyItsResolvedDeploymentWarning(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	updated, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true,
+		DeployComposePaths: []string{"alpha/compose.yml", "beta/compose.yml"},
+	})
+	require.NoError(t, err)
+	require.True(t, updated.AutoDeployEnabled)
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, []string{"alpha/compose.yml"}, map[string]any{"deploy_state": "rolled_back", "deploy_error": "previous version restored"}))
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, []string{"beta/compose.yml"}, map[string]any{"deploy_state": "failed", "deploy_error": "independent failure"}))
+	require.NoError(t, service.store.UpdateBindingAutoDeployState(binding.ID, "partial", "two incidents", nil))
+
+	alphaPath := filepath.Join(stackRoot, "alpha", "compose.yml")
+	require.NoError(t, os.WriteFile(alphaPath, []byte("services:\n  alpha:\n    image: alpine:fixed\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	_, err = service.PushGitStack(context.Background(), binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+
+	alpha, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, "idle", alpha.DeployState)
+	require.Empty(t, alpha.DeployError)
+	beta, err := service.store.GitStackStatus(binding.ID, "beta/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, "failed", beta.DeployState, "another stack's failure must remain visible")
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", row.AutoDeployState)
+	require.Contains(t, row.AutoDeployError, "1 stack")
+}
+
 func TestPartialSettingsPushKeepsRecoveryPausedUntilStackIsComplete(t *testing.T) {
 	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
 	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yml"), []byte("services:\n  alpha:\n    image: alpine:3.26\n"), 0o644))

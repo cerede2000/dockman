@@ -62,6 +62,14 @@ func TestLimitedDeploymentLogWriter(t *testing.T) {
 	require.Len(t, w.String(), maxDeploymentLogSize)
 }
 
+func TestDeploymentOutputRemovesTerminalControlSequences(t *testing.T) {
+	raw := "\x1b[?25l\x1b[0G[+] up 0/1 \x1b[33m⠋\x1b[0m recreate\r\x1b[?25hfinal error"
+	clean := sanitizeDeploymentOutput(raw)
+	require.NotContains(t, clean, "\x1b")
+	require.Contains(t, clean, "[+] up 0/1")
+	require.Contains(t, clean, "final error")
+}
+
 func TestDeployChangedStacksContinuesAfterIndependentFailure(t *testing.T) {
 	service, _ := testService(t, true)
 	binding := StackBinding{

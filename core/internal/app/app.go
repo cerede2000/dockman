@@ -219,7 +219,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 			if getErr != nil {
 				return getErr
 			}
-			return dkSrv.Compose.Down(ctx, filename, out)
+			return dkSrv.Compose.DownPlain(ctx, filename, out)
 		},
 		compose.TryLockStack,
 	)
