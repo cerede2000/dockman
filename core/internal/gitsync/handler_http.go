@@ -508,6 +508,15 @@ func (h *HTTPHandler) createRepository(w http.ResponseWriter, r *http.Request) {
 	}
 	row, err := h.service.CreateRepository(r.Context(), input)
 	if err != nil {
+		var missingBranch *RemoteBranchMissingError
+		if errors.As(err, &missingBranch) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": missingBranch.Error(), "code": "remote_branch_missing",
+				"branch": missingBranch.Branch, "sourceBranch": missingBranch.SourceBranch,
+				"canCreate": missingBranch.CanCreate,
+			})
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}

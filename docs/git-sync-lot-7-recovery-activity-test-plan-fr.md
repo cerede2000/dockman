@@ -154,3 +154,17 @@ Résultat attendu : aucune nouvelle boucle de polling, aucun CPU de fond supplé
 Valider un parcours complet : création/édition Files, sync manuelle, sync auto, conflit, résolution, suppression Git préservée, suppression locale explicite, auto-deploy contrôlé, Monitor, logs et actions containers.
 
 Résultat attendu : aucune régression fonctionnelle sur les lots précédents et aucune action Docker déclenchée par l'historique, le téléchargement ou la restauration d'une sauvegarde.
+
+## 17. Vérification et création d'une branche distante
+
+1. Ajouter un dépôt existant en indiquant une branche déjà présente.
+2. Vérifier que l'import se termine directement, sans confirmation supplémentaire.
+3. Recommencer avec un autre dépôt ou après retrait du premier, en indiquant une branche absente, par exemple `dockman`.
+4. Vérifier que Dockman indique clairement que la branche n'existe pas et précise la branche distante qui servira de point de départ.
+5. Annuler : vérifier qu'aucune branche distante et qu'aucun dépôt local Dockman ne sont créés.
+6. Relancer puis confirmer `Create branch and import`.
+7. Vérifier sur GitHub que la branche `dockman` existe et pointe initialement sur le même commit que la branche de départ.
+8. Vérifier que le dépôt est ensuite importé dans Dockman avec l'état `ready`.
+9. Refaire le test avec un dépôt public sans identifiant d'écriture.
+
+Résultat attendu : Dockman ne crée jamais une branche silencieusement. Sans droit d'écriture, le message explique que la création automatique est impossible. Une branche vide ou un nom Git invalide est refusé proprement, sans clone local résiduel.

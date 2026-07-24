@@ -111,6 +111,56 @@ func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	require.Equal(t, "local change", string(contents))
 }
 
+func TestInspectAndCreateMissingRemoteBranch(t *testing.T) {
+	service, _ := testService(t, true)
+	remotePath, _ := createTestRemote(t)
+	row := Repository{
+		UUID: uuid.NewString(), Name: "missing-branch", Provider: "test", RemoteURL: remotePath,
+		DefaultBranch: "dockman", Mode: "managed", Status: "cloning",
+	}
+
+	state, err := service.inspectRemoteBranch(context.Background(), row)
+	require.NoError(t, err)
+	require.False(t, state.exists)
+	require.Equal(t, "main", state.sourceBranch)
+
+	require.NoError(t, service.createRemoteBranch(context.Background(), row, state.sourceBranch))
+	state, err = service.inspectRemoteBranch(context.Background(), row)
+	require.NoError(t, err)
+	require.True(t, state.exists)
+
+	checkout := t.TempDir()
+	_, err = gitclient.PlainClone(checkout, false, &gitclient.CloneOptions{
+		URL: remotePath, ReferenceName: plumbing.NewBranchReferenceName("dockman"), SingleBranch: true,
+	})
+	require.NoError(t, err)
+	contents, err := os.ReadFile(filepath.Join(checkout, "README.md"))
+	require.NoError(t, err)
+	require.Equal(t, "test repository", string(contents))
+}
+
+func TestRemoteDefaultBranchPrefersRemoteHead(t *testing.T) {
+	mainHash := plumbing.NewHash("1111111111111111111111111111111111111111")
+	developHash := plumbing.NewHash("2222222222222222222222222222222222222222")
+	require.Equal(t, "develop", remoteDefaultBranch(map[string]plumbing.Hash{
+		"main": mainHash, "develop": developHash,
+	}, developHash))
+	require.Equal(t, "main", remoteDefaultBranch(map[string]plumbing.Hash{
+		"main": mainHash, "release": mainHash,
+	}, mainHash))
+	require.Empty(t, remoteDefaultBranch(nil, plumbing.ZeroHash))
+}
+
+func TestRepositoryInputRejectsInvalidGitReference(t *testing.T) {
+	service, _ := testService(t, true)
+	for _, branch := range []string{"release/", "release//next", "release.lock", "feature."} {
+		_, err := service.validateRepositoryInput(RepositoryInput{
+			Name: "repository", RemoteURL: "owner/repository", DefaultBranch: branch,
+		})
+		require.ErrorContains(t, err, "invalid default branch name", branch)
+	}
+}
+
 func TestRepositoryPullRefusesDirtyWorkspace(t *testing.T) {
 	service, _ := testService(t, true)
 	remotePath, _ := createTestRemote(t)

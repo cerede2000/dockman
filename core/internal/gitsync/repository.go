@@ -12,16 +12,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	gitclient "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
@@ -33,10 +36,27 @@ var (
 )
 
 type RepositoryInput struct {
-	Name           string `json:"name"`
-	RemoteURL      string `json:"remoteUrl"`
-	DefaultBranch  string `json:"defaultBranch"`
-	CredentialUUID string `json:"credentialId"`
+	Name                  string `json:"name"`
+	RemoteURL             string `json:"remoteUrl"`
+	DefaultBranch         string `json:"defaultBranch"`
+	CredentialUUID        string `json:"credentialId"`
+	CreateBranchIfMissing bool   `json:"createBranchIfMissing"`
+}
+
+type RemoteBranchMissingError struct {
+	Branch       string
+	SourceBranch string
+	CanCreate    bool
+}
+
+func (e *RemoteBranchMissingError) Error() string {
+	if e.SourceBranch == "" {
+		return fmt.Sprintf("branch %q does not exist and the repository has no branch from which Dockman can create it", e.Branch)
+	}
+	if !e.CanCreate {
+		return fmt.Sprintf("branch %q does not exist; Dockman cannot create it with a read-only or unauthenticated credential", e.Branch)
+	}
+	return fmt.Sprintf("branch %q does not exist; confirmation is required to create it from %q", e.Branch, e.SourceBranch)
 }
 
 type GitHubRepositoryInput struct {
@@ -154,6 +174,21 @@ func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (
 	if err := s.validateRepositoryCredential(row); err != nil {
 		return RepositoryView{}, err
 	}
+	branchState, err := s.inspectRemoteBranch(ctx, row)
+	if err != nil {
+		return RepositoryView{}, err
+	}
+	if !branchState.exists {
+		canCreate := branchState.sourceBranch != "" && s.repositoryCredentialCanPush(row)
+		if !clean.CreateBranchIfMissing || !canCreate {
+			return RepositoryView{}, &RemoteBranchMissingError{
+				Branch: clean.DefaultBranch, SourceBranch: branchState.sourceBranch, CanCreate: canCreate,
+			}
+		}
+		if err := s.createRemoteBranch(ctx, row, branchState.sourceBranch); err != nil {
+			return RepositoryView{}, fmt.Errorf("create remote branch %q from %q: %w", row.DefaultBranch, branchState.sourceBranch, err)
+		}
+	}
 	lock := s.repositoryLock(row.UUID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -174,6 +209,108 @@ func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (
 		return RepositoryView{}, err
 	}
 	return s.repositoryView(row), nil
+}
+
+type remoteBranchState struct {
+	exists       bool
+	sourceBranch string
+}
+
+func (s *Service) inspectRemoteBranch(ctx context.Context, row Repository) (remoteBranchState, error) {
+	auth, err := s.authForRepository(ctx, row)
+	if err != nil {
+		return remoteBranchState{}, err
+	}
+	remote := gitclient.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name: "origin", URLs: []string{row.RemoteURL}})
+	references, err := remote.ListContext(ctx, &gitclient.ListOptions{Auth: auth})
+	if err != nil {
+		return remoteBranchState{}, fmt.Errorf("check remote branches: %w", err)
+	}
+	target := plumbing.NewBranchReferenceName(row.DefaultBranch)
+	branches := make(map[string]plumbing.Hash)
+	headHash := plumbing.ZeroHash
+	for _, reference := range references {
+		if reference.Name() == plumbing.HEAD {
+			headHash = reference.Hash()
+		}
+		if reference.Name().IsBranch() {
+			branch := reference.Name().Short()
+			branches[branch] = reference.Hash()
+			if reference.Name() == target {
+				return remoteBranchState{exists: true}, nil
+			}
+		}
+	}
+	return remoteBranchState{sourceBranch: remoteDefaultBranch(branches, headHash)}, nil
+}
+
+func remoteDefaultBranch(branches map[string]plumbing.Hash, headHash plumbing.Hash) string {
+	if len(branches) == 0 {
+		return ""
+	}
+	for _, preferred := range []string{"main", "master"} {
+		if hash, ok := branches[preferred]; ok && (headHash == plumbing.ZeroHash || hash == headHash) {
+			return preferred
+		}
+	}
+	candidates := make([]string, 0, len(branches))
+	for branch, hash := range branches {
+		if headHash == plumbing.ZeroHash || hash == headHash {
+			candidates = append(candidates, branch)
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Strings(candidates)
+	return candidates[0]
+}
+
+func (s *Service) repositoryCredentialCanPush(row Repository) bool {
+	if row.CredentialUUID == nil || *row.CredentialUUID == "" {
+		return false
+	}
+	credential, err := s.store.GetCredential(*row.CredentialUUID)
+	return err == nil && credential.AuthType != AuthPublic
+}
+
+func (s *Service) createRemoteBranch(ctx context.Context, row Repository, sourceBranch string) error {
+	if sourceBranch == "" {
+		return errors.New("remote repository has no default branch")
+	}
+	if err := os.MkdirAll(s.workspaceRoot, 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.MkdirTemp(s.workspaceRoot, ".branch-create-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(temporary)
+	auth, err := s.authForRepository(ctx, row)
+	if err != nil {
+		return err
+	}
+	repository, err := gitclient.PlainCloneContext(ctx, temporary, false, &gitclient.CloneOptions{
+		URL: row.RemoteURL, RemoteName: "origin", Auth: auth,
+		ReferenceName: plumbing.NewBranchReferenceName(sourceBranch), SingleBranch: true,
+		Tags: gitclient.NoTags, NoCheckout: true, Depth: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("clone source branch: %w", err)
+	}
+	sourceReference, err := repository.Reference(plumbing.NewBranchReferenceName(sourceBranch), true)
+	if err != nil {
+		return fmt.Errorf("resolve source branch: %w", err)
+	}
+	targetReference := plumbing.NewBranchReferenceName(row.DefaultBranch)
+	if err := repository.Storer.SetReference(plumbing.NewHashReference(targetReference, sourceReference.Hash())); err != nil {
+		return fmt.Errorf("prepare branch reference: %w", err)
+	}
+	refSpec := config.RefSpec(targetReference.String() + ":" + targetReference.String())
+	if err := repository.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
+		return fmt.Errorf("push branch: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ensureRepositoryUnique(identity, branch string) error {
@@ -515,7 +652,8 @@ func (s *Service) validateRepositoryInput(input RepositoryInput) (RepositoryInpu
 	if input.DefaultBranch == "" {
 		input.DefaultBranch = "main"
 	}
-	if !branchNamePattern.MatchString(input.DefaultBranch) || strings.Contains(input.DefaultBranch, "..") {
+	branchReference := plumbing.NewBranchReferenceName(input.DefaultBranch)
+	if !branchNamePattern.MatchString(input.DefaultBranch) || branchReference.Validate() != nil {
 		return input, errors.New("invalid default branch name")
 	}
 	preferSSH := false

@@ -92,6 +92,20 @@ interface RepositoryForm {
     private: boolean;
 }
 
+interface APIErrorBody {
+    error?: string;
+    code?: string;
+    branch?: string;
+    sourceBranch?: string;
+    canCreate?: boolean;
+}
+
+class APIError extends Error {
+    constructor(public readonly status: number, public readonly body: APIErrorBody) {
+        super(body.error || `HTTP ${status}`);
+    }
+}
+
 interface StackTarget { host: string; path: string; composePaths: string[]; scope: "all_stacks" | "folder"; stackCount: number; }
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
@@ -138,8 +152,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     if (init?.body) headers.set("Content-Type", "application/json");
     const response = await fetch(withProtectedAPI(`/git${path}`), {...init, headers});
     if (!response.ok) {
-        const body = await response.json().catch(() => ({error: response.statusText})) as {error?: string};
-        throw new Error(body.error || `HTTP ${response.status}`);
+        const body = await response.json().catch(() => ({error: response.statusText})) as APIErrorBody;
+        throw new APIError(response.status, body);
     }
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
@@ -245,6 +259,7 @@ export default function TabGit() {
 
     const [repositoryDialogOpen, setRepositoryDialogOpen] = useState(false);
     const [repositoryForm, setRepositoryForm] = useState<RepositoryForm>(emptyRepository);
+    const [missingBranch, setMissingBranch] = useState<{branch: string; sourceBranch: string} | null>(null);
     const [deleteRepository, setDeleteRepository] = useState<Repository | null>(null);
     const [historyRepository, setHistoryRepository] = useState<Repository | null>(null);
     const [operations, setOperations] = useState<Operation[]>([]);
@@ -436,10 +451,11 @@ export default function TabGit() {
 
     const openRepositoryCreate = () => {
         setRepositoryForm(emptyRepository);
+        setMissingBranch(null);
         setRepositoryDialogOpen(true);
     };
 
-    const saveRepository = async () => {
+    const saveRepository = async (createBranchIfMissing = false) => {
         setBusy("repository-save");
         try {
             if (repositoryForm.mode === "import") {
@@ -448,6 +464,7 @@ export default function TabGit() {
                     body: JSON.stringify({
                         name: repositoryForm.name, remoteUrl: repositoryForm.remoteUrl,
                         defaultBranch: repositoryForm.defaultBranch, credentialId: repositoryForm.credentialId,
+                        createBranchIfMissing,
                     }),
                 });
                 showSuccess("Repository imported into Dockman.");
@@ -463,8 +480,13 @@ export default function TabGit() {
                 showSuccess("GitHub repository created and imported.");
             }
             setRepositoryDialogOpen(false);
+            setMissingBranch(null);
             await load();
         } catch (error) {
+            if (error instanceof APIError && error.body.code === "remote_branch_missing" && error.body.canCreate && error.body.branch && error.body.sourceBranch) {
+                setMissingBranch({branch: error.body.branch, sourceBranch: error.body.sourceBranch});
+                return;
+            }
             showError((error as Error).message);
             await load();
         } finally {
@@ -1265,6 +1287,16 @@ export default function TabGit() {
                 {repositoryForm.mode === "github" && <Alert severity="info">Creation requires a GitHub HTTPS token allowed to create repositories. Dockman initializes and immediately clones the repository.</Alert>}
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setRepositoryDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveRepository()} disabled={busy !== null || !repositoryForm.name.trim() || (repositoryForm.mode === "import" ? !repositoryForm.remoteUrl.trim() : !repositoryForm.credentialId)}>{busy === "repository-save" && <CircularProgress size={16} sx={{mr: 1}}/>}{repositoryForm.mode === "import" ? "Import" : "Create"}</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={missingBranch !== null} onClose={() => busy === null && setMissingBranch(null)} fullWidth maxWidth="xs">
+            <DialogTitle>Create missing branch?</DialogTitle>
+            <DialogContent><Stack spacing={2}>
+                <Alert severity="warning">The branch <strong>{missingBranch?.branch}</strong> does not exist in the remote repository.</Alert>
+                <Typography>Dockman can create it from the current remote default branch <strong>{missingBranch?.sourceBranch}</strong>, then import it.</Typography>
+                <Typography variant="body2" color="text.secondary">This writes one new branch to the remote repository. Existing branches and files are not changed.</Typography>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setMissingBranch(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => { setMissingBranch(null); void saveRepository(true); }} disabled={busy !== null}>{busy === "repository-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Create branch and import</Button></DialogActions>
         </Dialog>
 
         <Dialog open={credentialDialogOpen} onClose={() => busy === null && setCredentialDialogOpen(false)} fullWidth maxWidth="sm">
