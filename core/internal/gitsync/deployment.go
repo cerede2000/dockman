@@ -46,7 +46,8 @@ func (s *Service) ListBindingDeployments(bindingID string) ([]DeploymentView, er
 	}
 	result := make([]DeploymentView, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, DeploymentView{ID: row.UUID, CommitSHA: row.CommitSHA, ComposePath: row.ComposeHash, State: row.State, Result: row.Result, Logs: row.Logs, CreatedAt: row.CreatedAt})
+		result = append(result, DeploymentView{ID: row.UUID, CommitSHA: row.CommitSHA, ComposePath: row.ComposeHash, State: row.State,
+			Result: sanitizeDeploymentOutput(row.Result), Logs: sanitizeDeploymentOutput(row.Logs), CreatedAt: row.CreatedAt})
 	}
 	return result, nil
 }
