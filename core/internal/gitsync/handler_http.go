@@ -513,7 +513,9 @@ func (h *HTTPHandler) createRepository(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error": missingBranch.Error(), "code": "remote_branch_missing",
 				"branch": missingBranch.Branch, "sourceBranch": missingBranch.SourceBranch,
-				"canCreate": missingBranch.CanCreate,
+				"canCreate":            missingBranch.CanCreate,
+				"canCreateFromDefault": missingBranch.CanCreateFromDefault,
+				"canCreateEmpty":       missingBranch.CanCreateEmpty,
 			})
 			return
 		}

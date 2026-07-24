@@ -160,11 +160,15 @@ Résultat attendu : aucune régression fonctionnelle sur les lots précédents e
 1. Ajouter un dépôt existant en indiquant une branche déjà présente.
 2. Vérifier que l'import se termine directement, sans confirmation supplémentaire.
 3. Recommencer avec un autre dépôt ou après retrait du premier, en indiquant une branche absente, par exemple `dockman`.
-4. Vérifier que Dockman indique clairement que la branche n'existe pas et précise la branche distante qui servira de point de départ.
+4. Vérifier que Dockman indique clairement que la branche n'existe pas et propose deux choix : création depuis la branche distante par défaut ou création d'une branche indépendante vide.
 5. Annuler : vérifier qu'aucune branche distante et qu'aucun dépôt local Dockman ne sont créés.
-6. Relancer puis confirmer `Create branch and import`.
+6. Relancer puis choisir `Create from main` (ou le nom de la branche par défaut détectée).
 7. Vérifier sur GitHub que la branche `dockman` existe et pointe initialement sur le même commit que la branche de départ.
 8. Vérifier que le dépôt est ensuite importé dans Dockman avec l'état `ready`.
-9. Refaire le test avec un dépôt public sans identifiant d'écriture.
+9. Supprimer cette branche distante et retirer le dépôt de Dockman, puis recommencer en choisissant `Create empty branch`.
+10. Vérifier sur GitHub que la nouvelle branche ne contient aucun fichier et possède un seul commit d'initialisation sans historique commun avec `main`.
+11. Ajouter ensuite une stack depuis Dockman et vérifier que seul ce nouveau contenu est poussé sur la branche indépendante.
+12. Refaire le test avec un dépôt public sans identifiant d'écriture.
+13. Refaire enfin le test avec un dépôt totalement vide : seule l'option de branche indépendante doit être disponible.
 
-Résultat attendu : Dockman ne crée jamais une branche silencieusement. Sans droit d'écriture, le message explique que la création automatique est impossible. Une branche vide ou un nom Git invalide est refusé proprement, sans clone local résiduel.
+Résultat attendu : Dockman ne crée jamais une branche silencieusement. Sans droit d'écriture, le message explique que la création automatique est impossible. Un nom Git invalide est refusé proprement, sans clone local résiduel. La variante depuis `main` partage son historique ; la variante indépendante contient seulement le commit racine vide créé par Dockman.

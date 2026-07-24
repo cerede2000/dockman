@@ -20,6 +20,7 @@ import GitBindingRecovery, {type RecoveryBinding} from '../../components/git-bin
 
 type AuthType = "public" | "https_token" | "ssh_key";
 type RepositoryDialogMode = "import" | "github";
+type BranchCreationMode = "from_default" | "empty";
 
 interface GitFeatureStatus {
     enabled: boolean;
@@ -98,6 +99,8 @@ interface APIErrorBody {
     branch?: string;
     sourceBranch?: string;
     canCreate?: boolean;
+    canCreateFromDefault?: boolean;
+    canCreateEmpty?: boolean;
 }
 
 class APIError extends Error {
@@ -259,7 +262,7 @@ export default function TabGit() {
 
     const [repositoryDialogOpen, setRepositoryDialogOpen] = useState(false);
     const [repositoryForm, setRepositoryForm] = useState<RepositoryForm>(emptyRepository);
-    const [missingBranch, setMissingBranch] = useState<{branch: string; sourceBranch: string} | null>(null);
+    const [missingBranch, setMissingBranch] = useState<{branch: string; sourceBranch: string; canCreateFromDefault: boolean; canCreateEmpty: boolean} | null>(null);
     const [deleteRepository, setDeleteRepository] = useState<Repository | null>(null);
     const [historyRepository, setHistoryRepository] = useState<Repository | null>(null);
     const [operations, setOperations] = useState<Operation[]>([]);
@@ -455,7 +458,7 @@ export default function TabGit() {
         setRepositoryDialogOpen(true);
     };
 
-    const saveRepository = async (createBranchIfMissing = false) => {
+    const saveRepository = async (branchCreationMode?: BranchCreationMode) => {
         setBusy("repository-save");
         try {
             if (repositoryForm.mode === "import") {
@@ -464,7 +467,7 @@ export default function TabGit() {
                     body: JSON.stringify({
                         name: repositoryForm.name, remoteUrl: repositoryForm.remoteUrl,
                         defaultBranch: repositoryForm.defaultBranch, credentialId: repositoryForm.credentialId,
-                        createBranchIfMissing,
+                        branchCreationMode: branchCreationMode || "",
                     }),
                 });
                 showSuccess("Repository imported into Dockman.");
@@ -483,8 +486,12 @@ export default function TabGit() {
             setMissingBranch(null);
             await load();
         } catch (error) {
-            if (error instanceof APIError && error.body.code === "remote_branch_missing" && error.body.canCreate && error.body.branch && error.body.sourceBranch) {
-                setMissingBranch({branch: error.body.branch, sourceBranch: error.body.sourceBranch});
+            if (error instanceof APIError && error.body.code === "remote_branch_missing" && error.body.canCreate && error.body.branch) {
+                setMissingBranch({
+                    branch: error.body.branch, sourceBranch: error.body.sourceBranch || "",
+                    canCreateFromDefault: Boolean(error.body.canCreateFromDefault),
+                    canCreateEmpty: Boolean(error.body.canCreateEmpty),
+                });
                 return;
             }
             showError((error as Error).message);
@@ -1293,10 +1300,11 @@ export default function TabGit() {
             <DialogTitle>Create missing branch?</DialogTitle>
             <DialogContent><Stack spacing={2}>
                 <Alert severity="warning">The branch <strong>{missingBranch?.branch}</strong> does not exist in the remote repository.</Alert>
-                <Typography>Dockman can create it from the current remote default branch <strong>{missingBranch?.sourceBranch}</strong>, then import it.</Typography>
-                <Typography variant="body2" color="text.secondary">This writes one new branch to the remote repository. Existing branches and files are not changed.</Typography>
+                {missingBranch?.canCreateFromDefault && <Typography>Dockman can create it from the current remote default branch <strong>{missingBranch.sourceBranch}</strong>, then import it.</Typography>}
+                <Alert severity="info"><strong>Independent empty branch:</strong> creates a separate root commit containing no files. It shares no history with the default branch, which is ideal for a dedicated Dockman synchronization branch but unsuitable for a normal pull request back to the default branch.</Alert>
+                <Typography variant="body2" color="text.secondary">Both choices write one new branch to the remote repository. Existing branches and files are never changed.</Typography>
             </Stack></DialogContent>
-            <DialogActions><Button onClick={() => setMissingBranch(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => { setMissingBranch(null); void saveRepository(true); }} disabled={busy !== null}>{busy === "repository-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Create branch and import</Button></DialogActions>
+            <DialogActions sx={{flexWrap: "wrap"}}><Button onClick={() => setMissingBranch(null)} disabled={busy !== null}>Cancel</Button>{missingBranch?.canCreateEmpty && <Button variant="outlined" onClick={() => { setMissingBranch(null); void saveRepository("empty"); }} disabled={busy !== null}>Create empty branch</Button>}{missingBranch?.canCreateFromDefault && <Button variant="contained" onClick={() => { setMissingBranch(null); void saveRepository("from_default"); }} disabled={busy !== null}>{busy === "repository-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Create from {missingBranch.sourceBranch}</Button>}</DialogActions>
         </Dialog>
 
         <Dialog open={credentialDialogOpen} onClose={() => busy === null && setCredentialDialogOpen(false)} fullWidth maxWidth="sm">

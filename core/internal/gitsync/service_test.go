@@ -124,7 +124,7 @@ func TestInspectAndCreateMissingRemoteBranch(t *testing.T) {
 	require.False(t, state.exists)
 	require.Equal(t, "main", state.sourceBranch)
 
-	require.NoError(t, service.createRemoteBranch(context.Background(), row, state.sourceBranch))
+	require.NoError(t, service.createRemoteBranchFromDefault(context.Background(), row, state.sourceBranch))
 	state, err = service.inspectRemoteBranch(context.Background(), row)
 	require.NoError(t, err)
 	require.True(t, state.exists)
@@ -137,6 +137,43 @@ func TestInspectAndCreateMissingRemoteBranch(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join(checkout, "README.md"))
 	require.NoError(t, err)
 	require.Equal(t, "test repository", string(contents))
+}
+
+func TestCreateIndependentEmptyRemoteBranch(t *testing.T) {
+	service, _ := testService(t, true)
+	remotePath, seedPath := createTestRemote(t)
+	seed, err := gitclient.PlainOpen(seedPath)
+	require.NoError(t, err)
+	mainReference, err := seed.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	row := Repository{
+		UUID: uuid.NewString(), Name: "empty-branch", Provider: "test", RemoteURL: remotePath,
+		DefaultBranch: "dockman-empty", Mode: "managed", Status: "cloning",
+	}
+
+	require.NoError(t, service.createEmptyRemoteBranch(context.Background(), row))
+	state, err := service.inspectRemoteBranch(context.Background(), row)
+	require.NoError(t, err)
+	require.True(t, state.exists)
+
+	checkout := t.TempDir()
+	repository, err := gitclient.PlainClone(checkout, false, &gitclient.CloneOptions{
+		URL: remotePath, ReferenceName: plumbing.NewBranchReferenceName("dockman-empty"), SingleBranch: true,
+	})
+	require.NoError(t, err)
+	emptyReference, err := repository.Reference(plumbing.NewBranchReferenceName("dockman-empty"), true)
+	require.NoError(t, err)
+	require.NotEqual(t, mainReference.Hash(), emptyReference.Hash())
+	commit, err := repository.CommitObject(emptyReference.Hash())
+	require.NoError(t, err)
+	require.Equal(t, 0, commit.NumParents())
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+	require.Empty(t, tree.Entries)
+	entries, err := os.ReadDir(checkout)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, ".git", entries[0].Name())
 }
 
 func TestRemoteDefaultBranchPrefersRemoteHead(t *testing.T) {
@@ -159,6 +196,10 @@ func TestRepositoryInputRejectsInvalidGitReference(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "invalid default branch name", branch)
 	}
+	_, err := service.validateRepositoryInput(RepositoryInput{
+		Name: "repository", RemoteURL: "owner/repository", DefaultBranch: "main", BranchCreationMode: "unknown",
+	})
+	require.ErrorContains(t, err, "invalid branch creation mode")
 }
 
 func TestRepositoryPullRefusesDirtyWorkspace(t *testing.T) {

@@ -41,16 +41,27 @@ type RepositoryInput struct {
 	DefaultBranch         string `json:"defaultBranch"`
 	CredentialUUID        string `json:"credentialId"`
 	CreateBranchIfMissing bool   `json:"createBranchIfMissing"`
+	BranchCreationMode    string `json:"branchCreationMode"`
 }
 
+const (
+	branchCreationFromDefault = "from_default"
+	branchCreationEmpty       = "empty"
+)
+
 type RemoteBranchMissingError struct {
-	Branch       string
-	SourceBranch string
-	CanCreate    bool
+	Branch               string
+	SourceBranch         string
+	CanCreate            bool
+	CanCreateFromDefault bool
+	CanCreateEmpty       bool
 }
 
 func (e *RemoteBranchMissingError) Error() string {
 	if e.SourceBranch == "" {
+		if e.CanCreateEmpty {
+			return fmt.Sprintf("branch %q does not exist; confirmation is required to initialize it as an independent empty branch", e.Branch)
+		}
 		return fmt.Sprintf("branch %q does not exist and the repository has no branch from which Dockman can create it", e.Branch)
 	}
 	if !e.CanCreate {
@@ -179,14 +190,35 @@ func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (
 		return RepositoryView{}, err
 	}
 	if !branchState.exists {
-		canCreate := branchState.sourceBranch != "" && s.repositoryCredentialCanPush(row)
-		if !clean.CreateBranchIfMissing || !canCreate {
+		canPush := s.repositoryCredentialCanPush(row)
+		canCreateFromDefault := canPush && branchState.sourceBranch != ""
+		canCreateEmpty := canPush
+		creationMode := clean.BranchCreationMode
+		if creationMode == "" && clean.CreateBranchIfMissing {
+			creationMode = branchCreationFromDefault
+		}
+		if creationMode == "" {
 			return RepositoryView{}, &RemoteBranchMissingError{
-				Branch: clean.DefaultBranch, SourceBranch: branchState.sourceBranch, CanCreate: canCreate,
+				Branch: clean.DefaultBranch, SourceBranch: branchState.sourceBranch,
+				CanCreate:            canCreateFromDefault || canCreateEmpty,
+				CanCreateFromDefault: canCreateFromDefault, CanCreateEmpty: canCreateEmpty,
 			}
 		}
-		if err := s.createRemoteBranch(ctx, row, branchState.sourceBranch); err != nil {
-			return RepositoryView{}, fmt.Errorf("create remote branch %q from %q: %w", row.DefaultBranch, branchState.sourceBranch, err)
+		switch creationMode {
+		case branchCreationFromDefault:
+			if !canCreateFromDefault {
+				return RepositoryView{}, errors.New("the remote branch cannot be created from the default branch with this credential")
+			}
+			if err := s.createRemoteBranchFromDefault(ctx, row, branchState.sourceBranch); err != nil {
+				return RepositoryView{}, fmt.Errorf("create remote branch %q from %q: %w", row.DefaultBranch, branchState.sourceBranch, err)
+			}
+		case branchCreationEmpty:
+			if !canCreateEmpty {
+				return RepositoryView{}, errors.New("an authenticated credential with repository write access is required to create an empty branch")
+			}
+			if err := s.createEmptyRemoteBranch(ctx, row); err != nil {
+				return RepositoryView{}, fmt.Errorf("create empty remote branch %q: %w", row.DefaultBranch, err)
+			}
 		}
 	}
 	lock := s.repositoryLock(row.UUID)
@@ -274,7 +306,7 @@ func (s *Service) repositoryCredentialCanPush(row Repository) bool {
 	return err == nil && credential.AuthType != AuthPublic
 }
 
-func (s *Service) createRemoteBranch(ctx context.Context, row Repository, sourceBranch string) error {
+func (s *Service) createRemoteBranchFromDefault(ctx context.Context, row Repository, sourceBranch string) error {
 	if sourceBranch == "" {
 		return errors.New("remote repository has no default branch")
 	}
@@ -309,6 +341,48 @@ func (s *Service) createRemoteBranch(ctx context.Context, row Repository, source
 	refSpec := config.RefSpec(targetReference.String() + ":" + targetReference.String())
 	if err := repository.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
 		return fmt.Errorf("push branch: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) createEmptyRemoteBranch(ctx context.Context, row Repository) error {
+	if err := os.MkdirAll(s.workspaceRoot, 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.MkdirTemp(s.workspaceRoot, ".empty-branch-create-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(temporary)
+	targetReference := plumbing.NewBranchReferenceName(row.DefaultBranch)
+	repository, err := gitclient.PlainInitWithOptions(temporary, &gitclient.PlainInitOptions{
+		InitOptions: gitclient.InitOptions{DefaultBranch: targetReference},
+	})
+	if err != nil {
+		return fmt.Errorf("initialize temporary repository: %w", err)
+	}
+	worktree, err := repository.Worktree()
+	if err != nil {
+		return fmt.Errorf("open temporary worktree: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := worktree.Commit("Initialize Dockman synchronization branch", &gitclient.CommitOptions{
+		Author:            &object.Signature{Name: "Dockman", Email: "dockman@localhost", When: now},
+		Committer:         &object.Signature{Name: "Dockman", Email: "dockman@localhost", When: now},
+		AllowEmptyCommits: true,
+	}); err != nil {
+		return fmt.Errorf("create initial empty commit: %w", err)
+	}
+	if _, err := repository.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{row.RemoteURL}}); err != nil {
+		return fmt.Errorf("configure remote: %w", err)
+	}
+	auth, err := s.authForRepository(ctx, row)
+	if err != nil {
+		return err
+	}
+	refSpec := config.RefSpec(targetReference.String() + ":" + targetReference.String())
+	if err := repository.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
+		return fmt.Errorf("push empty branch: %w", err)
 	}
 	return nil
 }
@@ -646,6 +720,7 @@ func (s *Service) validateRepositoryInput(input RepositoryInput) (RepositoryInpu
 	input.RemoteURL = strings.TrimSpace(input.RemoteURL)
 	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
 	input.CredentialUUID = strings.TrimSpace(input.CredentialUUID)
+	input.BranchCreationMode = strings.TrimSpace(input.BranchCreationMode)
 	if !repositoryNamePattern.MatchString(input.Name) {
 		return input, errors.New("repository name must use letters, numbers, dots, dashes, or underscores")
 	}
@@ -655,6 +730,9 @@ func (s *Service) validateRepositoryInput(input RepositoryInput) (RepositoryInpu
 	branchReference := plumbing.NewBranchReferenceName(input.DefaultBranch)
 	if !branchNamePattern.MatchString(input.DefaultBranch) || branchReference.Validate() != nil {
 		return input, errors.New("invalid default branch name")
+	}
+	if input.BranchCreationMode != "" && input.BranchCreationMode != branchCreationFromDefault && input.BranchCreationMode != branchCreationEmpty {
+		return input, errors.New("invalid branch creation mode")
 	}
 	preferSSH := false
 	if input.CredentialUUID != "" {
