@@ -5,7 +5,7 @@ import {
     CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, LinkOffOutlined, OpenInNew,
     HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, RestoreOutlined, RocketLaunchOutlined, ScheduleOutlined, Sync,
 } from '@mui/icons-material';
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {withProtectedAPI} from '../lib/api.ts';
 import {useSnackbar} from '../hooks/snackbar.ts';
@@ -25,6 +25,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 
 const colors = {neutral: '#9e9e9e', info: '#64b5f6', warning: '#ffb74d', error: '#ef5350', success: '#66bb6a'};
+
+interface LocalDeletionView {
+    composePath: string;
+    wholeStack: boolean;
+    files: Array<{path: string; gitChanged: boolean}>;
+}
+
+interface AutoSyncResult { state: string; message: string }
 
 function stateLabel(status: GitStackStatus) {
     if (status.deployState === 'failed') return 'Automatic deployment failed';
@@ -53,14 +61,31 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const [busy, setBusy] = useState(false);
     const [confirmPush, setConfirmPush] = useState(false);
     const [deleteGitTarget, setDeleteGitTarget] = useState<GitStackStatus | null>(null);
+    const [deleteGitPath, setDeleteGitPath] = useState('');
     const [deleteGitConfirmation, setDeleteGitConfirmation] = useState('');
+    const [localDeletion, setLocalDeletion] = useState<LocalDeletionView | null>(null);
+    const [localDeletionLoading, setLocalDeletionLoading] = useState(false);
     const [recoveryTab, setRecoveryTab] = useState<'activity' | 'backups' | null>(null);
-    const {showError, showSuccess} = useSnackbar();
+    const {showError, showSuccess, showWarning} = useSnackbar();
     const navigate = useNavigate();
     const severity = status ? gitStatusSeverity(status) : 'neutral';
     const color = status?.automationPaused && (severity === 'success' || severity === 'neutral') ? colors.neutral : colors[severity];
     const error = status?.deployState === 'failed' ? status.deployError : status?.error;
     const encodedComposePath = useMemo(() => status?.composePath.split('/').map(encodeURIComponent).join('/') ?? '', [status?.composePath]);
+
+    useEffect(() => {
+        if (!anchor || !status || status.state !== 'locally_deleted' || aggregateStatuses) {
+            setLocalDeletion(null);
+            return;
+        }
+        let active = true;
+        setLocalDeletionLoading(true);
+        void request<LocalDeletionView>(`/bindings/${status.bindingId}/local-deletion/${encodedComposePath}`)
+            .then((result) => { if (active) setLocalDeletion(result); })
+            .catch((reason) => { if (active) showError((reason as Error).message); })
+            .finally(() => { if (active) setLocalDeletionLoading(false); });
+        return () => { active = false; };
+    }, [aggregateStatuses, anchor, encodedComposePath, showError, status]);
     if (!status) return null;
 
     const icon = <>
@@ -84,9 +109,10 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const checkNow = async () => {
         setBusy(true);
         try {
-            await request(`/bindings/${status.bindingId}/automation/run`, {method: 'POST'});
+            const result = await request<AutoSyncResult>(`/bindings/${status.bindingId}/automation/run`, {method: 'POST'});
             await refreshGitStackStatuses(status.host);
-            showSuccess('Git synchronization check completed.');
+            if (result.state === 'blocked' || result.state === 'conflict' || result.state === 'partial') showWarning(result.message);
+            else showSuccess(result.message || 'Git synchronization check completed.');
         } catch (reason) {
             showError((reason as Error).message);
             await refreshGitStackStatuses(status.host);
@@ -110,18 +136,23 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
         } finally { setBusy(false); }
     };
 
-    const resolveLocalDeletion = async (target: GitStackStatus, action: 'restore' | 'delete_git' | 'deselect') => {
+    const resolveLocalDeletion = async (target: GitStackStatus, action: 'restore' | 'delete_git' | 'deselect' | 'exclude', path = '') => {
         setBusy(true);
         try {
             const encoded = target.composePath.split('/').map(encodeURIComponent).join('/');
             const result = await request<{message: string}>(`/bindings/${target.bindingId}/local-deletion/${encoded}`, {
-                method: 'POST', body: JSON.stringify({action, confirmation: action === 'delete_git' ? deleteGitConfirmation : ''}),
+                method: 'POST', body: JSON.stringify({action, path, confirmation: action === 'delete_git' ? deleteGitConfirmation : ''}),
             });
             await refreshGitStackStatuses(target.host);
             showSuccess(result.message);
             setDeleteGitTarget(null);
+            setDeleteGitPath('');
             setDeleteGitConfirmation('');
-            if (!aggregateStatuses) closePopover();
+            if (!aggregateStatuses && path) {
+                const remaining = await request<LocalDeletionView>(`/bindings/${target.bindingId}/local-deletion/${encoded}`);
+                setLocalDeletion(remaining);
+                if (remaining.files.length === 0) closePopover();
+            } else if (!aggregateStatuses) closePopover();
         } catch (reason) {
             showError((reason as Error).message);
             await refreshGitStackStatuses(target.host);
@@ -139,7 +170,9 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
         setAnchor(null);
         setConfirmPush(false);
         setDeleteGitTarget(null);
+        setDeleteGitPath('');
         setDeleteGitConfirmation('');
+        setLocalDeletion(null);
     };
 
     const pushStack = async (target = status) => {
@@ -218,15 +251,25 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 </>}
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
                 {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
-                {status.state === 'locally_deleted' && <Alert severity="warning">This synchronized stack was deleted locally but still exists on Git. Automatic synchronization is blocked until you restore it, delete it explicitly from Git, or stop synchronizing it.</Alert>}
+                {status.bindingSyncState === 'blocked' && <Alert severity="warning" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}><strong>Automatic synchronization is blocked.</strong>{status.bindingSyncError ? ` ${status.bindingSyncError}` : ''}</Alert>}
+                {status.state === 'locally_deleted' && <Alert severity="warning">A synchronized {localDeletion?.wholeStack ? 'stack' : 'file'} was deleted locally but still exists on Git. Choose explicitly whether to restore it, delete it from Git, or stop synchronizing it.</Alert>}
                 {status.state === 'orphaned' && <Alert severity="warning">This stack disappeared completely from Git and was preserved locally. Restore it to Git here, or open the detailed view to archive or explicitly remove the local folder after backup.</Alert>}
-                {deleteGitTarget && <Alert severity="error"><Stack spacing={1}><Typography variant="caption">Type <strong>DELETE STACK FROM GIT</strong> to confirm the committed Git deletion.</Typography><TextField size="small" value={deleteGitConfirmation} onChange={(event) => setDeleteGitConfirmation(event.target.value)} slotProps={{htmlInput: {autoComplete: 'off'}}}/><Stack direction="row" spacing={1}><Button size="small" onClick={() => { setDeleteGitTarget(null); setDeleteGitConfirmation(''); }}>Cancel</Button><Button size="small" color="error" variant="contained" disabled={busy || deleteGitConfirmation !== 'DELETE STACK FROM GIT'} onClick={() => void resolveLocalDeletion(status, 'delete_git')}>Confirm deletion</Button></Stack></Stack></Alert>}
+                {localDeletionLoading && <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><CircularProgress size={16}/><Typography variant="caption">Loading pending deletions…</Typography></Stack>}
+                {localDeletion && !localDeletion.wholeStack && localDeletion.files.map((file) => <Box key={file.path} sx={{p: 1, border: '1px solid rgba(255,183,77,.35)', borderRadius: 1.5}}>
+                    <Typography variant="body2" sx={{fontFamily: 'monospace', overflowWrap: 'anywhere'}}>{file.path}</Typography>
+                    {file.gitChanged ? <Alert severity="error" sx={{mt: .75}}>Git also changed this file. Open the comparison view before choosing a version.</Alert> : <Stack direction="row" spacing={.5} sx={{mt: .75, flexWrap: 'wrap'}}>
+                        <Button size="small" color="success" startIcon={<CloudDownloadOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'restore', file.path)}>Restore from Git</Button>
+                        <Button size="small" startIcon={<LinkOffOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'exclude', file.path)}>Stop synchronizing</Button>
+                        <Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy} onClick={() => { setDeleteGitTarget(status); setDeleteGitPath(file.path); setDeleteGitConfirmation(''); }}>Delete from Git</Button>
+                    </Stack>}
+                </Box>)}
+                {deleteGitTarget && <Alert severity="error"><Stack spacing={1}><Typography variant="caption">Type <strong>{deleteGitPath ? 'DELETE FILE FROM GIT' : 'DELETE STACK FROM GIT'}</strong> to confirm the committed Git deletion{deleteGitPath ? ` of ${deleteGitPath}` : ''}.</Typography><TextField size="small" value={deleteGitConfirmation} onChange={(event) => setDeleteGitConfirmation(event.target.value)} slotProps={{htmlInput: {autoComplete: 'off'}}}/><Stack direction="row" spacing={1}><Button size="small" onClick={() => { setDeleteGitTarget(null); setDeleteGitPath(''); setDeleteGitConfirmation(''); }}>Cancel</Button><Button size="small" color="error" variant="contained" disabled={busy || deleteGitConfirmation !== (deleteGitPath ? 'DELETE FILE FROM GIT' : 'DELETE STACK FROM GIT')} onClick={() => void resolveLocalDeletion(status, 'delete_git', deleteGitPath)}>Confirm deletion</Button></Stack></Stack></Alert>}
                 {confirmPush && <Alert severity="warning" action={<Stack direction="row" spacing={.5}><Button size="small" color="inherit" disabled={busy} onClick={() => setConfirmPush(false)}>Cancel</Button><Button size="small" color="warning" variant="contained" disabled={busy} onClick={() => void pushStack()}>{busy ? <CircularProgress size={14}/> : status.state === 'orphaned' ? 'Confirm restore' : 'Confirm push'}</Button></Stack>}>{status.state === 'orphaned' ? 'Restore every transferable file belonging to this stack back to Git?' : "Push every transferable local change belonging to this stack with Dockman's default commit message?"}</Alert>}
                 {error && <Alert severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{error}</Alert>}
                 <Divider/>
                 <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap'}}>
                     {!status.selected && <><Button size="small" color="success" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void enableSynchronization(status, false)}>Enable only</Button><Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy} onClick={() => void enableSynchronization(status, true)}>Enable & push</Button></>}
-                    {status.state === 'locally_deleted' && <><Button size="small" color="success" startIcon={<CloudDownloadOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'restore')}>Restore from Git</Button><Button size="small" startIcon={<LinkOffOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'deselect')}>Stop synchronizing</Button><Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy || Boolean(deleteGitTarget)} onClick={() => setDeleteGitTarget(status)}>Delete from Git</Button></>}
+                    {status.state === 'locally_deleted' && localDeletion?.wholeStack && <><Button size="small" color="success" startIcon={<CloudDownloadOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'restore')}>Restore from Git</Button><Button size="small" startIcon={<LinkOffOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'deselect')}>Stop synchronizing</Button><Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy || Boolean(deleteGitTarget)} onClick={() => { setDeleteGitTarget(status); setDeleteGitPath(''); }}>Delete from Git</Button></>}
                     {status.selected && status.autoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
                     {(status.state === 'local_changes' || status.state === 'orphaned') && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>{status.state === 'orphaned' ? (status.pauseReason === 'recovery' ? 'Restore & resume' : 'Restore to Git') : (status.pauseReason === 'recovery' ? 'Push & resume' : 'Push to Git')}</Button>}
                     {status.selected && status.state !== 'locally_deleted' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView()}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || status.deployState === 'failed' ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>}

@@ -112,6 +112,109 @@ func TestLocalStackDeletionRequiresConfirmationBeforeDeletingGit(t *testing.T) {
 	require.NotContains(t, splitPatternLines(updated.ComposePaths), "beta/compose.yml")
 }
 
+func prepareTrackedFileDeletion(t *testing.T) (*Service, string, Repository, BindingView) {
+	t.Helper()
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "test.conf"), []byte("enabled=true\n"), 0o644))
+	binding, err := service.CreateBindingContext(context.Background(), BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks", InitialSync: "stack_to_repository",
+	})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(stackRoot, "alpha", "test.conf")))
+	service.MarkLocalChange("local", "compose/alpha/test.conf")
+	return service, stackRoot, repository, binding
+}
+
+func TestLocalFileDeletionIsReportedOnItsOwningStack(t *testing.T) {
+	service, _, _, binding := prepareTrackedFileDeletion(t)
+	view, err := service.ListLocalStackDeletions(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.False(t, view.WholeStack)
+	require.Equal(t, []LocalDeletedFileView{{Path: "alpha/test.conf"}}, view.Files)
+	statuses, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncLocalDeleted, findStackStatus(t, statuses, "alpha/compose.yml").State)
+}
+
+func TestAutomaticSyncExposesLocalFileDeletionAsBlockedOnStack(t *testing.T) {
+	service, _, _, binding := prepareTrackedFileDeletion(t)
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "blocked", result.State)
+	require.Contains(t, result.Message, "locally deleted synchronized file")
+	statuses, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	status := findStackStatus(t, statuses, "alpha/compose.yml")
+	require.Equal(t, stackSyncLocalDeleted, status.State)
+	require.Equal(t, "blocked", status.BindingSyncState)
+	require.Contains(t, status.BindingSyncError, "locally deleted synchronized file")
+}
+
+func TestLocalFileDeletionCanBeRestoredWithoutDockerAction(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedFileDeletion(t)
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "restore", Path: "alpha/test.conf"})
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "restored")
+	require.FileExists(t, filepath.Join(stackRoot, "alpha", "test.conf"))
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", updated.AutoSyncState)
+}
+
+func TestLocalFileDeletionCanBeExcludedWhileGitCopyIsPreserved(t *testing.T) {
+	service, _, repository, binding := prepareTrackedFileDeletion(t)
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "exclude", Path: "alpha/test.conf"})
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "preserved")
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, splitPatternLines(updated.ExcludePatterns), "/alpha/test.conf")
+	check, err := gitclient.PlainClone(t.TempDir(), false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+	require.NoError(t, err)
+	head, err := check.Head()
+	require.NoError(t, err)
+	commit, err := check.CommitObject(head.Hash())
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+	_, err = tree.File("stacks/alpha/test.conf")
+	require.NoError(t, err)
+}
+
+func TestLocalFileDeletionRequiresConfirmationAndCanBeCommitted(t *testing.T) {
+	service, _, repository, binding := prepareTrackedFileDeletion(t)
+	_, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf"})
+	require.ErrorContains(t, err, deleteGitFileConfirmText)
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf", Confirmation: deleteGitFileConfirmText})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.CommitSHA)
+	check, err := gitclient.PlainClone(t.TempDir(), false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
+	require.NoError(t, err)
+	head, err := check.Head()
+	require.NoError(t, err)
+	commit, err := check.CommitObject(head.Hash())
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+	_, err = tree.File("stacks/alpha/test.conf")
+	require.Error(t, err)
+	_, err = tree.File("stacks/alpha/compose.yml")
+	require.NoError(t, err)
+}
+
+func TestLocalFileDeletionRefusesToDeleteGitWhenRemoteChanged(t *testing.T) {
+	service, _, repository, binding := prepareTrackedFileDeletion(t)
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/test.conf", "enabled=false\n")
+	_, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf", Confirmation: deleteGitFileConfirmText})
+	require.ErrorContains(t, err, "Git changed")
+}
+
 func findStackStatus(t *testing.T, views []GitStackStatusView, composePath string) GitStackStatusView {
 	t.Helper()
 	for _, view := range views {

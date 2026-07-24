@@ -15,10 +15,14 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-const deleteGitStackConfirmText = "DELETE STACK FROM GIT"
+const (
+	deleteGitStackConfirmText = "DELETE STACK FROM GIT"
+	deleteGitFileConfirmText  = "DELETE FILE FROM GIT"
+)
 
 type LocalDeletionActionInput struct {
 	Action       string `json:"action"`
+	Path         string `json:"path,omitempty"`
 	Confirmation string `json:"confirmation"`
 }
 
@@ -27,6 +31,49 @@ type LocalDeletionActionResult struct {
 	ComposePath string `json:"composePath"`
 	CommitSHA   string `json:"commitSha,omitempty"`
 	Message     string `json:"message"`
+}
+
+type LocalDeletedFileView struct {
+	Path       string `json:"path"`
+	GitChanged bool   `json:"gitChanged"`
+}
+
+type LocalDeletionView struct {
+	ComposePath string                 `json:"composePath"`
+	WholeStack  bool                   `json:"wholeStack"`
+	Files       []LocalDeletedFileView `json:"files"`
+}
+
+// ListLocalStackDeletions is intentionally evaluated only when the user opens
+// the status popover. It keeps the background status projection compact while
+// still exposing every tracked file which needs an explicit decision.
+func (s *Service) ListLocalStackDeletions(bindingID, composePath string) (LocalDeletionView, error) {
+	composePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(composePath))))
+	if err := validateRelativePath(composePath, false); err != nil {
+		return LocalDeletionView{}, fmt.Errorf("invalid Compose path: %w", err)
+	}
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return LocalDeletionView{}, err
+	}
+	if !stringInSlice(composePath, selectedComposePaths(binding)) {
+		return LocalDeletionView{}, errors.New("stack is not selected for Git synchronization")
+	}
+	preview, err := s.PreviewBinding(bindingID, "stack_to_repository", TransferInput{})
+	if err != nil {
+		return LocalDeletionView{}, err
+	}
+	view := LocalDeletionView{ComposePath: composePath, WholeStack: !bindingComposeExistsLocally(s, binding, composePath), Files: []LocalDeletedFileView{}}
+	allCompose := selectedComposePaths(binding)
+	for _, entry := range preview.Entries {
+		if !stringInSlice(composePath, composePathsForFile(allCompose, entry.Path)) {
+			continue
+		}
+		if entry.Status == "deleted_locally" || (entry.Status == "conflict" && entry.ConflictKind == "source_deleted_destination_changed") {
+			view.Files = append(view.Files, LocalDeletedFileView{Path: entry.Path, GitChanged: entry.Status == "conflict"})
+		}
+	}
+	return view, nil
 }
 
 // ResolveLocalStackDeletion applies an explicit decision when a selected stack
@@ -38,11 +85,23 @@ func (s *Service) ResolveLocalStackDeletion(ctx context.Context, bindingID, comp
 		return LocalDeletionActionResult{}, fmt.Errorf("invalid Compose path: %w", err)
 	}
 	action := strings.ToLower(strings.TrimSpace(input.Action))
-	if action != "restore" && action != "delete_git" && action != "deselect" {
-		return LocalDeletionActionResult{}, errors.New("local deletion action must be restore, delete_git, or deselect")
+	filePath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(input.Path))))
+	if strings.TrimSpace(input.Path) != "" {
+		if err := validateRelativePath(filePath, false); err != nil {
+			return LocalDeletionActionResult{}, fmt.Errorf("invalid deleted file path: %w", err)
+		}
+		if action != "restore" && action != "delete_git" && action != "exclude" {
+			return LocalDeletionActionResult{}, errors.New("local file deletion action must be restore, delete_git, or exclude")
+		}
+	} else if action != "restore" && action != "delete_git" && action != "deselect" {
+		return LocalDeletionActionResult{}, errors.New("local stack deletion action must be restore, delete_git, or deselect")
 	}
-	if action == "delete_git" && input.Confirmation != deleteGitStackConfirmText {
-		return LocalDeletionActionResult{}, fmt.Errorf("type %q to confirm the Git stack deletion", deleteGitStackConfirmText)
+	confirmation := deleteGitStackConfirmText
+	if strings.TrimSpace(input.Path) != "" {
+		confirmation = deleteGitFileConfirmText
+	}
+	if action == "delete_git" && input.Confirmation != confirmation {
+		return LocalDeletionActionResult{}, fmt.Errorf("type %q to confirm the Git deletion", confirmation)
 	}
 
 	automationLock := s.repositoryLock("automation:" + bindingID)
@@ -57,6 +116,9 @@ func (s *Service) ResolveLocalStackDeletion(ctx context.Context, bindingID, comp
 	}
 	if !stringInSlice(composePath, selectedComposePaths(binding)) {
 		return LocalDeletionActionResult{}, errors.New("stack is not selected for Git synchronization")
+	}
+	if strings.TrimSpace(input.Path) != "" {
+		return s.resolveLocallyDeletedFile(ctx, binding, composePath, filePath, action)
 	}
 	if bindingComposeExistsLocally(s, binding, composePath) {
 		return LocalDeletionActionResult{}, errors.New("stack exists locally again; refresh its synchronization status")
@@ -93,6 +155,160 @@ func (s *Service) ResolveLocalStackDeletion(ctx context.Context, bindingID, comp
 	}
 
 	return s.deleteLocallyDeletedStackFromGit(ctx, binding, composePath)
+}
+
+func (s *Service) resolveLocallyDeletedFile(ctx context.Context, binding StackBinding, composePath, filePath, action string) (LocalDeletionActionResult, error) {
+	if !stringInSlice(composePath, composePathsForFile(selectedComposePaths(binding), filePath)) {
+		return LocalDeletionActionResult{}, errors.New("deleted file does not belong to this synchronized stack")
+	}
+	if _, err := s.PullRepository(ctx, binding.RepositoryUUID); err != nil {
+		return LocalDeletionActionResult{}, fmt.Errorf("refresh repository before local deletion action: %w", err)
+	}
+	preview, err := s.PreviewBinding(binding.UUID, "stack_to_repository", TransferInput{})
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	deleted := false
+	for _, entry := range preview.Entries {
+		if entry.Path != filePath {
+			continue
+		}
+		if entry.Status == "conflict" && entry.ConflictKind == "source_deleted_destination_changed" {
+			return LocalDeletionActionResult{}, errors.New("file resolution refused: Git changed after the local deletion; compare and resolve the conflict")
+		}
+		deleted = entry.Status == "deleted_locally"
+		break
+	}
+	if !deleted {
+		return LocalDeletionActionResult{}, errors.New("file is no longer a pending local deletion; refresh its synchronization status")
+	}
+
+	switch action {
+	case "restore":
+		remotePreview, err := s.PreviewBinding(binding.UUID, "repository_to_stack", TransferInput{})
+		if err != nil {
+			return LocalDeletionActionResult{}, err
+		}
+		result, err := s.ImportBinding(ctx, binding.UUID, TransferInput{PreviewToken: remotePreview.PreviewToken, SelectedPaths: []string{filePath}, compactResult: true})
+		if err != nil {
+			return LocalDeletionActionResult{}, err
+		}
+		if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
+			return LocalDeletionActionResult{}, fmt.Errorf("file restored but synchronization state could not be refreshed: %w", err)
+		}
+		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual", Details: ActivityDetails{Action: action, Message: result.Message, Paths: []string{filePath}}})
+		return LocalDeletionActionResult{Action: action, ComposePath: composePath, Message: "File restored from Git; no Docker action was run"}, nil
+	case "exclude":
+		if _, err := s.AddBindingExclusion(binding.UUID, BindingExclusionInput{Path: filePath}); err != nil {
+			return LocalDeletionActionResult{}, err
+		}
+		if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
+			return LocalDeletionActionResult{}, fmt.Errorf("file excluded but synchronization state could not be refreshed: %w", err)
+		}
+		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual", Details: ActivityDetails{Action: action, Paths: []string{filePath}}})
+		return LocalDeletionActionResult{Action: action, ComposePath: composePath, Message: "File excluded from synchronization; the Git copy was preserved"}, nil
+	default:
+		return s.deleteLocallyDeletedFileFromGit(ctx, binding, composePath, filePath)
+	}
+}
+
+func (s *Service) deleteLocallyDeletedFileFromGit(ctx context.Context, binding StackBinding, composePath, filePath string) (LocalDeletionActionResult, error) {
+	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
+	repositoryLock.Lock()
+	defer repositoryLock.Unlock()
+	status, err := s.fetchRepositoryLocked(ctx, binding.RepositoryUUID)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	if !status.Clean || status.Ahead > 0 || status.Behind > 0 || status.Diverged {
+		return LocalDeletionActionResult{}, errors.New("Git deletion refused: repository state changed; pull and retry")
+	}
+	binding, localFiles, repositoryFiles, err := s.loadTransferTrees(binding.UUID, "stack_to_repository", TransferInput{})
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	if local, exists := localFiles[filePath]; exists && local.open != nil {
+		return LocalDeletionActionResult{}, errors.New("Git deletion refused: the file exists locally again")
+	}
+	remote, exists := repositoryFiles[filePath]
+	if !exists || remote.open == nil {
+		return LocalDeletionActionResult{}, errors.New("Git deletion refused: the file no longer exists on Git")
+	}
+	baseline, err := s.store.BindingBaseline(binding.UUID)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	baseSHA, tracked := baseline[filePath]
+	if !tracked {
+		return LocalDeletionActionResult{}, errors.New("Git deletion refused: file has no common synchronization baseline")
+	}
+	if remote.sha != baseSHA {
+		return LocalDeletionActionResult{}, errors.New("Git deletion refused: Git changed after the local deletion; compare and resolve the conflict")
+	}
+	repositoryRow, err := s.store.GetRepository(binding.RepositoryUUID)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	repo, err := s.openRepository(repositoryRow)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	temporaryRepo, checkoutPath, cleanup, err := temporaryRepositoryWorktree(repo, s.workspaceRoot)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	defer cleanup()
+	worktree, err := temporaryRepo.Worktree()
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	if err := worktree.Checkout(&gitclient.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(repositoryRow.DefaultBranch), Force: true}); err != nil {
+		return LocalDeletionActionResult{}, fmt.Errorf("prepare temporary Git checkout: %w", err)
+	}
+	root, err := os.OpenRoot(checkoutPath)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	relative := filepath.FromSlash(filePath)
+	if binding.SubPath != "." {
+		relative = filepath.Join(filepath.FromSlash(binding.SubPath), relative)
+	}
+	removeErr := root.Remove(relative)
+	closeErr := root.Close()
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return LocalDeletionActionResult{}, fmt.Errorf("remove Git file %s: %w", filePath, removeErr)
+	}
+	if closeErr != nil {
+		return LocalDeletionActionResult{}, closeErr
+	}
+	stagePath := binding.SubPath
+	if stagePath == "." {
+		stagePath = ""
+	}
+	if err := worktree.AddWithOptions(&gitclient.AddOptions{Path: stagePath}); err != nil {
+		return LocalDeletionActionResult{}, fmt.Errorf("stage Git file deletion: %w", err)
+	}
+	hash, err := worktree.Commit("chore(stack): delete "+filePath+" from Git", &gitclient.CommitOptions{Author: &object.Signature{Name: "Dockman Git Sync", Email: "dockman@localhost.invalid", When: time.Now().UTC()}})
+	if err != nil {
+		return LocalDeletionActionResult{}, fmt.Errorf("commit Git file deletion: %w", err)
+	}
+	auth, err := s.authForRepository(ctx, repositoryRow)
+	if err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	if err := repo.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
+		return LocalDeletionActionResult{}, fmt.Errorf("push Git file deletion: %w", err)
+	}
+	delete(baseline, filePath)
+	if err := s.store.ReplaceBindingBaseline(binding.UUID, baseline); err != nil {
+		return LocalDeletionActionResult{}, err
+	}
+	compactRepositoryObjects(repo, binding.RepositoryUUID)
+	if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
+		return LocalDeletionActionResult{}, fmt.Errorf("Git file deleted but synchronization state could not be refreshed: %w", err)
+	}
+	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual", CommitSHA: hash.String(), Details: ActivityDetails{Action: "delete_git", Paths: []string{filePath}}})
+	return LocalDeletionActionResult{Action: "delete_git", ComposePath: composePath, CommitSHA: hash.String(), Message: "File deleted from Git and committed; no Docker action was run"}, nil
 }
 
 func (s *Service) deselectLocallyDeletedStack(binding StackBinding, composePath string) (LocalDeletionActionResult, error) {

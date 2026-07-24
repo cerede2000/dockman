@@ -44,6 +44,8 @@ type GitStackStatusView struct {
 	Error             string     `json:"error,omitempty"`
 	ConflictCount     int        `json:"conflictCount"`
 	AutoSyncEnabled   bool       `json:"autoSyncEnabled"`
+	BindingSyncState  string     `json:"bindingSyncState"`
+	BindingSyncError  string     `json:"bindingSyncError,omitempty"`
 	AutomationPaused  bool       `json:"automationPaused"`
 	PauseReason       string     `json:"pauseReason,omitempty"`
 	AutoDeployEnabled bool       `json:"autoDeployEnabled"`
@@ -155,7 +157,8 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 			RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, row.ComposePath)),
 			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
-			AutoSyncEnabled: binding.AutoSyncEnabled, AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
+			AutoSyncEnabled: binding.AutoSyncEnabled, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
+			AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
 			AutoDeployEnabled: deployEnabled, AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
 			LastCheckedAt: row.LastCheckedAt, LastSuccessAt: row.LastSuccessAt, NextCheckAt: nextCheck,
 			LastCommit: row.LastCommit, DeployState: deployState, DeployError: row.DeployError, LastDeployAt: row.LastDeployAt,
@@ -471,7 +474,7 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 					if current.state == stackSyncOrphaned || current.state == stackSyncLocalDeleted {
 						break
 					}
-					if preview.Direction == "repository_to_stack" && entry.ConflictKind == "destination_deleted" && entry.Path == composePath {
+					if preview.Direction == "repository_to_stack" && entry.ConflictKind == "destination_deleted" {
 						current.state = stackSyncLocalDeleted
 					} else if preview.Direction == "stack_to_repository" {
 						current.state = stackSyncLocalChanges
@@ -481,11 +484,7 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 				}
 			case "deleted_locally":
 				if current.state != stackSyncConflict {
-					if entry.Path == composePath {
-						current.state = stackSyncLocalDeleted
-					} else if current.state != stackSyncLocalDeleted {
-						current.state = stackSyncLocalChanges
-					}
+					current.state = stackSyncLocalDeleted
 				}
 			}
 			states[composePath] = current

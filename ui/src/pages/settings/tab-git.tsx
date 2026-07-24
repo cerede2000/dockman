@@ -139,6 +139,20 @@ type TransferDirection = "stack_to_repository" | "repository_to_stack";
 type PreviewStatus = PreviewEntry["status"];
 type ConflictDecision = "git" | "dockman";
 
+function composeOwner(binding: Binding, filePath: string): string | undefined {
+    return binding.composePaths
+        .filter((composePath) => {
+            const slash = composePath.lastIndexOf("/");
+            const directory = slash < 0 ? "" : composePath.slice(0, slash);
+            return directory === "" || filePath === directory || filePath.startsWith(`${directory}/`);
+        })
+        .sort((left, right) => {
+            const leftDirectory = left.includes("/") ? left.slice(0, left.lastIndexOf("/")) : "";
+            const rightDirectory = right.includes("/") ? right.slice(0, right.lastIndexOf("/")) : "";
+            return rightDirectory.length - leftDirectory.length;
+        })[0];
+}
+
 const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
@@ -304,6 +318,8 @@ export default function TabGit() {
     const [selectedPreviewPaths, setSelectedPreviewPaths] = useState<Set<string>>(() => new Set());
     const [orphanDecision, setOrphanDecision] = useState<{composePath: string; action: "archive" | "delete"} | null>(null);
     const [orphanConfirmation, setOrphanConfirmation] = useState("");
+    const [localDeletionDecision, setLocalDeletionDecision] = useState<{composePath: string; path: string; wholeStack: boolean} | null>(null);
+    const [localDeletionConfirmation, setLocalDeletionConfirmation] = useState("");
     const [searchParams, setSearchParams] = useSearchParams();
     const openedGitDeepLink = useRef('');
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
@@ -626,6 +642,38 @@ export default function TabGit() {
         } catch (error) {
             showError((error as Error).message);
             await previewTransfer(transferBinding, "repository_to_stack", false);
+        } finally { setBusy(null); }
+    };
+
+    const runLocalDeletionAction = async (entry: PreviewEntry, action: "restore" | "delete_git" | "exclude") => {
+        if (!transferBinding) return;
+        const composePath = composeOwner(transferBinding, entry.path);
+        if (!composePath) {
+            showError("No synchronized stack owns this deleted file.");
+            return;
+        }
+        const wholeStack = entry.path === composePath;
+        if (action === "delete_git" && !localDeletionDecision) {
+            setLocalDeletionDecision({composePath, path: wholeStack ? "" : entry.path, wholeStack});
+            setLocalDeletionConfirmation("");
+            return;
+        }
+        setBusy(`local-deletion-${action}-${entry.path}`);
+        try {
+            const encoded = composePath.split("/").map(encodeURIComponent).join("/");
+            const result = await api<{message: string}>(`/bindings/${transferBinding.id}/local-deletion/${encoded}`, {
+                method: "POST", body: JSON.stringify({
+                    action: wholeStack && action === "exclude" ? "deselect" : action,
+                    path: wholeStack ? "" : entry.path,
+                    confirmation: action === "delete_git" ? localDeletionConfirmation : "",
+                }),
+            });
+            showSuccess(result.message);
+            setLocalDeletionDecision(null); setLocalDeletionConfirmation("");
+            await previewTransfer(transferBinding, transferDirection, false);
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
         } finally { setBusy(null); }
     };
 
@@ -1170,7 +1218,11 @@ export default function TabGit() {
                             <TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell>
                             <TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.conflictKind === "destination_deleted" || entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={deletedConflict ? "deleted on Git · local changed" : entry.conflictKind === "destination_deleted" ? "deleted locally · restore available" : entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell>
                             <TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell>
-                            <TableCell>{orphanCompose ? <Stack direction="row" spacing={.5} sx={{alignItems: "center", flexWrap: "wrap"}}>
+                            <TableCell>{entry.status === "deleted_locally" ? <Stack direction="row" spacing={.5} sx={{alignItems: "center", flexWrap: "wrap"}}>
+                                <Button size="small" color="success" variant="outlined" startIcon={<CloudDownloadOutlined/>} disabled={busy !== null} onClick={() => void runLocalDeletionAction(entry, "restore")}>Restore from Git</Button>
+                                <Button size="small" variant="outlined" startIcon={<BlockOutlined/>} disabled={busy !== null} onClick={() => void runLocalDeletionAction(entry, "exclude")}>{entry.path === composeOwner(transferBinding!, entry.path) ? "Stop syncing stack" : "Stop syncing file"}</Button>
+                                <Button size="small" color="error" variant="outlined" startIcon={<DeleteOutlined/>} disabled={busy !== null} onClick={() => void runLocalDeletionAction(entry, "delete_git")}>Delete from Git</Button>
+                            </Stack> : orphanCompose ? <Stack direction="row" spacing={.5} sx={{alignItems: "center", flexWrap: "wrap"}}>
                                 <Button size="small" color="success" variant="outlined" startIcon={<RestoreOutlined/>} disabled={busy !== null} onClick={() => void runOrphanAction(entry.path, "restore")}>Restore to Git</Button>
                                 {!rootOrphan && <Button size="small" color="warning" variant="outlined" startIcon={<ArchiveOutlined/>} disabled={busy !== null} onClick={() => { setOrphanConfirmation(""); setOrphanDecision({composePath: entry.path, action: "archive"}); }}>Archive local</Button>}
                                 {!rootOrphan && <Button size="small" color="error" variant="outlined" startIcon={<DeleteOutlined/>} disabled={busy !== null} onClick={() => { setOrphanConfirmation(""); setOrphanDecision({composePath: entry.path, action: "delete"}); }}>Delete local</Button>}
@@ -1203,6 +1255,17 @@ export default function TabGit() {
                 {!conflictResolutionMode && transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
             </Stack></DialogContent>
             <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button>{conflictResolutionMode ? <Button variant="contained" disabled={busy !== null || Object.keys(conflictDecisions).length === 0} onClick={() => void resolveAutomationConflicts()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}Resolve selected decisions</Button> : <Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.changed > 0 && safeTransferCount === 0 && resolvedConflictPaths.size === 0) || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit selected and push" : "Backup and import selected"}</Button>}</DialogActions>
+        </Dialog>
+
+        <Dialog open={localDeletionDecision !== null} onClose={() => busy === null && setLocalDeletionDecision(null)} maxWidth="sm" fullWidth>
+            <DialogTitle>Confirm Git deletion?</DialogTitle><DialogContent><Stack spacing={2} sx={{pt: .5}}>
+                <Alert severity="error">This creates and pushes a Git commit deleting {localDeletionDecision?.wholeStack ? "the complete stack" : <strong>{localDeletionDecision?.path}</strong>}. Docker containers and volumes are never removed.</Alert>
+                <Typography>Type <strong>{localDeletionDecision?.wholeStack ? "DELETE STACK FROM GIT" : "DELETE FILE FROM GIT"}</strong> to confirm.</Typography>
+                <TextField value={localDeletionConfirmation} onChange={(event) => setLocalDeletionConfirmation(event.target.value)} autoComplete="off" autoFocus/>
+            </Stack></DialogContent><DialogActions><Button onClick={() => { setLocalDeletionDecision(null); setLocalDeletionConfirmation(""); }} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" disabled={busy !== null || localDeletionConfirmation !== (localDeletionDecision?.wholeStack ? "DELETE STACK FROM GIT" : "DELETE FILE FROM GIT")} onClick={() => {
+                if (!localDeletionDecision) return;
+                void runLocalDeletionAction({path: localDeletionDecision.path || localDeletionDecision.composePath, status: "deleted_locally"}, "delete_git");
+            }}>Commit deletion and push</Button></DialogActions>
         </Dialog>
 
         <Dialog open={orphanDecision !== null} onClose={() => busy === null && setOrphanDecision(null)} fullWidth maxWidth="sm">

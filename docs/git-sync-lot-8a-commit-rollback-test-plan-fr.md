@@ -133,3 +133,19 @@ Résultat attendu : un simple push ne retire jamais une pause manuelle. Une rest
 4. Observer les indicateurs sans recharger la page.
 
 Résultat attendu : les événements Docker du burst sont regroupés jusqu'au dernier événement, les indicateurs enfants reviennent au vert et le parent recalculé revient lui aussi au vert. Aucun polling supplémentaire permanent n'est ajouté.
+
+## 15. Suppression locale d'un fichier de configuration suivi
+
+1. Dans une stack synchronisée et verte, créer puis synchroniser un fichier `test.conf`.
+2. Supprimer `test.conf` uniquement depuis Dockman.
+3. Lancer **Check now** depuis la popup Git de la stack.
+4. Vérifier que l'icône devient jaune, que l'état indique une suppression locale et que la popup affiche clairement que la synchronisation automatique est bloquée.
+5. Vérifier que **Check now** affiche un avertissement avec la décision attendue, et non un faux succès générique.
+6. Vérifier les trois résolutions, en recréant le scénario avant chaque variante :
+   - **Restore from Git** recrée `test.conf` localement et rend la synchronisation verte ;
+   - **Stop synchronizing** ajoute une exclusion exacte, conserve la copie Git et rend la synchronisation stable ;
+   - **Delete from Git** exige la saisie `DELETE FILE FROM GIT`, crée et pousse un commit supprimant uniquement `test.conf`, puis rend la synchronisation verte.
+7. Ouvrir également **Preview Dockman → Git** : la ligne `deleted locally` doit proposer les mêmes trois décisions directement dans la colonne **Resolution**.
+8. Modifier ensuite `test.conf` sur Git, supprimer sa copie locale et réessayer la suppression Git : Dockman doit refuser l'effacement et demander une comparaison/résolution de conflit.
+
+Résultat attendu : aucune suppression distante n'est propagée silencieusement, mais chaque suppression locale suivie possède une sortie explicite et accessible depuis les deux interfaces.
