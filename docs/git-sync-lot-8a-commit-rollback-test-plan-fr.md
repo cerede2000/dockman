@@ -96,9 +96,11 @@ Résultat attendu : les fichiers synchronisés sélectionnés sont retirés apr�
 
 1. Attendre au moins deux intervalles d'auto-sync après un rollback.
 2. Vérifier les fichiers et les containers.
-3. Reprendre manuellement l'automatisation uniquement après avoir décidé de pousser, réimporter ou restaurer le backup.
+3. Depuis l'indicateur de la stack, tester `Push & resume`.
+4. Refaire un rollback puis tester directement `Push to Git` depuis l'indicateur.
+5. Refaire un rollback, provoquer volontairement un conflit distant, puis tester la reprise.
 
-Résultat attendu : la stack en rollback reste en pause et Git ne réapplique pas silencieusement le commit courant. Les autres stacks non concernées continuent à se synchroniser.
+Résultat attendu : la stack en rollback reste en pause et Git ne réapplique pas silencieusement le commit courant. Un push complet réussi ou `Push & resume` publie les changements puis reprend automatiquement l'auto-sync. Un échec ou un conflit conserve la pause. Les autres stacks non concernées continuent à se synchroniser.
 
 ## 11. Restauration du rollback
 
@@ -114,3 +116,20 @@ Résultat attendu : l'état présent avant rollback peut être récupéré avec 
 3. Pendant un auto-sync, tenter un rollback.
 
 Résultat attendu : aucun nouveau polling de fond, retour de la mémoire au niveau habituel et refus propre du rollback si le dépôt ou l'auto-sync est occupé.
+
+## 13. Pause de récupération et pause manuelle
+
+1. Mettre manuellement une stack en pause, modifier un fichier puis utiliser `Push to Git`.
+2. Vérifier ensuite l'état de l'automatisation.
+3. Restaurer un commit ou un backup, puis vérifier le libellé de la pause.
+
+Résultat attendu : un simple push ne retire jamais une pause manuelle. Une restauration crée une pause identifiée `Paused after recovery`, que le push complet peut retirer automatiquement. Une sélection partielle de fichiers conserve la pause jusqu'à ce que tous les changements de la stack soient publiés.
+
+## 14. Rafraîchissement des indicateurs parents
+
+1. Faire échouer deux stacks contenues dans un même dossier parent.
+2. Vérifier que les stacks et le parent deviennent rouges.
+3. Redémarrer les deux stacks rapidement.
+4. Observer les indicateurs sans recharger la page.
+
+Résultat attendu : les événements Docker du burst sont regroupés jusqu'au dernier événement, les indicateurs enfants reviennent au vert et le parent recalculé revient lui aussi au vert. Aucun polling supplémentaire permanent n'est ajouté.

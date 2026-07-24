@@ -221,6 +221,24 @@ func (s *Service) RestoreBackup(ctx context.Context, bindingID, backupID string,
 	if err != nil {
 		return BackupRestoreResult{}, fmt.Errorf("create restore safety backup: %w", err)
 	}
+	affectedSet := make(map[string]struct{})
+	for path := range selectedSet {
+		for _, composePath := range composePathsForFile(manifest.ComposePaths, path) {
+			affectedSet[composePath] = struct{}{}
+		}
+	}
+	affectedStacks := make([]string, 0, len(affectedSet))
+	for composePath := range affectedSet {
+		affectedStacks = append(affectedStacks, composePath)
+	}
+	sort.Strings(affectedStacks)
+	// As with commit rollback, pause before the first local write. This keeps a
+	// successful recovery from being immediately overwritten by auto-sync.
+	for _, composePath := range affectedStacks {
+		if err := s.store.SetGitStackPauseReason(binding.UUID, composePath, true, stackPauseRecovery); err != nil {
+			return BackupRestoreResult{SafetyBackupID: safetyBackup}, fmt.Errorf("pause stack automation before restore: %w", err)
+		}
+	}
 	if err := s.applyBackupArchive(row, manifest, selectedSet, allowed, targetFS, targetRoot); err != nil {
 		return BackupRestoreResult{}, err
 	}
@@ -254,9 +272,11 @@ func (s *Service) RestoreBackup(ctx context.Context, bindingID, backupID string,
 		}
 	}
 	now := time.Now().UTC()
-	_ = s.store.UpdateGitStackStatuses(binding.UUID, manifest.ComposePaths, map[string]any{
+	if err := s.store.UpdateGitStackStatuses(binding.UUID, affectedStacks, map[string]any{
 		"state": stackSyncLocalChanges, "error_message": "Backup restored locally; review before pushing or importing", "last_checked_at": &now,
-	})
+	}); err != nil {
+		return BackupRestoreResult{BackupID: row.UUID, SafetyBackupID: safetyBackup, RestoredPaths: paths}, fmt.Errorf("record restored stack state: %w", err)
+	}
 	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
 		Type: "backup_restore", Trigger: "manual", BackupID: row.UUID, CommitSHA: row.CommitSHA,
 		Details: ActivityDetails{Action: "restore", Paths: paths, Message: message}})

@@ -837,6 +837,10 @@ func TestManualExportAndImportCreateRecoverableState(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(contents), "alpine:3.22")
 	require.NoFileExists(t, filepath.Join(stackRoot, "app", "extra.yaml"))
+	restoredStatus, err := service.store.GitStackStatus(binding.ID, "compose.yaml")
+	require.NoError(t, err)
+	require.True(t, restoredStatus.AutomationPaused, "a backup restore must remain protected until it is pushed or explicitly resumed")
+	require.Equal(t, stackPauseRecovery, restoredStatus.PauseReason)
 	operations, err := service.ListBindingOperations(binding.ID, 100)
 	require.NoError(t, err)
 	require.Condition(t, func() bool {

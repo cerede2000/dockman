@@ -157,6 +157,7 @@ type GitStackStatus struct {
 	ErrorMessage     string `gorm:"type:text"`
 	ConflictCount    int    `gorm:"not null;default:0"`
 	AutomationPaused bool   `gorm:"not null;default:false"`
+	PauseReason      string `gorm:"not null;default:''"`
 	LastCheckedAt    *time.Time
 	LastSuccessAt    *time.Time
 	LastCommit       string

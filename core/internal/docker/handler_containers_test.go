@@ -75,3 +75,20 @@ func TestStackStatusAcceptsRunningContainerWithoutHealthcheck(t *testing.T) {
 	})
 	require.Equal(t, int32(1), status.up)
 }
+
+func TestComposeStatusSnapshotDoesNotRetainPreviousFailure(t *testing.T) {
+	const composeFile = "/server/stacks/substacks/app/compose.yml"
+	failed, _ := buildComposeStatusIndex([]container.Summary{{
+		Labels: map[string]string{api.ConfigFilesLabel: composeFile},
+		State:  container.StateExited,
+		Status: "Exited (1) 2 seconds ago",
+	}})
+	require.Equal(t, int32(1), failed[composeFile].failed)
+
+	running, _ := buildComposeStatusIndex([]container.Summary{{
+		Labels: map[string]string{api.ConfigFilesLabel: composeFile},
+		State:  container.StateRunning,
+	}})
+	require.Equal(t, &stackStatus{up: 1}, running[composeFile],
+		"each container-list response must replace, never merge with, the previous status snapshot")
+}

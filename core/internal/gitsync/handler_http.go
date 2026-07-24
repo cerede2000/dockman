@@ -82,7 +82,7 @@ func (h *HTTPHandler) pushGitStack(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
 	}
-	result, err := h.service.PushGitStack(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	result, err := h.service.PushGitStackAndResume(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -145,7 +145,14 @@ func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Req
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	row, err := h.service.SetGitStackAutomationPause(r.PathValue("id"), r.PathValue("composePath"), input.Paused)
+	var row GitStackStatusView
+	var pushed bool
+	var err error
+	if input.Paused {
+		row, err = h.service.SetGitStackAutomationPause(r.PathValue("id"), r.PathValue("composePath"), true)
+	} else {
+		row, pushed, err = h.service.ResumeGitStackAutomation(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	}
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -154,8 +161,12 @@ func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Req
 	if !input.Paused {
 		action = "resume"
 	}
+	message := ""
+	if pushed {
+		message = "Local changes pushed before resuming automatic synchronization"
+	}
 	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.BindingID, ComposePath: row.ComposePath,
-		Type: "stack_automation", Trigger: "manual", Details: ActivityDetails{Action: action, Paths: []string{row.ComposePath}}})
+		Type: "stack_automation", Trigger: "manual", Details: ActivityDetails{Action: action, Message: message, Paths: []string{row.ComposePath}}})
 	writeJSON(w, http.StatusOK, row)
 }
 

@@ -26,4 +26,7 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('git_stack_bindings') WHERE name=?", column).Scan(&count))
 		require.Equal(t, 1, count, column)
 	}
+	var pauseReasonColumns int
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('git_stack_statuses') WHERE name='pause_reason'").Scan(&pauseReasonColumns))
+	require.Equal(t, 1, pauseReasonColumns)
 }

@@ -446,7 +446,9 @@ func (s *Service) applyCommitRollbackLocked(binding StackBinding, input CommitRo
 	}
 	affected := make(map[string]struct{})
 	for path := range selected {
-		affected[actions[path].ComposePath] = struct{}{}
+		for _, composePath := range composePathsForFile(preview.ComposePaths, path) {
+			affected[composePath] = struct{}{}
+		}
 	}
 	affectedStacks := make([]string, 0, len(affected))
 	for path := range affected {
@@ -474,7 +476,7 @@ func (s *Service) applyCommitRollbackLocked(binding StackBinding, input CommitRo
 	// Pause first: once local files start changing, no automatic import may race
 	// with or silently undo the explicit rollback decision.
 	for _, composePath := range affectedStacks {
-		if err := s.store.SetGitStackPause(binding.UUID, composePath, true); err != nil {
+		if err := s.store.SetGitStackPauseReason(binding.UUID, composePath, true, stackPauseRecovery); err != nil {
 			return CommitRollbackResult{SafetyBackupID: backupID}, fmt.Errorf("pause stack automation before rollback: %w", err)
 		}
 	}

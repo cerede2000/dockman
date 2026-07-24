@@ -24,7 +24,11 @@ let notifyTimer: ReturnType<typeof setTimeout> | null = null;
 // coalesce bursts (a compose up emits one event per container) into a single
 // refresh tick
 function notify() {
-    if (notifyTimer !== null) return;
+    // A restart/start burst can contain die, stop, start and health events.
+    // Debounce from the LAST event so the single resulting refresh observes
+    // the settled container state instead of keeping an intermediate failure
+    // in an aggregated parent folder until the 30-second safety poll.
+    if (notifyTimer !== null) clearTimeout(notifyTimer);
     notifyTimer = setTimeout(() => {
         notifyTimer = null;
         seq++;

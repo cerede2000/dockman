@@ -18,6 +18,7 @@ export interface GitStackStatus {
     conflictCount: number;
     autoSyncEnabled: boolean;
     automationPaused: boolean;
+    pauseReason?: 'manual' | 'recovery';
     autoDeployEnabled: boolean;
     autoSyncIntervalMinutes: number;
     lastCheckedAt?: string;

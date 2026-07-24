@@ -192,6 +192,12 @@ func (s *Store) GitStackStatuses(bindingID string) ([]GitStackStatus, error) {
 	return rows, err
 }
 
+func (s *Store) GitStackStatus(bindingID, composePath string) (GitStackStatus, error) {
+	var row GitStackStatus
+	err := s.db.Where("binding_uuid = ? AND compose_path = ?", bindingID, composePath).First(&row).Error
+	return row, err
+}
+
 func (s *Store) PausedComposePaths(bindingID string) ([]string, error) {
 	var paths []string
 	err := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ? AND automation_paused = ?", bindingID, true).Pluck("compose_path", &paths).Error
@@ -200,7 +206,21 @@ func (s *Store) PausedComposePaths(bindingID string) ([]string, error) {
 }
 
 func (s *Store) SetGitStackPause(bindingID, composePath string, paused bool) error {
-	result := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ? AND compose_path = ?", bindingID, composePath).Update("automation_paused", paused)
+	reason := ""
+	if paused {
+		reason = stackPauseManual
+	}
+	return s.SetGitStackPauseReason(bindingID, composePath, paused, reason)
+}
+
+func (s *Store) SetGitStackPauseReason(bindingID, composePath string, paused bool, reason string) error {
+	if !paused {
+		reason = ""
+	} else if reason != stackPauseManual && reason != stackPauseRecovery {
+		return errors.New("invalid Git stack pause reason")
+	}
+	result := s.db.Model(&GitStackStatus{}).Where("binding_uuid = ? AND compose_path = ?", bindingID, composePath).
+		Updates(map[string]any{"automation_paused": paused, "pause_reason": reason})
 	if result.Error != nil {
 		return result.Error
 	}

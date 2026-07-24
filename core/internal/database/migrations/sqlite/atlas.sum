@@ -1,4 +1,4 @@
-h1:RjPjaCt8sVVu6yqfzFGAKJ1QFOJ7scWX9Q4IjWAylb0=
+h1:x3ZMf2tKKNIFs1JgPhS8p0105SHQyMhPr7IcqxSO20k=
 20260208203619_mig.sql h1:xBogJIlN+Qqa/9+EkfhypXCAZ8Hlqawf9Vh4ZvllQkc=
 20260208221102_mig.sql h1:Qx+BFt3Ilnk8My/pLg74kR0Mpgz0DqcXeB4RsuM5qqI=
 20260722090000_git_sync_foundation.sql h1:zeelfWn1yknX4cx8az8Z3r/Ie8pr+2EJx4jwcYpAeyU=
@@ -11,3 +11,4 @@ h1:RjPjaCt8sVVu6yqfzFGAKJ1QFOJ7scWX9Q4IjWAylb0=
 20260723200000_git_sync_compose_selection.sql h1:+C6J1tXZLznbOcd1fcHA63TYYzbUU8BiR8DDj041AME=
 20260723210000_git_stack_status.sql h1:EpJwcnK5L9KjutJcjyI+UhEh4aG0vbL5dAiU4yqlaYU=
 20260724090000_git_recovery_activity.sql h1:dPscPqAAH1EiztbBLWkjFN9O1L3Aov5U4btBGaEOxeM=
+20260724120000_git_stack_pause_reason.sql h1:KrJQQMI+EE/P56Fn2bqzUFvq1dx6yRS/BsS4METRg04=

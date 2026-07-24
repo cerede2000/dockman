@@ -23,7 +23,11 @@ const (
 	stackSyncOrphaned      = "orphaned"
 	stackSyncConflict      = "conflict"
 	stackSyncError         = "error"
+	stackPauseManual       = "manual"
+	stackPauseRecovery     = "recovery"
 )
+
+var errNoTransferableLocalChanges = errors.New("no transferable local change was found for this stack")
 
 type GitStackStatusView struct {
 	BindingID         string     `json:"bindingId"`
@@ -41,6 +45,7 @@ type GitStackStatusView struct {
 	ConflictCount     int        `json:"conflictCount"`
 	AutoSyncEnabled   bool       `json:"autoSyncEnabled"`
 	AutomationPaused  bool       `json:"automationPaused"`
+	PauseReason       string     `json:"pauseReason,omitempty"`
 	AutoDeployEnabled bool       `json:"autoDeployEnabled"`
 	AutoSyncInterval  int        `json:"autoSyncIntervalMinutes"`
 	LastCheckedAt     *time.Time `json:"lastCheckedAt,omitempty"`
@@ -150,7 +155,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 			RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, row.ComposePath)),
 			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
-			AutoSyncEnabled: binding.AutoSyncEnabled, AutomationPaused: row.AutomationPaused,
+			AutoSyncEnabled: binding.AutoSyncEnabled, AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
 			AutoDeployEnabled: deployEnabled, AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
 			LastCheckedAt: row.LastCheckedAt, LastSuccessAt: row.LastSuccessAt, NextCheckAt: nextCheck,
 			LastCommit: row.LastCommit, DeployState: deployState, DeployError: row.DeployError, LastDeployAt: row.LastDeployAt,
@@ -286,6 +291,65 @@ func (s *Service) SetGitStackAutomationPause(bindingID, composePath string, paus
 	return GitStackStatusView{}, gorm.ErrRecordNotFound
 }
 
+// ResumeGitStackAutomation safely resumes a manually paused stack. A local
+// rollback/restore must first be published, otherwise a Git -> Dockman cycle
+// could overwrite the explicit local recovery. The stack remains paused when
+// the push fails or a conflict needs a decision.
+func (s *Service) ResumeGitStackAutomation(ctx context.Context, bindingID, composePath string) (GitStackStatusView, bool, error) {
+	automationLock := s.repositoryLock("automation:" + bindingID)
+	if !automationLock.TryLock() {
+		return GitStackStatusView{}, false, errors.New("automatic synchronization is currently running; retry when it finishes")
+	}
+	defer automationLock.Unlock()
+
+	composePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(composePath))))
+	if err := validateRelativePath(composePath, false); err != nil {
+		return GitStackStatusView{}, false, fmt.Errorf("invalid Compose path: %w", err)
+	}
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return GitStackStatusView{}, false, err
+	}
+	if !stringInSlice(composePath, selectedComposePaths(binding)) {
+		return GitStackStatusView{}, false, errors.New("stack is not selected for Git synchronization")
+	}
+	if err := s.reconcileGitStackStatuses(binding); err != nil {
+		return GitStackStatusView{}, false, err
+	}
+	status, err := s.store.GitStackStatus(bindingID, composePath)
+	if err != nil {
+		return GitStackStatusView{}, false, err
+	}
+	pushed := false
+	if status.State == stackSyncLocalChanges || status.State == stackSyncOrphaned {
+		if _, err := s.PushGitStack(ctx, bindingID, composePath); err != nil {
+			if !errors.Is(err, errNoTransferableLocalChanges) {
+				return GitStackStatusView{}, false, fmt.Errorf("resume kept paused because local changes could not be pushed: %w", err)
+			}
+		} else {
+			pushed = true
+		}
+	}
+	if err := s.store.SetGitStackPause(bindingID, composePath, false); err != nil {
+		return GitStackStatusView{}, pushed, fmt.Errorf("changes were pushed but automatic synchronization could not be resumed: %w", err)
+	}
+	view, err := s.gitStackStatusView(binding.Host, bindingID, composePath)
+	return view, pushed, err
+}
+
+func (s *Service) gitStackStatusView(host, bindingID, composePath string) (GitStackStatusView, error) {
+	views, err := s.ListGitStackStatusViews(host)
+	if err != nil {
+		return GitStackStatusView{}, err
+	}
+	for _, view := range views {
+		if view.BindingID == bindingID && view.ComposePath == composePath {
+			return view, nil
+		}
+	}
+	return GitStackStatusView{}, gorm.ErrRecordNotFound
+}
+
 // PushGitStack performs the same preview-token protected export as the full
 // Git settings view, but limits the transfer to the stack represented by one
 // status indicator. It never auto-resolves conflicts or includes skipped
@@ -311,7 +375,7 @@ func (s *Service) PushGitStack(ctx context.Context, bindingID, composePath strin
 		return TransferResult{}, errors.New("push refused: this stack has a conflict; review and resolve it before pushing")
 	}
 	if len(selected) == 0 {
-		return TransferResult{}, errors.New("no transferable local change was found for this stack")
+		return TransferResult{}, errNoTransferableLocalChanges
 	}
 	result, err := s.ExportBinding(ctx, bindingID, TransferInput{PreviewToken: preview.PreviewToken, SelectedPaths: selected, compactResult: true})
 	if err != nil {
@@ -321,6 +385,33 @@ func (s *Service) PushGitStack(ctx context.Context, bindingID, composePath strin
 	// local changes in the same folder link remain visible.
 	_, _ = s.PreviewBinding(bindingID, "stack_to_repository", TransferInput{})
 	result.Message = fmt.Sprintf("Stack pushed to Git (%d file(s))", len(selected))
+	return result, nil
+}
+
+// PushGitStackAndResume serializes a manual status-indicator push with the
+// automatic worker and clears a recovery pause only after the push succeeds.
+func (s *Service) PushGitStackAndResume(ctx context.Context, bindingID, composePath string) (TransferResult, error) {
+	automationLock := s.repositoryLock("automation:" + bindingID)
+	if !automationLock.TryLock() {
+		return TransferResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+	}
+	defer automationLock.Unlock()
+
+	composePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(composePath))))
+	status, statusErr := s.store.GitStackStatus(bindingID, composePath)
+	result, err := s.PushGitStack(ctx, bindingID, composePath)
+	if err != nil {
+		if errors.Is(err, errNoTransferableLocalChanges) && statusErr == nil && status.AutomationPaused && status.PauseReason == stackPauseRecovery {
+			if resumeErr := s.store.SetGitStackPause(bindingID, composePath, false); resumeErr != nil {
+				return TransferResult{}, resumeErr
+			}
+			return TransferResult{Message: "Stack already matches Git; automatic synchronization resumed"}, nil
+		}
+		return TransferResult{}, err
+	}
+	if statusErr == nil && status.AutomationPaused && status.PauseReason == stackPauseRecovery {
+		result.Message += "; automatic synchronization resumed"
+	}
 	return result, nil
 }
 

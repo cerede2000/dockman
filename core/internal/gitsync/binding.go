@@ -925,6 +925,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 	defer lock.Unlock()
 
 	var result TransferResult
+	var exportedPaths []string
 	trigger := "manual"
 	if input.automation {
 		trigger = "automation"
@@ -968,6 +969,11 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if len(selected) == 0 {
 			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
 		}
+		exportedPaths = make([]string, 0, len(selected))
+		for path := range selected {
+			exportedPaths = append(exportedPaths, path)
+		}
+		sort.Strings(exportedPaths)
 		row, err := s.store.GetRepository(binding.RepositoryUUID)
 		if err != nil {
 			return err
@@ -1026,15 +1032,61 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
-	if err == nil && result.Preview.Conflicts == 0 {
-		paths := selectedComposePaths(binding)
-		if input.automation {
-			paths = s.activeAutomationComposePaths(binding)
+	if err == nil {
+		if result.Preview.Conflicts == 0 {
+			paths := selectedComposePaths(binding)
+			if input.automation {
+				paths = s.activeAutomationComposePaths(binding)
+			}
+			now := time.Now().UTC()
+			_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now, "last_commit": result.CommitSHA})
 		}
-		now := time.Now().UTC()
-		_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now, "last_commit": result.CommitSHA})
+		if !input.automation && len(exportedPaths) > 0 {
+			if resumeErr := s.resumeRecoveryPausesAfterExport(binding, result.Preview, exportedPaths); resumeErr != nil {
+				return result, fmt.Errorf("stack was pushed but automatic synchronization could not be resumed: %w", resumeErr)
+			}
+		}
 	}
 	return result, err
+}
+
+func (s *Service) resumeRecoveryPausesAfterExport(binding StackBinding, preview TransferPreview, exportedPaths []string) error {
+	statuses, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		return err
+	}
+	complete := make(map[string]struct{})
+	exported := make(map[string]struct{}, len(exportedPaths))
+	composePaths := selectedComposePaths(binding)
+	for _, path := range exportedPaths {
+		exported[path] = struct{}{}
+		for _, composePath := range composePathsForFile(composePaths, path) {
+			complete[composePath] = struct{}{}
+		}
+	}
+	// A settings transfer may intentionally select only part of a stack. Resume
+	// a recovery pause only when every remaining local/conflicting change owned
+	// by that stack was part of the successful export.
+	for _, entry := range preview.Entries {
+		if entry.Status != "add" && entry.Status != "modify" && entry.Status != "conflict" && entry.Status != "deleted_locally" {
+			continue
+		}
+		_, wasExported := exported[entry.Path]
+		for _, composePath := range composePathsForFile(composePaths, entry.Path) {
+			if _, candidate := complete[composePath]; candidate && (!wasExported || entry.Status == "deleted_locally") {
+				delete(complete, composePath)
+			}
+		}
+	}
+	for _, status := range statuses {
+		if _, ok := complete[status.ComposePath]; !ok || !status.AutomationPaused || status.PauseReason != stackPauseRecovery {
+			continue
+		}
+		if err := s.store.SetGitStackPause(binding.UUID, status.ComposePath, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) ImportBinding(ctx context.Context, id string, input TransferInput) (TransferResult, error) {

@@ -164,6 +164,95 @@ func TestGitStackPauseOnlyExcludesThatStackFromAutomation(t *testing.T) {
 	}
 }
 
+func TestManualStackPushResumesRecoveryPause(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	composePath := filepath.Join(stackRoot, "alpha", "compose.yml")
+	require.NoError(t, os.WriteFile(composePath, []byte("services:\n  alpha:\n    image: alpine:3.23\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	require.NoError(t, service.store.SetGitStackPauseReason(binding.ID, "alpha/compose.yml", true, stackPauseRecovery))
+
+	result, err := service.PushGitStackAndResume(context.Background(), binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "automatic synchronization resumed")
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.False(t, status.AutomationPaused)
+}
+
+func TestManualPauseIsNotClearedByPushAlone(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	composePath := filepath.Join(stackRoot, "alpha", "compose.yml")
+	require.NoError(t, os.WriteFile(composePath, []byte("services:\n  alpha:\n    image: alpine:3.25\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	_, err := service.SetGitStackAutomationPause(binding.ID, "alpha/compose.yml", true)
+	require.NoError(t, err)
+
+	_, err = service.PushGitStackAndResume(context.Background(), binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.True(t, status.AutomationPaused)
+	require.Equal(t, stackPauseManual, status.PauseReason)
+}
+
+func TestPartialSettingsPushKeepsRecoveryPausedUntilStackIsComplete(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yml"), []byte("services:\n  alpha:\n    image: alpine:3.26\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "settings.yml"), []byte("enabled: true\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	require.NoError(t, service.store.SetGitStackPauseReason(binding.ID, "alpha/compose.yml", true, stackPauseRecovery))
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ExportBinding(context.Background(), binding.ID, TransferInput{
+		PreviewToken: preview.PreviewToken, SelectedPaths: []string{"alpha/compose.yml"},
+	})
+	require.NoError(t, err)
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.True(t, status.AutomationPaused, "a partial stack export must not resume recovery automation")
+
+	remaining, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ExportBinding(context.Background(), binding.ID, TransferInput{
+		PreviewToken: remaining.PreviewToken, SelectedPaths: []string{"alpha/settings.yml"},
+	})
+	require.NoError(t, err)
+	status, err = service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.False(t, status.AutomationPaused, "the final successful stack export should resume recovery automation")
+}
+
+func TestResumePushesLocalRecoveryBeforeUnpausing(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	composePath := filepath.Join(stackRoot, "alpha", "compose.yml")
+	require.NoError(t, os.WriteFile(composePath, []byte("services:\n  alpha:\n    image: alpine:3.24\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	_, err := service.SetGitStackAutomationPause(binding.ID, "alpha/compose.yml", true)
+	require.NoError(t, err)
+
+	view, pushed, err := service.ResumeGitStackAutomation(context.Background(), binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.True(t, pushed)
+	require.False(t, view.AutomationPaused)
+}
+
+func TestResumeKeepsPauseWhenLocalPushCannotComplete(t *testing.T) {
+	service, stackRoot, repository, binding := prepareTrackedLocalDeletion(t)
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yml"), []byte("services:\n  alpha:\n    image: alpine:local\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	_, err := service.SetGitStackAutomationPause(binding.ID, "alpha/compose.yml", true)
+	require.NoError(t, err)
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/compose.yml", "services:\n  alpha:\n    image: alpine:remote\n")
+
+	_, pushed, err := service.ResumeGitStackAutomation(context.Background(), binding.ID, "alpha/compose.yml")
+	require.ErrorContains(t, err, "kept paused")
+	require.False(t, pushed)
+	status, statusErr := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, statusErr)
+	require.True(t, status.AutomationPaused)
+}
+
 func TestUnchangedRemoteCheckPreservesKnownLocalChanges(t *testing.T) {
 	service, _, bindingView := prepareMultiStackBinding(t)
 	binding, err := service.store.GetBinding(bindingView.ID)
