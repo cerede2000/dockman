@@ -64,8 +64,8 @@ func TestBuildComposeStatusIndexIncludesNestedPrimaryPath(t *testing.T) {
 	byFile, primaryFiles := buildComposeStatusIndex(containers)
 
 	require.Equal(t, map[string]struct{}{primary: {}}, primaryFiles)
-	require.Equal(t, &stackStatus{up: 1, failed: 1, healthy: 1}, byFile[primary])
-	require.Equal(t, &stackStatus{up: 1, failed: 1, healthy: 1}, byFile[override])
+	require.Equal(t, &stackStatus{up: 1, down: 1, healthy: 1}, byFile[primary])
+	require.Equal(t, &stackStatus{up: 1, down: 1, healthy: 1}, byFile[override])
 }
 
 func TestStackStatusAcceptsRunningContainerWithoutHealthcheck(t *testing.T) {
@@ -76,14 +76,15 @@ func TestStackStatusAcceptsRunningContainerWithoutHealthcheck(t *testing.T) {
 	require.Equal(t, int32(1), status.up)
 }
 
-func TestComposeStatusSnapshotDoesNotRetainPreviousFailure(t *testing.T) {
+func TestComposeStatusSnapshotDoesNotRetainPreviousStoppedState(t *testing.T) {
 	const composeFile = "/server/stacks/substacks/app/compose.yml"
-	failed, _ := buildComposeStatusIndex([]container.Summary{{
+	stopped, _ := buildComposeStatusIndex([]container.Summary{{
 		Labels: map[string]string{api.ConfigFilesLabel: composeFile},
 		State:  container.StateExited,
 		Status: "Exited (1) 2 seconds ago",
 	}})
-	require.Equal(t, int32(1), failed[composeFile].failed)
+	require.Equal(t, int32(1), stopped[composeFile].down)
+	require.Zero(t, stopped[composeFile].unhealthy, "an exit code cannot reliably distinguish a manual stop from a crash")
 
 	running, _ := buildComposeStatusIndex([]container.Summary{{
 		Labels: map[string]string{api.ConfigFilesLabel: composeFile},
@@ -91,4 +92,24 @@ func TestComposeStatusSnapshotDoesNotRetainPreviousFailure(t *testing.T) {
 	}})
 	require.Equal(t, &stackStatus{up: 1}, running[composeFile],
 		"each container-list response must replace, never merge with, the previous status snapshot")
+}
+
+func TestExitedContainersRemainStoppedRegardlessOfSignalExitCode(t *testing.T) {
+	for _, statusLine := range []string{"Exited (0) 2 seconds ago", "Exited (1) 2 seconds ago", "Exited (137) 2 seconds ago", "Exited (143) 2 seconds ago"} {
+		t.Run(statusLine, func(t *testing.T) {
+			status := &stackStatus{}
+			status.add(container.Summary{State: container.StateExited, Status: statusLine})
+			require.Equal(t, &stackStatus{down: 1}, status)
+		})
+	}
+}
+
+func TestComposeStatusKeepsObservableFailuresSeparateFromStopped(t *testing.T) {
+	status := &stackStatus{}
+	status.add(container.Summary{State: container.StateDead})
+	require.Equal(t, &stackStatus{down: 1, unhealthy: 1}, status)
+
+	status = &stackStatus{}
+	status.add(container.Summary{State: container.StateRunning, Health: &container.HealthSummary{Status: container.Unhealthy}})
+	require.Equal(t, &stackStatus{up: 1, unhealthy: 1}, status)
 }

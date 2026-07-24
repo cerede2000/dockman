@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,13 +105,14 @@ func (h *Handler) ComposeFileStatus(ctx context.Context, c *connect.Request[v1.C
 
 // stackStatus aggregates the container states of a single compose stack.
 //
-// It maps onto the v1.Status fields the UI already consumes. ServicesDown carries
-// the "in error" count — a service that crashed, is dead, is stuck restarting, or
-// exited non-zero — so the UI can distinguish a real problem (red) from a stack
-// that is simply stopped (grey).
+// It maps onto the v1.Status fields the UI already consumes. ServicesDown is the
+// number of non-running services. ServicesUnHealthy carries observable failures
+// (unhealthy/dead/restarting/removing). An exited code alone cannot distinguish
+// a crash from a user-requested stop — SIGTERM commonly produces 137/143 — and
+// must therefore remain a neutral stopped state, consistent with Monitor.
 type stackStatus struct {
 	up        int32
-	failed    int32
+	down      int32
 	healthy   int32
 	unhealthy int32
 }
@@ -165,36 +165,21 @@ func (s *stackStatus) add(ct container.Summary) {
 				s.unhealthy++
 			}
 		}
-	case "restarting", "dead":
-		s.failed++
-	case "exited":
-		if containerExitCode(ct) != 0 {
-			s.failed++
-		}
-		// exited(0) / created / paused / removing -> cleanly stopped, not counted
+	case "restarting", "dead", "removing":
+		s.down++
+		s.unhealthy++
+	case "exited", "created", "paused":
+		s.down++
 	}
 }
 
 func (s *stackStatus) toProto() *v1.Status {
 	return &v1.Status{
 		ServicesUp:        s.up,
-		ServicesDown:      s.failed,
+		ServicesDown:      s.down,
 		ServicesHealthy:   s.healthy,
 		ServicesUnHealthy: s.unhealthy,
 	}
-}
-
-// containerExitCode parses the exit code out of a container summary status line,
-// e.g. "Exited (137) 2 hours ago" -> 137. Returns 0 when it can't be determined.
-func containerExitCode(ct container.Summary) int {
-	l := strings.IndexByte(ct.Status, '(')
-	r := strings.IndexByte(ct.Status, ')')
-	if l >= 0 && r > l {
-		if code, err := strconv.Atoi(strings.TrimSpace(ct.Status[l+1 : r])); err == nil {
-			return code
-		}
-	}
-	return 0
 }
 
 func (h *Handler) ComposeUp(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {

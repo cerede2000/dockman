@@ -582,7 +582,7 @@ const StatusIndicator = ({fileStatus}: { fileStatus: Status }) => {
 
     return ((fileStatus) &&
         <Tooltip
-            title={`${fileStatus.servicesUp} running · ${fileStatus.servicesDown} failed · ${fileStatus.servicesHealthy} healthy`}
+            title={`${fileStatus.servicesUp} running · ${fileStatus.servicesDown} stopped · ${fileStatus.servicesHealthy} healthy${fileStatus.servicesUnHealthy ? ` · ${fileStatus.servicesUnHealthy} in error` : ''}`}
             arrow placement="right">
             <Box
                 sx={{
@@ -607,14 +607,14 @@ const StatusIndicator = ({fileStatus}: { fileStatus: Status }) => {
 export default StatusIndicator;
 
 const getStatusTheme = (status: Status | undefined) => {
-    // Precedence: error > unhealthy > running > stopped. servicesDown carries the
-    // "in error" count (crashed / dead / restarting / exited non-zero).
+    // Same observable-state semantics as Monitor. Exit codes are not used: a
+    // manual Docker stop commonly exits with 137/143 and must remain neutral.
     if (!status) {
         return {color: 'grey.500', label: 'Stopped', filled: false};
     }
-    if (status.servicesDown > 0) return {color: 'error.main', label: 'Error', filled: true};
-    if (status.servicesUnHealthy > 0) return {color: 'warning.main', label: 'Unhealthy', filled: true};
+    if (status.servicesUnHealthy > 0) return {color: 'error.main', label: 'Error', filled: true};
+    if (status.servicesUp > 0 && status.servicesDown > 0) return {color: 'warning.main', label: 'Partially running', filled: true};
     if (status.servicesUp > 0) return {color: 'success.main', label: 'Running', filled: true};
-    // no running/failed/unhealthy container -> stack is stopped
+    // no running/unhealthy container -> stack is stopped
     return {color: 'grey.500', label: 'Stopped', filled: false};
 };

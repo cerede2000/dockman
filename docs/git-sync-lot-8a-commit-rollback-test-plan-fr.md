@@ -149,3 +149,15 @@ Résultat attendu : les événements Docker du burst sont regroupés jusqu'au de
 8. Modifier ensuite `test.conf` sur Git, supprimer sa copie locale et réessayer la suppression Git : Dockman doit refuser l'effacement et demander une comparaison/résolution de conflit.
 
 Résultat attendu : aucune suppression distante n'est propagée silencieusement, mais chaque suppression locale suivie possède une sortie explicite et accessible depuis les deux interfaces.
+
+## 16. Statut Docker des stacks arrêtées
+
+1. Avec une stack en fonctionnement, vérifier que sa bullet, ses dossiers parents et sa ligne Monitor sont verts.
+2. Arrêter volontairement la stack depuis Dockman.
+3. Vérifier sans recharger la page que la stack devient grise dans Files et que Monitor indique `exited` avec sa couleur neutre.
+4. Redémarrer la stack et vérifier que la stack et tous ses parents reviennent au vert.
+5. Arrêter une seule stack dans un dossier qui en contient plusieurs encore actives.
+6. Vérifier que le dossier parent devient orange, et non rouge : il représente un fonctionnement partiel.
+7. Tester si possible un conteneur `unhealthy`, `dead` ou bloqué en `restarting`.
+
+Résultat attendu : gris signifie arrêté, orange signifie partiellement actif, rouge est réservé à un échec observable et vert signifie entièrement actif. Un code de sortie `137` ou `143` ne suffit jamais à classer un arrêt comme une erreur. Files et Monitor doivent rester cohérents, y compris après un redémarrage de Dockman.
