@@ -1164,6 +1164,24 @@ func (s *Service) clearResolvedDeploymentStates(binding StackBinding, complete m
 	return s.store.UpdateBindingAutoDeployState(binding.UUID, state, message, nil)
 }
 
+// A new Git commit can intentionally restore the exact file contents that the
+// automatic rollback already put back locally. No transfer or redeploy is
+// needed in that case, but the former rolled-back incident is now resolved and
+// must stop keeping the link partial. Hard failures remain untouched.
+func (s *Service) clearIdenticalRollbackStates(binding StackBinding) error {
+	statuses, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		return err
+	}
+	complete := make(map[string]struct{})
+	for _, status := range statuses {
+		if status.DeployState == "rolled_back" && stringInSlice(status.ComposePath, splitPatternLines(binding.AutoDeployComposePaths)) {
+			complete[status.ComposePath] = struct{}{}
+		}
+	}
+	return s.clearResolvedDeploymentStates(binding, complete)
+}
+
 func (s *Service) ImportBinding(ctx context.Context, id string, input TransferInput) (TransferResult, error) {
 	binding, err := s.store.GetBinding(id)
 	if err != nil {

@@ -104,6 +104,34 @@ func TestDisablingAutomationClearsFolderLinkPause(t *testing.T) {
 	require.Equal(t, "disabled", disabled.AutoSyncState)
 }
 
+func TestSavingUnchangedAutomationConfigurationPreservesOperationalIncidents(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services: {}\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployRollback: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	require.NoError(t, service.store.UpdateBindingAutoSyncState(binding.ID, "partial", "rollback needs attention", "", &now, nil))
+	require.NoError(t, service.store.UpdateBindingAutoDeployState(binding.ID, "partial", "previous version restored", &now))
+
+	updated, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployRollback: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "partial", updated.AutoSyncState)
+	require.Equal(t, "rollback needs attention", updated.AutoSyncError)
+	require.Equal(t, "partial", updated.AutoDeployState)
+	require.Equal(t, "previous version restored", updated.AutoDeployError)
+}
+
 func TestAutoSyncRestoresPreviousStackWhenHealthCheckedDeploymentFails(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)
@@ -166,6 +194,24 @@ func TestAutoSyncRestoresPreviousStackWhenHealthCheckedDeploymentFails(t *testin
 	require.Len(t, deploymentsView, 1)
 	require.Equal(t, "rolled_back", deploymentsView[0].State)
 	require.Contains(t, deploymentsView[0].Result, "previous version restored safely")
+
+	// Git is corrected in a new commit to the version already restored locally.
+	// There is intentionally nothing to transfer or redeploy, but the active
+	// rollback incident must be reconciled instead of keeping the link partial.
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", previous)
+	reconciled, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", reconciled.State)
+	require.Equal(t, "Stack already matches Git", reconciled.Message)
+	status, err := service.store.GitStackStatus(binding.ID, "compose.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "idle", status.DeployState)
+	require.Empty(t, status.DeployError)
+	resolved, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", resolved.AutoSyncState)
+	require.Equal(t, "watching", resolved.AutoDeployState)
+	require.Empty(t, resolved.AutoDeployError)
 }
 
 func TestAutoRollbackRefusesToOverwriteAFileChangedAfterImport(t *testing.T) {

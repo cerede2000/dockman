@@ -76,6 +76,8 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	if input.IntervalMinutes < minAutoSyncIntervalMinutes || input.IntervalMinutes > maxAutoSyncIntervalMinutes {
 		return BindingView{}, fmt.Errorf("automatic synchronization interval must be between %d and %d minutes", minAutoSyncIntervalMinutes, maxAutoSyncIntervalMinutes)
 	}
+	wasAutoSyncEnabled := row.AutoSyncEnabled
+	wasAutoDeployEnabled := row.AutoDeployEnabled
 	row.AutoSyncEnabled = input.Enabled
 	if !input.Enabled {
 		row.AutoSyncPaused = false
@@ -84,11 +86,14 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		row.AutoReconcileEnabled = *input.AutoReconcile
 	}
 	row.AutoSyncIntervalMinutes = input.IntervalMinutes
-	row.AutoSyncError = ""
 	if input.Enabled {
-		row.AutoSyncState = "watching"
+		if !wasAutoSyncEnabled || row.AutoSyncState == "" || row.AutoSyncState == "disabled" {
+			row.AutoSyncState = "watching"
+			row.AutoSyncError = ""
+		}
 	} else {
 		row.AutoSyncState = "disabled"
+		row.AutoSyncError = ""
 	}
 	deployPaths, err := validateDeploymentTargets(row, input.DeployEnabled, input.DeployNewStacks, input.DeployComposePaths)
 	if err != nil {
@@ -98,11 +103,14 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	row.AutoDeployNewStacks = input.DeployNewStacks
 	row.AutoDeployRollbackEnabled = input.DeployRollback
 	row.AutoDeployComposePaths = strings.Join(deployPaths, "\n")
-	row.AutoDeployError = ""
 	if input.DeployEnabled {
-		row.AutoDeployState = "watching"
+		if !wasAutoDeployEnabled || row.AutoDeployState == "" || row.AutoDeployState == "disabled" {
+			row.AutoDeployState = "watching"
+			row.AutoDeployError = ""
+		}
 	} else {
 		row.AutoDeployState = "disabled"
+		row.AutoDeployError = ""
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
@@ -401,6 +409,11 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 			result.Message = "Stack already matches Git"
 		} else if len(transfer.EditorBlocked) == 0 && len(transfer.ComposeBlocked) == 0 {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
+		}
+		if changed == 0 && binding.AutoDeployEnabled {
+			if clearErr := s.clearIdenticalRollbackStates(binding); clearErr != nil {
+				return clearErr
+			}
 		}
 		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "pending") {
 			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)

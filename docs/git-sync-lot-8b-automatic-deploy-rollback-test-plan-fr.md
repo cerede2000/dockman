@@ -145,3 +145,27 @@ Résultat attendu : la reprise lance d'abord le cycle complet standard (fetch, c
 5. Tester ensuite un lien qui cible directement la racine complète des stacks Dockman.
 
 Résultat attendu : l'action globale n'est proposée que sur le vrai dossier racine lié. Les dossiers parents purement agrégés restent non destructifs. Pour la racine complète des stacks, aucun faux dossier n'est créé : l'action reste disponible uniquement dans **Settings → Git**.
+
+## 17. Réconciliation après correction Git identique au rollback
+
+1. Après un rollback réussi, vérifier que Git contient encore la version fautive et que Dockman a restauré la version saine.
+2. Corriger Git dans un nouveau commit avec exactement le contenu déjà restauré localement.
+3. Lancer **Sync now** depuis la popup du dossier racine lié.
+
+Résultat attendu : Dockman indique que Git et la stack sont identiques, clôture l'incident actif `rolled_back`, remet la synchronisation à `up_to_date` et l'auto-deploy à `watching`. L'ancien échec reste consultable uniquement dans Activity et Recent controlled deployments.
+
+## 18. Sauvegarde des réglages sans acquittement d'incident
+
+1. Placer volontairement un folder link en `partial`, `blocked`, `conflict` ou en erreur de déploiement.
+2. Ouvrir sa configuration Git automatique sans modifier les options.
+3. Cliquer **Save**.
+
+Résultat attendu : l'état, le message et le détail de l'incident restent inchangés. Seule une vraie synchronisation/résolution réussie, ou la désactivation explicite de l'automatisation concernée, peut le clôturer.
+
+## 19. Container en boucle de redémarrage
+
+1. Utiliser une stack protégée par rollback avec `restart: always` ou `restart: unless-stopped`.
+2. Publier sur Git une modification de Compose ou de configuration qui fait quitter le processus immédiatement avec un code non nul.
+3. Déclencher la synchronisation.
+
+Résultat attendu : pendant la fenêtre bornée `docker compose up --wait --wait-timeout 60`, le container reste `restarting` et le déploiement échoue. Dockman restaure les fichiers pré-import, redéploie la version précédente et attend son retour running/healthy. Un crash différé après la réussite de cette fenêtre nécessite un healthcheck représentatif pour être détecté de manière fiable.
