@@ -44,6 +44,7 @@ type GitStackStatusView struct {
 	Error                     string     `json:"error,omitempty"`
 	ConflictCount             int        `json:"conflictCount"`
 	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
+	BindingAutomationPaused   bool       `json:"bindingAutomationPaused"`
 	BindingSyncState          string     `json:"bindingSyncState"`
 	BindingSyncError          string     `json:"bindingSyncError,omitempty"`
 	AutomationPaused          bool       `json:"automationPaused"`
@@ -144,7 +145,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			deployState = "idle"
 		}
 		var nextCheck *time.Time
-		if binding.AutoSyncEnabled && !row.AutomationPaused {
+		if binding.AutoSyncEnabled && !binding.AutoSyncPaused && !row.AutomationPaused {
 			base := time.Now().UTC()
 			if binding.LastAutoSyncAt != nil {
 				base = *binding.LastAutoSyncAt
@@ -158,7 +159,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 			RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, row.ComposePath)),
 			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
-			AutoSyncEnabled: binding.AutoSyncEnabled, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
+			AutoSyncEnabled: binding.AutoSyncEnabled, BindingAutomationPaused: binding.AutoSyncPaused, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
 			AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
 			AutoDeployEnabled: deployEnabled, AutoDeployRollbackEnabled: deployEnabled && binding.AutoDeployRollbackEnabled,
 			AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
@@ -188,7 +189,9 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 				ComposePath: composePath, FullComposePath: filepath.ToSlash(filepath.Join(binding.StackPath, composePath)),
 				RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 				RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, composePath)),
-				State:             stackSyncUnselected, Selected: false, DeployState: "disabled",
+				State:             stackSyncUnselected, Selected: false, AutoSyncEnabled: binding.AutoSyncEnabled,
+				BindingAutomationPaused: binding.AutoSyncPaused, BindingSyncState: binding.AutoSyncState,
+				DeployState: "disabled",
 			})
 		}
 	}

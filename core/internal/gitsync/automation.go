@@ -29,6 +29,15 @@ type BindingAutomationInput struct {
 	DeployComposePaths []string `json:"deployComposePaths"`
 }
 
+type BindingAutomationPauseInput struct {
+	Paused bool `json:"paused"`
+}
+
+type BindingAutomationPauseResult struct {
+	Binding BindingView     `json:"binding"`
+	Sync    *AutoSyncResult `json:"sync,omitempty"`
+}
+
 type AutoSyncResult struct {
 	BindingID      string   `json:"bindingId"`
 	State          string   `json:"state"`
@@ -68,6 +77,9 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		return BindingView{}, fmt.Errorf("automatic synchronization interval must be between %d and %d minutes", minAutoSyncIntervalMinutes, maxAutoSyncIntervalMinutes)
 	}
 	row.AutoSyncEnabled = input.Enabled
+	if !input.Enabled {
+		row.AutoSyncPaused = false
+	}
 	if input.AutoReconcile != nil {
 		row.AutoReconcileEnabled = *input.AutoReconcile
 	}
@@ -96,6 +108,67 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		return BindingView{}, err
 	}
 	return s.bindingView(row)
+}
+
+// SetBindingAutomationPause suspends only the scheduler for a folder link.
+// Resuming first performs the regular, complete synchronization while the
+// scheduler still ignores the link, then reenables subsequent scheduled runs.
+func (s *Service) SetBindingAutomationPause(ctx context.Context, id string, paused bool) (BindingAutomationPauseResult, error) {
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingAutomationPauseResult{}, err
+	}
+	if !row.AutoSyncEnabled {
+		return BindingAutomationPauseResult{}, errors.New("automatic synchronization is disabled for this folder link")
+	}
+	if row.AutoSyncPaused == paused {
+		view, viewErr := s.bindingView(row)
+		return BindingAutomationPauseResult{Binding: view}, viewErr
+	}
+	if paused {
+		automationLock := s.repositoryLock("automation:" + id)
+		if !automationLock.TryLock() {
+			return BindingAutomationPauseResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+		}
+		defer automationLock.Unlock()
+		row, err = s.store.GetBinding(id)
+		if err != nil {
+			return BindingAutomationPauseResult{}, err
+		}
+		if !row.AutoSyncEnabled {
+			return BindingAutomationPauseResult{}, errors.New("automatic synchronization is disabled for this folder link")
+		}
+		row.AutoSyncPaused = true
+		if err := s.store.SaveBinding(&row); err != nil {
+			return BindingAutomationPauseResult{}, err
+		}
+		view, err := s.bindingView(row)
+		return BindingAutomationPauseResult{Binding: view}, err
+	}
+
+	// Keep AutoSyncPaused set during the immediate run. This prevents the
+	// scheduler from racing the explicit resume check.
+	syncResult, syncErr := s.RunBindingAutoSync(ctx, id)
+	automationLock := s.repositoryLock("automation:" + id)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	row, reloadErr := s.store.GetBinding(id)
+	if reloadErr != nil {
+		return BindingAutomationPauseResult{}, reloadErr
+	}
+	row.AutoSyncPaused = false
+	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingAutomationPauseResult{}, err
+	}
+	view, viewErr := s.bindingView(row)
+	result := BindingAutomationPauseResult{Binding: view, Sync: &syncResult}
+	if viewErr != nil {
+		return BindingAutomationPauseResult{}, viewErr
+	}
+	if syncErr != nil {
+		return result, fmt.Errorf("automatic synchronization resumed, but its immediate check failed: %w", syncErr)
+	}
+	return result, nil
 }
 
 // StartAutomation starts the low-frequency Git watcher. It only processes

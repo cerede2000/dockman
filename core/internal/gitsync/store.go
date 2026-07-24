@@ -134,7 +134,7 @@ func (s *Store) GetBinding(id string) (StackBinding, error) {
 
 func (s *Store) ListAutoSyncBindings() ([]StackBinding, error) {
 	var rows []StackBinding
-	err := s.db.Where("auto_sync_enabled = ?", true).
+	err := s.db.Where("auto_sync_enabled = ? AND auto_sync_paused = ?", true, false).
 		Order("last_auto_sync_at ASC, created_at ASC").Find(&rows).Error
 	return rows, err
 }

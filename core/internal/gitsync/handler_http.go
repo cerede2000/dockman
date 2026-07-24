@@ -48,6 +48,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings/{id}/refresh-compose", h.refreshBindingComposeCatalog)
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
 	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
+	mux.HandleFunc("PUT /bindings/{id}/automation/pause", h.pauseBindingAutomation)
 	mux.HandleFunc("GET /bindings/{id}/deployments", h.listBindingDeployments)
 	mux.HandleFunc("GET /bindings/{id}/operations", h.bindingOperations)
 	mux.HandleFunc("GET /bindings/{id}/backups", h.listBindingBackups)
@@ -374,6 +375,31 @@ func (h *HTTPHandler) updateBindingAutomation(w http.ResponseWriter, r *http.Req
 	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.ID, Type: "automation_config",
 		Trigger: "manual", Details: ActivityDetails{Action: action}})
 	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) pauseBindingAutomation(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingAutomationPauseInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.SetBindingAutomationPause(r.Context(), r.PathValue("id"), input.Paused)
+	action := "resume"
+	if input.Paused {
+		action = "pause"
+	}
+	if result.Binding.ID != "" {
+		h.service.recordActivity(ActivityRecord{RepositoryID: result.Binding.RepositoryID, BindingID: result.Binding.ID, Type: "automation_pause",
+			Trigger: "manual", Details: ActivityDetails{Action: action}})
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) runBindingAutomation(w http.ResponseWriter, r *http.Request) {

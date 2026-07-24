@@ -74,6 +74,7 @@ type BindingView struct {
 	ExcludePatterns           []string   `json:"excludePatterns"`
 	Enabled                   bool       `json:"enabled"`
 	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
+	AutoSyncPaused            bool       `json:"autoSyncPaused"`
 	AutoSyncIntervalMinutes   int        `json:"autoSyncIntervalMinutes"`
 	AutoSyncState             string     `json:"autoSyncState"`
 	AutoSyncError             string     `json:"autoSyncError,omitempty"`
@@ -773,6 +774,7 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
 	row.AutoSyncEnabled = false
+	row.AutoSyncPaused = false
 	row.AutoSyncState = "disabled"
 	row.AutoSyncError = ""
 	row.AutoDeployEnabled = false
@@ -1466,7 +1468,7 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		ComposeSelectionMode: normalizedComposeSelectionMode(row.ComposeSelectionMode), SelectedComposePaths: selectedComposePaths(row),
 		SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns),
 		ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled,
-		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
+		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncPaused: row.AutoSyncPaused, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
 		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
 		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
 		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployNewStacks: row.AutoDeployNewStacks,

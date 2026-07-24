@@ -57,6 +57,7 @@ type StackBinding struct {
 	ExcludePatterns           string `gorm:"type:text"`
 	Enabled                   bool   `gorm:"not null;default:true"`
 	AutoSyncEnabled           bool   `gorm:"not null;default:false"`
+	AutoSyncPaused            bool   `gorm:"not null;default:false"`
 	AutoSyncIntervalMinutes   int    `gorm:"not null;default:15"`
 	AutoSyncState             string `gorm:"not null;default:disabled"`
 	AutoSyncError             string `gorm:"type:text"`

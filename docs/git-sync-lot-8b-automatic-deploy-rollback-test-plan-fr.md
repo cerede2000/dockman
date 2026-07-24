@@ -115,3 +115,33 @@ Résultat attendu : aucun surcoût de fond mesurable, aucun nouveau goroutine/po
 2. Déployer une modification saine puis une modification dont le démarrage échoue.
 
 Résultat attendu : la modification saine utilise le chemin historique non bloquant. L'échec conserve le comportement d'auto-deploy antérieur et ne restaure rien implicitement.
+
+## 14. Pause globale d'un folder link
+
+1. Sur un folder link dont la synchronisation automatique est active, cliquer sur **Pause** dans sa ligne sous **Settings → Git**.
+2. Vérifier que le badge du lien indique `paused` et que les indicateurs des stacks signalent la pause globale.
+3. Attendre au moins un intervalle configuré après avoir publié une modification saine sur Git.
+4. Vérifier que cette modification n'est ni importée ni déployée automatiquement.
+5. Utiliser **Check and synchronize now** pendant la pause.
+
+Résultat attendu : la pause conserve l'intervalle, la sélection des stacks, l'auto-deploy et le rollback. Le scheduler ignore complètement ce lien, mais le contrôle manuel reste utilisable et suit le processus normal complet.
+
+## 15. Reprise et contrôle immédiat
+
+1. Remettre le folder link en pause puis publier une nouvelle modification saine sur Git.
+2. Cliquer sur **Reprendre** dans **Settings → Git**.
+3. Vérifier que la modification est traitée immédiatement sans attendre le prochain intervalle.
+4. Publier une seconde modification et vérifier qu'elle est ensuite traitée au prochain intervalle normal.
+5. Refaire le test avec un conflit ou un Compose invalide.
+
+Résultat attendu : la reprise lance d'abord le cycle complet standard (fetch, comparaison, conflit/transfert, validation et éventuel déploiement), puis réactive la planification. Une erreur reste visible dans son état normal et ne provoque ni double exécution ni boucle de retry.
+
+## 16. Pause depuis la vue Files
+
+1. Ouvrir un vrai dossier qui est lui-même la racine d'un folder link.
+2. Cliquer son indicateur Git agrégé puis **Pause folder link**.
+3. Vérifier que toutes ses stacks reflètent la pause globale et que leurs sélections individuelles ne changent pas.
+4. Cliquer **Resume & check now** depuis la même popup.
+5. Tester ensuite un lien qui cible directement la racine complète des stacks Dockman.
+
+Résultat attendu : l'action globale n'est proposée que sur le vrai dossier racine lié. Les dossiers parents purement agrégés restent non destructifs. Pour la racine complète des stacks, aucun faux dossier n'est créé : l'action reste disponible uniquement dans **Settings → Git**.

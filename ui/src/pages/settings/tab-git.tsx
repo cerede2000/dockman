@@ -8,7 +8,7 @@ import {
 } from "@mui/material";
 import {
     Add, ArchiveOutlined, BlockOutlined, CheckCircleOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
-    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined,
+    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, PauseCircleOutlined, PlayCircleOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined,
 } from "@mui/icons-material";
 import {withProtectedAPI} from "../../lib/api.ts";
 import {formatBytes} from "../../lib/editor.ts";
@@ -115,7 +115,7 @@ interface Binding {
     subPath: string; composePaths: string[]; syncProfile: "compose_config" | "all_files";
     composeSelectionMode: "all" | "selected"; selectedComposePaths: string[];
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
-    autoSyncEnabled: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
+    autoSyncEnabled: boolean; autoSyncPaused: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
     autoSyncError?: string; lastAutoSyncAt?: string; lastAutoSyncSuccessAt?: string;
     autoDeployEnabled: boolean; autoDeployNewStacks: boolean; autoDeployRollbackEnabled: boolean; autoDeployComposePaths: string[]; autoDeployState: string;
     autoDeployError?: string; lastAutoDeployAt?: string;
@@ -915,6 +915,25 @@ export default function TabGit() {
         finally { setBusy(null); }
     };
 
+    const toggleBindingAutomationPause = async (binding: Binding) => {
+        const paused = !binding.autoSyncPaused;
+        setBusy(`binding-auto-pause-${binding.id}`);
+        try {
+            const result = await api<{binding: Binding; sync?: AutoSyncResult}>(`/bindings/${binding.id}/automation/pause`, {
+                method: "PUT", body: JSON.stringify({paused}),
+            });
+            setBindings((current) => current.map((candidate) => candidate.id === binding.id ? result.binding : candidate));
+            if (paused) showSuccess("Automatic synchronization paused for this folder link.");
+            else if (result.sync?.state === "conflict" || result.sync?.state === "blocked" || result.sync?.state === "error") showError(result.sync.message);
+            else if (result.sync?.state === "partial") showWarning(result.sync.message);
+            else showSuccess(result.sync?.message || "Automatic synchronization resumed after a complete check.");
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+            await load();
+        } finally { setBusy(null); }
+    };
+
     const addPreviewExclusions = async (entriesToExclude: Array<{path: string; directory: boolean}>) => {
         if (!transferBinding || entriesToExclude.length === 0) return;
         const previousPreview = transferPreview;
@@ -1087,8 +1106,9 @@ export default function TabGit() {
                             <TableCell>{binding.composePaths.length ? <Tooltip title="View and choose synchronized stacks"><Chip size="small" clickable color={(binding.selectedComposePaths || []).length === binding.composePaths.length ? "info" : "warning"} variant="outlined" onClick={() => openComposeSelection(binding)} label={(binding.selectedComposePaths || []).length}/></Tooltip> : <Chip size="small" color="warning" variant="outlined" label="0"/>}</TableCell>
                             <TableCell sx={{minWidth: 190}}>
                                 <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
-                                    <Tooltip title={binding.autoSyncState === "conflict" ? "Open and resolve conflicts" : binding.autoSyncState === "blocked" ? "Open preserved changes and Git deletions" : binding.autoSyncState === "error" || binding.autoSyncState === "partial" ? "Open error details" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict" || binding.autoSyncState === "blocked" || binding.autoSyncState === "error" || binding.autoSyncState === "partial"} onClick={() => openBindingState(binding)} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "up_to_date" ? "success" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncState === "blocked" || binding.autoSyncState === "partial" ? "warning" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
+                                    <Tooltip title={binding.autoSyncState === "conflict" ? `Open and resolve conflicts${binding.autoSyncPaused ? " (automatic synchronization is paused)" : ""}` : binding.autoSyncState === "blocked" ? `Open preserved changes and Git deletions${binding.autoSyncPaused ? " (automatic synchronization is paused)" : ""}` : binding.autoSyncState === "error" || binding.autoSyncState === "partial" ? "Open error details" : binding.autoSyncPaused ? "Automatic synchronization is paused for this folder link" : binding.autoSyncError || (binding.autoSyncEnabled ? `Every ${binding.autoSyncIntervalMinutes} minutes` : "Disabled by default")}><Chip size="small" variant="outlined" clickable={binding.autoSyncState === "conflict" || binding.autoSyncState === "blocked" || binding.autoSyncState === "error" || binding.autoSyncState === "partial"} onClick={() => openBindingState(binding)} color={!binding.autoSyncEnabled ? "default" : binding.autoSyncState === "conflict" || binding.autoSyncState === "error" ? "error" : binding.autoSyncPaused || binding.autoSyncState === "blocked" || binding.autoSyncState === "partial" ? "warning" : binding.autoSyncState === "up_to_date" ? "success" : "info"} label={!binding.autoSyncEnabled ? "off" : binding.autoSyncPaused ? `paused${["conflict", "blocked", "error", "partial"].includes(binding.autoSyncState) ? ` · ${binding.autoSyncState}` : ""}` : binding.autoSyncState.replaceAll("_", " ")}/></Tooltip>
                                     <Tooltip title="Configure automatic monitoring"><IconButton size="small" disabled={busy !== null} onClick={() => openBindingAutomation(binding)}><SyncOutlined fontSize="small"/></IconButton></Tooltip>
+                                    {binding.autoSyncEnabled && <Tooltip title={binding.autoSyncPaused ? "Resume and run a complete synchronization now" : "Pause automatic synchronization for this folder link"}><span><IconButton size="small" color={binding.autoSyncPaused ? "success" : "warning"} disabled={busy !== null} onClick={() => void toggleBindingAutomationPause(binding)}>{busy === `binding-auto-pause-${binding.id}` ? <CircularProgress size={17}/> : binding.autoSyncPaused ? <PlayCircleOutlined fontSize="small"/> : <PauseCircleOutlined fontSize="small"/>}</IconButton></span></Tooltip>}
                                     {binding.autoSyncEnabled && <Tooltip title="Check and synchronize now"><span><IconButton size="small" disabled={busy !== null} onClick={() => void runBindingAutomation(binding)}>{busy === `binding-auto-run-${binding.id}` ? <CircularProgress size={17}/> : <RefreshOutlined fontSize="small"/>}</IconButton></span></Tooltip>}
                                     {binding.autoDeployEnabled && <Tooltip title={binding.autoDeployState === "failed" || binding.autoDeployState === "partial" ? "Open deployment error details" : binding.autoDeployError || `${binding.autoDeployComposePaths.length} controlled deployment target(s)`}><Chip size="small" variant="outlined" clickable={binding.autoDeployState === "failed" || binding.autoDeployState === "partial"} onClick={binding.autoDeployState === "failed" || binding.autoDeployState === "partial" ? () => openBindingAutomation(binding) : undefined} color={binding.autoDeployState === "failed" || binding.autoDeployState === "partial" ? "error" : "warning"} label={binding.autoDeployState === "success" ? "deployed" : binding.autoDeployState === "partial" ? "partial deploy" : "auto deploy"}/></Tooltip>}
                                 </Stack>

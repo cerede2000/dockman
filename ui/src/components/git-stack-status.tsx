@@ -43,6 +43,9 @@ function stateLabel(status: GitStackStatus) {
         local_changes: 'Local changes waiting', locally_deleted: 'Deleted locally · still present on Git', remote_changes: 'Git changes waiting', conflict: 'Conflict requires a decision',
         orphaned: 'Deleted on Git · preserved locally', error: 'Synchronization failed',
     } as Record<string, string>)[status.state] ?? status.state;
+    if (status.bindingAutomationPaused) return label === 'Synchronized' || label === 'Synchronization not checked yet'
+        ? 'Folder link automation paused'
+        : `Folder link automation paused · ${label}`;
     if (!status.automationPaused) return label;
     return status.state === 'up_to_date' || status.state === 'pending'
         ? 'Automatic synchronization paused'
@@ -53,11 +56,12 @@ function dateLabel(value?: string) {
     return value ? new Date(value).toLocaleString() : '—';
 }
 
-export default function GitStackStatusIndicator({status, size = 18, interactive = true, aggregateStatuses}: {
+export default function GitStackStatusIndicator({status, size = 18, interactive = true, aggregateStatuses, bindingRoot = false}: {
     status?: GitStackStatus;
     size?: number;
     interactive?: boolean;
     aggregateStatuses?: GitStackStatus[];
+    bindingRoot?: boolean;
 }) {
     const [anchor, setAnchor] = useState<HTMLElement | null>(null);
     const [busy, setBusy] = useState(false);
@@ -71,7 +75,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const {showError, showSuccess, showWarning} = useSnackbar();
     const navigate = useNavigate();
     const severity = status ? gitStatusSeverity(status) : 'neutral';
-    const color = status?.automationPaused && (severity === 'success' || severity === 'neutral') ? colors.neutral : colors[severity];
+    const color = (status?.bindingAutomationPaused || status?.automationPaused) && (severity === 'success' || severity === 'neutral') ? colors.neutral : colors[severity];
     const error = status?.deployState === 'failed' || status?.deployState === 'rollback_failed' || status?.deployState === 'rolled_back' ? status.deployError : status?.error;
     const encodedComposePath = useMemo(() => status?.composePath.split('/').map(encodeURIComponent).join('/') ?? '', [status?.composePath]);
 
@@ -115,6 +119,23 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
             await refreshGitStackStatuses(status.host);
             if (result.state === 'blocked' || result.state === 'conflict' || result.state === 'partial') showWarning(result.message);
             else showSuccess(result.message || 'Git synchronization check completed.');
+        } catch (reason) {
+            showError((reason as Error).message);
+            await refreshGitStackStatuses(status.host);
+        } finally { setBusy(false); }
+    };
+
+    const toggleFolderLinkPause = async () => {
+        const paused = !status.bindingAutomationPaused;
+        setBusy(true);
+        try {
+            const result = await request<{sync?: AutoSyncResult}>(`/bindings/${status.bindingId}/automation/pause`, {
+                method: 'PUT', body: JSON.stringify({paused}),
+            });
+            await refreshGitStackStatuses(status.host);
+            if (paused) showSuccess('Automatic synchronization paused for this folder link.');
+            else if (result.sync?.state === 'blocked' || result.sync?.state === 'conflict' || result.sync?.state === 'partial' || result.sync?.state === 'error') showWarning(result.sync.message);
+            else showSuccess(result.sync?.message || 'Folder link resumed after a complete synchronization check.');
         } catch (reason) {
             showError((reason as Error).message);
             await refreshGitStackStatuses(status.host);
@@ -218,7 +239,11 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
         >
             {aggregateStatuses && aggregateStatuses.length > 0 ? <Stack spacing={1.25} sx={{p: 1.75, userSelect: 'text'}}>
                 <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><Sync sx={{color}}/><Box><Typography sx={{fontWeight: 700}}>Linked folder synchronization</Typography><Typography variant="caption" color="text.secondary">{aggregateStatuses.length} stack{aggregateStatuses.length === 1 ? '' : 's'} in this folder</Typography></Box></Stack>
-                <Alert severity={severity === 'error' ? 'error' : severity === 'warning' ? 'warning' : 'info'}>This is an aggregate indicator. Resolve each affected stack below; no action is applied blindly to the whole folder.</Alert>
+                <Alert severity={severity === 'error' ? 'error' : severity === 'warning' ? 'warning' : 'info'}>{bindingRoot ? 'This is the root of this folder link. Pausing it suspends scheduled synchronization for every stack below without changing their selection or deployment settings.' : 'This is an aggregate indicator. Resolve each affected stack below; no action is applied blindly to the whole folder.'}</Alert>
+                {bindingRoot && status.autoSyncEnabled && <Stack direction="row" spacing={1} sx={{alignItems: 'center', flexWrap: 'wrap'}}>
+                    <Button size="small" color={status.bindingAutomationPaused ? 'success' : 'warning'} variant="outlined" startIcon={busy ? <CircularProgress size={14}/> : status.bindingAutomationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void toggleFolderLinkPause()}>{status.bindingAutomationPaused ? 'Resume & check now' : 'Pause folder link'}</Button>
+                    {status.bindingAutomationPaused && <Typography variant="caption" color="text.secondary">The complete synchronization process runs immediately when resumed.</Typography>}
+                </Stack>}
                 <Divider/>
                 <Stack spacing={1} sx={{maxHeight: 420, overflowY: 'auto', pr: .5}}>
                     {aggregateStatuses.map((target) => <Box key={`${target.bindingId}:${target.composePath}`} sx={{p: 1.1, border: '1px solid rgba(255,255,255,.1)', borderRadius: 1.5, bgcolor: 'rgba(255,255,255,.025)'}}>
@@ -247,13 +272,14 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                     <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Last check</Typography><Typography variant="body2">{dateLabel(status.lastCheckedAt)}</Typography></Stack>
                     <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Last success</Typography><Typography variant="body2">{dateLabel(status.lastSuccessAt)}</Typography></Stack>
                     {status.lastCommit && <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Commit</Typography><Typography variant="body2" sx={{fontFamily: 'monospace'}}>{status.lastCommit.slice(0, 12)}</Typography></Stack>}
-                    <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Automation</Typography><Typography variant="body2">{!status.autoSyncEnabled ? 'Manual' : status.automationPaused ? status.pauseReason === 'recovery' ? 'Paused after recovery' : 'Paused manually' : `Every ${status.autoSyncIntervalMinutes} min`}</Typography></Stack>
-                    {status.autoSyncEnabled && !status.automationPaused && <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Next check</Typography><Typography variant="body2">{dateLabel(status.nextCheckAt)}</Typography></Stack>}
+                    <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Automation</Typography><Typography variant="body2">{!status.autoSyncEnabled ? 'Manual' : status.bindingAutomationPaused ? 'Paused for folder link' : status.automationPaused ? status.pauseReason === 'recovery' ? 'Paused after recovery' : 'Paused manually' : `Every ${status.autoSyncIntervalMinutes} min`}</Typography></Stack>
+                    {status.autoSyncEnabled && !status.bindingAutomationPaused && !status.automationPaused && <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Next check</Typography><Typography variant="body2">{dateLabel(status.nextCheckAt)}</Typography></Stack>}
                     <Stack direction="row" sx={{justifyContent: 'space-between', gap: 2}}><Typography variant="body2" color="text.secondary">Auto-deploy</Typography><Typography variant="body2">{status.autoDeployEnabled ? status.deployState.replaceAll('_', ' ') : 'Off'}{status.autoDeployEnabled && status.autoDeployRollbackEnabled ? ' · rollback protected' : ''}</Typography></Stack>
                 </>}
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
                 {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
                 {status.bindingSyncState === 'blocked' && <Alert severity="warning" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}><strong>Automatic synchronization is blocked.</strong>{status.bindingSyncError ? ` ${status.bindingSyncError}` : ''}</Alert>}
+                {status.bindingAutomationPaused && <Alert severity="info">Automatic synchronization is paused for the complete folder link. Resume it from its root folder or from Settings → Git.</Alert>}
                 {status.state === 'locally_deleted' && <Alert severity="warning">A synchronized {localDeletion?.wholeStack ? 'stack' : 'file'} was deleted locally but still exists on Git. Choose explicitly whether to restore it, delete it from Git, or stop synchronizing it.</Alert>}
                 {status.state === 'orphaned' && <Alert severity="warning">This stack disappeared completely from Git and was preserved locally. Restore it to Git here, or open the detailed view to archive or explicitly remove the local folder after backup.</Alert>}
                 {localDeletionLoading && <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><CircularProgress size={16}/><Typography variant="caption">Loading pending deletions…</Typography></Stack>}
@@ -275,7 +301,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                     {status.selected && status.autoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
                     {(status.state === 'local_changes' || status.state === 'orphaned') && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>{status.state === 'orphaned' ? (status.pauseReason === 'recovery' ? 'Restore & resume' : 'Restore to Git') : (status.pauseReason === 'recovery' ? 'Push & resume' : 'Push to Git')}</Button>}
                     {status.selected && status.state !== 'locally_deleted' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView()}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || ['failed', 'rollback_failed', 'rolled_back'].includes(status.deployState) ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>}
-                    {status.autoSyncEnabled && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused && (status.state === 'local_changes' || status.state === 'orphaned') ? 'Push & resume' : status.automationPaused ? 'Resume' : 'Pause'}</Button>}
+                    {status.autoSyncEnabled && !status.bindingAutomationPaused && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused && (status.state === 'local_changes' || status.state === 'orphaned') ? 'Push & resume' : status.automationPaused ? 'Resume' : 'Pause'}</Button>}
                     <Button size="small" startIcon={<HistoryOutlined/>} disabled={busy} onClick={() => { setAnchor(null); setRecoveryTab('activity'); }}>Activity</Button>
                     <Button size="small" startIcon={<RestoreOutlined/>} disabled={busy} onClick={() => { setAnchor(null); setRecoveryTab('backups'); }}>Backups</Button>
                     <Button size="small" startIcon={<OpenInNew/>} onClick={() => navigate('/settings?tab=2')}>Git settings</Button>

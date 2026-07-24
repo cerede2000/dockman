@@ -17,6 +17,7 @@ export interface GitStackStatus {
     error?: string;
     conflictCount: number;
     autoSyncEnabled: boolean;
+    bindingAutomationPaused: boolean;
     bindingSyncState: string;
     bindingSyncError?: string;
     automationPaused: boolean;
@@ -64,7 +65,7 @@ export function worstGitStatus(statuses: GitStackStatus[]): GitStackStatus | und
         if (status.state === 'orphaned' || status.state === 'locally_deleted') return 5;
         if (status.state === 'local_changes' || status.state === 'remote_changes' || status.deployState === 'pending' || status.deployState === 'rolled_back') return 4;
         if (status.state === 'checking') return 3;
-        if (!status.selected || status.automationPaused || status.state === 'pending') return 2;
+        if (!status.selected || status.bindingAutomationPaused || status.automationPaused || status.state === 'pending') return 2;
         return 1;
     };
     return statuses.reduce<GitStackStatus | undefined>((worst, current) => {

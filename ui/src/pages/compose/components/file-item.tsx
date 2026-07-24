@@ -225,8 +225,12 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
         const compose = status.fullComposePath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
         return compose.slice(0, Math.max(0, compose.lastIndexOf('/'))) === normalizedFolder
     })
-    const actionableFolderStatuses = !exactGitStatus && !containsDirectStack && aggregateGitStatuses.length > 0
+    const bindingRootStatuses = !exactGitStatus && aggregateGitStatuses.length > 0
+        && new Set(aggregateGitStatuses.map((status) => status.bindingId)).size === 1
+        && aggregateGitStatuses.every((status) => status.stackPath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '') === normalizedFolder)
         ? aggregateGitStatuses : undefined
+    const actionableFolderStatuses = bindingRootStatuses ?? (!exactGitStatus && !containsDirectStack && aggregateGitStatuses.length > 0
+        ? aggregateGitStatuses : undefined)
     useEffect(() => {
         // Track the stack status for any folder that contains a compose file,
         // regardless of the useComposeFolders display mode, so the status dot is
@@ -307,7 +311,8 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
 
                 <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={17}
                                          interactive={Boolean(exactGitStatus) || Boolean(actionableFolderStatuses)}
-                                         aggregateStatuses={actionableFolderStatuses}/>
+                                         aggregateStatuses={actionableFolderStatuses}
+                                         bindingRoot={Boolean(bindingRootStatuses)}/>
                 <StatusIndicator fileStatus={fileStatus}/>
 
                 <IconButton
