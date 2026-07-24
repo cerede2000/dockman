@@ -31,12 +31,12 @@ type BindingCommitView struct {
 }
 
 type CommitRollbackInput struct {
-	CommitSHA              string   `json:"commitSha"`
-	ComposePaths           []string `json:"composePaths"`
-	SelectedPaths          []string `json:"selectedPaths"`
-	IncludeSensitive       bool     `json:"includeSensitive"`
+	CommitSHA             string   `json:"commitSha"`
+	ComposePaths          []string `json:"composePaths"`
+	SelectedPaths         []string `json:"selectedPaths"`
+	IncludeSensitive      bool     `json:"includeSensitive"`
 	SensitiveConfirmation string   `json:"sensitiveConfirmation"`
-	PreviewToken           string   `json:"previewToken"`
+	PreviewToken          string   `json:"previewToken"`
 }
 
 type CommitRollbackEntry struct {
@@ -51,24 +51,24 @@ type CommitRollbackEntry struct {
 }
 
 type CommitRollbackPreview struct {
-	Commit               BindingCommitView     `json:"commit"`
-	ComposePaths         []string              `json:"composePaths"`
-	Entries              []CommitRollbackEntry `json:"entries"`
-	Changed              int                   `json:"changed"`
-	Restores             int                   `json:"restores"`
-	Removals             int                   `json:"removals"`
-	Skipped              int                   `json:"skipped"`
-	MissingComposePaths  []string              `json:"missingComposePaths,omitempty"`
-	ComposeErrors        map[string]string     `json:"composeErrors,omitempty"`
-	Token                string                `json:"token"`
+	Commit              BindingCommitView     `json:"commit"`
+	ComposePaths        []string              `json:"composePaths"`
+	Entries             []CommitRollbackEntry `json:"entries"`
+	Changed             int                   `json:"changed"`
+	Restores            int                   `json:"restores"`
+	Removals            int                   `json:"removals"`
+	Skipped             int                   `json:"skipped"`
+	MissingComposePaths []string              `json:"missingComposePaths,omitempty"`
+	ComposeErrors       map[string]string     `json:"composeErrors,omitempty"`
+	Token               string                `json:"token"`
 }
 
 type CommitRollbackResult struct {
-	CommitSHA       string   `json:"commitSha"`
-	SafetyBackupID  string   `json:"safetyBackupId"`
-	RestoredPaths   []string `json:"restoredPaths"`
-	PausedStacks    []string `json:"pausedStacks"`
-	Message         string   `json:"message"`
+	CommitSHA      string   `json:"commitSha"`
+	SafetyBackupID string   `json:"safetyBackupId"`
+	RestoredPaths  []string `json:"restoredPaths"`
+	PausedStacks   []string `json:"pausedStacks"`
+	Message        string   `json:"message"`
 }
 
 func (s *Service) ListBindingCommits(bindingID string, limit int) ([]BindingCommitView, error) {
@@ -207,10 +207,16 @@ func rollbackComposeSelection(binding StackBinding, requested []string) ([]strin
 
 func buildCommitRollbackPreview(commit BindingCommitView, composePaths []string, target, current map[string]transferFile) CommitRollbackPreview {
 	all := make(map[string]struct{}, len(target)+len(current))
-	for path := range target { all[path] = struct{}{} }
-	for path := range current { all[path] = struct{}{} }
+	for path := range target {
+		all[path] = struct{}{}
+	}
+	for path := range current {
+		all[path] = struct{}{}
+	}
 	paths := make([]string, 0, len(all))
-	for path := range all { paths = append(paths, path) }
+	for path := range all {
+		paths = append(paths, path)
+	}
 	sort.Strings(paths)
 	preview := CommitRollbackPreview{Commit: commit, ComposePaths: composePaths}
 	for _, path := range paths {
@@ -221,8 +227,15 @@ func buildCommitRollbackPreview(commit BindingCommitView, composePaths []string,
 		targetFile, targetExists := target[path]
 		currentFile, currentExists := current[path]
 		entry := CommitRollbackEntry{Path: path, ComposePath: owners[0], Sensitive: targetFile.sensitive || currentFile.sensitive}
-		if targetExists { entry.TargetSHA, entry.Size = targetFile.sha, targetFile.size }
-		if currentExists { entry.CurrentSHA = currentFile.sha; if !targetExists { entry.Size = currentFile.size } }
+		if targetExists {
+			entry.TargetSHA, entry.Size = targetFile.sha, targetFile.size
+		}
+		if currentExists {
+			entry.CurrentSHA = currentFile.sha
+			if !targetExists {
+				entry.Size = currentFile.size
+			}
+		}
 		switch {
 		case targetExists && targetFile.open == nil:
 			entry.Action, entry.Reason = "skipped", "target commit file is protected: "+targetFile.skipReason
@@ -241,7 +254,9 @@ func buildCommitRollbackPreview(commit BindingCommitView, composePaths []string,
 		default:
 			continue
 		}
-		if entry.Action == "skipped" { preview.Skipped++ }
+		if entry.Action == "skipped" {
+			preview.Skipped++
+		}
 		preview.Entries = append(preview.Entries, entry)
 	}
 	return preview
@@ -249,8 +264,8 @@ func buildCommitRollbackPreview(commit BindingCommitView, composePaths []string,
 
 func commitRollbackToken(preview CommitRollbackPreview) string {
 	raw, _ := json.Marshal(struct {
-		Commit string `json:"commit"`
-		Stacks []string `json:"stacks"`
+		Commit  string                `json:"commit"`
+		Stacks  []string              `json:"stacks"`
 		Entries []CommitRollbackEntry `json:"entries"`
 	}{preview.Commit.SHA, preview.ComposePaths, preview.Entries})
 	hash := sha256.Sum256(raw)
@@ -263,28 +278,43 @@ func (s *Service) CompareCommitRollbackFile(bindingID string, input CommitRollba
 		return FileComparison{}, err
 	}
 	binding, err := s.store.GetBinding(bindingID)
-	if err != nil { return FileComparison{}, err }
+	if err != nil {
+		return FileComparison{}, err
+	}
 	lock := s.repositoryLock(binding.RepositoryUUID)
 	lock.Lock()
 	defer lock.Unlock()
 	preview, target, current, err := s.rollbackTreesLocked(binding, input)
-	if err != nil { return FileComparison{}, err }
+	if err != nil {
+		return FileComparison{}, err
+	}
 	allowed := false
 	for _, entry := range preview.Entries {
-		if entry.Path == path && entry.Action == "restore" { allowed = true; break }
+		if entry.Path == path && entry.Action == "restore" {
+			allowed = true
+			break
+		}
 	}
-	if !allowed { return FileComparison{}, errors.New("only changed files available on both sides can be compared") }
+	if !allowed {
+		return FileComparison{}, errors.New("only changed files available on both sides can be compared")
+	}
 	targetFile, targetOK := target[path]
 	currentFile, currentOK := current[path]
 	if !targetOK || !currentOK || targetFile.open == nil || currentFile.open == nil {
 		return FileComparison{}, errors.New("both file versions must be available for comparison")
 	}
 	dockman, dockmanComparable, dockmanReason, err := comparisonSide(currentFile)
-	if err != nil { return FileComparison{}, err }
+	if err != nil {
+		return FileComparison{}, err
+	}
 	git, gitComparable, gitReason, err := comparisonSide(targetFile)
-	if err != nil { return FileComparison{}, err }
+	if err != nil {
+		return FileComparison{}, err
+	}
 	result := FileComparison{Path: path, Dockman: dockman, Git: git, Comparable: dockmanComparable && gitComparable}
-	if !result.Comparable { result.Reason = strings.TrimSpace(strings.Join([]string{dockmanReason, gitReason}, " ")) }
+	if !result.Comparable {
+		result.Reason = strings.TrimSpace(strings.Join([]string{dockmanReason, gitReason}, " "))
+	}
 	return result, nil
 }
 
@@ -293,28 +323,48 @@ func (s *Service) rollbackTreesLocked(binding StackBinding, input CommitRollback
 		return CommitRollbackPreview{}, nil, nil, err
 	}
 	repository, err := s.store.GetRepository(binding.RepositoryUUID)
-	if err != nil { return CommitRollbackPreview{}, nil, nil, err }
+	if err != nil {
+		return CommitRollbackPreview{}, nil, nil, err
+	}
 	repo, err := s.openRepository(repository)
-	if err != nil { return CommitRollbackPreview{}, nil, nil, err }
+	if err != nil {
+		return CommitRollbackPreview{}, nil, nil, err
+	}
 	commit, err := reachableBindingCommit(repo, repository.DefaultBranch, input.CommitSHA)
-	if err != nil { return CommitRollbackPreview{}, nil, nil, err }
+	if err != nil {
+		return CommitRollbackPreview{}, nil, nil, err
+	}
 	composePaths, err := rollbackComposeSelection(binding, input.ComposePaths)
-	if err != nil { return CommitRollbackPreview{}, nil, nil, err }
+	if err != nil {
+		return CommitRollbackPreview{}, nil, nil, err
+	}
 	rollbackBinding := binding
 	rollbackBinding.ComposeSelectionMode = composeSelectionSelected
 	rollbackBinding.SelectedComposePaths = strings.Join(composePaths, "\n")
 	rollbackBinding.AutoDeployEnabled = false
 	rollbackBinding.AutoDeployNewStacks = false
 	policy, err := policyFromBinding(rollbackBinding, repository)
-	if err != nil { return CommitRollbackPreview{}, nil, nil, err }
+	if err != nil {
+		return CommitRollbackPreview{}, nil, nil, err
+	}
 	target, err := collectRepositoryFilesAtCommit(repo, commit.Hash, binding.SubPath, input.IncludeSensitive, policy)
-	if err != nil && !errors.Is(err, os.ErrNotExist) { return CommitRollbackPreview{}, nil, nil, fmt.Errorf("read target commit files: %w", err) }
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return CommitRollbackPreview{}, nil, nil, fmt.Errorf("read target commit files: %w", err)
+	}
 	targetFS, targetRoot, err := s.resolveBindingStack(binding)
-	if err != nil { return CommitRollbackPreview{}, nil, nil, err }
+	if err != nil {
+		return CommitRollbackPreview{}, nil, nil, err
+	}
 	current, err := collectStackFiles(targetFS, targetRoot, input.IncludeSensitive, policy)
-	if err != nil && !errors.Is(err, os.ErrNotExist) { return CommitRollbackPreview{}, nil, nil, fmt.Errorf("read current stack files: %w", err) }
-	if target == nil { target = map[string]transferFile{} }
-	if current == nil { current = map[string]transferFile{} }
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return CommitRollbackPreview{}, nil, nil, fmt.Errorf("read current stack files: %w", err)
+	}
+	if target == nil {
+		target = map[string]transferFile{}
+	}
+	if current == nil {
+		current = map[string]transferFile{}
+	}
 	preview := buildCommitRollbackPreview(bindingCommitView(commit.Hash.String(), commit.Message, commit.Author.Name, commit.Author.Email, commit.Author.When), composePaths, target, current)
 	preview.ComposeErrors, _ = composeFileErrors(target)
 	for _, composePath := range composePaths {
@@ -330,24 +380,34 @@ func (s *Service) rollbackTreesLocked(binding StackBinding, input CommitRollback
 func (s *Service) ApplyCommitRollback(ctx context.Context, bindingID string, input CommitRollbackInput) (CommitRollbackResult, error) {
 	_ = ctx
 	binding, err := s.store.GetBinding(bindingID)
-	if err != nil { return CommitRollbackResult{}, err }
+	if err != nil {
+		return CommitRollbackResult{}, err
+	}
 	automationLock := s.repositoryLock("automation:" + bindingID)
-	if !automationLock.TryLock() { return CommitRollbackResult{}, errors.New("automatic synchronization is currently running; retry when it finishes") }
+	if !automationLock.TryLock() {
+		return CommitRollbackResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+	}
 	defer automationLock.Unlock()
 	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
-	if !repositoryLock.TryLock() { return CommitRollbackResult{}, errors.New("a Git operation is currently running; retry when it finishes") }
+	if !repositoryLock.TryLock() {
+		return CommitRollbackResult{}, errors.New("a Git operation is currently running; retry when it finishes")
+	}
 	defer repositoryLock.Unlock()
 	result, applyErr := s.applyCommitRollbackLocked(binding, input)
 	activity := ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, Type: "commit_rollback", Trigger: "manual", CommitSHA: input.CommitSHA, BackupID: result.SafetyBackupID,
 		Details: ActivityDetails{Action: "restore_commit", Paths: result.RestoredPaths, Message: result.Message}}
-	if applyErr != nil { activity.State, activity.Error = "failed", safeGitError(applyErr) }
+	if applyErr != nil {
+		activity.State, activity.Error = "failed", safeGitError(applyErr)
+	}
 	s.recordActivity(activity)
 	return result, applyErr
 }
 
 func (s *Service) applyCommitRollbackLocked(binding StackBinding, input CommitRollbackInput) (CommitRollbackResult, error) {
 	preview, target, current, err := s.rollbackTreesLocked(binding, input)
-	if err != nil { return CommitRollbackResult{}, err }
+	if err != nil {
+		return CommitRollbackResult{}, err
+	}
 	if input.PreviewToken == "" || input.PreviewToken != preview.Token {
 		return CommitRollbackResult{}, errors.New("commit rollback preview changed; review it again")
 	}
@@ -356,50 +416,100 @@ func (s *Service) applyCommitRollbackLocked(binding StackBinding, input CommitRo
 	}
 	selected := make(map[string]struct{})
 	if len(input.SelectedPaths) == 0 {
-		for _, entry := range preview.Entries { if entry.Action == "restore" || entry.Action == "remove" { selected[entry.Path] = struct{}{} } }
+		for _, entry := range preview.Entries {
+			if entry.Action == "restore" || entry.Action == "remove" {
+				selected[entry.Path] = struct{}{}
+			}
+		}
 	} else {
 		for _, path := range input.SelectedPaths {
 			path = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(path))))
-			if err := validateRelativePath(path, false); err != nil { return CommitRollbackResult{}, err }
+			if err := validateRelativePath(path, false); err != nil {
+				return CommitRollbackResult{}, err
+			}
 			selected[path] = struct{}{}
 		}
 	}
 	actions := make(map[string]CommitRollbackEntry)
-	for _, entry := range preview.Entries { if entry.Action == "restore" || entry.Action == "remove" { actions[entry.Path] = entry } }
-	for path := range selected { if _, ok := actions[path]; !ok { return CommitRollbackResult{}, fmt.Errorf("%s is no longer safely rollbackable", path) } }
-	if len(selected) == 0 { return CommitRollbackResult{}, errors.New("no rollback file was selected") }
+	for _, entry := range preview.Entries {
+		if entry.Action == "restore" || entry.Action == "remove" {
+			actions[entry.Path] = entry
+		}
+	}
+	for path := range selected {
+		if _, ok := actions[path]; !ok {
+			return CommitRollbackResult{}, fmt.Errorf("%s is no longer safely rollbackable", path)
+		}
+	}
+	if len(selected) == 0 {
+		return CommitRollbackResult{}, errors.New("no rollback file was selected")
+	}
 	affected := make(map[string]struct{})
-	for path := range selected { affected[actions[path].ComposePath] = struct{}{} }
+	for path := range selected {
+		affected[actions[path].ComposePath] = struct{}{}
+	}
 	affectedStacks := make([]string, 0, len(affected))
-	for path := range affected { affectedStacks = append(affectedStacks, path) }
+	for path := range affected {
+		affectedStacks = append(affectedStacks, path)
+	}
 	sort.Strings(affectedStacks)
-	if s.stackHasAnyDirtyEditor(binding, affectedStacks) { return CommitRollbackResult{}, errors.New("commit rollback refused while an affected stack has an unsaved editor") }
+	if s.stackHasAnyDirtyEditor(binding, affectedStacks) {
+		return CommitRollbackResult{}, errors.New("commit rollback refused while an affected stack has an unsaved editor")
+	}
 	desired, currentSelected := make(map[string]transferFile), make(map[string]transferFile)
 	for path := range selected {
-		if actions[path].Action == "restore" { desired[path] = target[path] } else { desired[path] = transferFile{path: path} }
-		if file, ok := current[path]; ok { currentSelected[path] = file }
+		if actions[path].Action == "restore" {
+			desired[path] = target[path]
+		} else {
+			desired[path] = transferFile{path: path}
+		}
+		if file, ok := current[path]; ok {
+			currentSelected[path] = file
+		}
 	}
 	backupID, err := s.backupChangedFiles(binding, desired, currentSelected, "pre_commit_rollback", preview.Commit.SHA)
-	if err != nil { return CommitRollbackResult{}, fmt.Errorf("create rollback safety backup: %w", err) }
+	if err != nil {
+		return CommitRollbackResult{}, fmt.Errorf("create rollback safety backup: %w", err)
+	}
+	// Pause first: once local files start changing, no automatic import may race
+	// with or silently undo the explicit rollback decision.
+	for _, composePath := range affectedStacks {
+		if err := s.store.SetGitStackPause(binding.UUID, composePath, true); err != nil {
+			return CommitRollbackResult{SafetyBackupID: backupID}, fmt.Errorf("pause stack automation before rollback: %w", err)
+		}
+	}
 	targetFS, targetRoot, err := s.resolveBindingStack(binding)
-	if err != nil { return CommitRollbackResult{}, err }
-	if err := writeStackFiles(targetFS, targetRoot, desired); err != nil { return CommitRollbackResult{SafetyBackupID: backupID}, err }
+	if err != nil {
+		return CommitRollbackResult{}, err
+	}
+	if err := writeStackFiles(targetFS, targetRoot, desired); err != nil {
+		return CommitRollbackResult{SafetyBackupID: backupID}, err
+	}
 	for path := range selected {
-		if actions[path].Action != "remove" { continue }
-		if err := targetFS.RemoveAll(targetFS.Join(targetRoot, filepath.FromSlash(path))); err != nil { return CommitRollbackResult{SafetyBackupID: backupID}, err }
+		if actions[path].Action != "remove" {
+			continue
+		}
+		if err := targetFS.RemoveAll(targetFS.Join(targetRoot, filepath.FromSlash(path))); err != nil {
+			return CommitRollbackResult{SafetyBackupID: backupID}, err
+		}
 	}
 	paths := make([]string, 0, len(selected))
 	for path := range selected {
 		paths = append(paths, path)
-		if s.fileChangeNotify != nil { s.fileChangeNotify(binding.Host, filepath.ToSlash(filepath.Join(binding.StackPath, path))) }
+		if s.fileChangeNotify != nil {
+			s.fileChangeNotify(binding.Host, filepath.ToSlash(filepath.Join(binding.StackPath, path)))
+		}
 	}
 	sort.Strings(paths)
 	now := time.Now().UTC()
 	for _, composePath := range affectedStacks {
 		state := stackSyncLocalChanges
-		if !bindingComposeExistsLocally(s, binding, composePath) { state = stackSyncLocalDeleted }
-		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{"state": state, "error_message": "Local rollback waiting; review before pushing or importing", "conflict_count": 0, "last_checked_at": &now})
-		_ = s.store.SetGitStackPause(binding.UUID, composePath, true)
+		if !bindingComposeExistsLocally(s, binding, composePath) {
+			state = stackSyncLocalDeleted
+		}
+		if err := s.store.UpdateGitStackStatuses(binding.UUID, []string{composePath}, map[string]any{"state": state, "error_message": "Local rollback waiting; review before pushing or importing", "conflict_count": 0, "last_checked_at": &now}); err != nil {
+			return CommitRollbackResult{CommitSHA: preview.Commit.SHA, SafetyBackupID: backupID, RestoredPaths: paths, PausedStacks: affectedStacks}, fmt.Errorf("record rollback stack state: %w", err)
+		}
 	}
 	message := fmt.Sprintf("%d file(s) restored locally from commit %s; %d affected stack(s) paused; no Compose or Docker action was run", len(paths), preview.Commit.ShortSHA, len(affectedStacks))
 	return CommitRollbackResult{CommitSHA: preview.Commit.SHA, SafetyBackupID: backupID, RestoredPaths: paths, PausedStacks: affectedStacks, Message: message}, nil
@@ -407,8 +517,12 @@ func (s *Service) applyCommitRollbackLocked(binding StackBinding, input CommitRo
 
 func firstMapValue(values map[string]string) string {
 	keys := make([]string, 0, len(values))
-	for key := range values { keys = append(keys, key) }
+	for key := range values {
+		keys = append(keys, key)
+	}
 	sort.Strings(keys)
-	if len(keys) == 0 { return "Compose validation failed" }
+	if len(keys) == 0 {
+		return "Compose validation failed"
+	}
 	return values[keys[0]]
 }
