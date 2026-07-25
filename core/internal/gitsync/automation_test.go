@@ -244,6 +244,18 @@ func TestAutoSyncRestoresPreviousStackWhenHealthCheckedDeploymentFails(t *testin
 	require.Equal(t, "rolled_back", deploymentsView[0].State)
 	require.Contains(t, deploymentsView[0].Result, "previous version restored safely")
 
+	// Background polling must not loop on an unchanged failing commit, while an
+	// explicit Check now must retry after the operator fixes the environment.
+	deploymentCount := len(deployments)
+	skipped, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", skipped.State)
+	require.Len(t, deployments, deploymentCount)
+	retried, err := service.RunBindingAutoSyncNow(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "partial", retried.State)
+	require.Len(t, deployments, deploymentCount+2, "manual retry checks the failing version, then restores the previous version again")
+
 	// Git is corrected in a new commit to the version already restored locally.
 	// There is intentionally nothing to transfer or redeploy, but the active
 	// rollback incident must be reconciled instead of keeping the link partial.

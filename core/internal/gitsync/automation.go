@@ -156,7 +156,7 @@ func (s *Service) SetBindingAutomationPause(ctx context.Context, id string, paus
 
 	// Keep AutoSyncPaused set during the immediate run. This prevents the
 	// scheduler from racing the explicit resume check.
-	syncResult, syncErr := s.RunBindingAutoSync(ctx, id)
+	syncResult, syncErr := s.RunBindingAutoSyncNow(ctx, id)
 	automationLock := s.repositoryLock("automation:" + id)
 	automationLock.Lock()
 	defer automationLock.Unlock()
@@ -250,6 +250,17 @@ func (s *Service) runDueAutoSyncs(ctx context.Context, now time.Time) {
 }
 
 func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncResult, error) {
+	return s.runBindingAutoSync(ctx, id, false)
+}
+
+// RunBindingAutoSyncNow is an explicit user-triggered synchronization. Unlike
+// background polling, it may retry a failed or rolled-back deployment on the
+// same Git commit after the operator has corrected the runtime environment.
+func (s *Service) RunBindingAutoSyncNow(ctx context.Context, id string) (AutoSyncResult, error) {
+	return s.runBindingAutoSync(ctx, id, true)
+}
+
+func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeployment bool) (AutoSyncResult, error) {
 	releaseMemory := observeGitMemory("automatic Git to Dockman synchronization")
 	defer releaseMemory()
 	binding, err := s.store.GetBinding(id)
@@ -321,7 +332,9 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 				}
 			}
 		}
-		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head {
+		retryCurrentDeployment := retryDeployment && binding.AutoDeployEnabled &&
+			(binding.AutoDeployState == "failed" || binding.AutoDeployState == "partial" || binding.AutoDeployState == "pending")
+		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head && !retryCurrentDeployment {
 			skippedStackScan = true
 			if s.bindingHasActiveStackState(binding, stackSyncLocalDeleted) {
 				localDeletionBlock = true

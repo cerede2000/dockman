@@ -406,7 +406,7 @@ func (h *HTTPHandler) runBindingAutomation(w http.ResponseWriter, r *http.Reques
 	if !h.requireEnabled(w) {
 		return
 	}
-	result, err := h.service.RunBindingAutoSync(r.Context(), r.PathValue("id"))
+	result, err := h.service.RunBindingAutoSyncNow(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
