@@ -316,7 +316,7 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 
 func provisionChownError(path string, uid, gid int, err error) error {
 	if errors.Is(err, os.ErrPermission) {
-		return fmt.Errorf("cannot change owner of %s to %d:%d: the Dockman or SSH account is not permitted to change ownership; remove uid/gid, use its current uid/gid, or explicitly grant CHOWN capability: %w", path, uid, gid, err)
+		return fmt.Errorf("cannot change owner of %s to %d:%d: the Dockman or SSH account is not permitted to change ownership; remove uid/gid, use Dockman's current PUID/PGID, or for deliberate cross-owner provisioning run Dockman with PUID=0 and explicitly grant CHOWN capability: %w", path, uid, gid, err)
 	}
 	return fmt.Errorf("change owner of %s to %d:%d: %w", path, uid, gid, err)
 }

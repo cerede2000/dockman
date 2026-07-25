@@ -100,7 +100,8 @@ func TestProvisionTransactionSkipsUnnecessaryChown(t *testing.T) {
 func TestProvisionChownErrorIsActionable(t *testing.T) {
 	err := provisionChownError("data", 1000, 1000, os.ErrPermission)
 	require.ErrorContains(t, err, "cannot change owner of data to 1000:1000")
-	require.ErrorContains(t, err, "remove uid/gid, use its current uid/gid, or explicitly grant CHOWN capability")
+	require.ErrorContains(t, err, "remove uid/gid, use Dockman's current PUID/PGID")
+	require.ErrorContains(t, err, "run Dockman with PUID=0 and explicitly grant CHOWN capability")
 }
 
 func TestProvisionControlFileHasAStableVirtualBaseline(t *testing.T) {
