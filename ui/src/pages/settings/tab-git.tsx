@@ -294,6 +294,7 @@ export default function TabGit() {
     const [selectedTransferPaths, setSelectedTransferPaths] = useState<Set<string>>(new Set());
     const [comparison, setComparison] = useState<FileComparison | null>(null);
     const [conflictResolutionMode, setConflictResolutionMode] = useState(false);
+    const [conflictPreviewReconciled, setConflictPreviewReconciled] = useState(false);
     const [conflictDecisions, setConflictDecisions] = useState<Record<string, ConflictDecision>>({});
     const commitMessageRef = useRef<HTMLInputElement | null>(null);
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
@@ -584,7 +585,6 @@ export default function TabGit() {
     };
 
     const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false, resolvedPath?: string, selectedPath?: string, conflictMode = false) => {
-        setConflictResolutionMode(conflictMode);
         if (!conflictMode) setConflictDecisions({});
         if (!sensitive) {
             setIncludeSensitive(false); setSensitiveConfirmation("");
@@ -596,8 +596,12 @@ export default function TabGit() {
             const preview = await api<TransferPreview>(`/bindings/${binding.id}/preview/${direction}`, {
                 method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
             });
+            const currentConflictMode = conflictMode && preview.conflicts > 0;
+            setConflictResolutionMode(currentConflictMode);
+            setConflictPreviewReconciled(conflictMode && !currentConflictMode);
+            if (!currentConflictMode) setConflictDecisions({});
             setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
-            setPreviewSearch(""); setPreviewStatus(conflictMode ? "conflict" : "all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
+            setPreviewSearch(""); setPreviewStatus(currentConflictMode ? "conflict" : "all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
             setResolvedConflictPaths(resolvedPath && preview.entries.some((entry) => entry.path === resolvedPath && entry.status === "conflict") ? new Set([resolvedPath]) : new Set());
             setSelectedTransferPaths(selectedPath && preview.entries.some((entry) => entry.path === selectedPath && ["add", "modify", "conflict"].includes(entry.status)) ? new Set([selectedPath]) : new Set());
         } catch (error) { showError((error as Error).message); }
@@ -608,6 +612,7 @@ export default function TabGit() {
         setTransferBinding(null); setTransferPreview(null); setIncludeSensitive(false);
         setSensitiveConfirmation(""); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set()); setComparison(null); setExcludeMenu(null); setPreviewPage(0); setPreviewSearch(""); setPreviewStatus("all");
         setConflictResolutionMode(false); setConflictDecisions({});
+        setConflictPreviewReconciled(false);
         setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
         if (commitMessageRef.current) commitMessageRef.current.value = "";
     };
@@ -871,17 +876,22 @@ export default function TabGit() {
                 ? 'repository_to_stack'
                 : 'stack_to_repository';
             const conflictMode = action === 'conflicts' || binding.autoSyncState === 'conflict';
-            setConflictResolutionMode(conflictMode);
             setConflictDecisions({});
             setBusy(`preview-${binding.id}`);
             void api<TransferPreview>(`/bindings/${binding.id}/preview/${direction}`, {
                 method: 'POST', body: JSON.stringify({}),
             }).then((preview) => {
+                const currentConflictMode = conflictMode && preview.conflicts > 0;
+                setConflictResolutionMode(currentConflictMode);
+                setConflictPreviewReconciled(conflictMode && !currentConflictMode);
                 setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
-                setPreviewStatus(conflictMode ? 'conflict' : 'all'); setPreviewPageInput('1'); setSelectedPreviewPaths(new Set());
+                setPreviewStatus(currentConflictMode ? 'conflict' : 'all'); setPreviewPageInput('1'); setSelectedPreviewPaths(new Set());
                 setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set());
                 const separator = composePath.lastIndexOf('/');
-                setPreviewSearch(separator >= 0 ? composePath.slice(0, separator) : '');
+                const requestedSearch = separator >= 0 ? composePath.slice(0, separator) : '';
+                const normalizedSearch = requestedSearch.trim().toLocaleLowerCase();
+                const searchMatches = !normalizedSearch || preview.entries.some((entry) => (!currentConflictMode || entry.status === 'conflict') && entry.path.toLocaleLowerCase().includes(normalizedSearch));
+                setPreviewSearch(searchMatches ? requestedSearch : '');
             }).catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
         }
         const next = new URLSearchParams(searchParams);
@@ -1201,6 +1211,7 @@ export default function TabGit() {
                 <Alert severity={conflictResolutionMode ? "error" : transferDirection === "stack_to_repository" ? "info" : "warning"}>
                     {conflictResolutionMode ? "Choose Git or Dockman independently for each conflict, then validate. Files left without a decision remain pending." : transferDirection === "stack_to_repository" ? "Changed stack files will be committed and pushed. Remote-only files are preserved." : "Changed repository files will be copied into the stack after a backup. Stack deployment is never triggered."}
                 </Alert>
+                {conflictPreviewReconciled && <Alert severity="info">The previously reported conflict is no longer present in the current preview. The remaining synchronization changes are shown below.</Alert>}
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}}}>
                     <Chip label={`${transferPreview?.changed || 0} changed`} color={transferPreview?.changed ? "warning" : "success"}/>
                     <Chip label={`${transferPreview?.skipped || 0} skipped`} variant="outlined" color={transferPreview?.skipped ? "warning" : "default"}/>

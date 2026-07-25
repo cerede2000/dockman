@@ -132,6 +132,55 @@ func TestSavingUnchangedAutomationConfigurationPreservesOperationalIncidents(t *
 	require.Equal(t, "previous version restored", updated.AutoDeployError)
 }
 
+func TestManualResolutionClearsObsoleteFolderLinkConflictState(t *testing.T) {
+	for _, keep := range []string{"git", "dockman"} {
+		t.Run(keep, func(t *testing.T) {
+			service, _ := testService(t, true)
+			stackRoot := configureTestStack(t, service)
+			repository := prepareBindingRepository(t, service)
+			stackPath := filepath.Join(stackRoot, "app")
+			require.NoError(t, os.MkdirAll(stackPath, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(stackPath, "compose.yaml"), []byte("services: {}\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(stackPath, "app.conf"), []byte("value=baseline\n"), 0o644))
+			binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+			require.NoError(t, err)
+			establishBindingBaseline(t, service, binding.ID)
+			_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+			require.NoError(t, err)
+
+			remoteChange(t, repository.RemoteURL, "stacks/app/app.conf", "value=git\n")
+			require.NoError(t, os.WriteFile(filepath.Join(stackPath, "app.conf"), []byte("value=dockman\n"), 0o644))
+			result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+			require.NoError(t, err)
+			require.Equal(t, "conflict", result.State)
+
+			direction := "repository_to_stack"
+			if keep == "dockman" {
+				direction = "stack_to_repository"
+			}
+			preview, err := service.PreviewBinding(binding.ID, direction, TransferInput{})
+			require.NoError(t, err)
+			require.Equal(t, 1, preview.Conflicts)
+			input := TransferInput{PreviewToken: preview.PreviewToken, ResolvedPaths: []string{"app.conf"}, SelectedPaths: []string{"app.conf"}}
+			if keep == "git" {
+				_, err = service.ImportBinding(context.Background(), binding.ID, input)
+			} else {
+				_, err = service.ExportBinding(context.Background(), binding.ID, input)
+			}
+			require.NoError(t, err)
+
+			updated, err := service.store.GetBinding(binding.ID)
+			require.NoError(t, err)
+			require.Equal(t, "watching", updated.AutoSyncState)
+			require.Empty(t, updated.AutoSyncError)
+			fresh, err := service.PreviewBinding(binding.ID, "repository_to_stack", TransferInput{})
+			require.NoError(t, err)
+			require.Zero(t, fresh.Conflicts)
+			require.Zero(t, fresh.Changed)
+		})
+	}
+}
+
 func TestAutoSyncRestoresPreviousStackWhenHealthCheckedDeploymentFails(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

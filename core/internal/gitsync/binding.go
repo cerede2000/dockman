@@ -931,6 +931,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 
 	var result TransferResult
 	var exportedPaths []string
+	pendingConflicts := 0
 	trigger := "manual"
 	if input.automation {
 		trigger = "automation"
@@ -967,10 +968,11 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = "Repository already matches the stack"
 			return nil
 		}
-		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
+		selected, remainingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
 		if err != nil {
 			return err
 		}
+		pendingConflicts = remainingConflicts
 		if len(selected) == 0 {
 			return errors.New("no transferable file was selected; resolve at least one conflict or leave this transfer pending")
 		}
@@ -1038,6 +1040,9 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		return nil
 	})
 	if err == nil {
+		if stateErr := s.clearResolvedManualConflictState(binding, pendingConflicts); stateErr != nil {
+			return result, fmt.Errorf("stack was pushed but its synchronization state could not be refreshed: %w", stateErr)
+		}
 		if result.Preview.Conflicts == 0 {
 			paths := selectedComposePaths(binding)
 			if input.automation {
@@ -1182,6 +1187,18 @@ func (s *Service) clearIdenticalRollbackStates(binding StackBinding) error {
 	return s.clearResolvedDeploymentStates(binding, complete)
 }
 
+// A manual transfer can resolve the last conflict before the automatic worker
+// gets another turn. Do not leave the folder link painted as conflicted when
+// the transfer preview confirms that no decision remains pending. The next
+// regular check still performs the complete Git -> Dockman reconciliation;
+// this only removes the obsolete incident state and never deploys anything.
+func (s *Service) clearResolvedManualConflictState(binding StackBinding, pendingConflicts int) error {
+	if !binding.AutoSyncEnabled || binding.AutoSyncState != "conflict" || pendingConflicts > 0 {
+		return nil
+	}
+	return s.store.UpdateBindingAutoSyncState(binding.UUID, "watching", "", "", nil, nil)
+}
+
 func (s *Service) ImportBinding(ctx context.Context, id string, input TransferInput) (TransferResult, error) {
 	binding, err := s.store.GetBinding(id)
 	if err != nil {
@@ -1192,6 +1209,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 	defer lock.Unlock()
 
 	var result TransferResult
+	pendingConflicts := 0
 	trigger := "manual"
 	if input.automation {
 		trigger = "automation"
@@ -1241,10 +1259,11 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = "Stack already matches the repository"
 			return nil
 		}
-		selected, pendingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
+		selected, remainingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
 		if err != nil {
 			return err
 		}
+		pendingConflicts = remainingConflicts
 		if len(selected) == 0 {
 			if result.Preview.Preserved > 0 && pendingConflicts == 0 {
 				result.Message = fmt.Sprintf("%d Git deletion(s) preserved locally; choose an explicit orphan action", result.Preview.Preserved)
@@ -1299,6 +1318,11 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		return nil
 	})
+	if err == nil {
+		if stateErr := s.clearResolvedManualConflictState(binding, pendingConflicts); stateErr != nil {
+			return result, fmt.Errorf("repository files were imported but the synchronization state could not be refreshed: %w", stateErr)
+		}
+	}
 	if err == nil && result.Preview.Conflicts == 0 && result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0 {
 		paths := selectedComposePaths(binding)
 		if input.automation {
