@@ -87,6 +87,11 @@ func TestProvisionControlFileHasAStableVirtualBaseline(t *testing.T) {
 	preview = buildPreview("binding", "repository_to_stack", nil, nil, map[string]string{file.path: "new"})
 	require.Equal(t, 1, preview.Changed)
 	require.Equal(t, "remove_control", preview.Entries[0].Status)
+	require.Empty(t, changedPreviewPaths(preview), "removing only a provision control file must not redeploy the stack")
+	require.Equal(t, []string{"app/config.yml"}, changedPreviewPaths(TransferPreview{Entries: []PreviewEntry{
+		{Path: file.path, Status: "remove_control"},
+		{Path: "app/config.yml", Status: "modify"},
+	}}), "real stack changes in the same commit must still trigger deployment")
 	selected, _, err := selectedTransferFiles(preview, nil, nil, nil)
 	require.NoError(t, err)
 	require.Contains(t, selected, file.path)

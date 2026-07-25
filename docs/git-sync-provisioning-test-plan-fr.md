@@ -117,7 +117,7 @@ Résultat attendu : chaque tentative est refusée. Aucun fichier ou dossier ext�
 1. Supprimer `provision.yml` dans Git, committer et pousser.
 2. Synchroniser deux fois.
 
-Résultat attendu : la suppression du fichier de contrôle est mémorisée sans tenter de supprimer un fichier local inexistant. La synchronisation suivante est verte et les prochains déploiements n'appliquent plus ce manifeste. Les permissions déjà appliquées ne sont pas modifiées implicitement.
+Résultat attendu : la suppression du fichier de contrôle est mémorisée sans tenter de supprimer un fichier local inexistant. Si le commit ne contient que cette suppression, la stack n'est pas redéployée. La synchronisation suivante est verte et les prochains déploiements n'appliquent plus ce manifeste. Les permissions déjà appliquées ne sont pas modifiées implicitement.
 
 ## Test 8 — hôte SSH
 

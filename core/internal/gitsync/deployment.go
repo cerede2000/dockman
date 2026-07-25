@@ -118,7 +118,7 @@ func validateDeploymentTargets(binding StackBinding, enabled, allowNew bool, req
 func changedPreviewPaths(preview TransferPreview) []string {
 	paths := make([]string, 0, preview.Changed)
 	for _, entry := range preview.Entries {
-		if entry.Status == "add" || entry.Status == "modify" || entry.Status == "remove_control" {
+		if entry.Status == "add" || entry.Status == "modify" {
 			paths = append(paths, entry.Path)
 		}
 	}
