@@ -58,11 +58,13 @@ type normalizedProvisionOperation struct {
 }
 
 type provisionSnapshot struct {
-	path       string
-	mode       fs.FileMode
-	uid        int
-	gid        int
-	ownerKnown bool
+	path         string
+	mode         fs.FileMode
+	uid          int
+	gid          int
+	ownerKnown   bool
+	restoreMode  bool
+	restoreOwner bool
 }
 
 type provisionTransaction struct {
@@ -270,15 +272,26 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 		full := tx.filesystem.Join(root, filepath.FromSlash(operation.path))
 		info, err := tx.filesystem.Lstat(full)
 		currentUID, currentGID, ownerKnown := 0, 0, false
+		currentMode, modeKnown := fs.FileMode(0), false
+		snapshotIndex := -1
 		if errors.Is(err, os.ErrNotExist) && operation.directory {
 			created, createdErr := missingProvisionDirectories(tx.filesystem, root, operation.path)
 			if createdErr != nil {
 				return createdErr
 			}
-			if err := tx.filesystem.MkdirAll(full, 0755); err != nil {
+			createMode := fs.FileMode(0755)
+			if operation.setMode {
+				createMode = operation.mode
+			}
+			if err := tx.filesystem.MkdirAll(full, createMode); err != nil {
 				return fmt.Errorf("create directory %s: %w", operation.path, err)
 			}
 			tx.created = append(tx.created, created...)
+			info, err = tx.filesystem.Lstat(full)
+			if err != nil {
+				return fmt.Errorf("inspect created directory %s: %w", operation.path, err)
+			}
+			currentMode, modeKnown = info.Mode().Perm(), true
 			if operation.setOwner {
 				currentUID, currentGID, err = tx.filesystem.Ownership(full)
 				if err != nil {
@@ -290,6 +303,7 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 			return fmt.Errorf("inspect %s: %w", operation.path, err)
 		} else {
 			snapshot := provisionSnapshot{path: full, mode: info.Mode().Perm()}
+			currentMode, modeKnown = snapshot.mode, true
 			if operation.setOwner {
 				snapshot.uid, snapshot.gid, err = tx.filesystem.Ownership(full)
 				if err != nil {
@@ -299,19 +313,35 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 				currentUID, currentGID, ownerKnown = snapshot.uid, snapshot.gid, true
 			}
 			tx.snapshots = append(tx.snapshots, snapshot)
+			snapshotIndex = len(tx.snapshots) - 1
 		}
 		if operation.setOwner && (!ownerKnown || currentUID != operation.uid || currentGID != operation.gid) {
 			if err := tx.filesystem.Chown(full, operation.uid, operation.gid); err != nil {
 				return provisionChownError(operation.path, operation.uid, operation.gid, err)
 			}
+			if snapshotIndex >= 0 {
+				tx.snapshots[snapshotIndex].restoreOwner = true
+			}
 		}
-		if operation.setMode {
+		if operation.setMode && (!modeKnown || currentMode != operation.mode) {
 			if err := tx.filesystem.Chmod(full, operation.mode); err != nil {
-				return fmt.Errorf("chmod %s: %w", operation.path, err)
+				info, statErr := tx.filesystem.Lstat(full)
+				if statErr != nil || info.Mode().Perm() != operation.mode {
+					return provisionChmodError(operation.path, currentMode, operation.mode, err)
+				}
+			} else if snapshotIndex >= 0 {
+				tx.snapshots[snapshotIndex].restoreMode = true
 			}
 		}
 	}
 	return nil
+}
+
+func provisionChmodError(path string, current, requested fs.FileMode, err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("cannot change permissions of %s from %04o to %04o: the underlying filesystem or Dockman/SSH account refused chmod; use the effective mode provided by the mount, fix its ownership or mount options, or run Dockman with an account that owns the path: %w", path, current.Perm(), requested.Perm(), err)
+	}
+	return fmt.Errorf("change permissions of %s from %04o to %04o: %w", path, current.Perm(), requested.Perm(), err)
 }
 
 func provisionChownError(path string, uid, gid int, err error) error {
@@ -408,13 +438,15 @@ func (tx *provisionTransaction) RollbackMetadata() error {
 	var rollbackErrors []error
 	for index := len(tx.snapshots) - 1; index >= 0; index-- {
 		snapshot := tx.snapshots[index]
-		if snapshot.ownerKnown {
+		if snapshot.restoreOwner && snapshot.ownerKnown {
 			if err := tx.filesystem.Chown(snapshot.path, snapshot.uid, snapshot.gid); err != nil {
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore owner of %s: %w", snapshot.path, err))
 			}
 		}
-		if err := tx.filesystem.Chmod(snapshot.path, snapshot.mode); err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore mode of %s: %w", snapshot.path, err))
+		if snapshot.restoreMode {
+			if err := tx.filesystem.Chmod(snapshot.path, snapshot.mode); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore mode of %s: %w", snapshot.path, err))
+			}
 		}
 	}
 	return errors.Join(rollbackErrors...)

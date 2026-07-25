@@ -13,6 +13,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type provisionTrackingFS struct {
+	filesystem.FileSystem
+	chmodCalls int
+	chownCalls int
+}
+
+func (f *provisionTrackingFS) Chmod(path string, mode os.FileMode) error {
+	f.chmodCalls++
+	return f.FileSystem.Chmod(path, mode)
+}
+
+func (f *provisionTrackingFS) Chown(path string, uid, gid int) error {
+	f.chownCalls++
+	return f.FileSystem.Chown(path, uid, gid)
+}
+
 func TestNormalizeProvisionManifestRejectsUnsafeInput(t *testing.T) {
 	mode := "0750"
 	tests := []struct {
@@ -86,15 +102,41 @@ func TestProvisionTransactionExplainsMissingPermissionTargets(t *testing.T) {
 
 func TestProvisionTransactionSkipsUnnecessaryChown(t *testing.T) {
 	root := t.TempDir()
-	targetFS := filesystem.NewLocal(root)
-	uid, gid, err := targetFS.Ownership(".")
+	baseFS := filesystem.NewLocal(root)
+	uid, gid, err := baseFS.Ownership(".")
 	require.NoError(t, err)
+	targetFS := &provisionTrackingFS{FileSystem: baseFS}
 	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Directories: []provisionDirectory{{
-		Path: "data", UID: &uid, GID: &gid,
+		Path: "data", Mode: "0750", UID: &uid, GID: &gid,
 	}}})
 	require.NoError(t, err)
-	require.NoError(t, (&provisionTransaction{filesystem: targetFS}).apply(context.Background(), ".", operations))
+	tx := &provisionTransaction{filesystem: targetFS}
+	require.NoError(t, tx.apply(context.Background(), ".", operations))
 	require.DirExists(t, filepath.Join(root, "data"))
+	require.Zero(t, targetFS.chownCalls, "ownership already inherited from Dockman must not trigger chown")
+	require.Zero(t, targetFS.chmodCalls, "a directory created directly with the requested mode must not trigger chmod")
+	require.NoError(t, tx.Rollback())
+	require.NoDirExists(t, filepath.Join(root, "data"))
+	require.Zero(t, targetFS.chownCalls, "rollback must not restore ownership that was never changed")
+	require.Zero(t, targetFS.chmodCalls, "rollback must not restore a mode that was never changed")
+}
+
+func TestProvisionTransactionSkipsUnchangedExistingMetadata(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "data"), 0750))
+	baseFS := filesystem.NewLocal(root)
+	uid, gid, err := baseFS.Ownership("data")
+	require.NoError(t, err)
+	targetFS := &provisionTrackingFS{FileSystem: baseFS}
+	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Permissions: []provisionPermission{{
+		Path: "data", Mode: "0750", UID: &uid, GID: &gid,
+	}}})
+	require.NoError(t, err)
+	tx := &provisionTransaction{filesystem: targetFS}
+	require.NoError(t, tx.apply(context.Background(), ".", operations))
+	require.NoError(t, tx.Rollback())
+	require.Zero(t, targetFS.chownCalls, "matching ownership must remain a no-op during apply and rollback")
+	require.Zero(t, targetFS.chmodCalls, "matching permissions must remain a no-op during apply and rollback")
 }
 
 func TestProvisionChownErrorIsActionable(t *testing.T) {
@@ -102,6 +144,12 @@ func TestProvisionChownErrorIsActionable(t *testing.T) {
 	require.ErrorContains(t, err, "cannot change owner of data to 1000:1000")
 	require.ErrorContains(t, err, "remove uid/gid, use Dockman's current PUID/PGID")
 	require.ErrorContains(t, err, "run Dockman with PUID=0 and explicitly grant CHOWN capability")
+}
+
+func TestProvisionChmodErrorIsActionable(t *testing.T) {
+	err := provisionChmodError("data", 0755, 0750, os.ErrPermission)
+	require.ErrorContains(t, err, "cannot change permissions of data from 0755 to 0750")
+	require.ErrorContains(t, err, "underlying filesystem or Dockman/SSH account refused chmod")
 }
 
 func TestProvisionControlFileHasAStableVirtualBaseline(t *testing.T) {
