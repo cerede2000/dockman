@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -114,6 +115,57 @@ func (l *LocalFileSystem) Stat(name string) (os.FileInfo, error) {
 	}
 	defer root.Close()
 	return root.Stat(rel)
+}
+
+func (l *LocalFileSystem) Lstat(name string) (os.FileInfo, error) {
+	rel, err := l.relativePath(name)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(l.root)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.Lstat(rel)
+}
+
+func (l *LocalFileSystem) Ownership(name string) (int, int, error) {
+	info, err := l.Lstat(name)
+	if err != nil {
+		return 0, 0, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("read ownership for %q: unsupported file metadata", name)
+	}
+	return int(stat.Uid), int(stat.Gid), nil
+}
+
+func (l *LocalFileSystem) Chmod(name string, mode os.FileMode) error {
+	rel, err := l.relativePath(name)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(l.root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Chmod(rel, mode)
+}
+
+func (l *LocalFileSystem) Chown(name string, uid, gid int) error {
+	rel, err := l.relativePath(name)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(l.root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Chown(rel, uid, gid)
 }
 
 func (l *LocalFileSystem) RemoveAll(path string) error {

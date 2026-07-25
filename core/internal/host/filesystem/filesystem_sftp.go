@@ -98,6 +98,47 @@ func (s *SftpFileSystem) Stat(filename string) (os.FileInfo, error) {
 	return s.client.Stat(full)
 }
 
+func (s *SftpFileSystem) Lstat(filename string) (os.FileInfo, error) {
+	// Resolve first to prove that a symlink cannot escape the configured root,
+	// then lstat the lexical path so callers can still reject the link itself.
+	if _, err := s.fullPath(filename); err != nil {
+		return nil, err
+	}
+	full, err := s.rawPath(filename)
+	if err != nil {
+		return nil, err
+	}
+	return s.client.Lstat(full)
+}
+
+func (s *SftpFileSystem) Ownership(filename string) (int, int, error) {
+	info, err := s.Lstat(filename)
+	if err != nil {
+		return 0, 0, err
+	}
+	stat, ok := info.Sys().(*sftp.FileStat)
+	if !ok {
+		return 0, 0, fmt.Errorf("read ownership for %q: unsupported SFTP metadata", filename)
+	}
+	return int(stat.UID), int(stat.GID), nil
+}
+
+func (s *SftpFileSystem) Chmod(filename string, mode os.FileMode) error {
+	full, err := s.fullPath(filename)
+	if err != nil {
+		return err
+	}
+	return s.client.Chmod(full, mode)
+}
+
+func (s *SftpFileSystem) Chown(filename string, uid, gid int) error {
+	full, err := s.fullPath(filename)
+	if err != nil {
+		return err
+	}
+	return s.client.Chown(full, uid, gid)
+}
+
 func (s *SftpFileSystem) RemoveAll(name string) error {
 	full, err := s.fullPath(name)
 	if err != nil {
@@ -194,6 +235,22 @@ func (s *SftpFileSystem) fullPath(name string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrPathOutsideRoot, name)
 	}
 	return realCandidate, nil
+}
+
+func (s *SftpFileSystem) rawPath(name string) (string, error) {
+	root := path.Clean(filepathToSlash(s.root))
+	clean := path.Clean(filepathToSlash(name))
+	if path.IsAbs(clean) {
+		var ok bool
+		clean, ok = remoteRelative(root, clean)
+		if !ok {
+			return "", fmt.Errorf("%w: %q", ErrPathOutsideRoot, name)
+		}
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("%w: %q", ErrPathOutsideRoot, name)
+	}
+	return path.Join(root, clean), nil
 }
 
 func (s *SftpFileSystem) realPathOrParent(candidate string) (string, error) {

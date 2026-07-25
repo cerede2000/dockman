@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,4 +132,49 @@ func TestDeployChangedStacksContinuesAfterIndependentFailure(t *testing.T) {
 	require.Len(t, statuses, 2)
 	require.Equal(t, "failed", statuses[0].DeployState)
 	require.Equal(t, "success", statuses[1].DeployState)
+}
+
+func TestDeployChangedStacksRollsBackProvisioningMetadata(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "stacks/app/provision.yml", "version: 1\ndirectories:\n  - path: data\n    mode: \"0750\"\npermissions:\n  - path: config.yml\n    mode: \"0600\"\n")
+	_, err := service.FetchRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	status, err := service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yml"), []byte("services: {}\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "config.yml"), []byte("ok\n"), 0644))
+	binding := StackBinding{UUID: uuid.NewString(), RepositoryUUID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks",
+		AutoSyncEnabled: true, AutoDeployEnabled: true, AutoDeployRollbackEnabled: true,
+		ComposePaths: "app/compose.yml", AutoDeployComposePaths: "app/compose.yml"}
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.NoError(t, service.store.ReconcileGitStackStatuses(binding, splitPatternLines(binding.ComposePaths), stackSyncPending))
+	validations := 0
+	service.ConfigureDeployment(
+		func(_ context.Context, _, _ string) error {
+			validations++
+			if validations == 1 {
+				info, statErr := os.Stat(filepath.Join(stackRoot, "app", "config.yml"))
+				require.NoError(t, statErr)
+				require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+				return errors.New("invalid compose")
+			}
+			return nil
+		},
+		func(context.Context, string, string, io.Writer) error { return nil },
+		func(context.Context, string, string, io.Writer) error { return nil },
+		func(context.Context, string, string, io.Writer) error { return nil },
+		func(context.Context, string, string, io.Writer) error { return nil },
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	result, err := service.deployChangedStacks(context.Background(), binding, status.Head, []string{"app/provision.yml"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"app/compose.yml"}, result.RolledBack)
+	info, err := os.Stat(filepath.Join(stackRoot, "app", "config.yml"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0644), info.Mode().Perm())
+	require.NoDirExists(t, filepath.Join(stackRoot, "app", "data"))
 }

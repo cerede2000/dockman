@@ -962,7 +962,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		if result.Preview.Changed == 0 {
-			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
+			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSourcePreservingControl(source, baseline)); err != nil {
 				return err
 			}
 			result.Message = "Repository already matches the stack"
@@ -1287,15 +1287,19 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		backup, err := s.backupChangedFiles(binding, selected, target, "pre_import", status.Head)
-		if err != nil {
-			return err
+		stackFiles, controlFiles := splitProvisionControlFiles(selected)
+		backup := ""
+		if len(stackFiles) > 0 {
+			backup, err = s.backupChangedFiles(binding, stackFiles, target, "pre_import", status.Head)
+			if err != nil {
+				return err
+			}
 		}
-		if err := writeStackFiles(targetFS, targetRoot, selected); err != nil {
+		if err := writeStackFiles(targetFS, targetRoot, stackFiles); err != nil {
 			return err
 		}
 		if s.fileChangeNotify != nil {
-			for path := range selected {
+			for path := range stackFiles {
 				s.fileChangeNotify(binding.Host, filepath.ToSlash(filepath.Join(binding.StackPath, path)))
 			}
 		}
@@ -1310,6 +1314,9 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			_ = s.store.UpdateBindingAutoDeployState(binding.UUID, "pending", "Imported changes are waiting for controlled deployment", nil)
 		}
 		result.Backup, result.Message = backup, "Repository files imported with a backup; the stack was not deployed"
+		if len(controlFiles) > 0 && len(stackFiles) == 0 {
+			result.Message = "Provisioning manifest synchronized; it will be applied by the controlled deployment"
+		}
 		if len(result.ComposeBlocked) > 0 {
 			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe repository files were imported with a backup", len(result.ComposeBlocked))
 		}
@@ -1643,6 +1650,11 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 		}
 		for _, entry := range entries {
 			childRel := filepath.ToSlash(filepath.Join(rel, entry.Name()))
+			// Provision manifests are Git-side control files. They are never
+			// exported from or copied into the live stack directory.
+			if !entry.IsDir() && isProvisionControlPath(childRel) {
+				continue
+			}
 			selected, traverse := policy.selectsPath(childRel, entry.IsDir())
 			if !selected {
 				if entry.IsDir() && traverse {
@@ -1655,7 +1667,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if shouldSkipPath(childRel, entry.IsDir()) {
 				continue
 			}
-			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.protectsCompose(childRel) {
+			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.protectsCompose(childRel) && !policy.protectsProvision(childRel) {
 				if entry.IsDir() && policy.containsCompose(childRel) {
 					child := targetFS.Join(dir, entry.Name())
 					if err := walk(child, childRel); err != nil {
@@ -1696,7 +1708,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 				result[childRel] = transferFile{path: childRel, size: info.Size(), skipReason: "oversized"}
 				continue
 			}
-			if !policy.includesFile(childRel) {
+			if !policy.includesFile(childRel) && !policy.protectsProvision(childRel) {
 				result[childRel] = transferFile{path: childRel, size: info.Size(), skipReason: "type"}
 				continue
 			}
@@ -1791,7 +1803,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 			if shouldSkipPath(rel, isDirectory) {
 				continue
 			}
-			if policy.excludesPath(rel, isDirectory, ignoreRules) && !policy.protectsCompose(rel) {
+			if policy.excludesPath(rel, isDirectory, ignoreRules) && !policy.protectsCompose(rel) && !policy.protectsProvision(rel) {
 				if isDirectory && policy.containsCompose(rel) {
 					subtree, err := current.Tree(entry.Name)
 					if err != nil {
@@ -1836,7 +1848,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				result[rel] = transferFile{path: rel, size: size, skipReason: "oversized"}
 				continue
 			}
-			if !policy.includesFile(rel) {
+			if !policy.includesFile(rel) && !policy.protectsProvision(rel) {
 				result[rel] = transferFile{path: rel, size: size, skipReason: "type"}
 				continue
 			}
@@ -2162,6 +2174,22 @@ func (policy syncPolicy) protectsCompose(relative string) bool {
 	return protected
 }
 
+func (policy syncPolicy) protectsProvision(relative string) bool {
+	if !isProvisionControlPath(relative) {
+		return false
+	}
+	directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))
+	if len(policy.compose) == 0 {
+		return true
+	}
+	for compose := range policy.compose {
+		if filepath.ToSlash(filepath.Dir(filepath.FromSlash(compose))) == directory {
+			return true
+		}
+	}
+	return false
+}
+
 func (policy syncPolicy) containsCompose(directory string) bool {
 	directory = strings.Trim(filepath.ToSlash(directory), "/")
 	for compose := range policy.compose {
@@ -2256,6 +2284,15 @@ func isComposePath(relative string) bool {
 	}
 }
 
+func isProvisionControlPath(relative string) bool {
+	switch strings.ToLower(filepath.Base(filepath.FromSlash(relative))) {
+	case "provision.yml", "provision.yaml":
+		return true
+	default:
+		return false
+	}
+}
+
 func shouldSkipPath(path string, directory bool) bool {
 	base := strings.ToLower(filepath.Base(path))
 	return directory && (base == ".git" || base == ".dockman-backups")
@@ -2286,6 +2323,22 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 	sort.Strings(paths)
 	for _, path := range paths {
 		src := source[path]
+		if isProvisionControlPath(path) {
+			if direction == "stack_to_repository" {
+				continue
+			}
+			entry := PreviewEntry{Path: path, Status: "add", SourceSHA: src.sha, Size: src.size}
+			if previous, tracked := baseline[path]; tracked {
+				if previous == src.sha {
+					preview.Unchanged++
+					continue
+				}
+				entry.Status = "modify"
+			}
+			preview.Entries = append(preview.Entries, entry)
+			preview.Changed++
+			continue
+		}
 		if src.open == nil {
 			reason := src.skipReason
 			if reason == "" {
@@ -2329,7 +2382,7 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 	// export can therefore never turn a local deletion into a remote deletion.
 	if direction == "stack_to_repository" {
 		for path, dst := range target {
-			if _, exists := source[path]; exists || dst.open == nil {
+			if _, exists := source[path]; exists || dst.open == nil || isProvisionControlPath(path) {
 				continue
 			}
 			baseSHA, tracked := baseline[path]
@@ -2354,7 +2407,7 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 	if direction == "repository_to_stack" {
 		preservedPaths := make([]string, 0)
 		for path, dst := range target {
-			if _, exists := source[path]; exists || dst.open == nil {
+			if _, exists := source[path]; exists || dst.open == nil || isProvisionControlPath(path) {
 				continue
 			}
 			baseSHA, tracked := baseline[path]
@@ -2375,6 +2428,17 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 		if len(preservedPaths) > 0 {
 			sort.SliceStable(preview.Entries, func(i, j int) bool { return preview.Entries[i].Path < preview.Entries[j].Path })
 		}
+		for path := range baseline {
+			if !isProvisionControlPath(path) {
+				continue
+			}
+			if _, exists := source[path]; exists {
+				continue
+			}
+			preview.Entries = append(preview.Entries, PreviewEntry{Path: path, Status: "remove_control"})
+			preview.Changed++
+		}
+		sort.SliceStable(preview.Entries, func(i, j int) bool { return preview.Entries[i].Path < preview.Entries[j].Path })
 	}
 	preview.PreviewToken = previewToken(preview)
 	return preview
@@ -2388,6 +2452,29 @@ func baselineFromSource(source map[string]transferFile) map[string]string {
 		}
 	}
 	return result
+}
+
+func baselineFromSourcePreservingControl(source map[string]transferFile, current map[string]string) map[string]string {
+	result := baselineFromSource(source)
+	for path, sha := range current {
+		if isProvisionControlPath(path) {
+			result[path] = sha
+		}
+	}
+	return result
+}
+
+func splitProvisionControlFiles(files map[string]transferFile) (map[string]transferFile, map[string]transferFile) {
+	stackFiles := make(map[string]transferFile, len(files))
+	controlFiles := make(map[string]transferFile)
+	for path, file := range files {
+		if isProvisionControlPath(path) {
+			controlFiles[path] = file
+			continue
+		}
+		stackFiles[path] = file
+	}
+	return stackFiles, controlFiles
 }
 
 func previewToken(preview TransferPreview) string {
@@ -2531,7 +2618,7 @@ func selectedTransferFiles(preview TransferPreview, source map[string]transferFi
 	conflicts := make(map[string]struct{}, preview.Conflicts)
 	transferable := make(map[string]struct{}, preview.Changed)
 	for _, entry := range preview.Entries {
-		if entry.Status == "add" || entry.Status == "modify" || entry.Status == "conflict" {
+		if entry.Status == "add" || entry.Status == "modify" || entry.Status == "conflict" || entry.Status == "remove_control" {
 			transferable[entry.Path] = struct{}{}
 		}
 		if entry.Status == "conflict" {
@@ -2575,7 +2662,7 @@ func selectedTransferFiles(preview TransferPreview, source map[string]transferFi
 				continue
 			}
 		}
-		if entry.Status != "add" && entry.Status != "modify" {
+		if entry.Status != "add" && entry.Status != "modify" && entry.Status != "remove_control" {
 			if entry.Status != "conflict" {
 				continue
 			}
@@ -2583,7 +2670,9 @@ func selectedTransferFiles(preview TransferPreview, source map[string]transferFi
 				continue
 			}
 		}
-		if file, exists := source[entry.Path]; exists && file.open != nil {
+		if entry.Status == "remove_control" {
+			selected[entry.Path] = transferFile{path: entry.Path}
+		} else if file, exists := source[entry.Path]; exists && file.open != nil {
 			selected[entry.Path] = file
 		}
 	}
@@ -2594,6 +2683,11 @@ func baselineAfterTransfer(current map[string]string, source, target, selected m
 	result := make(map[string]string, len(current)+len(selected))
 	for path, sha := range current {
 		result[path] = sha
+	}
+	for path, file := range selected {
+		if isProvisionControlPath(path) && file.open == nil {
+			delete(result, path)
+		}
 	}
 	for path, sourceFile := range source {
 		if sourceFile.open == nil || sourceFile.sha == "" {

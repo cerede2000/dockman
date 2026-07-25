@@ -118,7 +118,7 @@ func validateDeploymentTargets(binding StackBinding, enabled, allowNew bool, req
 func changedPreviewPaths(preview TransferPreview) []string {
 	paths := make([]string, 0, preview.Changed)
 	for _, entry := range preview.Entries {
-		if entry.Status == "add" || entry.Status == "modify" {
+		if entry.Status == "add" || entry.Status == "modify" || entry.Status == "remove_control" {
 			paths = append(paths, entry.Path)
 		}
 	}
@@ -245,8 +245,15 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			return result, err
 		}
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "validating", "deploy_error": ""})
-		stage := "validation"
-		err := s.validateCompose(ctx, binding.Host, filename)
+		stage := "provisioning"
+		deployment.State = "provisioning"
+		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "provisioning", "deploy_error": ""})
+		provisioning, err := s.applyStackProvisioning(ctx, binding, commit, relative, logs)
+		if err == nil {
+			stage = "validation"
+			deployment.State = "validating"
+			err = s.validateCompose(ctx, binding.Host, filename)
+		}
 		if err == nil {
 			stage = "dry-run"
 			deployment.State = "dry_run"
@@ -265,14 +272,32 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			originalErr := sanitizeDeploymentOutput(safeGitError(fmt.Errorf("%s failed: %w", stage, err)))
 			deployment.State = "rolling_back"
 			_, _ = fmt.Fprintf(logs, "\n[dockman] %s; restoring the pre-import stack files\n", originalErr)
-			hadPreviousCompose, rollbackErr := s.deploymentHadPreviousCompose(binding, rollbackBackupID, relative)
+			hadPreviousCompose := true
+			var rollbackErr error
+			if rollbackBackupID != "" {
+				hadPreviousCompose, rollbackErr = s.deploymentHadPreviousCompose(binding, rollbackBackupID, relative)
+			}
 			if rollbackErr == nil && stage == "deployment" && !hadPreviousCompose {
 				_, _ = fmt.Fprintln(logs, "[dockman] first deployment failed; removing its partial containers and networks before restoring the absent stack")
 				rollbackErr = s.cleanupCompose(ctx, binding.Host, filename, logs)
 			}
 			var restored []string
-			if rollbackErr == nil {
-				restored, rollbackErr = s.rollbackDeploymentFiles(binding, rollbackBackupID, relative)
+			if provisioning != nil {
+				if provisionRollbackErr := provisioning.RollbackMetadata(); provisionRollbackErr != nil {
+					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore provisioning metadata: %w", provisionRollbackErr))
+				}
+			}
+			if rollbackBackupID != "" {
+				var fileRollbackErr error
+				restored, fileRollbackErr = s.rollbackDeploymentFiles(binding, rollbackBackupID, relative)
+				rollbackErr = errors.Join(rollbackErr, fileRollbackErr)
+			}
+			if provisioning != nil {
+				if provisionRollbackErr := provisioning.RollbackCreatedDirectories(); provisionRollbackErr != nil {
+					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove provisioned directories: %w", provisionRollbackErr))
+				} else {
+					_, _ = fmt.Fprintln(logs, "[dockman] provisioning permissions and directories restored")
+				}
 			}
 			if rollbackErr == nil && hadPreviousCompose {
 				rollbackErr = s.validateCompose(ctx, binding.Host, filename)
@@ -319,6 +344,16 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
 			ComposePath: relative, Type: "stack_deploy", Trigger: "automation", State: deployment.State,
 			CommitSHA: commit, Error: deployError, Details: ActivityDetails{Action: stage, Paths: []string{relative}, DeploymentIDs: []string{deployment.UUID}}})
+		if provisioning != nil {
+			provisionState := "success"
+			if binding.AutoDeployRollbackEnabled && deployment.State != "success" {
+				provisionState = deployment.State
+			}
+			s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
+				ComposePath: relative, Type: "stack_provision", Trigger: "automation", State: provisionState,
+				CommitSHA: commit, Error: deployError, Details: ActivityDetails{Action: provisioning.manifest,
+					Changed: provisioning.operations, Paths: []string{relative}, DeploymentIDs: []string{deployment.UUID}}})
+		}
 		if deployment.State != "success" {
 			result.Failed = append(result.Failed, relative)
 			continue

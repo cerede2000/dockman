@@ -18,6 +18,10 @@ type FileSystem interface {
 	OpenFile(filename string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error)
 	LoadFile(filename string) (io.ReadSeekCloser, time.Time, error)
 	Stat(root string) (os.FileInfo, error)
+	Lstat(root string) (os.FileInfo, error)
+	Ownership(path string) (uid int, gid int, err error)
+	Chmod(path string, mode os.FileMode) error
+	Chown(path string, uid, gid int) error
 	RemoveAll(fullpath string) error
 	Rename(oldPath string, newPath string) error
 	ReadFile(fullpath string) ([]byte, error)

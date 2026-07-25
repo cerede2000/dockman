@@ -124,7 +124,7 @@ interface Binding {
 interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; deployFailed?: string[]; rolledBack?: string[]; rollbackFailed?: string[]; syncFailed?: string[]; message: string; }
 interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
 interface PreviewEntry {
-    path: string; status: "add" | "modify" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
+    path: string; status: "add" | "modify" | "remove_control" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
     targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed" | "source_deleted_destination_changed" | "destination_deleted";
 }
 interface TransferPreview {
@@ -153,7 +153,7 @@ function composeOwner(binding: Binding, filePath: string): string | undefined {
         })[0];
 }
 
-const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
+const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
@@ -339,10 +339,10 @@ export default function TabGit() {
         previewPage * previewRowsPerPage,
         previewPage * previewRowsPerPage + previewRowsPerPage,
     ), [filteredPreviewEntries, previewPage, previewRowsPerPage]);
-    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict" && entry.status !== "deleted_on_git" && entry.status !== "deleted_locally");
+    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict" && entry.status !== "deleted_on_git" && entry.status !== "deleted_locally" && entry.status !== "remove_control");
     const selectedVisibleCount = selectablePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).length;
     const allowableSelectedEntries = visiblePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path) && entry.status === "skipped_type");
-    const safeTransferCount = (transferPreview?.entries || []).filter((entry) => entry.status === "add" || entry.status === "modify").length;
+    const safeTransferCount = (transferPreview?.entries || []).filter((entry) => entry.status === "add" || entry.status === "modify" || entry.status === "remove_control").length;
     const unresolvedConflictCount = Math.max(0, (transferPreview?.conflicts || 0) - resolvedConflictPaths.size);
     const orphanComposePaths = useMemo(() => new Set(transferPreview?.orphanedComposePaths || []), [transferPreview?.orphanedComposePaths]);
 
@@ -603,7 +603,7 @@ export default function TabGit() {
             setTransferBinding(binding); setTransferDirection(direction); setTransferPreview(preview); setPreviewPage(0);
             setPreviewSearch(""); setPreviewStatus(currentConflictMode ? "conflict" : "all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
             setResolvedConflictPaths(resolvedPath && preview.entries.some((entry) => entry.path === resolvedPath && entry.status === "conflict") ? new Set([resolvedPath]) : new Set());
-            setSelectedTransferPaths(selectedPath && preview.entries.some((entry) => entry.path === selectedPath && ["add", "modify", "conflict"].includes(entry.status)) ? new Set([selectedPath]) : new Set());
+            setSelectedTransferPaths(selectedPath && preview.entries.some((entry) => entry.path === selectedPath && ["add", "modify", "remove_control", "conflict"].includes(entry.status)) ? new Set([selectedPath]) : new Set());
         } catch (error) { showError((error as Error).message); }
         finally { setBusy(null); }
     };
@@ -1222,6 +1222,7 @@ export default function TabGit() {
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Files skipped only by type can be permanently allowed here. Oversized, unavailable, sensitive, and explicitly excluded files keep their dedicated protection.</Alert>}
                 {!!transferPreview?.preserved && <Alert severity="warning">Files deleted on Git remain local by default. For a whole orphaned stack, restore it to Git, archive it, or explicitly delete its local folder after a backup. Dockman never runs Compose down and never removes Docker volumes here.</Alert>}
                 {!!transferPreview?.localDeletions && <Alert severity="warning">A synchronized stack or file was deleted locally but remains on Git. Regular transfer will not delete it from Git. Use the stack synchronization icon to restore it, explicitly delete it from Git, or stop synchronizing it.</Alert>}
+                {transferPreview?.entries.some((entry) => entry.status === "remove_control") && <Alert severity="info">A Git provisioning manifest was removed. Confirming this change only stops future provisioning; permissions already applied to the live stack are preserved.</Alert>}
                 {!!transferPreview?.conflicts && <Alert severity="error">
                     Conflicts are never overwritten automatically. Compare and approve only the files you want to resolve; the others remain pending. An “initial conflict” means that no common synchronization baseline is available.
                 </Alert>}
@@ -1246,7 +1247,7 @@ export default function TabGit() {
                         const rootOrphan = orphanCompose && !entry.path.includes("/");
                         const deletedConflict = entry.conflictKind === "source_deleted_destination_changed";
                         return <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}>
-                            <TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git" || entry.status === "deleted_locally"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell>
+                            <TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.status === "remove_control"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell>
                             <TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell>
                             <TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.conflictKind === "destination_deleted" || entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={deletedConflict ? "deleted on Git · local changed" : entry.conflictKind === "destination_deleted" ? "deleted locally · restore available" : entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell>
                             <TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell>
@@ -1260,7 +1261,7 @@ export default function TabGit() {
                                 {!rootOrphan && <Button size="small" color="error" variant="outlined" startIcon={<DeleteOutlined/>} disabled={busy !== null} onClick={() => { setOrphanConfirmation(""); setOrphanDecision({composePath: entry.path, action: "delete"}); }}>Delete local</Button>}
                                 {rootOrphan && <Typography variant="caption" color="text.secondary">Local removal is unavailable at the folder-link root.</Typography>}
                             </Stack> : deletedConflict ? <Typography variant="caption" color="warning.main">Handled by the orphaned stack decision.</Typography> : entry.status === "conflict" && (conflictResolutionMode ? <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button><Button size="small" color="warning" variant={conflictDecisions[entry.path] === "git" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "git")}>Keep Git</Button><Button size="small" color="primary" variant={conflictDecisions[entry.path] === "dockman" ? "contained" : "outlined"} onClick={() => decideConflict(entry.path, "dockman")}>Keep Dockman</Button></Stack> : <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><Button size="small" variant="outlined" startIcon={<CompareArrowsOutlined/>} disabled={busy !== null} onClick={() => void compareConflict(entry)}>Compare</Button>{resolvedConflictPaths.has(entry.path) ? <Button size="small" color="warning" startIcon={<UndoOutlined/>} onClick={() => leaveConflictPending(entry.path)}>Pending</Button> : <Button size="small" color="error" variant="contained" onClick={() => keepCurrentSource(entry.path)}>{transferDirection === "stack_to_repository" ? "Keep Dockman" : "Keep Git"}</Button>}</Stack>)}</TableCell>
-                            <TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git" || entry.status === "deleted_locally"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell>
+                            <TableCell align="right"><Tooltip title="Add a permanent exclusion"><span><IconButton size="small" disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.status === "remove_control"} onClick={(event) => setExcludeMenu({anchor: event.currentTarget, entry})}><BlockOutlined fontSize="small"/></IconButton></span></Tooltip></TableCell>
                         </TableRow>;
                     })}
                 </TableBody></Table></TableContainer>
