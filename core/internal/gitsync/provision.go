@@ -269,6 +269,7 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 		}
 		full := tx.filesystem.Join(root, filepath.FromSlash(operation.path))
 		info, err := tx.filesystem.Lstat(full)
+		currentUID, currentGID, ownerKnown := 0, 0, false
 		if errors.Is(err, os.ErrNotExist) && operation.directory {
 			created, createdErr := missingProvisionDirectories(tx.filesystem, root, operation.path)
 			if createdErr != nil {
@@ -278,6 +279,13 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 				return fmt.Errorf("create directory %s: %w", operation.path, err)
 			}
 			tx.created = append(tx.created, created...)
+			if operation.setOwner {
+				currentUID, currentGID, err = tx.filesystem.Ownership(full)
+				if err != nil {
+					return fmt.Errorf("read owner of created directory %s: %w", operation.path, err)
+				}
+				ownerKnown = true
+			}
 		} else if err != nil {
 			return fmt.Errorf("inspect %s: %w", operation.path, err)
 		} else {
@@ -288,12 +296,13 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 					return fmt.Errorf("read owner of %s: %w", operation.path, err)
 				}
 				snapshot.ownerKnown = true
+				currentUID, currentGID, ownerKnown = snapshot.uid, snapshot.gid, true
 			}
 			tx.snapshots = append(tx.snapshots, snapshot)
 		}
-		if operation.setOwner {
+		if operation.setOwner && (!ownerKnown || currentUID != operation.uid || currentGID != operation.gid) {
 			if err := tx.filesystem.Chown(full, operation.uid, operation.gid); err != nil {
-				return fmt.Errorf("chown %s: %w", operation.path, err)
+				return provisionChownError(operation.path, operation.uid, operation.gid, err)
 			}
 		}
 		if operation.setMode {
@@ -305,6 +314,13 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 	return nil
 }
 
+func provisionChownError(path string, uid, gid int, err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("cannot change owner of %s to %d:%d: the Dockman or SSH account is not permitted to change ownership; remove uid/gid, use its current uid/gid, or explicitly grant CHOWN capability: %w", path, uid, gid, err)
+	}
+	return fmt.Errorf("change owner of %s to %d:%d: %w", path, uid, gid, err)
+}
+
 func validateProvisionPath(targetFS filesystem.FileSystem, root, relative string, allowMissing bool) error {
 	parts := strings.Split(filepath.ToSlash(relative), "/")
 	for index := range parts {
@@ -312,6 +328,13 @@ func validateProvisionPath(targetFS filesystem.FileSystem, root, relative string
 		info, err := targetFS.Lstat(candidate)
 		if errors.Is(err, os.ErrNotExist) && allowMissing {
 			return nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			missing := strings.Join(parts[:index+1], "/")
+			if index < len(parts)-1 {
+				return fmt.Errorf("parent directory %q does not exist after Git synchronization; permissions targets must already exist", missing)
+			}
+			return errors.New("target does not exist after Git synchronization; permissions can only be applied to existing files or directories")
 		}
 		if err != nil {
 			return err

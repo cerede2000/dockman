@@ -72,6 +72,37 @@ func TestProvisionTransactionRejectsSymlink(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(outside, "data"))
 }
 
+func TestProvisionTransactionExplainsMissingPermissionTargets(t *testing.T) {
+	root := t.TempDir()
+	targetFS := filesystem.NewLocal(root)
+
+	err := validateProvisionPath(targetFS, ".", "config/app.yml", false)
+	require.EqualError(t, err, `parent directory "config" does not exist after Git synchronization; permissions targets must already exist`)
+
+	require.NoError(t, os.Mkdir(filepath.Join(root, "config"), 0755))
+	err = validateProvisionPath(targetFS, ".", "config/app.yml", false)
+	require.EqualError(t, err, "target does not exist after Git synchronization; permissions can only be applied to existing files or directories")
+}
+
+func TestProvisionTransactionSkipsUnnecessaryChown(t *testing.T) {
+	root := t.TempDir()
+	targetFS := filesystem.NewLocal(root)
+	uid, gid, err := targetFS.Ownership(".")
+	require.NoError(t, err)
+	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Directories: []provisionDirectory{{
+		Path: "data", UID: &uid, GID: &gid,
+	}}})
+	require.NoError(t, err)
+	require.NoError(t, (&provisionTransaction{filesystem: targetFS}).apply(context.Background(), ".", operations))
+	require.DirExists(t, filepath.Join(root, "data"))
+}
+
+func TestProvisionChownErrorIsActionable(t *testing.T) {
+	err := provisionChownError("data", 1000, 1000, os.ErrPermission)
+	require.ErrorContains(t, err, "cannot change owner of data to 1000:1000")
+	require.ErrorContains(t, err, "remove uid/gid, use its current uid/gid, or explicitly grant CHOWN capability")
+}
+
 func TestProvisionControlFileHasAStableVirtualBaseline(t *testing.T) {
 	file := transferFile{path: "app/provision.yml", sha: "new", size: 10, open: func() (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("version: 1")), nil
