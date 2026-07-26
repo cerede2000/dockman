@@ -20,6 +20,11 @@ interface YamlKey {
 // while a Compose file is temporarily invalid and does not require a second YAML
 // parser beside the validator used by the backend.
 const readMappingKey = (line: string): YamlKey | null => {
+    // A commented mapping-looking line is documentation, never an outline
+    // entry. Reject it explicitly before applying the permissive key matcher
+    // used while the Compose file is temporarily incomplete.
+    if (line.trimStart().startsWith('#')) return null;
+
     const match = /^( *)(?:"((?:\\.|[^"\\])*)"|'((?:''|[^'])*)'|([^:#][^:]*?))\s*:(?:\s|$)/.exec(line);
     if (!match) return null;
 
