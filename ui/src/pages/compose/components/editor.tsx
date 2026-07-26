@@ -7,11 +7,14 @@ import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {useTabs, useTabsStore} from "../../../context/tab-context.tsx";
 import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {useConfig} from "../../../hooks/config.ts";
+import {buildYamlOutline, type YamlOutlineItem} from "./yaml-outline.ts";
 
 interface MonacoEditorProps {
     selectedFile: string;
     fileContent: string;
     handleEditorChange: (value: string | undefined) => void;
+    onOutlineChange?: (items: YamlOutlineItem[]) => void;
+    registerOutlineNavigation?: (navigate: ((item: YamlOutlineItem) => void) | null) => void;
 }
 
 export function MonacoEditor(
@@ -19,11 +22,14 @@ export function MonacoEditor(
         selectedFile,
         fileContent,
         handleEditorChange,
+        onOutlineChange,
+        registerOutlineNavigation,
     }: MonacoEditorProps) {
     const file = useHostClient(FileService)
     const {showError} = useSnackbar()
 
     const editorRef = useRef<monacoEditor.editor.IStandaloneCodeEditor | null>(null);
+    const outlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const saveLineNum = useSaveLineNum()
 
     const [mounted, setMounted] = useState(false);
@@ -114,6 +120,23 @@ export function MonacoEditor(
     };
 
     useEffect(() => {
+        const editor = editorRef.current;
+        if (!mounted || !editor || !registerOutlineNavigation) return;
+
+        registerOutlineNavigation((item) => {
+            const model = editor.getModel();
+            if (!model) return;
+            const lineNumber = Math.max(1, Math.min(item.line, model.getLineCount()));
+            const column = Math.max(1, Math.min(item.column, model.getLineMaxColumn(lineNumber)));
+            editor.setPosition({lineNumber, column});
+            editor.revealLineInCenter(lineNumber);
+            editor.focus();
+        });
+
+        return () => registerOutlineNavigation(null);
+    }, [mounted, editorGen, registerOutlineNavigation]);
+
+    useEffect(() => {
         if (!mounted || !editorRef.current) return;
 
         const model = editorRef.current.getModel();
@@ -123,8 +146,16 @@ export function MonacoEditor(
         model.setValue(fileContent);
 
         const contentSubscription = model.onDidChangeContent(() => {
-            handleEditorChange(model.getValue());
+            const value = model.getValue();
+            handleEditorChange(value);
+            if (outlineTimer.current) clearTimeout(outlineTimer.current);
+            outlineTimer.current = setTimeout(() => {
+                onOutlineChange?.(buildYamlOutline(value));
+                outlineTimer.current = null;
+            }, 200);
         });
+
+        onOutlineChange?.(buildYamlOutline(model.getValue()));
 
         const tab = useTabsStore.getState().allTabs[selectedFile];
         if (tab) {
@@ -144,11 +175,17 @@ export function MonacoEditor(
             });
         }
 
-        return () => contentSubscription.dispose();
+        return () => {
+            contentSubscription.dispose();
+            if (outlineTimer.current) {
+                clearTimeout(outlineTimer.current);
+                outlineTimer.current = null;
+            }
+        };
         // do not add tabs as dependencies
         // it will mess with the editor typing
         // resetting cursor position when the tab
-    }, [editorGen, fileContent, handleEditorChange, mounted, selectedFile]);
+    }, [editorGen, fileContent, handleEditorChange, mounted, onOutlineChange, selectedFile]);
 
     return (
         <Editor

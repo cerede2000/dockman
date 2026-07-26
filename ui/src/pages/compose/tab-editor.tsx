@@ -1,9 +1,9 @@
 import {Box, IconButton, Tooltip} from "@mui/material";
-import {type JSX, useCallback, useMemo, useState} from "react";
+import {type JSX, useCallback, useMemo, useRef, useState} from "react";
 import {callRPC, useHostClient} from "../../lib/api";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 import {type SaveState} from "./hooks/status-hook.tsx";
-import {CloudUploadOutlined, ConstructionRounded, ErrorOutlineOutlined, MoveDownRounded} from "@mui/icons-material";
+import {AccountTreeOutlined, CloudUploadOutlined, ConstructionRounded, ErrorOutlineOutlined, MoveDownRounded} from "@mui/icons-material";
 import {isComposeFile} from "../../lib/editor.ts";
 import useResizeBar from "./hooks/resize-hook.ts";
 import {useFiles} from "../../context/file-context.tsx";
@@ -13,6 +13,8 @@ import EditorDeployWidget from "./editor-widgets/deploy.tsx";
 import ItToolsWidget from "./editor-widgets/it-tools.tsx";
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
 import EditorCommon from "./components/editor-common.tsx";
+import YamlOutlineWidget from "./editor-widgets/yaml-outline.tsx";
+import type {YamlOutlineItem} from "./components/yaml-outline.ts";
 
 type ActionItem = {
     element: JSX.Element;
@@ -31,6 +33,16 @@ function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
     const {loadEditableFile, saveEditableFile, setEditorLease, editorEventsUrl} = useFiles()
 
     const [errors, setErrors] = useState<string[]>([])
+    const [outline, setOutline] = useState<YamlOutlineItem[]>([])
+    const outlineNavigation = useRef<((item: YamlOutlineItem) => void) | null>(null)
+
+    const registerOutlineNavigation = useCallback((navigate: ((item: YamlOutlineItem) => void) | null) => {
+        outlineNavigation.current = navigate;
+    }, []);
+
+    const navigateOutline = useCallback((item: YamlOutlineItem) => {
+        outlineNavigation.current?.(item);
+    }, []);
 
     const getFile = useCallback(async (filename: string) => {
         return loadEditableFile(filename)
@@ -77,6 +89,11 @@ function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
 
     const actions: Record<string, ActionItem> = useMemo(() => {
         const baseActions: Record<string, ActionItem> = {
+            outline: {
+                element: <YamlOutlineWidget items={outline} onNavigate={navigateOutline}/>,
+                icon: <AccountTreeOutlined/>,
+                label: 'Navigate Compose elements',
+            },
             errors: {
                 element: <EditorErrorWidget errors={errors}/>,
                 icon: <ErrorOutlineOutlined/>,
@@ -105,7 +122,7 @@ function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
         }
 
         return baseActions;
-    }, [selectedPage, errors]);
+    }, [selectedPage, errors, navigateOutline, outline]);
 
     return (
         <Box sx={{
@@ -139,6 +156,8 @@ function TabEditor({selectedPage, setFileSaveStatus}: EditorProps) {
                         setEditorLease={setEditorLease}
                         editorEventsUrl={editorEventsUrl}
                         setFileSaveStatus={setFileSaveStatus}
+                        onOutlineChange={setOutline}
+                        registerOutlineNavigation={registerOutlineNavigation}
                     />
                 </Box>
 

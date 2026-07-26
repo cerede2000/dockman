@@ -7,6 +7,7 @@ import {type SaveState, useSaveStatus} from "../hooks/status-hook.tsx";
 import {ErrFileNotSupported} from "../../../context/file-context.tsx";
 import {DiffEditor} from "@monaco-editor/react";
 import {getLanguageFromExtension} from "../../../lib/editor.ts";
+import type {YamlOutlineItem} from "./yaml-outline.ts";
 
 interface TextEditorProps {
     filename: string
@@ -17,9 +18,11 @@ interface TextEditorProps {
     editorEventsUrl?: string
 
     setFileSaveStatus: (status: SaveState) => void
+    onOutlineChange?: (items: YamlOutlineItem[]) => void
+    registerOutlineNavigation?: (navigate: ((item: YamlOutlineItem) => void) | null) => void
 }
 
-function EditorCommon({filename, setFileSaveStatus, saveFile, getFile, setEditorLease, editorEventsUrl}: TextEditorProps) {
+function EditorCommon({filename, setFileSaveStatus, saveFile, getFile, setEditorLease, editorEventsUrl, onOutlineChange, registerOutlineNavigation}: TextEditorProps) {
     const {showError} = useSnackbar();
 
     const [contents, setContents] = useState<string>("");
@@ -194,6 +197,8 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile, setEditor
                 selectedFile={filename}
                 fileContent={contents}
                 handleEditorChange={onContentChange}
+                onOutlineChange={onOutlineChange}
+                registerOutlineNavigation={registerOutlineNavigation}
             />
             <Dialog open={compareOpen && remoteVersion !== null} onClose={() => setCompareOpen(false)} maxWidth="xl" fullWidth>
                 <DialogTitle>File changed while editing — {filename}</DialogTitle>
