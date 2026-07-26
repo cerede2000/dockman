@@ -197,6 +197,32 @@ func TestCompleteStacksFolderIsDiscoveredAndLinkedOnce(t *testing.T) {
 	require.Equal(t, binding.ComposePaths, binding.SelectedComposePaths)
 }
 
+func TestAllStacksDiscoveryDoesNotLoseSiblingStacksBehindLargeDataTree(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+
+	// This directory sorts before the stacks and contains enough children to
+	// exhaust the bounded legacy depth-first scan.
+	cacheRoot := filepath.Join(stackRoot, "aaa-data")
+	require.NoError(t, os.MkdirAll(cacheRoot, 0o755))
+	for index := 0; index < 1100; index++ {
+		require.NoError(t, os.Mkdir(filepath.Join(cacheRoot, fmt.Sprintf("cache-%04d", index)), 0o755))
+	}
+
+	for index := 0; index < 19; index++ {
+		directory := filepath.Join(stackRoot, fmt.Sprintf("stack-%02d", index))
+		require.NoError(t, os.MkdirAll(directory, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "compose.yml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644))
+	}
+
+	targets, err := service.ListStackTargets()
+	require.NoError(t, err)
+	require.NotEmpty(t, targets)
+	require.Equal(t, "all_stacks", targets[0].Scope)
+	require.Equal(t, 19, targets[0].StackCount)
+	require.Len(t, targets[0].ComposePaths, 19)
+}
+
 func TestComposeSelectionPersistsAndSkipsUnselectedStackTrees(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

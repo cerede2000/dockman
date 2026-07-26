@@ -1531,24 +1531,41 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 
 func discoverComposeFiles(targetFS filesystem.FileSystem, root string) []string {
 	names := make([]string, 0)
+	type pendingDirectory struct {
+		path     string
+		relative string
+		depth    int
+	}
+
+	// Breadth-first discovery is important here. A stack may contain a large
+	// data/cache tree; a depth-first walk can exhaust the bounded directory
+	// budget inside that first tree and never inspect its sibling stacks. Keep
+	// the same limits, but inspect every shallower folder before descending.
+	queue := []pendingDirectory{{path: root}}
 	visited := 0
-	var walk func(string, string, int)
-	walk = func(directory, relative string, depth int) {
-		if depth > 8 || visited >= 1000 || len(names) >= 500 {
-			return
+	for len(queue) > 0 && visited < 1000 && len(names) < 500 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth > 8 {
+			continue
 		}
 		visited++
-		entries, err := targetFS.ReadDir(directory)
+		entries, err := targetFS.ReadDir(current.path)
 		if err != nil {
-			return
+			continue
 		}
+		children := make([]pendingDirectory, 0)
 		for _, entry := range entries {
-			childRelative := filepath.ToSlash(filepath.Join(relative, entry.Name()))
+			childRelative := filepath.ToSlash(filepath.Join(current.relative, entry.Name()))
 			if entry.Type()&os.ModeSymlink != 0 || shouldSkipPath(childRelative, entry.IsDir()) {
 				continue
 			}
 			if entry.IsDir() {
-				walk(targetFS.Join(directory, entry.Name()), childRelative, depth+1)
+				children = append(children, pendingDirectory{
+					path:     targetFS.Join(current.path, entry.Name()),
+					relative: childRelative,
+					depth:    current.depth + 1,
+				})
 				continue
 			}
 			switch strings.ToLower(entry.Name()) {
@@ -1556,8 +1573,16 @@ func discoverComposeFiles(targetFS filesystem.FileSystem, root string) []string 
 				names = append(names, childRelative)
 			}
 		}
+		// Bound the pending work as well as the number of filesystem calls. This
+		// prevents a single very wide directory from increasing memory usage.
+		remaining := 1000 - visited - len(queue)
+		if remaining > len(children) {
+			remaining = len(children)
+		}
+		if remaining > 0 {
+			queue = append(queue, children[:remaining]...)
+		}
 	}
-	walk(root, "", 0)
 	sort.Strings(names)
 	return names
 }
