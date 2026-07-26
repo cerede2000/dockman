@@ -1345,13 +1345,13 @@ export default function TabGit() {
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
                 <Alert severity="info">The policy applies in both directions. Compose files stay protected. Special files, Git metadata and files over 100 MiB are always excluded.</Alert>
                 <FormControl><InputLabel>Base profile</InputLabel><Select label="Base profile" value={policyForm.profile} onChange={(event) => setPolicyForm({...policyForm, profile: event.target.value as "compose_only" | "compose_config" | "all_files"})}>
-                    <MenuItem value="compose_only">Docker Compose only — YAML and environment templates</MenuItem>
+                    <MenuItem value="compose_only">Docker Compose only — manifests and environment templates</MenuItem>
                     <MenuItem value="compose_config">Compose configuration — recommended</MenuItem>
                     <MenuItem value="all_files">All regular files</MenuItem>
                 </Select></FormControl>
                 <TextField label="Additional include rules" value={policyForm.includes} onChange={(event) => setPolicyForm({...policyForm, includes: event.target.value})} multiline minRows={4} maxRows={10} placeholder={"scripts/**\ncustom-file\n*.py"} helperText="One relative glob per line. These rules extend the selected profile." sx={{"& textarea": {fontFamily: "monospace"}}}/>
                 <TextField label="Exclude rules" value={policyForm.excludes} onChange={(event) => setPolicyForm({...policyForm, excludes: event.target.value})} multiline minRows={4} maxRows={10} placeholder={"**/data/**\n**/cache/**\n*.log"} helperText="One relative glob per line. Exclusions always take priority." sx={{"& textarea": {fontFamily: "monospace"}}}/>
-                <Typography variant="caption" color="text.secondary">Docker Compose only includes YAML/YML files and conventional .env.example/.sample/.template/.dist templates. The configuration profile also includes JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Explicit include rules can extend either profile; sensitive files remain protected separately.</Typography>
+                <Typography variant="caption" color="text.secondary">Docker Compose only includes compose.yml/compose.yaml, docker-compose.yml/docker-compose.yaml and conventional .env.example/.sample/.template/.dist files. Other YAML files are filtered. The configuration profile also includes JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Explicit include rules can extend either profile; sensitive files remain protected separately.</Typography>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
         </Dialog>

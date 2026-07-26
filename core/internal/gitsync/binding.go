@@ -234,7 +234,6 @@ var composeConfigRules = mustRules([]string{
 })
 
 var composeOnlyRules = mustRules([]string{
-	"*.yml", "*.yaml",
 	".env.example", ".env.*.example", ".env.sample", ".env.*.sample",
 	".env.template", ".env.*.template", ".env.dist", ".env.*.dist",
 })
@@ -2297,7 +2296,7 @@ func (policy syncPolicy) includesFile(relative string) bool {
 		return true
 	}
 	if policy.profile == syncProfileComposeOnly {
-		return matchesIgnoreRule(composeOnlyRules, relative, false)
+		return isComposePath(relative) || matchesIgnoreRule(composeOnlyRules, relative, false)
 	}
 	if policy.profile == syncProfileAllFiles {
 		return true

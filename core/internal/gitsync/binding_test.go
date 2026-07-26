@@ -886,11 +886,13 @@ func TestComposeConfigPolicySupportsIncludesAndExcludes(t *testing.T) {
 	require.NotContains(t, files, "runtime/cache/state.json")
 }
 
-func TestComposeOnlyPolicyIncludesYamlTemplatesAndExplicitAdditions(t *testing.T) {
+func TestComposeOnlyPolicyIncludesManifestsTemplatesAndExplicitAdditions(t *testing.T) {
 	stackRoot := t.TempDir()
 	files := make(map[string]string)
 	files["compose.yaml"] = "services: {}\n"
+	files["docker-compose.yml"] = "services: {}\n"
 	files["override.yml"] = "services: {}\n"
+	files["application.yaml"] = "enabled: true\n"
 	files[".env.example"] = "TOKEN=replace-me\n"
 	files[".env.sample"] = "TOKEN=replace-me\n"
 	files[".env.prod.template"] = "TOKEN=replace-me\n"
@@ -904,10 +906,10 @@ func TestComposeOnlyPolicyIncludesYamlTemplatesAndExplicitAdditions(t *testing.T
 
 	collected, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false, policy)
 	require.NoError(t, err)
-	for _, name := range []string{"compose.yaml", "override.yml", ".env.example", ".env.sample", ".env.prod.template", "application.conf"} {
+	for _, name := range []string{"compose.yaml", "docker-compose.yml", ".env.example", ".env.sample", ".env.prod.template", "application.conf"} {
 		require.NotNil(t, collected[name].open, name)
 	}
-	for _, name := range []string{"settings.json", "notes.md"} {
+	for _, name := range []string{"override.yml", "application.yaml", "settings.json", "notes.md"} {
 		require.Equal(t, "type", collected[name].skipReason, name)
 	}
 }
