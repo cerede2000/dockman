@@ -19,6 +19,21 @@ type provisionTrackingFS struct {
 	chownCalls int
 }
 
+type provisionOrderFS struct {
+	filesystem.FileSystem
+	calls []string
+}
+
+func (f *provisionOrderFS) Chmod(path string, mode os.FileMode) error {
+	f.calls = append(f.calls, "chmod")
+	return f.FileSystem.Chmod(path, mode)
+}
+
+func (f *provisionOrderFS) Chown(_ string, _, _ int) error {
+	f.calls = append(f.calls, "chown")
+	return nil
+}
+
 func (f *provisionTrackingFS) Chmod(path string, mode os.FileMode) error {
 	f.chmodCalls++
 	return f.FileSystem.Chmod(path, mode)
@@ -137,6 +152,23 @@ func TestProvisionTransactionSkipsUnchangedExistingMetadata(t *testing.T) {
 	require.NoError(t, tx.Rollback())
 	require.Zero(t, targetFS.chownCalls, "matching ownership must remain a no-op during apply and rollback")
 	require.Zero(t, targetFS.chmodCalls, "matching permissions must remain a no-op during apply and rollback")
+}
+
+func TestProvisionTransactionAppliesModeBeforeTransferringOwnership(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "data"), 0700))
+	baseFS := filesystem.NewLocal(root)
+	uid, gid, err := baseFS.Ownership("data")
+	require.NoError(t, err)
+	targetFS := &provisionOrderFS{FileSystem: baseFS}
+	targetUID, targetGID := uid+1, gid+1
+	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Permissions: []provisionPermission{{
+		Path: "data", Mode: "0750", UID: &targetUID, GID: &targetGID,
+	}}})
+	require.NoError(t, err)
+	require.NoError(t, (&provisionTransaction{filesystem: targetFS}).apply(context.Background(), ".", operations))
+	require.Equal(t, []string{"chmod", "chown"}, targetFS.calls,
+		"ownership must be transferred only after applying the requested mode")
 }
 
 func TestProvisionChownErrorIsActionable(t *testing.T) {

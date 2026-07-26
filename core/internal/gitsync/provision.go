@@ -315,14 +315,10 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 			tx.snapshots = append(tx.snapshots, snapshot)
 			snapshotIndex = len(tx.snapshots) - 1
 		}
-		if operation.setOwner && (!ownerKnown || currentUID != operation.uid || currentGID != operation.gid) {
-			if err := tx.filesystem.Chown(full, operation.uid, operation.gid); err != nil {
-				return provisionChownError(operation.path, operation.uid, operation.gid, err)
-			}
-			if snapshotIndex >= 0 {
-				tx.snapshots[snapshotIndex].restoreOwner = true
-			}
-		}
+		// Apply permissions while Dockman still owns the path, then transfer
+		// ownership. With a least-privilege CHOWN-only capability set, doing
+		// this in the opposite order would require FOWNER just to apply the
+		// requested mode to the newly transferred path.
 		if operation.setMode && (!modeKnown || currentMode != operation.mode) {
 			if err := tx.filesystem.Chmod(full, operation.mode); err != nil {
 				info, statErr := tx.filesystem.Lstat(full)
@@ -331,6 +327,14 @@ func (tx *provisionTransaction) apply(ctx context.Context, root string, operatio
 				}
 			} else if snapshotIndex >= 0 {
 				tx.snapshots[snapshotIndex].restoreMode = true
+			}
+		}
+		if operation.setOwner && (!ownerKnown || currentUID != operation.uid || currentGID != operation.gid) {
+			if err := tx.filesystem.Chown(full, operation.uid, operation.gid); err != nil {
+				return provisionChownError(operation.path, operation.uid, operation.gid, err)
+			}
+			if snapshotIndex >= 0 {
+				tx.snapshots[snapshotIndex].restoreOwner = true
 			}
 		}
 	}
