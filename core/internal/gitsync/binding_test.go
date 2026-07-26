@@ -189,6 +189,31 @@ func TestPreviewSkipsSensitiveFilesUnlessExplicitlyConfirmed(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestEnvironmentTemplatesCanBeIncludedWithoutWeakeningSensitiveProtection(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", ".env.example"), []byte("TOKEN=replace-me\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", ".env.production"), []byte("TOKEN=do-not-leak\n"), 0o600))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{IncludePatterns: []string{".env.example", ".env.production"}})
+	require.NoError(t, err)
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Equal(t, 2, preview.Changed)
+	require.Equal(t, 1, preview.Skipped)
+	statuses := make(map[string]string, len(preview.Entries))
+	for _, entry := range preview.Entries {
+		statuses[entry.Path] = entry.Status
+	}
+	require.Equal(t, "add", statuses[".env.example"])
+	require.Equal(t, "skipped_sensitive", statuses[".env.production"])
+}
+
 func TestRepositoryBindingPathsCannotOverlap(t *testing.T) {
 	require.True(t, pathsOverlap(".", "stacks/app"))
 	require.True(t, pathsOverlap("stacks", "stacks/app"))
@@ -861,6 +886,32 @@ func TestComposeConfigPolicySupportsIncludesAndExcludes(t *testing.T) {
 	require.NotContains(t, files, "runtime/cache/state.json")
 }
 
+func TestComposeOnlyPolicyIncludesYamlTemplatesAndExplicitAdditions(t *testing.T) {
+	stackRoot := t.TempDir()
+	files := make(map[string]string)
+	files["compose.yaml"] = "services: {}\n"
+	files["override.yml"] = "services: {}\n"
+	files[".env.example"] = "TOKEN=replace-me\n"
+	files[".env.sample"] = "TOKEN=replace-me\n"
+	files[".env.prod.template"] = "TOKEN=replace-me\n"
+	files["settings.json"] = "{}\n"
+	files["application.conf"] = "enabled=true\n"
+	files["notes.md"] = "documentation\n"
+	for name, contents := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, name), []byte(contents), 0o644))
+	}
+	policy := syncPolicy{profile: syncProfileComposeOnly, includes: mustRules([]string{"application.conf"})}
+
+	collected, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false, policy)
+	require.NoError(t, err)
+	for _, name := range []string{"compose.yaml", "override.yml", ".env.example", ".env.sample", ".env.prod.template", "application.conf"} {
+		require.NotNil(t, collected[name].open, name)
+	}
+	for _, name := range []string{"settings.json", "notes.md"} {
+		require.Equal(t, "type", collected[name].skipReason, name)
+	}
+}
+
 func TestComposeFilesCannotBeExcludedByPolicyOrDockmanIgnore(t *testing.T) {
 	stackRoot := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "nested"), 0755))
@@ -889,6 +940,10 @@ func TestBindingPolicyIsValidatedAndPersisted(t *testing.T) {
 	require.Equal(t, syncProfileAllFiles, updated.SyncProfile)
 	require.Equal(t, []string{"scripts/**"}, updated.IncludePatterns)
 	require.Equal(t, []string{"data/**", "*.log"}, updated.ExcludePatterns)
+	updated, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly, IncludePatterns: []string{"application.conf"}})
+	require.NoError(t, err)
+	require.Equal(t, syncProfileComposeOnly, updated.SyncProfile)
+	require.Equal(t, []string{"application.conf"}, updated.IncludePatterns)
 	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeConfig, ExcludePatterns: []string{"../outside"}})
 	require.ErrorContains(t, err, "path traversal")
 }

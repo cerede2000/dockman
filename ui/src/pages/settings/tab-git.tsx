@@ -112,7 +112,7 @@ class APIError extends Error {
 interface StackTarget { host: string; path: string; composePaths: string[]; scope: "all_stacks" | "folder"; stackCount: number; }
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
-    subPath: string; composePaths: string[]; syncProfile: "compose_config" | "all_files";
+    subPath: string; composePaths: string[]; syncProfile: "compose_only" | "compose_config" | "all_files";
     composeSelectionMode: "all" | "selected"; selectedComposePaths: string[];
     includePatterns: string[]; excludePatterns: string[]; enabled: boolean;
     autoSyncEnabled: boolean; autoSyncPaused: boolean; autoSyncIntervalMinutes: number; autoSyncState: string;
@@ -306,7 +306,7 @@ export default function TabGit() {
     const [deleteBinding, setDeleteBinding] = useState<Binding | null>(null);
 	const [recoveryView, setRecoveryView] = useState<{binding: RecoveryBinding; tab: 'activity' | 'backups'} | null>(null);
     const [policyBinding, setPolicyBinding] = useState<Binding | null>(null);
-    const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_config" | "all_files", includes: "", excludes: ""});
+    const [policyForm, setPolicyForm] = useState({profile: "compose_config" as "compose_only" | "compose_config" | "all_files", includes: "", excludes: ""});
     const [automationBinding, setAutomationBinding] = useState<Binding | null>(null);
     const [composeBinding, setComposeBinding] = useState<Binding | null>(null);
     const [selectedComposePaths, setSelectedComposePaths] = useState<Set<string>>(() => new Set());
@@ -1119,7 +1119,7 @@ export default function TabGit() {
                         {bindings.length === 0 && <TableRow><TableCell colSpan={5} align="center" sx={{py: 5, color: "text.secondary"}}>No stack linked to a repository.</TableCell></TableRow>}
                         {bindings.map((binding) => <TableRow key={binding.id} hover>
                             <TableCell><Typography variant="body2" sx={{fontWeight: 700}}>{binding.stackPath}</Typography><Typography variant="caption" color="text.secondary">Complete folder on {binding.host}</Typography></TableCell>
-                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Stack direction="row" spacing={.5} sx={{mt: .5, alignItems: "center"}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : "Configuration files"}/><Tooltip title={binding.initialSyncError || "Initial link state"}><Chip size="small" variant="outlined" color={binding.initialSyncState === "error" ? "error" : binding.initialSyncState === "reconciled" || binding.initialSyncState === "imported" || binding.initialSyncState === "exported" ? "success" : "default"} label={(binding.initialSyncState || "pending").replaceAll("_", " ")}/></Tooltip></Stack></TableCell>
+                            <TableCell><Typography variant="body2">{binding.repositoryName}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{binding.subPath === "." ? "/" : `/${binding.subPath}`}</Typography><Stack direction="row" spacing={.5} sx={{mt: .5, alignItems: "center"}}><Chip size="small" variant="outlined" color={binding.syncProfile === "all_files" ? "warning" : "info"} label={binding.syncProfile === "all_files" ? "All regular files" : binding.syncProfile === "compose_only" ? "Docker Compose only" : "Configuration files"}/><Tooltip title={binding.initialSyncError || "Initial link state"}><Chip size="small" variant="outlined" color={binding.initialSyncState === "error" ? "error" : binding.initialSyncState === "reconciled" || binding.initialSyncState === "imported" || binding.initialSyncState === "exported" ? "success" : "default"} label={(binding.initialSyncState || "pending").replaceAll("_", " ")}/></Tooltip></Stack></TableCell>
                             <TableCell>{binding.composePaths.length ? <Tooltip title="View and choose synchronized stacks"><Chip size="small" clickable color={(binding.selectedComposePaths || []).length === binding.composePaths.length ? "info" : "warning"} variant="outlined" onClick={() => openComposeSelection(binding)} label={(binding.selectedComposePaths || []).length}/></Tooltip> : <Chip size="small" color="warning" variant="outlined" label="0"/>}</TableCell>
                             <TableCell sx={{minWidth: 190}}>
                                 <Stack direction="row" spacing={.5} sx={{alignItems: "center"}}>
@@ -1344,13 +1344,14 @@ export default function TabGit() {
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Synchronization policy</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
                 <Alert severity="info">The policy applies in both directions. Compose files stay protected. Special files, Git metadata and files over 100 MiB are always excluded.</Alert>
-                <FormControl><InputLabel>Base profile</InputLabel><Select label="Base profile" value={policyForm.profile} onChange={(event) => setPolicyForm({...policyForm, profile: event.target.value as "compose_config" | "all_files"})}>
+                <FormControl><InputLabel>Base profile</InputLabel><Select label="Base profile" value={policyForm.profile} onChange={(event) => setPolicyForm({...policyForm, profile: event.target.value as "compose_only" | "compose_config" | "all_files"})}>
+                    <MenuItem value="compose_only">Docker Compose only — YAML and environment templates</MenuItem>
                     <MenuItem value="compose_config">Compose configuration — recommended</MenuItem>
                     <MenuItem value="all_files">All regular files</MenuItem>
                 </Select></FormControl>
                 <TextField label="Additional include rules" value={policyForm.includes} onChange={(event) => setPolicyForm({...policyForm, includes: event.target.value})} multiline minRows={4} maxRows={10} placeholder={"scripts/**\ncustom-file\n*.py"} helperText="One relative glob per line. These rules extend the selected profile." sx={{"& textarea": {fontFamily: "monospace"}}}/>
                 <TextField label="Exclude rules" value={policyForm.excludes} onChange={(event) => setPolicyForm({...policyForm, excludes: event.target.value})} multiline minRows={4} maxRows={10} placeholder={"**/data/**\n**/cache/**\n*.log"} helperText="One relative glob per line. Exclusions always take priority." sx={{"& textarea": {fontFamily: "monospace"}}}/>
-                <Typography variant="caption" color="text.secondary">The configuration profile includes Compose/YAML, JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Sensitive files remain protected separately.</Typography>
+                <Typography variant="caption" color="text.secondary">Docker Compose only includes YAML/YML files and conventional .env.example/.sample/.template/.dist templates. The configuration profile also includes JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Explicit include rules can extend either profile; sensitive files remain protected separately.</Typography>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
         </Dialog>

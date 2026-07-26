@@ -41,6 +41,7 @@ const (
 	maxComparisonFileSize    = 2 << 20
 	gitBackupRetention       = 10
 	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
+	syncProfileComposeOnly   = "compose_only"
 	syncProfileComposeConfig = "compose_config"
 	syncProfileAllFiles      = "all_files"
 	composeSelectionAll      = "all"
@@ -230,6 +231,12 @@ var composeConfigRules = mustRules([]string{
 	"*.properties", "*.xml", "*.tmpl", "*.tpl", "*.j2", "*.sh", "*.bash", "*.sql",
 	"*.txt", "*.md", "*.crt", ".env", ".env.*", ".gitignore", ".dockerignore",
 	".dockmanignore", "Dockerfile*", "Containerfile*", "Caddyfile", "Makefile",
+})
+
+var composeOnlyRules = mustRules([]string{
+	"*.yml", "*.yaml",
+	".env.example", ".env.*.example", ".env.sample", ".env.*.sample",
+	".env.template", ".env.*.template", ".env.dist", ".env.*.dist",
 })
 
 func (s *Service) ListBindings() ([]BindingView, error) {
@@ -2198,8 +2205,8 @@ func normalizeBindingPolicy(input BindingPolicyInput) (string, []string, []strin
 	if profile == "" {
 		profile = syncProfileComposeConfig
 	}
-	if profile != syncProfileComposeConfig && profile != syncProfileAllFiles {
-		return "", nil, nil, errors.New("sync profile must be compose_config or all_files")
+	if profile != syncProfileComposeOnly && profile != syncProfileComposeConfig && profile != syncProfileAllFiles {
+		return "", nil, nil, errors.New("sync profile must be compose_only, compose_config or all_files")
 	}
 	includes, _, err := normalizePatterns(input.IncludePatterns)
 	if err != nil {
@@ -2288,6 +2295,9 @@ func mustRules(patterns []string) []ignoreRule {
 func (policy syncPolicy) includesFile(relative string) bool {
 	if matchesIgnoreRule(policy.includes, relative, false) {
 		return true
+	}
+	if policy.profile == syncProfileComposeOnly {
+		return matchesIgnoreRule(composeOnlyRules, relative, false)
 	}
 	if policy.profile == syncProfileAllFiles {
 		return true
@@ -2444,13 +2454,29 @@ func shouldSkipPath(path string, directory bool) bool {
 func isSensitivePath(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	ext := strings.ToLower(filepath.Ext(base))
-	if base == ".env" || strings.HasPrefix(base, ".env.") || base == "id_rsa" || base == "id_ed25519" {
+	if ((base == ".env" || strings.HasPrefix(base, ".env.")) && !isEnvironmentTemplate(base)) || base == "id_rsa" || base == "id_ed25519" {
 		return true
 	}
 	if ext == ".pem" || ext == ".key" || ext == ".p12" || ext == ".pfx" {
 		return true
 	}
 	return strings.Contains(base, "secret") || strings.Contains(base, "credential")
+}
+
+// Environment templates document variable names and safe example values. Keep
+// the sensitive-file guard for real environment files, but allow conventional
+// templates to be selected explicitly by a synchronization policy.
+func isEnvironmentTemplate(base string) bool {
+	if !strings.HasPrefix(base, ".env.") {
+		return false
+	}
+	suffix := base[strings.LastIndexByte(base, '.')+1:]
+	switch suffix {
+	case "example", "sample", "template", "dist":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildPreview(bindingID, direction string, source, target map[string]transferFile, baselines ...map[string]string) TransferPreview {
