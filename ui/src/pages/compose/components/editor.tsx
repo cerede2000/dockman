@@ -129,7 +129,7 @@ export function MonacoEditor(
             const lineNumber = Math.max(1, Math.min(item.line, model.getLineCount()));
             const column = Math.max(1, Math.min(item.column, model.getLineMaxColumn(lineNumber)));
             editor.setPosition({lineNumber, column});
-            editor.revealLineInCenter(lineNumber);
+            editor.revealLineNearTop(lineNumber);
             editor.focus();
         });
 
