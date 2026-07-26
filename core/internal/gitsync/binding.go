@@ -32,6 +32,7 @@ import (
 
 const (
 	maxBindingFiles          = 20_000
+	maxAutoDirectoryFiles    = 2_000
 	maxBindingFileSize       = 100 << 20
 	maxBindingTotalSize      = 2 << 30
 	transferBufferSize       = 64 << 10
@@ -958,7 +959,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		}
 		result.Preview = buildPreview(binding.UUID, "stack_to_repository", source, target, baseline)
 		result.Preview.automation = input.automation
-		result.ReadBlocked = previewPathsWithStatus(result.Preview, "skipped_permission")
+		result.ReadBlocked = previewProtectedLocalPaths(result.Preview)
 		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
@@ -969,7 +970,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			}
 			result.Message = "Repository already matches the readable stack files"
 			if len(result.ReadBlocked) > 0 {
-				result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+				result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 			}
 			return nil
 		}
@@ -1040,7 +1041,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		}
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
 		if len(result.ReadBlocked) > 0 {
-			result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+			result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 		}
 		if pendingConflicts > 0 {
 			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
@@ -1257,7 +1258,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if input.automation {
 			result.Preview.ComposeErrors = composeErrors
 		}
-		result.ReadBlocked = previewPathsWithStatus(result.Preview, "skipped_permission")
+		result.ReadBlocked = previewProtectedLocalPaths(result.Preview)
 		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
@@ -1268,7 +1269,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			}
 			result.Message = "Readable stack files already match the repository"
 			if len(result.ReadBlocked) > 0 {
-				result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+				result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 			}
 			return nil
 		}
@@ -1334,7 +1335,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe repository files were imported with a backup", len(result.ComposeBlocked))
 		}
 		if len(result.ReadBlocked) > 0 {
-			result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+			result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 		}
 		if pendingConflicts > 0 {
 			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
@@ -1683,17 +1684,18 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 		return nil, err
 	}
 	var total int64
-	var walk func(string, string) error
-	walk = func(dir, rel string) error {
+	var walk func(string, string) (int, error)
+	walk = func(dir, rel string) (int, error) {
 		entries, err := targetFS.ReadDir(dir)
 		if err != nil {
 			if rel != "" && errors.Is(err, fs.ErrPermission) {
 				log.Warn().Str("path", rel).Err(err).Msg("Git stack sync skipped unreadable directory")
 				result[rel] = transferFile{path: rel, skipReason: "permission", directory: true}
-				return nil
+				return 0, nil
 			}
-			return err
+			return 0, err
 		}
+		observed := 0
 		for _, entry := range entries {
 			childRel := filepath.ToSlash(filepath.Join(rel, entry.Name()))
 			// Provision manifests are Git-side control files. They are never
@@ -1704,9 +1706,11 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			selected, traverse := policy.selectsPath(childRel, entry.IsDir())
 			if !selected {
 				if entry.IsDir() && traverse {
-					if err := walk(targetFS.Join(dir, entry.Name()), childRel); err != nil {
-						return err
+					childCount, err := walk(targetFS.Join(dir, entry.Name()), childRel)
+					if err != nil {
+						return 0, err
 					}
+					observed += childCount
 				}
 				continue
 			}
@@ -1716,9 +1720,11 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.protectsCompose(childRel) && !policy.protectsProvision(childRel) {
 				if entry.IsDir() && policy.containsCompose(childRel) {
 					child := targetFS.Join(dir, entry.Name())
-					if err := walk(child, childRel); err != nil {
-						return err
+					childCount, err := walk(child, childRel)
+					if err != nil {
+						return 0, err
 					}
+					observed += childCount
 					continue
 				}
 				result[childRel] = transferFile{path: childRel, skipReason: "excluded", directory: entry.IsDir()}
@@ -1729,8 +1735,13 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			}
 			child := targetFS.Join(dir, entry.Name())
 			if entry.IsDir() {
-				if err := walk(child, childRel); err != nil {
-					return err
+				childCount, err := walk(child, childRel)
+				if err != nil {
+					return 0, err
+				}
+				observed += childCount
+				if autoExcludeLargeDirectory(result, policy, rel, observed) {
+					return observed, nil
 				}
 				continue
 			}
@@ -1741,13 +1752,17 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 					result[childRel] = transferFile{path: childRel, skipReason: "permission"}
 					continue
 				}
-				return err
+				return 0, err
 			}
 			if !isTransferFile(info.Mode()) {
 				continue
 			}
+			observed++
+			if autoExcludeLargeDirectory(result, policy, rel, observed) {
+				return observed, nil
+			}
 			if len(result)+1 > maxBindingFiles {
-				return fmt.Errorf("stack contains more than %d files; exclude generated folders with .dockmanignore", maxBindingFiles)
+				return 0, stackInventoryLimitError(policy, childRel, maxBindingFiles)
 			}
 			sensitive := isSensitivePath(childRel)
 			if sensitive && !includeSensitive {
@@ -1764,10 +1779,10 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 				continue
 			}
 			if total+info.Size() > maxBindingTotalSize {
-				return fmt.Errorf("stack files exceed the %d MiB total limit at %s (%d MiB accumulated); exclude this file or a generated folder with .dockmanignore", maxBindingTotalSize>>20, childRel, (total+info.Size())>>20)
+				return 0, fmt.Errorf("%s files exceed the %d MiB total limit while scanning %s (%d MiB accumulated); exclude its data directory with .dockmanignore", stackInventoryOwner(policy, childRel), maxBindingTotalSize>>20, childRel, (total+info.Size())>>20)
 			}
 			if err := checkTransferLimit(len(result)+1, info.Size(), total+info.Size()); err != nil {
-				return err
+				return 0, fmt.Errorf("%s at %s: %w", stackInventoryOwner(policy, childRel), childRel, err)
 			}
 			total += info.Size()
 			childPath := child
@@ -1781,13 +1796,45 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 					result[childRel] = transferFile{path: childRel, size: info.Size(), mode: info.Mode().Perm(), skipReason: "permission"}
 					continue
 				}
-				return err
+				return 0, err
 			}
 			result[childRel] = file
 		}
-		return nil
+		return observed, nil
 	}
-	return result, walk(root, "")
+	_, err = walk(root, "")
+	return result, err
+}
+
+func autoExcludeLargeDirectory(result map[string]transferFile, policy syncPolicy, relative string, observed int) bool {
+	if relative == "" || len(policy.compose) == 0 || observed <= maxAutoDirectoryFiles || policy.containsCompose(relative) {
+		return false
+	}
+	prefix := strings.TrimSuffix(filepath.ToSlash(relative), "/") + "/"
+	for candidate := range result {
+		if candidate == relative || strings.HasPrefix(candidate, prefix) {
+			delete(result, candidate)
+		}
+	}
+	result[relative] = transferFile{path: relative, skipReason: "large_directory", directory: true}
+	log.Warn().Str("directory", relative).Int("observed_files", observed).Int("automatic_limit", maxAutoDirectoryFiles).Msg("Git stack sync automatically skipped a large data directory")
+	return true
+}
+
+func stackInventoryOwner(policy syncPolicy, relative string) string {
+	compose := make([]string, 0, len(policy.compose))
+	for candidate := range policy.compose {
+		compose = append(compose, candidate)
+	}
+	owners := composePathsForFile(compose, relative)
+	if len(owners) == 0 {
+		return "folder link"
+	}
+	return "stack " + strings.Join(owners, ", ")
+}
+
+func stackInventoryLimitError(policy syncPolicy, relative string, limit int) error {
+	return fmt.Errorf("%s exceeds the %d-item synchronization inventory while scanning %s; large data directories above %d files are skipped automatically, so this path needs an explicit folder exclusion in .dockmanignore or the folder-link settings", stackInventoryOwner(policy, relative), limit, relative, maxAutoDirectoryFiles)
 }
 
 func collectRepositoryFiles(repo *gitclient.Repository, branch, subPath string, includeSensitive bool, policies ...syncPolicy) (map[string]transferFile, error) {
@@ -1831,6 +1878,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 	if err != nil {
 		return nil, err
 	}
+	largeDirectories := discoverLargeRepositoryDirectories(tree, policy)
 	var total int64
 	var walk func(*object.Tree, string) error
 	walk = func(current *object.Tree, parent string) error {
@@ -1874,6 +1922,12 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				continue
 			}
 			if isDirectory {
+				if _, large := largeDirectories[rel]; large {
+					result[rel] = transferFile{path: rel, skipReason: "large_directory", directory: true}
+					continue
+				}
+			}
+			if isDirectory {
 				subtree, err := current.Tree(entry.Name)
 				if err != nil {
 					return err
@@ -1892,7 +1946,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 			}
 			size := blob.Size
 			if len(result)+1 > maxBindingFiles {
-				return fmt.Errorf("repository folder contains more than %d files; exclude generated folders with .dockmanignore", maxBindingFiles)
+				return stackInventoryLimitError(policy, rel, maxBindingFiles)
 			}
 			sensitive := isSensitivePath(rel)
 			if sensitive && !includeSensitive {
@@ -1909,10 +1963,10 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				continue
 			}
 			if total+size > maxBindingTotalSize {
-				return fmt.Errorf("repository files exceed the %d MiB total limit at %s (%d MiB accumulated); exclude this file or a generated folder with .dockmanignore", maxBindingTotalSize>>20, rel, (total+size)>>20)
+				return fmt.Errorf("%s repository files exceed the %d MiB total limit while scanning %s (%d MiB accumulated); exclude its data directory", stackInventoryOwner(policy, rel), maxBindingTotalSize>>20, rel, (total+size)>>20)
 			}
 			if err := checkTransferLimit(len(result)+1, size, total+size); err != nil {
-				return err
+				return fmt.Errorf("%s at %s: %w", stackInventoryOwner(policy, rel), rel, err)
 			}
 			total += size
 			file := transferFile{path: rel, size: size, mode: gitFileMode(entry.Mode), sensitive: sensitive, open: gitBlobOpener(repo, entry.Hash)}
@@ -1925,6 +1979,39 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 		return nil
 	}
 	return result, walk(tree, "")
+}
+
+func discoverLargeRepositoryDirectories(tree *object.Tree, policy syncPolicy) map[string]struct{} {
+	result := make(map[string]struct{})
+	if len(policy.compose) == 0 {
+		return result
+	}
+	var walk func(*object.Tree, string) int
+	walk = func(current *object.Tree, parent string) int {
+		observed := 0
+		for _, entry := range current.Entries {
+			relative := path.Join(parent, entry.Name)
+			if entry.Mode == filemode.Dir {
+				if shouldSkipPath(relative, true) {
+					continue
+				}
+				subtree, err := current.Tree(entry.Name)
+				if err != nil {
+					continue
+				}
+				observed += walk(subtree, relative)
+			} else if entry.Mode.IsFile() {
+				observed++
+			}
+			if parent != "" && observed > maxAutoDirectoryFiles && !policy.containsCompose(parent) {
+				result[parent] = struct{}{}
+				return observed
+			}
+		}
+		return observed
+	}
+	walk(tree, "")
+	return result
 }
 
 func discoverRepositoryComposeFiles(tree *object.Tree) []string {
@@ -2405,9 +2492,12 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 			continue
 		}
 		dst, exists := target[path]
+		if !exists && direction == "repository_to_stack" {
+			dst, exists = blockedTargetDirectory(target, path)
+		}
 		entry := PreviewEntry{Path: path, Status: "add", SourceSHA: src.sha, Size: src.size, Sensitive: src.sensitive}
-		if exists && dst.open == nil && dst.skipReason == "permission" {
-			entry.Status = "skipped_permission"
+		if exists && dst.open == nil && (dst.skipReason == "permission" || dst.skipReason == "large_directory") {
+			entry.Status = "skipped_" + dst.skipReason
 			entry.TargetSHA = dst.sha
 			entry.Size = dst.size
 			entry.Directory = dst.directory
@@ -2507,6 +2597,17 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 	}
 	preview.PreviewToken = previewToken(preview)
 	return preview
+}
+
+func blockedTargetDirectory(target map[string]transferFile, relative string) (transferFile, bool) {
+	current := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))
+	for current != "." && current != "" {
+		if blocker, exists := target[current]; exists && blocker.directory && blocker.open == nil && (blocker.skipReason == "permission" || blocker.skipReason == "large_directory") {
+			return blocker, true
+		}
+		current = filepath.ToSlash(filepath.Dir(filepath.FromSlash(current)))
+	}
+	return transferFile{}, false
 }
 
 func baselineFromSource(source map[string]transferFile) map[string]string {
@@ -2794,6 +2895,13 @@ func previewPathsWithStatus(preview TransferPreview, status string) []string {
 		}
 	}
 	return uniqueSortedStrings(paths)
+}
+
+func previewProtectedLocalPaths(preview TransferPreview) []string {
+	return uniqueSortedStrings(append(
+		previewPathsWithStatus(preview, "skipped_permission"),
+		previewPathsWithStatus(preview, "skipped_large_directory")...,
+	))
 }
 
 func composePathsForFiles(composePaths, filePaths []string) []string {

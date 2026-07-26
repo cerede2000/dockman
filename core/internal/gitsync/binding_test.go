@@ -502,6 +502,39 @@ func TestStackInventorySkipsUnreadableFileWithoutBlockingSiblingStacks(t *testin
 	require.NotNil(t, files["whoami/compose.yaml"].open, "an unreadable AdGuard file must not hide another stack")
 }
 
+func TestStackInventoryCollapsesLargeDataDirectoryWithoutBlockingSiblingStacks(t *testing.T) {
+	root := t.TempDir()
+	for _, stack := range []string{"adguard", "whoami"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, stack), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, stack, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	}
+	data := filepath.Join(root, "adguard", "data")
+	require.NoError(t, os.MkdirAll(data, 0o755))
+	for index := 0; index <= maxAutoDirectoryFiles; index++ {
+		require.NoError(t, os.WriteFile(filepath.Join(data, fmt.Sprintf("query-%05d.log", index)), []byte("data\n"), 0o644))
+	}
+	policy := defaultSyncPolicy()
+	policy.compose = map[string]struct{}{"adguard/compose.yaml": {}, "whoami/compose.yaml": {}}
+
+	files, err := collectStackFiles(filesystem.NewLocal(root), ".", false, policy)
+	require.NoError(t, err)
+	require.Equal(t, "large_directory", files["adguard/data"].skipReason)
+	require.True(t, files["adguard/data"].directory)
+	require.NotNil(t, files["adguard/compose.yaml"].open)
+	require.NotNil(t, files["whoami/compose.yaml"].open, "a large AdGuard data folder must not hide another stack")
+	for path := range files {
+		require.False(t, strings.HasPrefix(path, "adguard/data/"), "large directory children must be represented by one bounded marker")
+	}
+}
+
+func TestStackInventoryLimitNamesOwningStackAndPath(t *testing.T) {
+	policy := defaultSyncPolicy()
+	policy.compose = map[string]struct{}{"adguard/compose.yaml": {}, "whoami/compose.yaml": {}}
+	err := stackInventoryLimitError(policy, "adguard/config/filters.yaml", maxBindingFiles)
+	require.ErrorContains(t, err, "stack adguard/compose.yaml")
+	require.ErrorContains(t, err, "adguard/config/filters.yaml")
+}
+
 func TestGitImportPreviewSkipsUnreadableTargetAndKeepsOtherChangesTransferable(t *testing.T) {
 	available := func(path, contents string) transferFile {
 		hash := sha256.Sum256([]byte(contents))
@@ -526,6 +559,19 @@ func TestGitImportPreviewSkipsUnreadableTargetAndKeepsOtherChangesTransferable(t
 	require.Equal(t, 1, preview.Changed)
 	require.Equal(t, "skipped_permission", preview.Entries[0].Status)
 	require.Equal(t, "modify", preview.Entries[1].Status)
+}
+
+func TestGitImportPreviewDoesNotWriteInsideAutomaticallySkippedDataDirectory(t *testing.T) {
+	sourceFile := transferFile{path: "adguard/data/runtime.db", sha: "remote", size: 42, open: func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(strings.Repeat("x", 42))), nil
+	}}
+	preview := buildPreview("binding", "repository_to_stack", map[string]transferFile{sourceFile.path: sourceFile}, map[string]transferFile{
+		"adguard/data": {path: "adguard/data", skipReason: "large_directory", directory: true},
+	})
+
+	require.Equal(t, 0, preview.Changed)
+	require.Equal(t, 1, preview.Skipped)
+	require.Equal(t, "skipped_large_directory", preview.Entries[0].Status)
 }
 
 func TestTransferInventoryRejectsSpecialFiles(t *testing.T) {

@@ -414,9 +414,9 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		if len(readBlockedStacks) > 0 {
 			result.State = "partial"
 			changedPaths = excludeComposeStackPaths(changedPaths, readBlockedStacks)
-			result.Message = fmt.Sprintf("%d stack(s) contain unreadable local items and were skipped; other stacks continued independently", len(readBlockedStacks))
+			result.Message = fmt.Sprintf("%d stack(s) contain protected local items or automatically excluded large data directories and were skipped; other stacks continued independently", len(readBlockedStacks))
 			if len(transfer.ComposeBlocked) > 0 {
-				result.Message = fmt.Sprintf("%d invalid Compose stack(s) and %d stack(s) with unreadable local items were skipped; other stacks continued independently", len(transfer.ComposeBlocked), len(readBlockedStacks))
+				result.Message = fmt.Sprintf("%d invalid Compose stack(s) and %d stack(s) with protected local items were skipped; other stacks continued independently", len(transfer.ComposeBlocked), len(readBlockedStacks))
 			}
 		}
 		if len(transfer.EditorBlocked) > 0 {
@@ -456,7 +456,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 			if (len(transfer.ComposeBlocked) > 0 || len(readBlockedStacks) > 0) && len(deployment.Failed) > 0 {
 				result.Message = fmt.Sprintf("%d stack(s) skipped during synchronization; %d stack(s) deployed and %d additional stack(s) failed deployment", len(result.SyncFailed), len(deployment.Deployed), len(deployment.Failed))
 			} else if len(readBlockedStacks) > 0 {
-				result.Message = fmt.Sprintf("%d stack(s) with unreadable local items were skipped; %d independent stack(s) deployed successfully", len(readBlockedStacks), len(deployment.Deployed))
+				result.Message = fmt.Sprintf("%d stack(s) with protected local items were skipped; %d independent stack(s) deployed successfully", len(readBlockedStacks), len(deployment.Deployed))
 			} else if len(transfer.ComposeBlocked) > 0 {
 				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d independent stack(s) deployed successfully", len(transfer.ComposeBlocked), len(deployment.Deployed))
 			} else if len(deployment.Failed) > 0 {

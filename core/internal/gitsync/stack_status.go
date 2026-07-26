@@ -464,6 +464,11 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 		for _, composePath := range composePathsForFile(paths, entry.Path) {
 			current := states[composePath]
 			switch entry.Status {
+			case "skipped_large_directory":
+				if current.state != stackSyncConflict {
+					current.state = stackSyncError
+					current.message = "A large local data directory was automatically skipped while other stacks continued: " + entry.Path
+				}
 			case "skipped_permission":
 				if current.state != stackSyncConflict {
 					current.state = stackSyncError
