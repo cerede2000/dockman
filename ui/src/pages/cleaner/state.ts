@@ -12,7 +12,7 @@ export const useCleanerConfig = create<{
     isLoading: boolean;
     SetField: <K extends keyof CleanerConfig>(field: K, value: CleanerConfig[K]) => void;
     Fetch: (client: Client<typeof CleanerService>) => Promise<void>;
-    Save: (client: Client<typeof CleanerService>, showErr: (err: string) => void, onSuccess: () => void) => Promise<void>;
+    Save: (client: Client<typeof CleanerService>, showErr: (err: string) => void, onSuccess: () => void) => Promise<boolean>;
 }>((set, get) => ({
     config: null,
     err: null,
@@ -20,15 +20,18 @@ export const useCleanerConfig = create<{
     Save: async (client, showErr, onSuccess) => {
         if (!get().config) {
             debugWarn("Cleaner configuration is not loaded");
-            return;
+            showErr("Cleaner configuration is not loaded");
+            return false;
         }
 
         const {val, err} = await callRPC(() => client.editConfig({config: get().config!}))
         if (err) {
             showErr(err)
+            return false
         } else {
             set({config: val?.config ?? null})
             onSuccess()
+            return true
         }
     },
     Fetch: async (client) => {

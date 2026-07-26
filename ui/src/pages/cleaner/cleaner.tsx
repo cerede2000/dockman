@@ -42,6 +42,7 @@ function DockerCleanerPage() {
     const saveConfig = useCleanerConfig(state => state.Save);
 
     const [refetchUsage, setRefetchUsage] = useState(true);
+    const [isSavingAndTriggering, setIsSavingAndTriggering] = useState(false);
 
     const cronSamples = [
         {label: 'Daily at 03:00', value: '0 3 * * *'},
@@ -55,19 +56,34 @@ function DockerCleanerPage() {
         fetchConfig(cleaner).then();
     }, [fetchConfig, cleaner]);
 
-    const handleSave = async () => {
-        await saveConfig(
+    const handleSave = async (showConfirmation = true) => {
+        return saveConfig(
             cleaner,
             err => showError(`Error saving config: ${err}`),
-            () => showSuccess("Configuration updated")
+            () => {
+                if (showConfirmation) showSuccess("Configuration updated")
+            }
         );
     };
 
-    const handleTrigger = async () => {
+    const handleTrigger = async (successMessage = "Maintenance task triggered successfully") => {
         const {err} = await callRPC(() => cleaner.runCleaner({}));
         if (err) showError(`Error running cleaner: ${err}`);
-        else showSuccess("Maintenance task triggered successfully");
+        else showSuccess(successMessage);
         setRefetchUsage(prev => !prev);
+        return !err;
+    };
+
+    const handleSaveAndTrigger = async () => {
+        if (isSavingAndTriggering) return;
+        setIsSavingAndTriggering(true);
+        try {
+            const saved = await handleSave(false);
+            if (!saved) return;
+            await handleTrigger("Configuration saved and maintenance task triggered successfully");
+        } finally {
+            setIsSavingAndTriggering(false);
+        }
     };
 
     if (isLoading) {
@@ -147,7 +163,7 @@ function DockerCleanerPage() {
                             variant="outlined"
                             color="inherit"
                             startIcon={<Save/>}
-                            onClick={handleSave}
+                            onClick={() => void handleSave()}
                             sx={{borderRadius: 2, fontWeight: 700}}
                         >
                             Save Settings
@@ -155,7 +171,7 @@ function DockerCleanerPage() {
                         <Button
                             variant="contained"
                             startIcon={<PlayArrow/>}
-                            onClick={handleTrigger}
+                            onClick={() => void handleTrigger()}
                             sx={{borderRadius: 2, fontWeight: 700, boxShadow: 'none'}}
                         >
                             Run Now
@@ -242,10 +258,8 @@ function DockerCleanerPage() {
                                 <Button
                                     color="success"
                                     startIcon={<BoltIcon/>}
-                                    onClick={async () => {
-                                        await handleSave();
-                                        await handleTrigger();
-                                    }}
+                                    onClick={handleSaveAndTrigger}
+                                    disabled={isSavingAndTriggering}
                                     sx={{
                                         borderRadius: 2,
                                         fontWeight: 700,
@@ -253,7 +267,7 @@ function DockerCleanerPage() {
                                         color: 'success.dark'
                                     }}
                                 >
-                                    Save & Trigger Now
+                                    {isSavingAndTriggering ? 'Saving…' : 'Save & Trigger Now'}
                                 </Button>
                             </Stack>
                         </Box>
