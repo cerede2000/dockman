@@ -221,7 +221,7 @@ function DockerCleanerPage() {
                                     htmlInput: {maxLength: 120, spellCheck: false}
                                 }}
                             />
-                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{mt: 1}}>
+                            <Stack direction="row" spacing={1} useFlexGap sx={{mt: 1, flexWrap: 'wrap'}}>
                                 {cronSamples.map(sample => (
                                     <Chip
                                         key={sample.value}
