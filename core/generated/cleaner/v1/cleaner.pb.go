@@ -730,16 +730,19 @@ func (*PruneResult) Descriptor() ([]byte, []int) {
 }
 
 type PruneConfig struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Enabled         bool                   `protobuf:"varint,1,opt,name=Enabled,proto3" json:"Enabled,omitempty"`
-	IntervalInHours uint32                 `protobuf:"varint,2,opt,name=IntervalInHours,proto3" json:"IntervalInHours,omitempty"`
-	Volumes         bool                   `protobuf:"varint,3,opt,name=Volumes,proto3" json:"Volumes,omitempty"`
-	Networks        bool                   `protobuf:"varint,4,opt,name=Networks,proto3" json:"Networks,omitempty"`
-	Images          bool                   `protobuf:"varint,5,opt,name=Images,proto3" json:"Images,omitempty"`
-	Containers      bool                   `protobuf:"varint,6,opt,name=Containers,proto3" json:"Containers,omitempty"`
-	BuildCache      bool                   `protobuf:"varint,7,opt,name=BuildCache,proto3" json:"BuildCache,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Enabled bool                   `protobuf:"varint,1,opt,name=Enabled,proto3" json:"Enabled,omitempty"`
+	// Deprecated compatibility field for configurations created before cron scheduling.
+	IntervalInHours uint32 `protobuf:"varint,2,opt,name=IntervalInHours,proto3" json:"IntervalInHours,omitempty"`
+	Volumes         bool   `protobuf:"varint,3,opt,name=Volumes,proto3" json:"Volumes,omitempty"`
+	Networks        bool   `protobuf:"varint,4,opt,name=Networks,proto3" json:"Networks,omitempty"`
+	Images          bool   `protobuf:"varint,5,opt,name=Images,proto3" json:"Images,omitempty"`
+	Containers      bool   `protobuf:"varint,6,opt,name=Containers,proto3" json:"Containers,omitempty"`
+	BuildCache      bool   `protobuf:"varint,7,opt,name=BuildCache,proto3" json:"BuildCache,omitempty"`
+	// Standard five-field cron expression (minute hour day-of-month month day-of-week).
+	CronExpression string `protobuf:"bytes,8,opt,name=CronExpression,proto3" json:"CronExpression,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PruneConfig) Reset() {
@@ -821,6 +824,13 @@ func (x *PruneConfig) GetBuildCache() bool {
 	return false
 }
 
+func (x *PruneConfig) GetCronExpression() string {
+	if x != nil {
+		return x.CronExpression
+	}
+	return ""
+}
+
 var File_cleaner_v1_cleaner_proto protoreflect.FileDescriptor
 
 const file_cleaner_v1_cleaner_proto_rawDesc = "" +
@@ -872,7 +882,7 @@ const file_cleaner_v1_cleaner_proto_rawDesc = "" +
 	"\ahistory\x18\x01 \x03(\v2\x18.cleaner.v1.PruneHistoryR\ahistory\"\x13\n" +
 	"\x11RunCleanerRequest\"\x14\n" +
 	"\x12RunCleanerResponse\"\r\n" +
-	"\vPruneResult\"\xdf\x01\n" +
+	"\vPruneResult\"\x87\x02\n" +
 	"\vPruneConfig\x12\x18\n" +
 	"\aEnabled\x18\x01 \x01(\bR\aEnabled\x12(\n" +
 	"\x0fIntervalInHours\x18\x02 \x01(\rR\x0fIntervalInHours\x12\x18\n" +
@@ -884,7 +894,8 @@ const file_cleaner_v1_cleaner_proto_rawDesc = "" +
 	"Containers\x12\x1e\n" +
 	"\n" +
 	"BuildCache\x18\a \x01(\bR\n" +
-	"BuildCache2\xea\x03\n" +
+	"BuildCache\x12&\n" +
+	"\x0eCronExpression\x18\b \x01(\tR\x0eCronExpression2\xea\x03\n" +
 	"\x0eCleanerService\x12P\n" +
 	"\vListHistory\x12\x1e.cleaner.v1.ListHistoryRequest\x1a\x1f.cleaner.v1.ListHistoryResponse\"\x00\x12M\n" +
 	"\n" +
