@@ -26,6 +26,9 @@ type backupManifestFile struct {
 	BeforeExists bool   `json:"beforeExists"`
 	AfterExists  bool   `json:"afterExists"`
 	BeforeMode   uint32 `json:"beforeMode,omitempty"`
+	EntryType    string `json:"entryType,omitempty"`
+	BeforeUID    int    `json:"beforeUid,omitempty"`
+	BeforeGID    int    `json:"beforeGid,omitempty"`
 }
 
 type backupManifest struct {

@@ -4,7 +4,7 @@
 
 Un fichier `provision.yml` ou `provision.yaml`, placé dans le même dossier Git que le fichier Compose, permet de créer des dossiers et d'appliquer des droits après la synchronisation Git et avant la validation puis le déploiement contrôlé.
 
-Le manifeste est un fichier de contrôle réservé : il est suivi par la synchronisation, mais n'est jamais copié dans le dossier live de la stack. Il n'exécute aucun shell, ne supprime aucun fichier et ne peut agir qu'à l'intérieur du dossier de la stack concernée.
+Le manifeste est un fichier de contrôle réservé : il est suivi par la synchronisation, mais n'est jamais copié dans le dossier live de la stack. Il n'exécute aucun shell et ne peut agir qu'à l'intérieur du dossier de la stack concernée. Les suppressions sont possibles uniquement par une section `remove` explicite et après création réussie d'un backup complet.
 
 ## Préparation
 
@@ -124,3 +124,18 @@ Résultat attendu : la suppression du fichier de contrôle est mémorisée sans 
 Rejouer les tests 1, 2 et 4 sur une stack gérée via SSH/SFTP.
 
 Résultat attendu : même comportement qu'en local, y compris `chmod`, `chown`, détection des liens symboliques et rollback.
+
+## Test 9 — suppression protégée
+
+Créer un fichier et un dossier contenant un fichier ainsi qu'un sous-dossier vide, puis ajouter :
+
+```yaml
+remove:
+  - path: obsolete.conf
+    type: file
+  - path: old-data
+    type: directory
+    recursive: true
+```
+
+Résultat attendu : un backup `pre_provision_delete` est créé avant toute mutation, puis les cibles sont supprimées après succès. En provoquant un échec de déploiement avec le rollback automatique actif, leur contenu, leurs dossiers vides et leurs métadonnées sont restaurés exactement. Un dossier non vide sans `recursive: true`, un type incorrect, un lien symbolique, un fichier spécial, un chemin protégé ou hors stack est refusé sans suppression.

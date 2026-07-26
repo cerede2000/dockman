@@ -169,3 +169,29 @@ Résultat attendu : l'état, le message et le détail de l'incident restent inch
 3. Déclencher la synchronisation.
 
 Résultat attendu : pendant la fenêtre bornée `docker compose up --wait --wait-timeout 60`, le container reste `restarting` et le déploiement échoue. Dockman restaure les fichiers pré-import, redéploie la version précédente et attend son retour running/healthy. Un crash différé après la réussite de cette fenêtre nécessite un healthcheck représentatif pour être détecté de manière fiable.
+
+## 20. Suppression déclarative protégée
+
+1. Créer dans une stack un fichier `obsolete.conf` et un dossier `old-data` contenant un fichier et un sous-dossier vide.
+2. Ajouter dans `provision.yml` :
+
+```yaml
+version: 1
+remove:
+  - path: obsolete.conf
+    type: file
+  - path: old-data
+    type: directory
+    recursive: true
+```
+
+3. Publier le commit et lancer la synchronisation contrôlée.
+4. Vérifier dans **Backups** la création préalable d'un backup `pre_provision_delete`, téléchargeable et soumis à la rétention habituelle.
+5. Vérifier que le fichier et le dossier ont disparu après un déploiement sain.
+6. Refaire le scénario avec une configuration qui fait échouer le déploiement lorsque le rollback automatique est actif.
+
+Résultat attendu : aucune suppression ne commence si l'archive complète ne peut pas être créée. Pendant l'opération, les éléments sont mis en quarantaine sur le même filesystem sans copie en mémoire. Un succès purge la quarantaine et conserve le backup ; un échec restaure exactement fichiers, dossiers vides, modes et propriétaires depuis la quarantaine. Les liens symboliques, fichiers spéciaux, chemins hors stack, fichiers Compose/manifestes, types incorrects et dossiers non vides sans `recursive: true` sont refusés avant toute mutation.
+
+7. Retirer les cibles localement puis relancer le même manifeste.
+
+Résultat attendu : une cible déjà absente est un succès idempotent et ne crée aucun backup vide.

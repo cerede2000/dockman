@@ -2295,7 +2295,7 @@ func isProvisionControlPath(relative string) bool {
 
 func shouldSkipPath(path string, directory bool) bool {
 	base := strings.ToLower(filepath.Base(path))
-	return directory && (base == ".git" || base == ".dockman-backups")
+	return directory && (base == ".git" || base == ".dockman-backups" || strings.HasPrefix(base, ".dockman-provision-staging-"))
 }
 
 func isSensitivePath(path string) bool {

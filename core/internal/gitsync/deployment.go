@@ -249,6 +249,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		deployment.State = "provisioning"
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "provisioning", "deploy_error": ""})
 		provisioning, err := s.applyStackProvisioning(ctx, binding, commit, relative, logs)
+		provisionRolledBack := false
 		if err == nil {
 			stage = "validation"
 			deployment.State = "validating"
@@ -269,6 +270,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			err = deploy(ctx, binding.Host, filename, logs)
 		}
 		if err != nil && binding.AutoDeployRollbackEnabled {
+			provisionRolledBack = true
 			originalErr := sanitizeDeploymentOutput(safeGitError(fmt.Errorf("%s failed: %w", stage, err)))
 			deployment.State = "rolling_back"
 			_, _ = fmt.Fprintf(logs, "\n[dockman] %s; restoring the pre-import stack files\n", originalErr)
@@ -291,6 +293,11 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 				var fileRollbackErr error
 				restored, fileRollbackErr = s.rollbackDeploymentFiles(binding, rollbackBackupID, relative)
 				rollbackErr = errors.Join(rollbackErr, fileRollbackErr)
+			}
+			if provisioning != nil {
+				if provisionRollbackErr := provisioning.RollbackRemovedPaths(); provisionRollbackErr != nil {
+					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore provisioned removals: %w", provisionRollbackErr))
+				}
 			}
 			if provisioning != nil {
 				if provisionRollbackErr := provisioning.RollbackCreatedDirectories(); provisionRollbackErr != nil {
@@ -323,6 +330,13 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 				result.RollbackFailed = append(result.RollbackFailed, relative)
 			}
 		}
+		if provisioning != nil && !provisionRolledBack {
+			if finalizeErr := provisioning.Commit(); finalizeErr != nil {
+				_, _ = fmt.Fprintf(logs, "\n[dockman] provisioning cleanup failed: %v\n", finalizeErr)
+				err = errors.Join(err, finalizeErr)
+				stage = "provisioning cleanup"
+			}
+		}
 		unlock()
 		deployment.Logs = logs.String()
 		if err == nil {
@@ -351,7 +365,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			}
 			s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
 				ComposePath: relative, Type: "stack_provision", Trigger: "automation", State: provisionState,
-				CommitSHA: commit, Error: deployError, Details: ActivityDetails{Action: provisioning.manifest,
+				CommitSHA: commit, BackupID: provisioning.backupID, Error: deployError, Details: ActivityDetails{Action: provisioning.manifest,
 					Changed: provisioning.operations, Paths: []string{relative}, DeploymentIDs: []string{deployment.UUID}}})
 		}
 		if deployment.State != "success" {

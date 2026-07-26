@@ -56,6 +56,9 @@ func TestNormalizeProvisionManifestRejectsUnsafeInput(t *testing.T) {
 		{name: "duplicate", manifest: provisionManifest{Version: 1, Directories: []provisionDirectory{{Path: "data"}}, Permissions: []provisionPermission{{Path: "data", Mode: mode}}}, error: "declared more than once"},
 		{name: "owner pair", manifest: provisionManifest{Version: 1, Permissions: []provisionPermission{{Path: "config.yml", UID: func() *int { value := 1000; return &value }()}}}, error: "uid and gid"},
 		{name: "special mode", manifest: provisionManifest{Version: 1, Permissions: []provisionPermission{{Path: "config.yml", Mode: "4755"}}}, error: "permission bits"},
+		{name: "remove type", manifest: provisionManifest{Version: 1, Remove: []provisionRemoval{{Path: "old"}}}, error: "explicitly set type"},
+		{name: "recursive file", manifest: provisionManifest{Version: 1, Remove: []provisionRemoval{{Path: "old.conf", Type: "file", Recursive: true}}}, error: "only be recursive"},
+		{name: "overlap", manifest: provisionManifest{Version: 1, Directories: []provisionDirectory{{Path: "data"}}, Remove: []provisionRemoval{{Path: "data/old", Type: "directory", Recursive: true}}}, error: "overlap"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -63,6 +66,66 @@ func TestNormalizeProvisionManifestRejectsUnsafeInput(t *testing.T) {
 			require.ErrorContains(t, err, test.error)
 		})
 	}
+}
+
+func TestProvisionTransactionStagesAndRollsBackRemoval(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "obsolete", "empty"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "obsolete", "config.yml"), []byte("preserved\n"), 0640))
+	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Remove: []provisionRemoval{{
+		Path: "obsolete", Type: "directory", Recursive: true,
+	}}})
+	require.NoError(t, err)
+	targetFS := filesystem.NewLocal(root)
+	tx := &provisionTransaction{filesystem: targetFS}
+	require.NoError(t, tx.apply(context.Background(), ".", operations))
+	require.NoDirExists(t, filepath.Join(root, "obsolete"))
+	require.NotEmpty(t, tx.staging)
+	require.NoError(t, tx.Rollback())
+	require.FileExists(t, filepath.Join(root, "obsolete", "config.yml"))
+	require.DirExists(t, filepath.Join(root, "obsolete", "empty"))
+	contents, err := os.ReadFile(filepath.Join(root, "obsolete", "config.yml"))
+	require.NoError(t, err)
+	require.Equal(t, "preserved\n", string(contents))
+
+	tx = &provisionTransaction{filesystem: targetFS}
+	require.NoError(t, tx.apply(context.Background(), ".", operations))
+	require.NoError(t, tx.Commit())
+	require.NoDirExists(t, filepath.Join(root, "obsolete"))
+}
+
+func TestProvisionRemovalRequiresExplicitRecursiveFlag(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "obsolete"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "obsolete", "config.yml"), []byte("keep\n"), 0640))
+	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Remove: []provisionRemoval{{
+		Path: "obsolete", Type: "directory",
+	}}})
+	require.NoError(t, err)
+	tx := &provisionTransaction{filesystem: filesystem.NewLocal(root)}
+	err = tx.apply(context.Background(), ".", operations)
+	require.ErrorContains(t, err, "set recursive: true explicitly")
+	require.FileExists(t, filepath.Join(root, "obsolete", "config.yml"))
+}
+
+func TestProvisionRemovalProtectsComposeAndNestedControlFiles(t *testing.T) {
+	operations, err := normalizeProvisionManifest(provisionManifest{Version: 1, Remove: []provisionRemoval{{
+		Path: "compose.yml", Type: "file",
+	}}})
+	require.NoError(t, err)
+	err = validateProtectedProvisionRemovals(StackBinding{ComposePaths: "compose.yml"}, "", "compose.yml", operations)
+	require.ErrorContains(t, err, "protected control or Compose file")
+
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "obsolete"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "obsolete", "provision.yml"), []byte("version: 1\n"), 0640))
+	operations, err = normalizeProvisionManifest(provisionManifest{Version: 1, Remove: []provisionRemoval{{
+		Path: "obsolete", Type: "directory", Recursive: true,
+	}}})
+	require.NoError(t, err)
+	_, err = collectProvisionBackupEntries(context.Background(), filesystem.NewLocal(root), ".", "", operations)
+	require.ErrorContains(t, err, "protected Compose or provisioning control file")
+	require.FileExists(t, filepath.Join(root, "obsolete", "provision.yml"))
 }
 
 func TestProvisionTransactionAppliesAndRollsBack(t *testing.T) {
@@ -237,6 +300,37 @@ func TestApplyStackProvisioningLoadsGitOnlyManifest(t *testing.T) {
 	require.DirExists(t, filepath.Join(stackRoot, "app", "data"))
 	require.NoError(t, tx.Rollback())
 	require.NoDirExists(t, filepath.Join(stackRoot, "app", "data"))
+}
+
+func TestApplyStackProvisioningBacksUpEveryRemovalBeforeStaging(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "stacks/app/provision.yml", "version: 1\nremove:\n  - path: obsolete\n    type: directory\n    recursive: true\n")
+	_, err := service.FetchRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	status, err := service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", "obsolete", "empty"), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "obsolete", "config.yml"), []byte("backup me\n"), 0640))
+	binding := StackBinding{UUID: uuid.NewString(), RepositoryUUID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks", ComposePaths: "app/compose.yml"}
+	require.NoError(t, service.store.SaveBinding(&binding))
+	tx, err := service.applyStackProvisioning(context.Background(), binding, status.Head, "app/compose.yml", &strings.Builder{})
+	require.NoError(t, err)
+	require.NotNil(t, tx)
+	require.NotEmpty(t, tx.backupID)
+	require.NoDirExists(t, filepath.Join(stackRoot, "app", "obsolete"))
+	backups, err := service.ListBindingBackups(binding.UUID, 10)
+	require.NoError(t, err)
+	require.Len(t, backups, 1)
+	require.Equal(t, "pre_provision_delete", backups[0].Kind)
+	require.Equal(t, 3, backups[0].FileCount, "directory, empty subdirectory, and file must all be archived")
+	require.False(t, backups[0].Restorable, "directory archives use exact automatic rollback and remain downloadable")
+	require.NoError(t, tx.Rollback())
+	require.FileExists(t, filepath.Join(stackRoot, "app", "obsolete", "config.yml"))
+	require.DirExists(t, filepath.Join(stackRoot, "app", "obsolete", "empty"))
 }
 
 func TestGitProvisionManifestIsTrackedWithoutBeingCopied(t *testing.T) {
