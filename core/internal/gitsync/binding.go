@@ -1751,6 +1751,14 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 				}
 				continue
 			}
+			// Compose-only is an allow-list profile: unrelated files are outside
+			// the synchronization inventory altogether. In particular, do not
+			// stat, hash, count, or tokenise mutable application data merely to
+			// report it as skipped. Explicit include rules still opt individual
+			// files back into the normal protected transfer path below.
+			if policy.profile == syncProfileComposeOnly && !policy.includesFile(childRel) {
+				continue
+			}
 			info, err := targetFS.Stat(child)
 			if err != nil {
 				if errors.Is(err, fs.ErrPermission) {
@@ -1944,6 +1952,12 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				continue
 			}
 			if entry.Mode == filemode.Symlink || entry.Mode == filemode.Submodule || !entry.Mode.IsFile() {
+				continue
+			}
+			// Keep the Compose-only inventory genuinely bounded to its allow
+			// list. This mirrors the live-stack collector and avoids loading Git
+			// blobs which cannot participate in this synchronization.
+			if policy.profile == syncProfileComposeOnly && !policy.includesFile(rel) && !policy.protectsProvision(rel) {
 				continue
 			}
 			blob, err := repo.BlobObject(entry.Hash)
@@ -2672,6 +2686,14 @@ func previewToken(preview TransferPreview) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00", preview.BindingID, preview.Direction, preview.DeletionMode)
 	for _, entry := range preview.Entries {
+		// Skipped entries are deliberately non-transferable and require no
+		// user decision. Mutable logs, caches, excluded files, or unreadable
+		// data must therefore not invalidate confirmation of an otherwise
+		// unchanged Compose transfer. If such a path becomes transferable its
+		// status changes and it is included in the next token automatically.
+		if strings.HasPrefix(entry.Status, "skipped_") {
+			continue
+		}
 		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%t\x00", entry.Path, entry.Status, entry.ConflictKind, entry.SourceSHA, entry.TargetSHA, entry.Size, entry.Sensitive)
 	}
 	return hex.EncodeToString(hash.Sum(nil))

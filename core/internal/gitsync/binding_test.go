@@ -214,6 +214,52 @@ func TestEnvironmentTemplatesCanBeIncludedWithoutWeakeningSensitiveProtection(t 
 	require.Equal(t, "skipped_sensitive", statuses[".env.production"])
 }
 
+func TestComposeOnlyPushIgnoresMutableUnselectedFiles(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", "runtime"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", ".env.example"), []byte("TOKEN=replace-me\n"), 0o644))
+	runtimeLog := filepath.Join(stackRoot, "app", "runtime", "application.log")
+	require.NoError(t, os.WriteFile(runtimeLog, []byte("before preview\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Equal(t, 2, preview.Changed)
+	require.Zero(t, preview.Skipped)
+	for _, entry := range preview.Entries {
+		require.NotEqual(t, "runtime/application.log", entry.Path)
+	}
+
+	// Application data may legitimately change between preview and click. It
+	// is outside this allow-list profile and must not invalidate the push.
+	require.NoError(t, os.WriteFile(runtimeLog, []byte("changed after preview and still ignored\n"), 0o644))
+	result, err := service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.CommitSHA)
+}
+
+func TestPreviewTokenIgnoresSkippedMetadataButProtectsTransferableFiles(t *testing.T) {
+	base := TransferPreview{BindingID: "binding", Direction: "stack_to_repository", DeletionMode: "non_destructive", Entries: []PreviewEntry{
+		{Path: "compose.yaml", Status: "add", SourceSHA: "compose-v1", Size: 12},
+		{Path: "runtime.log", Status: "skipped_type", Size: 10},
+	}}
+	mutableSkipped := base
+	mutableSkipped.Entries = append([]PreviewEntry(nil), base.Entries...)
+	mutableSkipped.Entries[1].Size = 100_000
+	require.Equal(t, previewToken(base), previewToken(mutableSkipped))
+
+	changedCompose := base
+	changedCompose.Entries = append([]PreviewEntry(nil), base.Entries...)
+	changedCompose.Entries[0].SourceSHA = "compose-v2"
+	require.NotEqual(t, previewToken(base), previewToken(changedCompose))
+}
+
 func TestRepositoryBindingPathsCannotOverlap(t *testing.T) {
 	require.True(t, pathsOverlap(".", "stacks/app"))
 	require.True(t, pathsOverlap("stacks", "stacks/app"))
@@ -910,7 +956,7 @@ func TestComposeOnlyPolicyIncludesManifestsTemplatesAndExplicitAdditions(t *test
 		require.NotNil(t, collected[name].open, name)
 	}
 	for _, name := range []string{"override.yml", "application.yaml", "settings.json", "notes.md"} {
-		require.Equal(t, "type", collected[name].skipReason, name)
+		require.NotContains(t, collected, name)
 	}
 }
 
