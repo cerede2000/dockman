@@ -85,7 +85,7 @@ func (h *Handler) SpaceStatus(ctx context.Context, _ *connect.Request[v1.SpaceSt
 
 	var inuse int
 	for _, ne := range net {
-		isSystem := ne.Name == "host" || ne.Name == "bridge" || ne.Name == "none"
+		isSystem := ne.Name == "host" || ne.Name == "bridge" || ne.Name == "none" || ne.Name == "docker_gwbridge" || ne.Ingress
 		if len(ne.Containers) > 0 || isSystem {
 			inuse++
 		}
@@ -93,6 +93,9 @@ func (h *Handler) SpaceStatus(ctx context.Context, _ *connect.Request[v1.SpaceSt
 
 	inu := int64(inuse)
 	count := int64(len(net))
+	if inu > count {
+		inu = count
+	}
 	network := &v1.SpaceStat{
 		ActiveCount: inu,
 		TotalCount:  count,
@@ -143,7 +146,7 @@ func (h *Handler) RunCleaner(ctx context.Context, _ *connect.Request[v1.RunClean
 		return nil, err
 	}
 
-	err = h.srv.RunWithScheduler(hostname, false)
+	err = h.srv.RunScheduledNow(hostname)
 	if err != nil {
 		return nil, err
 	}
@@ -180,8 +183,12 @@ func (h *Handler) EditConfig(ctx context.Context, req *connect.Request[v1.EditCo
 	cf.FromProto(req.Msg.Config)
 	cf.Host = hostname
 
-	if cf.Enabled && cf.Interval <= 0 {
-		return nil, fmt.Errorf("set a maintenance interval greater than 0 to enable auto-pruning")
+	if cf.Enabled {
+		cronExpression, validationErr := normalizedPruneCron(cf.CronExpression, cf.Interval)
+		if validationErr != nil {
+			return nil, validationErr
+		}
+		cf.CronExpression = cronExpression
 	}
 
 	err = h.srv.store.UpdateConfig(&cf)

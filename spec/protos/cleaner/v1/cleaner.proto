@@ -81,6 +81,7 @@ message PruneResult {}
 
 message PruneConfig {
   bool Enabled = 1;
+  // Deprecated compatibility field for configurations created before cron scheduling.
   uint32 IntervalInHours = 2;
 
   bool Volumes = 3;
@@ -88,4 +89,6 @@ message PruneConfig {
   bool Images = 5;
   bool Containers = 6;
   bool BuildCache = 7;
+  // Standard five-field cron expression (minute hour day-of-month month day-of-week).
+  string CronExpression = 8;
 }

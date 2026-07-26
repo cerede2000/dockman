@@ -4,10 +4,10 @@ import {
     AlertTitle,
     Box,
     Button,
+    Chip,
     CircularProgress,
     Divider,
     FormControlLabel,
-    InputAdornment,
     Paper,
     Stack,
     Switch,
@@ -42,6 +42,14 @@ function DockerCleanerPage() {
     const saveConfig = useCleanerConfig(state => state.Save);
 
     const [refetchUsage, setRefetchUsage] = useState(true);
+
+    const cronSamples = [
+        {label: 'Daily at 03:00', value: '0 3 * * *'},
+        {label: 'Sunday at 03:00', value: '0 3 * * 0'},
+        {label: '1st of month at 03:00', value: '0 3 1 * *'},
+        {label: 'Every 6 hours', value: '0 */6 * * *'},
+        {label: 'Every 12 hours', value: '0 */12 * * *'},
+    ];
 
     useEffect(() => {
         fetchConfig(cleaner).then();
@@ -197,29 +205,35 @@ function DockerCleanerPage() {
                             />
                         </Box>
 
-                        <TextField
-                            label="Maintenance Interval"
-                            type="number"
-                            size="small"
-                            value={config?.IntervalInHours}
-                            onChange={(e) => useCleanerConfig.getState().SetField('IntervalInHours', parseInt(e.target.value) || 0)}
-                            sx={{width: {xs: '100%', md: 240}}}
-                            slotProps={{
-                                input: {
-                                    startAdornment: (
-                                        <InputAdornment position="start">
-                                            <ClockIcon fontSize="small"/>
-                                        </InputAdornment>
-                                    ),
-                                    endAdornment: (
-                                        <InputAdornment position="end">
-                                            Hours
-                                        </InputAdornment>
-                                    ),
-                                    sx: {fontWeight: 700, fontFamily: 'monospace'}
-                                }
-                            }}
-                        />
+                        <Box sx={{width: {xs: '100%', md: 520}}}>
+                            <TextField
+                                label="Cron schedule"
+                                size="small"
+                                value={config?.CronExpression || '0 3 * * *'}
+                                onChange={(e) => useCleanerConfig.getState().SetField('CronExpression', e.target.value)}
+                                fullWidth
+                                helperText="Minute · hour · day of month · month · day of week. Uses the Dockman host timezone; minimum recurrence is one hour."
+                                slotProps={{
+                                    input: {
+                                        startAdornment: <ClockIcon fontSize="small" sx={{mr: 1, color: 'text.secondary'}}/>,
+                                        sx: {fontWeight: 700, fontFamily: 'monospace'}
+                                    },
+                                    htmlInput: {maxLength: 120, spellCheck: false}
+                                }}
+                            />
+                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{mt: 1}}>
+                                {cronSamples.map(sample => (
+                                    <Chip
+                                        key={sample.value}
+                                        size="small"
+                                        variant={config?.CronExpression === sample.value ? 'filled' : 'outlined'}
+                                        color={config?.CronExpression === sample.value ? 'primary' : 'default'}
+                                        label={sample.label}
+                                        onClick={() => useCleanerConfig.getState().SetField('CronExpression', sample.value)}
+                                    />
+                                ))}
+                            </Stack>
+                        </Box>
 
                         <Divider orientation="vertical" flexItem sx={{display: {xs: 'none', md: 'block'}}}/>
 

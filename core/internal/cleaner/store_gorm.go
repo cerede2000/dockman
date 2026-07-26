@@ -33,7 +33,7 @@ func (g *GormStore) UpdateConfig(config *PruneConfig) error {
 	return g.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "host"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"enabled", "interval",
+			"enabled", "interval", "cron_expression",
 			"volumes", "networks", "images", "containers", "build_cache",
 			"updated_at",
 		}),

@@ -99,7 +99,7 @@ function StorageInuse({refetch}: { refetch: boolean }) {
 
 const SpaceStateDisplay = ({stat, title, icon, onClean}: {
     stat: SpaceStat | undefined,
-    title: keyof CleanerConfigWithoutNumbers,
+    title: CleanerToggleKey,
     icon: ReactNode,
     onClean: () => Promise<void>
 }) => {
@@ -210,8 +210,8 @@ const StatInfo = ({label, value, mono = false}: { label: string, value: string, 
     </Grid>
 );
 
-type CleanerConfigWithoutNumbers = {
-    [K in keyof CleanerConfig as CleanerConfig[K] extends number ? never : K]: CleanerConfig[K]
-};
+type CleanerToggleKey = {
+    [K in keyof CleanerConfig]: CleanerConfig[K] extends boolean ? K : never
+}[keyof CleanerConfig];
 
 export default StorageInuse;

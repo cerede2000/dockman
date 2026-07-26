@@ -3,16 +3,26 @@ package cleaner
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
+	"time"
 
 	"github.com/RA341/dockman/internal/docker"
 	"github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/pkg/syncmap"
 	"github.com/dustin/go-humanize"
 	"github.com/go-co-op/gocron/v2"
+	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+	"github.com/robfig/cron/v3"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	defaultPruneCron = "0 3 * * *"
+	minimumPruneGap  = time.Hour
 )
 
 type GetService func(host string) (*docker.Service, error)
@@ -76,6 +86,7 @@ func (s *Service) GetSystemStorage(ctx context.Context, hostname string) (client
 	if err != nil {
 		return client.DiskUsageResult{}, nil, err
 	}
+	normalizeDiskUsage(&usage)
 
 	list, err := cli.NetworksList(ctx)
 	if err != nil {
@@ -128,12 +139,13 @@ func (s *Service) RunWithScheduler(host string, edit bool) error {
 	if !getConfig.Enabled {
 		return fmt.Errorf("cleaner is disabled for host %q; enable it first", host)
 	}
-	if getConfig.Interval <= 0 {
-		return fmt.Errorf("cleaner interval must be greater than 0 for host %q", host)
+	cronExpression, err := normalizedPruneCron(getConfig.CronExpression, getConfig.Interval)
+	if err != nil {
+		return fmt.Errorf("invalid cleaner schedule for host %q: %w", host, err)
 	}
 
 	var jb gocron.Job
-	jobDef := gocron.DurationJob(getConfig.Interval)
+	jobDef := gocron.CronJob(cronExpression, false)
 	task := gocron.NewTask(s.clean, host)
 
 	val, ok := s.taskList.Load(host)
@@ -151,7 +163,118 @@ func (s *Service) RunWithScheduler(host string, edit bool) error {
 	}
 
 	s.taskList.Store(host, jb)
+	return nil
+}
+
+// RunScheduledNow executes an enabled cleaner immediately without changing
+// its next cron occurrence. If the job was not registered yet (for example
+// just after adding a host), it is registered first.
+func (s *Service) RunScheduledNow(host string) error {
+	if jb, ok := s.taskList.Load(host); ok {
+		return jb.RunNow()
+	}
+	if err := s.RunWithScheduler(host, false); err != nil {
+		return err
+	}
+	jb, ok := s.taskList.Load(host)
+	if !ok {
+		return fmt.Errorf("cleaner schedule was not created for host %q", host)
+	}
 	return jb.RunNow()
+}
+
+func normalizedPruneCron(expression string, legacyInterval time.Duration) (string, error) {
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		if legacyInterval > 0 {
+			expression = fmt.Sprintf("@every %s", legacyInterval)
+		} else {
+			expression = defaultPruneCron
+		}
+	}
+	if len(expression) > 120 || strings.ContainsAny(expression, "\r\n\x00") {
+		return "", fmt.Errorf("cron expression is empty, multiline, or too long")
+	}
+	schedule, err := cron.ParseStandard(expression)
+	if err != nil {
+		return "", fmt.Errorf("use a standard five-field cron expression: %w", err)
+	}
+	first := schedule.Next(time.Now())
+	second := schedule.Next(first)
+	if first.IsZero() || second.IsZero() {
+		return "", fmt.Errorf("cron expression has no future execution")
+	}
+	if second.Sub(first) < minimumPruneGap {
+		return "", fmt.Errorf("automatic pruning cannot run more often than once per hour")
+	}
+	if !strings.HasPrefix(expression, "@") {
+		expression = strings.Join(strings.Fields(expression), " ")
+	}
+	return expression, nil
+}
+
+// normalizeDiskUsage removes impossible negative values and replaces Moby's
+// misleading image aggregate with a conservative prune estimate derived from
+// the verbose image inventory. Moby 29 can report TotalSize as Reclaimable
+// when every image is active; summing only the unique bytes of unused images
+// matches its legacy client calculation and never promises shared layers that
+// an image prune may retain.
+func normalizeDiskUsage(usage *client.DiskUsageResult) {
+	usage.Images.Reclaimable = conservativeImageReclaimable(usage.Images.Items)
+	usage.Images.TotalSize = nonNegative(usage.Images.TotalSize)
+	usage.Images.ActiveCount = boundedCount(usage.Images.ActiveCount, usage.Images.TotalCount)
+	usage.Images.TotalCount = nonNegative(usage.Images.TotalCount)
+
+	usage.Containers.Reclaimable = nonNegative(usage.Containers.Reclaimable)
+	usage.Containers.TotalSize = nonNegative(usage.Containers.TotalSize)
+	usage.Containers.ActiveCount = boundedCount(usage.Containers.ActiveCount, usage.Containers.TotalCount)
+	usage.Containers.TotalCount = nonNegative(usage.Containers.TotalCount)
+
+	usage.Volumes.Reclaimable = nonNegative(usage.Volumes.Reclaimable)
+	usage.Volumes.TotalSize = nonNegative(usage.Volumes.TotalSize)
+	usage.Volumes.ActiveCount = boundedCount(usage.Volumes.ActiveCount, usage.Volumes.TotalCount)
+	usage.Volumes.TotalCount = nonNegative(usage.Volumes.TotalCount)
+
+	usage.BuildCache.Reclaimable = nonNegative(usage.BuildCache.Reclaimable)
+	usage.BuildCache.TotalSize = nonNegative(usage.BuildCache.TotalSize)
+	usage.BuildCache.ActiveCount = boundedCount(usage.BuildCache.ActiveCount, usage.BuildCache.TotalCount)
+	usage.BuildCache.TotalCount = nonNegative(usage.BuildCache.TotalCount)
+}
+
+func conservativeImageReclaimable(images []image.Summary) int64 {
+	var total int64
+	for _, img := range images {
+		// Negative means the daemon did not compute usage. Assume in-use rather
+		// than making a destructive promise from incomplete information.
+		if img.Containers != 0 || img.Size < 0 || img.SharedSize < 0 {
+			continue
+		}
+		unique := img.Size - img.SharedSize
+		if unique <= 0 {
+			continue
+		}
+		if total > math.MaxInt64-unique {
+			return math.MaxInt64
+		}
+		total += unique
+	}
+	return total
+}
+
+func nonNegative(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func boundedCount(active, total int64) int64 {
+	total = nonNegative(total)
+	active = nonNegative(active)
+	if active > total {
+		return total
+	}
+	return active
 }
 
 // StopScheduler removes any scheduled cleaner job for the host. It is a no-op
@@ -259,9 +382,9 @@ func (s *Service) pruneNetworks(ctx context.Context, cli *client.Client) OpResul
 
 func (s *Service) pruneBuildCache(ctx context.Context, cli *client.Client) OpResult {
 	buildCacheOpts := client.BuildCachePruneOptions{
-		// todo proper filters
-		//All: true,
-		//Filters: nil,
+		// The storage card reports all unused cache records. Use the matching
+		// prune scope instead of deleting dangling cache only.
+		All: true,
 	}
 	rep, err := cli.BuildCachePrune(ctx, buildCacheOpts)
 

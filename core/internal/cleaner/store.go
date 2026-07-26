@@ -21,9 +21,12 @@ type PruneResult struct {
 
 type PruneConfig struct {
 	gorm.Model
-	Enabled  bool
-	Interval time.Duration
-	Host     string `gorm:"uniqueIndex"`
+	Enabled        bool
+	Interval       time.Duration
+	// Empty is retained for pre-cron rows so their legacy duration can be
+	// migrated losslessly to an @every schedule on the next save.
+	CronExpression string
+	Host           string `gorm:"uniqueIndex"`
 
 	Volumes    bool
 	Networks   bool
