@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,29 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+type denyAtomicReplacementFS struct {
+	filesystem.FileSystem
+}
+
+func (d denyAtomicReplacementFS) OpenFile(filename string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error) {
+	if strings.Contains(filepath.Base(filename), ".dockman-git-") {
+		return nil, fs.ErrPermission
+	}
+	return d.FileSystem.OpenFile(filename, flag, perm)
+}
+
+type denyReadFS struct {
+	filesystem.FileSystem
+	baseName string
+}
+
+func (d denyReadFS) OpenFile(filename string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error) {
+	if filepath.Base(filename) == d.baseName && flag&os.O_WRONLY == 0 && flag&os.O_RDWR == 0 {
+		return nil, fs.ErrPermission
+	}
+	return d.FileSystem.OpenFile(filename, flag, perm)
+}
 
 func configureTestStack(t *testing.T, service *Service) string {
 	t.Helper()
@@ -410,6 +434,98 @@ func TestLargeFilesAreHashedAndTransferredWithBoundedBuffers(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, file.sha)
 	require.NoError(t, streamTransferFile(file, io.Discard))
+}
+
+func TestStackImportUpdatesWritableExistingFileWhenAtomicReplacementIsDenied(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "app"), 0o755))
+	destination := filepath.Join(root, "app", "compose.yaml")
+	require.NoError(t, os.WriteFile(destination, []byte("services: {}\n"), 0o600))
+
+	contents := "services:\n  app:\n    image: alpine:3.24\n"
+	hash := sha256.Sum256([]byte(contents))
+	file := transferFile{
+		path: "app/compose.yaml",
+		sha:  hex.EncodeToString(hash[:]),
+		size: int64(len(contents)),
+		mode: 0o644,
+		open: func() (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(contents)), nil
+		},
+	}
+	targetFS := denyAtomicReplacementFS{FileSystem: filesystem.NewLocal(root)}
+
+	require.NoError(t, writeStackFiles(targetFS, ".", map[string]transferFile{file.path: file}))
+	actual, err := os.ReadFile(destination)
+	require.NoError(t, err)
+	require.Equal(t, contents, string(actual))
+	info, err := os.Stat(destination)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o600), info.Mode().Perm(), "the compatibility write must preserve existing permissions")
+}
+
+func TestStackImportDoesNotUsePermissionFallbackToCreateMissingFile(t *testing.T) {
+	root := t.TempDir()
+	contents := "services: {}\n"
+	hash := sha256.Sum256([]byte(contents))
+	file := transferFile{
+		path: "app/compose.yaml",
+		sha:  hex.EncodeToString(hash[:]),
+		size: int64(len(contents)),
+		mode: 0o644,
+		open: func() (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(contents)), nil
+		},
+	}
+	targetFS := denyAtomicReplacementFS{FileSystem: filesystem.NewLocal(root)}
+
+	err := writeStackFiles(targetFS, ".", map[string]transferFile{file.path: file})
+	require.ErrorContains(t, err, "no writable regular file is available")
+	_, statErr := os.Stat(filepath.Join(root, "app", "compose.yaml"))
+	require.ErrorIs(t, statErr, fs.ErrNotExist)
+}
+
+func TestStackInventorySkipsUnreadableFileWithoutBlockingSiblingStacks(t *testing.T) {
+	root := t.TempDir()
+	for _, stack := range []string{"adguard", "whoami"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, stack), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, stack, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "adguard", "AdGuardHome.yaml"), []byte("locked: true\n"), 0o600))
+	targetFS := denyReadFS{FileSystem: filesystem.NewLocal(root), baseName: "AdGuardHome.yaml"}
+
+	files, err := collectStackFiles(targetFS, ".", false)
+	require.NoError(t, err)
+	require.Equal(t, "permission", files["adguard/AdGuardHome.yaml"].skipReason)
+	require.Nil(t, files["adguard/AdGuardHome.yaml"].open)
+	require.NotNil(t, files["adguard/compose.yaml"].open)
+	require.NotNil(t, files["whoami/compose.yaml"].open, "an unreadable AdGuard file must not hide another stack")
+}
+
+func TestGitImportPreviewSkipsUnreadableTargetAndKeepsOtherChangesTransferable(t *testing.T) {
+	available := func(path, contents string) transferFile {
+		hash := sha256.Sum256([]byte(contents))
+		return transferFile{path: path, sha: hex.EncodeToString(hash[:]), size: int64(len(contents)), open: func() (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(contents)), nil
+		}}
+	}
+	source := map[string]transferFile{
+		"adguard/AdGuardHome.yaml": available("adguard/AdGuardHome.yaml", "new locked config\n"),
+		"whoami/compose.yaml":     available("whoami/compose.yaml", "services:\n  app:\n    image: traefik/whoami\n"),
+	}
+	target := map[string]transferFile{
+		"adguard/AdGuardHome.yaml": {path: "adguard/AdGuardHome.yaml", skipReason: "permission"},
+		"whoami/compose.yaml":     available("whoami/compose.yaml", "services: {}\n"),
+	}
+
+	preview := buildPreview("binding", "repository_to_stack", source, target, map[string]string{
+		"adguard/AdGuardHome.yaml": "previous",
+		"whoami/compose.yaml":     target["whoami/compose.yaml"].sha,
+	})
+	require.Equal(t, 1, preview.Skipped)
+	require.Equal(t, 1, preview.Changed)
+	require.Equal(t, "skipped_permission", preview.Entries[0].Status)
+	require.Equal(t, "modify", preview.Entries[1].Status)
 }
 
 func TestTransferInventoryRejectsSpecialFiles(t *testing.T) {

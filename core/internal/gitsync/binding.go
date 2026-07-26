@@ -173,6 +173,7 @@ type TransferResult struct {
 	Message        string          `json:"message"`
 	EditorBlocked  []string        `json:"editorBlocked,omitempty"`
 	ComposeBlocked []string        `json:"composeBlocked,omitempty"`
+	ReadBlocked    []string        `json:"readBlocked,omitempty"`
 }
 
 type ComparisonInput struct {
@@ -957,6 +958,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		}
 		result.Preview = buildPreview(binding.UUID, "stack_to_repository", source, target, baseline)
 		result.Preview.automation = input.automation
+		result.ReadBlocked = previewPathsWithStatus(result.Preview, "skipped_permission")
 		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
@@ -965,7 +967,10 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSourcePreservingControl(source, baseline)); err != nil {
 				return err
 			}
-			result.Message = "Repository already matches the stack"
+			result.Message = "Repository already matches the readable stack files"
+			if len(result.ReadBlocked) > 0 {
+				result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+			}
 			return nil
 		}
 		selected, remainingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
@@ -1034,6 +1039,9 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
+		if len(result.ReadBlocked) > 0 {
+			result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+		}
 		if pendingConflicts > 0 {
 			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
 		}
@@ -1049,6 +1057,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 				paths = s.activeAutomationComposePaths(binding)
 			}
 			now := time.Now().UTC()
+			paths = excludeStringValues(paths, composePathsForFiles(paths, result.ReadBlocked))
 			_ = s.store.UpdateGitStackStatuses(binding.UUID, paths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now, "last_commit": result.CommitSHA})
 		}
 		if !input.automation && len(exportedPaths) > 0 {
@@ -1248,6 +1257,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if input.automation {
 			result.Preview.ComposeErrors = composeErrors
 		}
+		result.ReadBlocked = previewPathsWithStatus(result.Preview, "skipped_permission")
 		s.recordPreviewStackStatuses(binding, result.Preview)
 		if err := validatePreviewToken(input.PreviewToken, result.Preview.PreviewToken); err != nil {
 			return err
@@ -1256,7 +1266,10 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			if err := s.store.ReplaceBindingBaseline(binding.UUID, baselineFromSource(source)); err != nil {
 				return err
 			}
-			result.Message = "Stack already matches the repository"
+			result.Message = "Readable stack files already match the repository"
+			if len(result.ReadBlocked) > 0 {
+				result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
+			}
 			return nil
 		}
 		selected, remainingConflicts, err := selectedTransferFiles(result.Preview, source, input.ResolvedPaths, input.SelectedPaths)
@@ -1319,6 +1332,9 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 		if len(result.ComposeBlocked) > 0 {
 			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe repository files were imported with a backup", len(result.ComposeBlocked))
+		}
+		if len(result.ReadBlocked) > 0 {
+			result.Message += fmt.Sprintf("; %d unreadable local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 		}
 		if pendingConflicts > 0 {
 			result.Message += fmt.Sprintf("; %d conflict(s) remain pending", pendingConflicts)
@@ -1671,6 +1687,11 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 	walk = func(dir, rel string) error {
 		entries, err := targetFS.ReadDir(dir)
 		if err != nil {
+			if rel != "" && errors.Is(err, fs.ErrPermission) {
+				log.Warn().Str("path", rel).Err(err).Msg("Git stack sync skipped unreadable directory")
+				result[rel] = transferFile{path: rel, skipReason: "permission", directory: true}
+				return nil
+			}
 			return err
 		}
 		for _, entry := range entries {
@@ -1715,6 +1736,11 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			}
 			info, err := targetFS.Stat(child)
 			if err != nil {
+				if errors.Is(err, fs.ErrPermission) {
+					log.Warn().Str("file", childRel).Err(err).Msg("Git stack sync skipped unreadable file")
+					result[childRel] = transferFile{path: childRel, skipReason: "permission"}
+					continue
+				}
 				return err
 			}
 			if !isTransferFile(info.Mode()) {
@@ -1750,6 +1776,11 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			}}
 			file.sha, err = hashTransferFile(file)
 			if err != nil {
+				if errors.Is(err, fs.ErrPermission) {
+					log.Warn().Str("file", childRel).Err(err).Msg("Git stack sync skipped unreadable file")
+					result[childRel] = transferFile{path: childRel, size: info.Size(), mode: info.Mode().Perm(), skipReason: "permission"}
+					continue
+				}
 				return err
 			}
 			result[childRel] = file
@@ -2375,6 +2406,15 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 		}
 		dst, exists := target[path]
 		entry := PreviewEntry{Path: path, Status: "add", SourceSHA: src.sha, Size: src.size, Sensitive: src.sensitive}
+		if exists && dst.open == nil && dst.skipReason == "permission" {
+			entry.Status = "skipped_permission"
+			entry.TargetSHA = dst.sha
+			entry.Size = dst.size
+			entry.Directory = dst.directory
+			preview.Entries = append(preview.Entries, entry)
+			preview.Skipped++
+			continue
+		}
 		if exists && dst.open != nil {
 			entry.TargetSHA = dst.sha
 			if entry.SourceSHA == entry.TargetSHA {
@@ -2575,7 +2615,13 @@ func writeStackFiles(targetFS filesystem.FileSystem, root string, files map[stri
 		temporary := destination + ".dockman-git-" + uuid.NewString() + ".tmp"
 		handle, err := targetFS.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, safeFileMode(file.mode))
 		if err != nil {
-			return err
+			if errors.Is(err, fs.ErrPermission) {
+				if fallbackErr := writeExistingStackFile(targetFS, destination, file, err); fallbackErr != nil {
+					return fallbackErr
+				}
+				continue
+			}
+			return fmt.Errorf("create temporary replacement for %s: %w", file.path, err)
 		}
 		writeErr := streamTransferFile(file, handle)
 		closeErr := handle.Close()
@@ -2588,8 +2634,44 @@ func writeStackFiles(targetFS filesystem.FileSystem, root string, files map[stri
 		}
 		if err := targetFS.Rename(temporary, destination); err != nil {
 			_ = targetFS.RemoveAll(temporary)
+			if errors.Is(err, fs.ErrPermission) {
+				if fallbackErr := writeExistingStackFile(targetFS, destination, file, err); fallbackErr != nil {
+					return fallbackErr
+				}
+				continue
+			}
 			return fmt.Errorf("replace %s: %w", file.path, err)
 		}
+	}
+	return nil
+}
+
+// writeExistingStackFile is the narrow compatibility path for mounts where an
+// existing file is writable but its parent directory does not allow creating
+// or renaming entries. The regular Git import path remains atomic. Imports
+// create a safety backup before reaching this function, and this fallback only
+// applies to an existing regular file: it never creates a missing path or
+// follows a symlink.
+func writeExistingStackFile(targetFS filesystem.FileSystem, destination string, file transferFile, atomicErr error) error {
+	info, err := targetFS.Lstat(destination)
+	if err != nil {
+		return fmt.Errorf("cannot replace %s atomically and no writable regular file is available for an in-place update: %w", file.path, atomicErr)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("cannot replace %s atomically and refusing an in-place update of a non-regular file: %w", file.path, atomicErr)
+	}
+
+	handle, err := targetFS.OpenFile(destination, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return fmt.Errorf("cannot replace %s atomically or update the existing file directly: %w", file.path, errors.Join(atomicErr, err))
+	}
+	writeErr := streamTransferFile(file, handle)
+	closeErr := handle.Close()
+	if writeErr != nil {
+		return fmt.Errorf("update existing file %s after atomic replacement was denied: %w", file.path, writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close existing file %s after atomic replacement was denied: %w", file.path, closeErr)
 	}
 	return nil
 }
@@ -2702,6 +2784,24 @@ func selectedTransferFiles(preview TransferPreview, source map[string]transferFi
 		}
 	}
 	return selected, len(conflicts) - len(resolved), nil
+}
+
+func previewPathsWithStatus(preview TransferPreview, status string) []string {
+	paths := make([]string, 0)
+	for _, entry := range preview.Entries {
+		if entry.Status == status {
+			paths = append(paths, entry.Path)
+		}
+	}
+	return uniqueSortedStrings(paths)
+}
+
+func composePathsForFiles(composePaths, filePaths []string) []string {
+	result := make([]string, 0)
+	for _, filePath := range filePaths {
+		result = append(result, composePathsForFile(composePaths, filePath)...)
+	}
+	return uniqueSortedStrings(result)
 }
 
 func baselineAfterTransfer(current map[string]string, source, target, selected map[string]transferFile) map[string]string {

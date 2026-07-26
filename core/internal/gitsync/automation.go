@@ -404,11 +404,20 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		}
 		result.State = "up_to_date"
 		result.Backup = transfer.Backup
-		result.SyncFailed = transfer.ComposeBlocked
+		readBlockedStacks := composePathsForFiles(s.activeAutomationComposePaths(binding), transfer.ReadBlocked)
+		result.SyncFailed = uniqueSortedStrings(append(append([]string(nil), transfer.ComposeBlocked...), readBlockedStacks...))
 		if len(transfer.ComposeBlocked) > 0 {
 			result.State = "partial"
 			changedPaths = excludeComposeStackPaths(changedPaths, transfer.ComposeBlocked)
 			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe changes were synchronized", len(transfer.ComposeBlocked))
+		}
+		if len(readBlockedStacks) > 0 {
+			result.State = "partial"
+			changedPaths = excludeComposeStackPaths(changedPaths, readBlockedStacks)
+			result.Message = fmt.Sprintf("%d stack(s) contain unreadable local items and were skipped; other stacks continued independently", len(readBlockedStacks))
+			if len(transfer.ComposeBlocked) > 0 {
+				result.Message = fmt.Sprintf("%d invalid Compose stack(s) and %d stack(s) with unreadable local items were skipped; other stacks continued independently", len(transfer.ComposeBlocked), len(readBlockedStacks))
+			}
 		}
 		if len(transfer.EditorBlocked) > 0 {
 			changedPaths = excludeComposeStackPaths(changedPaths, transfer.EditorBlocked)
@@ -418,12 +427,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		if preserved > 0 && len(transfer.EditorBlocked) == 0 {
 			result.State = "blocked"
 			result.Message = fmt.Sprintf("%d Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion", preserved)
-		} else if changed == 0 {
+		} else if changed == 0 && len(readBlockedStacks) == 0 {
 			result.Message = "Stack already matches Git"
-		} else if len(transfer.EditorBlocked) == 0 && len(transfer.ComposeBlocked) == 0 {
+		} else if len(transfer.EditorBlocked) == 0 && len(transfer.ComposeBlocked) == 0 && len(readBlockedStacks) == 0 {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
 		}
-		if changed == 0 && binding.AutoDeployEnabled {
+		if changed == 0 && binding.AutoDeployEnabled && len(readBlockedStacks) == 0 {
 			if clearErr := s.clearIdenticalRollbackStates(binding); clearErr != nil {
 				return clearErr
 			}
@@ -431,6 +440,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "pending") {
 			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
 		}
+		changedPaths = excludeComposeStackPaths(changedPaths, result.SyncFailed)
 		if len(changedPaths) > 0 && binding.AutoDeployEnabled {
 			deployment, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths, transfer.Backup)
 			if deployErr != nil {
@@ -443,8 +453,10 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 			if len(deployment.Failed) > 0 {
 				result.State = "partial"
 			}
-			if len(transfer.ComposeBlocked) > 0 && len(deployment.Failed) > 0 {
-				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d stack(s) deployed and %d additional stack(s) failed deployment", len(transfer.ComposeBlocked), len(deployment.Deployed), len(deployment.Failed))
+			if (len(transfer.ComposeBlocked) > 0 || len(readBlockedStacks) > 0) && len(deployment.Failed) > 0 {
+				result.Message = fmt.Sprintf("%d stack(s) skipped during synchronization; %d stack(s) deployed and %d additional stack(s) failed deployment", len(result.SyncFailed), len(deployment.Deployed), len(deployment.Failed))
+			} else if len(readBlockedStacks) > 0 {
+				result.Message = fmt.Sprintf("%d stack(s) with unreadable local items were skipped; %d independent stack(s) deployed successfully", len(readBlockedStacks), len(deployment.Deployed))
 			} else if len(transfer.ComposeBlocked) > 0 {
 				result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; %d independent stack(s) deployed successfully", len(transfer.ComposeBlocked), len(deployment.Deployed))
 			} else if len(deployment.Failed) > 0 {

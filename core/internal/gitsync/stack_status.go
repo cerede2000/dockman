@@ -450,6 +450,7 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 	type aggregate struct {
 		state     string
 		conflicts int
+		message   string
 	}
 	states := make(map[string]aggregate, len(paths))
 	orphans := make(map[string]struct{}, len(preview.OrphanedComposePaths))
@@ -463,6 +464,11 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 		for _, composePath := range composePathsForFile(paths, entry.Path) {
 			current := states[composePath]
 			switch entry.Status {
+			case "skipped_permission":
+				if current.state != stackSyncConflict {
+					current.state = stackSyncError
+					current.message = "A local stack item cannot be read; it was skipped while other stacks continued: " + entry.Path
+				}
 			case "conflict":
 				current.state = stackSyncConflict
 				current.conflicts++
@@ -496,7 +502,7 @@ func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview Trans
 		}
 	}
 	for composePath, state := range states {
-		updates := map[string]any{"state": state.state, "error_message": "", "conflict_count": state.conflicts, "last_checked_at": &now}
+		updates := map[string]any{"state": state.state, "error_message": state.message, "conflict_count": state.conflicts, "last_checked_at": &now}
 		if state.state == stackSyncUpToDate {
 			updates["last_success_at"] = &now
 		}

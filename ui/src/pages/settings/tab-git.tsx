@@ -124,7 +124,7 @@ interface Binding {
 interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; deployFailed?: string[]; rolledBack?: string[]; rollbackFailed?: string[]; syncFailed?: string[]; message: string; }
 interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
 interface PreviewEntry {
-    path: string; status: "add" | "modify" | "remove_control" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable"; sourceSha?: string;
+    path: string; status: "add" | "modify" | "remove_control" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable" | "skipped_permission"; sourceSha?: string;
     targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed" | "source_deleted_destination_changed" | "destination_deleted";
 }
 interface TransferPreview {
@@ -153,7 +153,7 @@ function composeOwner(binding: Binding, filePath: string): string | undefined {
         })[0];
 }
 
-const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
+const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_permission", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
@@ -1219,7 +1219,7 @@ export default function TabGit() {
                     {!!transferPreview?.conflicts && <Chip label={`${transferPreview.conflicts} conflict${transferPreview.conflicts === 1 ? "" : "s"}`} color="error"/>}
                     <Typography variant="body2" color="text.secondary" sx={{ml: {sm: "auto!important"}}}>No source-side deletion is propagated.</Typography>
                 </Stack>
-                {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied. Files skipped only by type can be permanently allowed here. Oversized, unavailable, sensitive, and explicitly excluded files keep their dedicated protection.</Alert>}
+                {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied and do not block other stacks. Files skipped only by type can be permanently allowed here. Permission-denied, oversized, unavailable, sensitive, and explicitly excluded files keep their dedicated protection.</Alert>}
                 {!!transferPreview?.preserved && <Alert severity="warning">Files deleted on Git remain local by default. For a whole orphaned stack, restore it to Git, archive it, or explicitly delete its local folder after a backup. Dockman never runs Compose down and never removes Docker volumes here.</Alert>}
                 {!!transferPreview?.localDeletions && <Alert severity="warning">A synchronized stack or file was deleted locally but remains on Git. Regular transfer will not delete it from Git. Use the stack synchronization icon to restore it, explicitly delete it from Git, or stop synchronizing it.</Alert>}
                 {transferPreview?.entries.some((entry) => entry.status === "remove_control") && <Alert severity="info">A Git provisioning manifest was removed. Confirming this change only stops future provisioning; permissions already applied to the live stack are preserved.</Alert>}
