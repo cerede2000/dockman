@@ -35,6 +35,18 @@ type denyReadFS struct {
 	baseName string
 }
 
+type denyReadDirFS struct {
+	filesystem.FileSystem
+	baseName string
+}
+
+func (d denyReadDirFS) ReadDir(path string) ([]fs.DirEntry, error) {
+	if filepath.Base(path) == d.baseName {
+		return nil, fmt.Errorf("must not read %s: %w", path, fs.ErrPermission)
+	}
+	return d.FileSystem.ReadDir(path)
+}
+
 func (d denyReadFS) OpenFile(filename string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error) {
 	if filepath.Base(filename) == d.baseName && flag&os.O_WRONLY == 0 && flag&os.O_RDWR == 0 {
 		return nil, fs.ErrPermission
@@ -242,6 +254,45 @@ func TestComposeOnlyPushIgnoresMutableUnselectedFiles(t *testing.T) {
 	result, err := service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken})
 	require.NoError(t, err)
 	require.NotEmpty(t, result.CommitSHA)
+}
+
+func TestComposeOnlyDoesNotOpenUnselectedDirectories(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "secrets"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, ".env.example"), []byte("TOKEN=replace-me\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "secrets", "private.key"), []byte("secret\n"), 0o600))
+	policy := syncPolicy{
+		profile: syncProfileComposeOnly,
+		compose: map[string]struct{}{"compose.yaml": {}},
+	}
+
+	files, err := collectStackFiles(denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "secrets"}, ".", false, policy)
+	require.NoError(t, err)
+	require.NotNil(t, files["compose.yaml"].open)
+	require.NotNil(t, files[".env.example"].open)
+	require.NotContains(t, files, "secrets")
+	require.NotContains(t, files, "secrets/private.key")
+}
+
+func TestComposeOnlyExplicitFileDoesNotOpenItsUnrelatedSiblingTree(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "config", "locked"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yaml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "config", "application.conf"), []byte("enabled=true\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "config", "locked", "secret.conf"), []byte("secret=true\n"), 0o600))
+	policy := syncPolicy{
+		profile:  syncProfileComposeOnly,
+		compose:  map[string]struct{}{"compose.yaml": {}},
+		includes: mustRules([]string{"config/application.conf"}),
+	}
+
+	files, err := collectStackFiles(denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "locked"}, ".", false, policy)
+	require.NoError(t, err)
+	require.NotNil(t, files["compose.yaml"].open)
+	require.NotNil(t, files["config/application.conf"].open)
+	require.NotContains(t, files, "config/locked")
+	require.NotContains(t, files, "config/locked/secret.conf")
 }
 
 func TestPreviewTokenIgnoresSkippedMetadataButProtectsTransferableFiles(t *testing.T) {

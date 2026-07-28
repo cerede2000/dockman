@@ -1741,6 +1741,13 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			}
 			child := targetFS.Join(dir, entry.Name())
 			if entry.IsDir() {
+				// Compose-only is a strict allow-list. Once the Compose catalog is
+				// known, do not even open unrelated application-data directories:
+				// they may contain secrets, sockets, locked files, or very large
+				// trees and none of them belongs to this synchronization profile.
+				if policy.profile == syncProfileComposeOnly && !policy.traversesComposeOnlyDirectory(childRel) {
+					continue
+				}
 				childCount, err := walk(child, childRel)
 				if err != nil {
 					return 0, err
@@ -2364,6 +2371,56 @@ func (policy syncPolicy) containsCompose(directory string) bool {
 		}
 	}
 	return false
+}
+
+// traversesComposeOnlyDirectory reports whether an allow-listed file can exist
+// below directory. Built-in environment templates are intentionally scoped to
+// directories that contain a known Compose manifest. Extra trees are visited
+// only when an explicit include rule can target them.
+func (policy syncPolicy) traversesComposeOnlyDirectory(directory string) bool {
+	if len(policy.compose) == 0 || policy.containsCompose(directory) {
+		return true
+	}
+	directory = strings.Trim(filepath.ToSlash(directory), "/")
+	for _, rule := range policy.includes {
+		// A basename rule is deliberately valid at every depth, so its search
+		// cannot safely be narrowed to one subtree.
+		if rule.basename {
+			return true
+		}
+		if includeRuleCanMatchBelowDirectory(rule, directory) {
+			return true
+		}
+	}
+	return false
+}
+
+func includeRuleCanMatchBelowDirectory(rule ignoreRule, directory string) bool {
+	patterns := strings.Split(strings.Trim(rule.pattern, "/"), "/")
+	directories := strings.Split(strings.Trim(directory, "/"), "/")
+	type state struct{ pattern, directory int }
+	visited := map[state]bool{}
+	var matches func(int, int) bool
+	matches = func(patternIndex, directoryIndex int) bool {
+		current := state{pattern: patternIndex, directory: directoryIndex}
+		if visited[current] {
+			return false
+		}
+		visited[current] = true
+		if directoryIndex == len(directories) {
+			// At least one pattern component must remain below this directory.
+			return patternIndex < len(patterns)
+		}
+		if patternIndex == len(patterns) {
+			return false
+		}
+		if patterns[patternIndex] == "**" {
+			return matches(patternIndex+1, directoryIndex) || matches(patternIndex, directoryIndex+1)
+		}
+		matched, err := doublestar.Match(patterns[patternIndex], directories[directoryIndex])
+		return err == nil && matched && matches(patternIndex+1, directoryIndex+1)
+	}
+	return matches(0, 0)
 }
 
 func loadStackIgnoreRules(targetFS filesystem.FileSystem, root string) ([]ignoreRule, error) {
