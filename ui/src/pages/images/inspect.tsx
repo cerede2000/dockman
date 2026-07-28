@@ -1,4 +1,4 @@
-import {useNavigate, useParams} from "react-router-dom";
+import {useNavigate, useParams} from "react-router";
 import {useCallback, useEffect, useState} from "react";
 import {callRPC, useHostClient} from "../../lib/api.ts";
 import {DockerService, type ImageInspect} from "../../gen/docker/v1/docker_pb.ts";

@@ -1,6 +1,6 @@
 import type {TabDetails} from "../context/tab-context.tsx";
 import {useCallback} from "react";
-import {useLocation} from "react-router-dom";
+import {useLocation} from "react-router";
 import {useAliasStore, useHostStore} from "../pages/compose/state/files.ts";
 import type {DockmanYaml} from "../gen/dockyaml/v1/dockyaml_pb.ts";
 

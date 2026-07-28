@@ -10,7 +10,7 @@ import {
     Menu,
     MenuItem, Tooltip
 } from "@mui/material";
-import {useLocation, useNavigate} from 'react-router-dom'
+import {useLocation, useNavigate} from 'react-router'
 import React, {type MouseEvent, useCallback, useEffect, useRef, useState} from 'react'
 import {ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
 import {Link as RouterLink} from "react-router";

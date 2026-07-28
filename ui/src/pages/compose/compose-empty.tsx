@@ -9,7 +9,7 @@ import {
 import {useAlias} from "../../context/alias-context.tsx";
 import {useFileComponents} from "./state/terminal.tsx";
 import AliasDialog, {useAliasAddDialogState} from "./components/add-alias-dialog.tsx";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import FolderIcon from "@mui/icons-material/Folder";
 
 export const InvalidAlias = () => {

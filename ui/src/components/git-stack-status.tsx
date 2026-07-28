@@ -6,7 +6,7 @@ import {
     HistoryOutlined, PauseCircleOutlined, PlayCircleOutlined, RestoreOutlined, RocketLaunchOutlined, ScheduleOutlined, Sync,
 } from '@mui/icons-material';
 import {useEffect, useMemo, useState} from 'react';
-import {useNavigate} from 'react-router-dom';
+import {useNavigate} from 'react-router';
 import {withProtectedAPI} from '../lib/api.ts';
 import {useSnackbar} from '../hooks/snackbar.ts';
 import {gitStatusSeverity, type GitStackStatus, refreshGitStackStatuses} from './git-stack-status-store.ts';

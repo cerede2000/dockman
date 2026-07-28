@@ -11,7 +11,7 @@ import {
     Typography,
 } from '@mui/material'
 import {InsertDriveFileOutlined, Search, SubdirectoryArrowRight} from '@mui/icons-material'
-import {useNavigate} from 'react-router-dom'
+import {useNavigate} from 'react-router'
 import {create} from "zustand";
 import {useFileComponents} from "../state/terminal.tsx";
 import {getBaseUrl, getWSUrl} from "../../../lib/api.ts";

@@ -26,7 +26,7 @@ import {formatDate} from "../../lib/api.ts";
 import {type SortOrder, sortTable, type TableInfo, useSort} from "../../lib/table.ts";
 import {formatBytes} from "../../lib/editor.ts";
 import {useConfig} from "../../hooks/config.ts";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import {getImageHomePageUrl} from "./docker-images.ts";
 
 interface ImageTableProps {

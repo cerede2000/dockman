@@ -1,6 +1,6 @@
 import {callRPC, useHostClient} from "../../lib/api.ts";
 import {DockerService, type NetworkInspectInfo} from "../../gen/docker/v1/docker_pb.ts";
-import {useParams} from "react-router-dom";
+import {useParams} from "react-router";
 import {useCallback, useEffect, useState} from "react";
 import {
     Alert,

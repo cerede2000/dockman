@@ -17,7 +17,7 @@ import {
     ViewList,
 } from '@mui/icons-material';
 import {useEffect, useMemo, useRef, useState} from 'react';
-import {useNavigate} from 'react-router-dom';
+import {useNavigate} from 'react-router';
 import "@xterm/xterm/css/xterm.css";
 import PageHeader, {RefreshButton} from '../../components/page-header.tsx';
 import useSearch from '../../hooks/search.ts';

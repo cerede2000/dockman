@@ -1,5 +1,5 @@
 import {type ReactElement, type ReactNode, type SyntheticEvent, useMemo} from "react";
-import {useNavigate, useParams, useSearchParams} from "react-router-dom";
+import {useNavigate, useParams, useSearchParams} from "react-router";
 import {Box, Breadcrumbs, IconButton, Link as MuiLink, Paper, Stack, Tab, Tabs, Typography} from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';

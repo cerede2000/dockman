@@ -1,7 +1,7 @@
 import {createContext, type ReactNode, useCallback, useContext, useEffect, useState} from 'react'
 import {callRPC, useClient} from '../lib/api'
 import {useSnackbar} from '../hooks/snackbar'
-import {useLocation, useNavigate} from "react-router-dom";
+import {useLocation, useNavigate} from "react-router";
 import {HostManagerService} from "../gen/host/v1/host_pb.ts";
 
 interface HostContextType {

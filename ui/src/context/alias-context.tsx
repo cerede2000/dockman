@@ -1,7 +1,7 @@
 import {createContext, type ReactNode, useCallback, useContext, useEffect, useState} from "react";
 import {callRPC, useClient} from "../lib/api.ts";
 import {useSnackbar} from "../hooks/snackbar.ts";
-import {useNavigate, useParams} from "react-router-dom";
+import {useNavigate, useParams} from "react-router";
 import {useEditorUrl} from "../lib/editor.ts";
 import {type FolderAlias, HostManagerService} from "../gen/host/v1/host_pb.ts";
 

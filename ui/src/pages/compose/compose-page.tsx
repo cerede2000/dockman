@@ -1,5 +1,5 @@
 import {type JSX, useEffect, useMemo, useRef, useState} from 'react';
-import {Navigate, Outlet, useLocation, useNavigate, useParams} from 'react-router-dom';
+import {Navigate, Outlet, useLocation, useNavigate, useParams} from 'react-router';
 import {Box, CircularProgress, IconButton, Tab, Tabs, Tooltip, Typography} from '@mui/material';
 import {FileList} from "./components/file-list.tsx";
 import {ClearAll, Close} from '@mui/icons-material';

@@ -12,7 +12,7 @@ import {
     Typography
 } from '@mui/material';
 import {LockOutlined, LoginOutlined, PersonOutlined, PublicRounded} from '@mui/icons-material';
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import {callRPC, useAuthClient} from "../../lib/api.ts";
 import {AuthService, type Config} from '../../gen/auth/v1/auth_pb.ts';
 import {useAuth} from '../../hooks/auth.ts';

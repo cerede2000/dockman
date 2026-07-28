@@ -15,6 +15,8 @@ import (
 	"github.com/RA341/dockman/internal/host/filesystem"
 	gitclient "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -293,6 +295,34 @@ func TestComposeOnlyExplicitFileDoesNotOpenItsUnrelatedSiblingTree(t *testing.T)
 	require.NotNil(t, files["config/application.conf"].open)
 	require.NotContains(t, files, "config/locked")
 	require.NotContains(t, files, "config/locked/secret.conf")
+}
+
+func TestComposeOnlyRepositoryDoesNotLoadUnselectedGitTrees(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	repository, err := gitclient.PlainInit(repositoryRoot, false)
+	require.NoError(t, err)
+	commitTestFile(t, repository, repositoryRoot, "compose.yaml", "services: {}\n")
+	head, err := repository.Head()
+	require.NoError(t, err)
+	commit, err := repository.CommitObject(head.Hash())
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+
+	// Missing tree objects make accidental traversal deterministic. Model the
+	// reported 20,000-directory repository: the collector succeeds only when
+	// Compose-only rejects every unrelated subtree before asking go-git to load
+	// it, and returns only the selected Compose manifest.
+	synthetic := *tree
+	for index := 0; index < 20_000; index++ {
+		synthetic.Entries = append(synthetic.Entries, object.TreeEntry{Name: fmt.Sprintf("large-data-%05d", index), Mode: filemode.Dir, Hash: plumbing.ZeroHash})
+	}
+	policy := syncPolicy{profile: syncProfileComposeOnly, compose: map[string]struct{}{"compose.yaml": {}}}
+
+	files, err := collectRepositoryTreeFiles(repository, &synthetic, ".", false, policy)
+	require.NoError(t, err)
+	require.NotNil(t, files["compose.yaml"].open)
+	require.Len(t, files, 1)
 }
 
 func TestPreviewTokenIgnoresSkippedMetadataButProtectsTransferableFiles(t *testing.T) {

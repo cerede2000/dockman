@@ -1,6 +1,6 @@
 import React from 'react';
 import {Box, Tab, Tabs} from "@mui/material";
-import {useSearchParams} from 'react-router-dom';
+import {useSearchParams} from 'react-router';
 import TabDockerHosts from "./tab-host.tsx";
 import TabDockman from "./tab-dockman.tsx";
 import TabGit from "./tab-git.tsx";

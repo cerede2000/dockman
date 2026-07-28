@@ -221,6 +221,7 @@ type syncPolicy struct {
 	repositoryExcludes []ignoreRule
 	repositorySubPath  string
 	compose            map[string]struct{}
+	composeDirectories map[string]struct{}
 	selectedRoots      map[string]struct{}
 	selectionEnabled   bool
 	selectNewCompose   bool
@@ -1685,6 +1686,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
+	policy = policy.withComposeDirectoryIndex()
 	ignoreRules, err := loadStackIgnoreRules(targetFS, root)
 	if err != nil {
 		return nil, err
@@ -1891,25 +1893,27 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 		}
 		for _, relative := range discoverRepositoryComposeFiles(tree) {
 			if _, known := policy.compose[relative]; !known {
+				policy.compose[relative] = struct{}{}
 				policy.selectedRoots[filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))] = struct{}{}
 			}
 		}
 	}
+	policy = policy.withComposeDirectoryIndex()
 	ignoreRules, err := loadRepositoryTreeIgnoreRules(tree)
 	if err != nil {
 		return nil, err
 	}
-	largeDirectories := discoverLargeRepositoryDirectories(tree, policy)
 	var total int64
-	var walk func(*object.Tree, string) error
-	walk = func(current *object.Tree, parent string) error {
+	var walk func(*object.Tree, string) (int, error)
+	walk = func(current *object.Tree, parent string) (int, error) {
+		observed := 0
 		for _, entry := range current.Entries {
 			if entry.Name == "" || entry.Name == "." || entry.Name == ".." || strings.ContainsAny(entry.Name, `/\\`) {
-				return fmt.Errorf("repository contains unsafe Git tree entry %q", entry.Name)
+				return 0, fmt.Errorf("repository contains unsafe Git tree entry %q", entry.Name)
 			}
 			rel := path.Join(parent, entry.Name)
 			if err := validateRelativePath(rel, false); err != nil {
-				return fmt.Errorf("repository contains unsafe Git tree path %q: %w", rel, err)
+				return 0, fmt.Errorf("repository contains unsafe Git tree path %q: %w", rel, err)
 			}
 			isDirectory := entry.Mode == filemode.Dir
 			selected, traverse := policy.selectsPath(rel, isDirectory)
@@ -1917,11 +1921,13 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				if isDirectory && traverse {
 					subtree, err := current.Tree(entry.Name)
 					if err != nil {
-						return err
+						return 0, err
 					}
-					if err := walk(subtree, rel); err != nil {
-						return err
+					childCount, err := walk(subtree, rel)
+					if err != nil {
+						return 0, err
 					}
+					observed += childCount
 				}
 				continue
 			}
@@ -1932,29 +1938,36 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				if isDirectory && policy.containsCompose(rel) {
 					subtree, err := current.Tree(entry.Name)
 					if err != nil {
-						return err
+						return 0, err
 					}
-					if err := walk(subtree, rel); err != nil {
-						return err
+					childCount, err := walk(subtree, rel)
+					if err != nil {
+						return 0, err
 					}
+					observed += childCount
 					continue
 				}
 				result[rel] = transferFile{path: rel, skipReason: "excluded", directory: isDirectory}
 				continue
 			}
 			if isDirectory {
-				if _, large := largeDirectories[rel]; large {
-					result[rel] = transferFile{path: rel, skipReason: "large_directory", directory: true}
+				// Keep Git-side Compose-only traversal symmetrical with the live
+				// stack collector. An unrelated tree is outside the inventory, so
+				// do not load its Git tree object or enumerate any of its entries.
+				if policy.profile == syncProfileComposeOnly && !policy.traversesComposeOnlyDirectory(rel) {
 					continue
 				}
-			}
-			if isDirectory {
 				subtree, err := current.Tree(entry.Name)
 				if err != nil {
-					return err
+					return 0, err
 				}
-				if err := walk(subtree, rel); err != nil {
-					return err
+				childCount, err := walk(subtree, rel)
+				if err != nil {
+					return 0, err
+				}
+				observed += childCount
+				if autoExcludeLargeDirectory(result, policy, parent, observed) {
+					return observed, nil
 				}
 				continue
 			}
@@ -1969,11 +1982,15 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 			}
 			blob, err := repo.BlobObject(entry.Hash)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			size := blob.Size
+			observed++
+			if autoExcludeLargeDirectory(result, policy, parent, observed) {
+				return observed, nil
+			}
 			if len(result)+1 > maxBindingFiles {
-				return stackInventoryLimitError(policy, rel, maxBindingFiles)
+				return 0, stackInventoryLimitError(policy, rel, maxBindingFiles)
 			}
 			sensitive := isSensitivePath(rel)
 			if sensitive && !includeSensitive {
@@ -1990,55 +2007,23 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				continue
 			}
 			if total+size > maxBindingTotalSize {
-				return fmt.Errorf("%s repository files exceed the %d MiB total limit while scanning %s (%d MiB accumulated); exclude its data directory", stackInventoryOwner(policy, rel), maxBindingTotalSize>>20, rel, (total+size)>>20)
+				return 0, fmt.Errorf("%s repository files exceed the %d MiB total limit while scanning %s (%d MiB accumulated); exclude its data directory", stackInventoryOwner(policy, rel), maxBindingTotalSize>>20, rel, (total+size)>>20)
 			}
 			if err := checkTransferLimit(len(result)+1, size, total+size); err != nil {
-				return fmt.Errorf("%s at %s: %w", stackInventoryOwner(policy, rel), rel, err)
+				return 0, fmt.Errorf("%s at %s: %w", stackInventoryOwner(policy, rel), rel, err)
 			}
 			total += size
 			file := transferFile{path: rel, size: size, mode: gitFileMode(entry.Mode), sensitive: sensitive, open: gitBlobOpener(repo, entry.Hash)}
 			file.sha, err = hashTransferFile(file)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			result[rel] = file
 		}
-		return nil
+		return observed, nil
 	}
-	return result, walk(tree, "")
-}
-
-func discoverLargeRepositoryDirectories(tree *object.Tree, policy syncPolicy) map[string]struct{} {
-	result := make(map[string]struct{})
-	if len(policy.compose) == 0 {
-		return result
-	}
-	var walk func(*object.Tree, string) int
-	walk = func(current *object.Tree, parent string) int {
-		observed := 0
-		for _, entry := range current.Entries {
-			relative := path.Join(parent, entry.Name)
-			if entry.Mode == filemode.Dir {
-				if shouldSkipPath(relative, true) {
-					continue
-				}
-				subtree, err := current.Tree(entry.Name)
-				if err != nil {
-					continue
-				}
-				observed += walk(subtree, relative)
-			} else if entry.Mode.IsFile() {
-				observed++
-			}
-			if parent != "" && observed > maxAutoDirectoryFiles && !policy.containsCompose(parent) {
-				result[parent] = struct{}{}
-				return observed
-			}
-		}
-		return observed
-	}
-	walk(tree, "")
-	return result
+	_, err = walk(tree, "")
+	return result, err
 }
 
 func discoverRepositoryComposeFiles(tree *object.Tree) []string {
@@ -2365,12 +2350,28 @@ func (policy syncPolicy) protectsProvision(relative string) bool {
 
 func (policy syncPolicy) containsCompose(directory string) bool {
 	directory = strings.Trim(filepath.ToSlash(directory), "/")
+	if policy.composeDirectories != nil {
+		_, found := policy.composeDirectories[directory]
+		return found
+	}
 	for compose := range policy.compose {
 		if strings.HasPrefix(compose, directory+"/") {
 			return true
 		}
 	}
 	return false
+}
+
+func (policy syncPolicy) withComposeDirectoryIndex() syncPolicy {
+	policy.composeDirectories = make(map[string]struct{}, len(policy.compose))
+	for compose := range policy.compose {
+		directory := path.Dir(filepath.ToSlash(compose))
+		for directory != "." && directory != "" && directory != "/" {
+			policy.composeDirectories[strings.Trim(directory, "/")] = struct{}{}
+			directory = path.Dir(directory)
+		}
+	}
+	return policy
 }
 
 // traversesComposeOnlyDirectory reports whether an allow-listed file can exist

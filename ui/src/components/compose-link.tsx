@@ -1,5 +1,5 @@
 import {Typography} from "@mui/material";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 
 const ComposeLink = ({servicePath, stackName}: { servicePath: string; stackName: string; }) => {
     const navigate = useNavigate()

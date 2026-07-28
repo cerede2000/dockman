@@ -1,5 +1,5 @@
 import {useCallback} from "react";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import {useFiles} from "../../../context/file-context.tsx";
 import {useFileSearch} from "../dialogs/file-search.tsx";
 import {useFileCreate} from "../dialogs/file-create.tsx";

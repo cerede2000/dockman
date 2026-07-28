@@ -1,6 +1,6 @@
 import {create} from 'zustand'
 import type {Terminal} from "@xterm/xterm";
-import {useLocation, useParams} from "react-router-dom";
+import {useLocation, useParams} from "react-router";
 import {debugLog, debugWarn} from "../../../lib/debug.ts";
 
 export const useFileComponents = (): { host: string; alias: string; filename: string; splitFilename: string | null } => {

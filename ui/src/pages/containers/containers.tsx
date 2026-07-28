@@ -17,7 +17,7 @@ import useSearch from "../../hooks/search.ts";
 import ActionButtons from "../../components/action-buttons.tsx";
 import scrollbarStyles from "../../components/scrollbar-style.tsx";
 import {ContainersLoading} from "./containers-loading.tsx";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import {useHostStore} from "../compose/state/files.ts";
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
 

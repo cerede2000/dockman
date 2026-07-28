@@ -1,5 +1,5 @@
 import React, {type ReactElement, useCallback, useEffect, useMemo, useState} from 'react';
-import {useNavigate, useSearchParams} from 'react-router-dom';
+import {useNavigate, useSearchParams} from 'react-router';
 import {Box, Button, CircularProgress, Fade, Tab, Tabs, Tooltip} from '@mui/material';
 import {callRPC, useHostClient} from "../../../lib/api.ts";
 import {isComposeFile, stackDefaultTab, useEditorUrl} from "../../../lib/editor.ts";

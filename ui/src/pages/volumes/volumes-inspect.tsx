@@ -1,6 +1,6 @@
 import {callRPC, useHostClient} from '../../lib/api.ts';
 import {DockerService, type VolumeInspectInfo} from '../../gen/docker/v1/docker_pb.ts';
-import {useNavigate, useParams} from 'react-router-dom';
+import {useNavigate, useParams} from 'react-router';
 import {type ReactNode, useCallback, useEffect, useState} from 'react';
 import {
     Alert, Box, Button, Chip, CircularProgress, Dialog, Divider, IconButton, Paper, Stack, Tab, Table,

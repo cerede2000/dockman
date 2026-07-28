@@ -15,7 +15,7 @@ import {formatBytes} from "../../lib/editor.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 import {useCopyButton} from "../../hooks/copy.ts";
 import CopyButton from "../../components/copy-button.tsx";
-import {useSearchParams} from 'react-router-dom';
+import {useSearchParams} from 'react-router';
 import GitBindingRecovery, {type RecoveryBinding} from '../../components/git-binding-recovery.tsx';
 
 type AuthType = "public" | "https_token" | "ssh_key";
@@ -331,24 +331,32 @@ export default function TabGit() {
     const openedGitDeepLink = useRef('');
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
     const deferredPreviewSearch = useDeferredValue(previewSearch);
+    const previewEntries = useMemo(() => transferPreview?.entries || [], [transferPreview?.entries]);
+    const previewSearchPaths = useMemo(() => previewEntries.map((entry) => entry.path.toLowerCase()), [previewEntries]);
     const previewStatusCounts = useMemo(() => {
         const counts = new Map<PreviewStatus, number>();
-        for (const entry of transferPreview?.entries || []) counts.set(entry.status, (counts.get(entry.status) || 0) + 1);
+        for (const entry of previewEntries) counts.set(entry.status, (counts.get(entry.status) || 0) + 1);
         return counts;
-    }, [transferPreview?.entries]);
+    }, [previewEntries]);
     const filteredPreviewEntries = useMemo(() => {
-        const query = deferredPreviewSearch.trim().toLocaleLowerCase();
-        return (transferPreview?.entries || []).filter((entry) => (previewStatus === "all" || entry.status === previewStatus) && (!query || entry.path.toLocaleLowerCase().includes(query)));
-    }, [deferredPreviewSearch, previewStatus, transferPreview?.entries]);
+        const query = deferredPreviewSearch.trim().toLowerCase();
+        const filtered: PreviewEntry[] = [];
+        for (let index = 0; index < previewEntries.length; index++) {
+            const entry = previewEntries[index]!;
+            if ((previewStatus === "all" || entry.status === previewStatus) && (!query || previewSearchPaths[index].includes(query))) filtered.push(entry);
+        }
+        return filtered;
+    }, [deferredPreviewSearch, previewEntries, previewSearchPaths, previewStatus]);
     const previewPageCount = Math.max(1, Math.ceil(filteredPreviewEntries.length / previewRowsPerPage));
     const visiblePreviewEntries = useMemo(() => filteredPreviewEntries.slice(
         previewPage * previewRowsPerPage,
         previewPage * previewRowsPerPage + previewRowsPerPage,
     ), [filteredPreviewEntries, previewPage, previewRowsPerPage]);
-    const selectablePreviewEntries = visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict" && entry.status !== "deleted_on_git" && entry.status !== "deleted_locally" && entry.status !== "remove_control");
-    const selectedVisibleCount = selectablePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).length;
-    const allowableSelectedEntries = visiblePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path) && entry.status === "skipped_type");
-    const safeTransferCount = (transferPreview?.entries || []).filter((entry) => entry.status === "add" || entry.status === "modify" || entry.status === "remove_control").length;
+    const selectablePreviewEntries = useMemo(() => visiblePreviewEntries.filter((entry) => entry.status !== "skipped_excluded" && entry.status !== "conflict" && entry.status !== "deleted_on_git" && entry.status !== "deleted_locally" && entry.status !== "remove_control"), [visiblePreviewEntries]);
+    const selectedVisibleCount = useMemo(() => selectablePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path)).length, [selectablePreviewEntries, selectedPreviewPaths]);
+    const allowableSelectedEntries = useMemo(() => visiblePreviewEntries.filter((entry) => selectedPreviewPaths.has(entry.path) && entry.status === "skipped_type"), [selectedPreviewPaths, visiblePreviewEntries]);
+    const safeTransferCount = useMemo(() => previewEntries.filter((entry) => entry.status === "add" || entry.status === "modify" || entry.status === "remove_control").length, [previewEntries]);
+    const hasRemovedProvisionControl = useMemo(() => previewEntries.some((entry) => entry.status === "remove_control"), [previewEntries]);
     const unresolvedConflictCount = Math.max(0, (transferPreview?.conflicts || 0) - resolvedConflictPaths.size);
     const orphanComposePaths = useMemo(() => new Set(transferPreview?.orphanedComposePaths || []), [transferPreview?.orphanedComposePaths]);
 
@@ -1229,7 +1237,7 @@ export default function TabGit() {
                 {!!transferPreview?.skipped && <Alert severity="warning">Skipped files are never copied and do not block other stacks. Large data directories are collapsed automatically after 2,000 discovered files and are shown as a single “skipped large directory” item. Files skipped only by type can be permanently allowed here; permission-denied, oversized, unavailable, sensitive, and explicitly excluded files keep their protection.</Alert>}
                 {!!transferPreview?.preserved && <Alert severity="warning">Files deleted on Git remain local by default. For a whole orphaned stack, restore it to Git, archive it, or explicitly delete its local folder after a backup. Dockman never runs Compose down and never removes Docker volumes here.</Alert>}
                 {!!transferPreview?.localDeletions && <Alert severity="warning">A synchronized stack or file was deleted locally but remains on Git. Regular transfer will not delete it from Git. Use the stack synchronization icon to restore it, explicitly delete it from Git, or stop synchronizing it.</Alert>}
-                {transferPreview?.entries.some((entry) => entry.status === "remove_control") && <Alert severity="info">A Git provisioning manifest was removed. Confirming this change only stops future provisioning; permissions already applied to the live stack are preserved.</Alert>}
+                {hasRemovedProvisionControl && <Alert severity="info">A Git provisioning manifest was removed. Confirming this change only stops future provisioning; permissions already applied to the live stack are preserved.</Alert>}
                 {!!transferPreview?.conflicts && <Alert severity="error">
                     Conflicts are never overwritten automatically. Compare and approve only the files you want to resolve; the others remain pending. An “initial conflict” means that no common synchronization baseline is available.
                 </Alert>}

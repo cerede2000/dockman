@@ -15,7 +15,7 @@ import {
 } from '@mui/material';
 import {SnackbarProvider} from "./context/snackbar-context.tsx";
 import {UploadProgressToast} from "./components/upload-progress-toast.tsx";
-import {BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams} from "react-router-dom";
+import {BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams} from "react-router";
 import {AuthProvider} from "./context/auth-context.tsx";
 import React, {useEffect, useState} from 'react';
 import {useConfig} from './hooks/config.ts';

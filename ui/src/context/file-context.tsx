@@ -1,5 +1,5 @@
 import {createContext, type ReactNode, useCallback, useContext, useEffect, useState} from 'react'
-import {useNavigate} from 'react-router-dom'
+import {useNavigate} from 'react-router'
 import {callRPC, useHostClient, useHostUrl,} from "../lib/api.ts";
 import {useSnackbar} from "../hooks/snackbar.ts";
 import {useUploadProgress} from "../hooks/upload-progress.ts";

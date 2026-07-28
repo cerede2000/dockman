@@ -1,5 +1,5 @@
 import {createContext, type ReactNode, useCallback, useContext, useEffect} from 'react'
-import {useLocation, useNavigate} from 'react-router-dom';
+import {useLocation, useNavigate} from 'react-router';
 import {stackDefaultTab, useEditorUrl} from "../lib/editor.ts";
 import {useConfig} from "../hooks/config.ts";
 import {create} from "zustand";

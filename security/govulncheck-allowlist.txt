@@ -3,5 +3,4 @@
 # run a Docker daemon. No fixed github.com/docker/docker module exists yet.
 GO-2026-4883
 GO-2026-4887
-GO-2026-5617
 GO-2026-5668

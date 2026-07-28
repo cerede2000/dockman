@@ -1,6 +1,6 @@
 import {Box, Divider, Drawer, List, ListItemButton, ListItemIcon, Tooltip,} from '@mui/material';
 import {FolderDelete, Logout, Settings, SpaceDashboardOutlined} from '@mui/icons-material';
-import {Link as RouterLink, Outlet, useLocation, useNavigate, useParams} from 'react-router-dom';
+import {Link as RouterLink, Outlet, useLocation, useNavigate, useParams} from 'react-router';
 
 import HostSelectDropdown from "./host-selector.tsx";
 import {useAuth} from "../../hooks/auth.ts";

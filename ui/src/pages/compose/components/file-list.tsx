@@ -20,7 +20,7 @@ import {useCompactMode, usePinnedMode, useSideBarAction, useToolbarPlacement} fr
 import {YamlIcon} from "./file-icon.tsx";
 import {RootDropZone} from "./root-drop-zone.tsx";
 import {useDragAutoScroll} from "../hooks/drag-autoscroll.ts";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import {useEditorUrl} from "../../../lib/editor.ts";
 import {formatDockyaml} from "./viewer-dockyml.tsx";
 import {useComposeFileState} from "../state/status.ts";

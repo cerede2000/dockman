@@ -17,7 +17,7 @@ import {
 import {useEffect} from "react";
 import {useCompactMode, usePinnedMode, useSideBarAction, useToolbarPlacement} from "../state/files.ts";
 import {useAlias} from "../../../context/alias-context.tsx";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 import {type FolderAlias} from "../../../gen/host/v1/host_pb.ts";
 import {useAliasAddDialogState} from "./add-alias-dialog.tsx";
 import {useSidebarActions} from "../hooks/sidebar-actions.ts";

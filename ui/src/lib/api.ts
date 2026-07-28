@@ -2,7 +2,7 @@ import {type Client, ConnectError, createClient} from "@connectrpc/connect";
 import {createConnectTransport} from "@connectrpc/connect-web";
 import type {DescService} from "@bufbuild/protobuf";
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {useParams} from "react-router-dom";
+import {useParams} from "react-router";
 import {debugLog, debugWarn} from "./debug.ts";
 
 const mode = import.meta.env.MODE;

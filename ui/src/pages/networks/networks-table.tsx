@@ -30,7 +30,7 @@ import CopyButton from "../../components/copy-button.tsx";
 import {formatDate} from "../../lib/api.ts";
 import {type SortOrder, sortTable, type TableInfo, useSort} from "../../lib/table.ts";
 import {useConfig} from "../../hooks/config.ts";
-import {useNavigate} from "react-router-dom";
+import {useNavigate} from "react-router";
 
 interface NetworkTableProps {
     networks: Network[];
