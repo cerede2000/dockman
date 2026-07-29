@@ -55,6 +55,12 @@ func TestDeploymentTargetsOnlyIncludeAffectedStacks(t *testing.T) {
 	require.Empty(t, deploymentTargetsForChanges(binding, []string{"docs/readme.md"}))
 }
 
+func TestDeploymentTargetsPreferDeepestStackOverRoot(t *testing.T) {
+	binding := StackBinding{AutoDeployComposePaths: "compose.yml\napps/alpha/compose.yml\napps/beta/compose.yml"}
+	require.Equal(t, []string{"apps/alpha/compose.yml"}, deploymentTargetsForChanges(binding, []string{"apps/alpha/config/app.yml"}))
+	require.Equal(t, []string{"compose.yml"}, deploymentTargetsForChanges(binding, []string{"root.env.example"}))
+}
+
 func TestLimitedDeploymentLogWriter(t *testing.T) {
 	w := &limitedLogWriter{}
 	payload := strings.Repeat("x", maxDeploymentLogSize+1024)

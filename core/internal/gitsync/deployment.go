@@ -198,19 +198,13 @@ func uniqueSortedStrings(values []string) []string {
 }
 
 func deploymentTargetsForChanges(binding StackBinding, changed []string) []string {
+	targets := splitPatternLines(binding.AutoDeployComposePaths)
 	result := make([]string, 0)
-	for _, compose := range splitPatternLines(binding.AutoDeployComposePaths) {
-		directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(compose)))
-		for _, path := range changed {
-			clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
-			if clean == compose || directory == "." || strings.HasPrefix(clean, directory+"/") {
-				result = append(result, compose)
-				break
-			}
-		}
+	for _, path := range changed {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+		result = append(result, composePathsForFile(targets, clean)...)
 	}
-	sort.Strings(result)
-	return result
+	return uniqueSortedStrings(result)
 }
 
 func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding, commit string, changed []string, backupID ...string) (deploymentBatchResult, error) {

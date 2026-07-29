@@ -1030,7 +1030,7 @@ export default function TabGit() {
     return <Box sx={{maxWidth: 1200, mx: "auto", p: {xs: 1, md: 3}}}>
         <Stack spacing={3}>
             <Alert severity="info" variant="outlined">
-                Git transfers remain non-destructive. Optional automatic monitoring is Git → Dockman only, creates a backup before changes, stops on conflicts, and never deploys or restarts a stack.
+                Git transfers remain non-destructive. Optional automatic monitoring is Git → Dockman only, creates a backup before changes, and stops on conflicts. Controlled deployment and rollback are separate opt-in options for explicitly selected stacks.
                 {" "}Repositories use a compact shared object store; files are checked out temporarily only while exporting Dockman changes.
             </Alert>
 
