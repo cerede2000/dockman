@@ -339,7 +339,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		}
 		retryCurrentDeployment := retryDeployment && binding.AutoDeployEnabled &&
 			(binding.AutoDeployState == "failed" || binding.AutoDeployState == "partial" || binding.AutoDeployState == "pending")
-		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head && !retryCurrentDeployment {
+		// A red synchronization state must be re-evaluated even when Git did not
+		// move. The underlying local permission, transient read failure or edited
+		// file may have been fixed since the previous cycle. Healthy bindings keep
+		// the cheap commit-only fast path, so there is no idle CPU regression.
+		recheckSynchronizationError := s.bindingHasActiveStackState(binding, stackSyncError)
+		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head && !retryCurrentDeployment && !recheckSynchronizationError {
 			skippedStackScan = true
 			if s.bindingHasActiveStackState(binding, stackSyncLocalDeleted) {
 				localDeletionBlock = true

@@ -609,8 +609,8 @@ func TestAutoSyncDeploysNewStackWhenExistingStackValidationFails(t *testing.T) {
 	second, err := service.RunBindingAutoSync(context.Background(), binding.ID)
 	require.NoError(t, err)
 	require.Equal(t, "partial", second.State)
-	require.Contains(t, second.Message, "no new Git commit, stack scan skipped")
-	require.Len(t, actions, actionCount, "an unchanged failed Compose file must not create a retry loop")
+	require.NotContains(t, second.Message, "stack scan skipped", "red synchronization states are checked automatically even when Git did not move")
+	require.Len(t, actions, actionCount, "rechecking an unchanged invalid Compose file must not deploy it")
 	statuses, err = service.store.GitStackStatuses(binding.ID)
 	require.NoError(t, err)
 	for _, status := range statuses {

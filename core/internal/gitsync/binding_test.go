@@ -228,6 +228,68 @@ func TestEnvironmentTemplatesCanBeIncludedWithoutWeakeningSensitiveProtection(t 
 	require.Equal(t, "skipped_sensitive", statuses[".env.production"])
 }
 
+func TestComposeOnlyExplicitTemplatesDoNotTraverseProtectedSubdirectories(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := t.TempDir()
+	protectedFS := denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "secret"}
+	service.ConfigureStackAccess(func(host, stackPath string) (filesystem.FileSystem, string, error) {
+		if host == "local" && stackPath == "compose/app" {
+			return protectedFS, "app", nil
+		}
+		return nil, "", os.ErrNotExist
+	}, func() []string { return []string{"local"} }, filepath.Join(t.TempDir(), "backups"))
+	repository := prepareBindingRepository(t, service)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", "secret"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", ".env.example"), []byte("TOKEN=replace-me\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", ".env.template"), []byte("PORT=8080\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "secret", "private.key"), []byte("do-not-read\n"), 0o600))
+
+	binding, err := service.CreateBinding(BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app",
+		ComposeSelectionMode: composeSelectionSelected, SelectedComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{
+		Profile: syncProfileComposeOnly,
+		// Explicit template rules must override a broad environment exclusion,
+		// without authorizing a recursive search through unrelated directories.
+		IncludePatterns: []string{".env.example", ".env.template"},
+		ExcludePatterns: []string{".env*"},
+	})
+	require.NoError(t, err)
+
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Equal(t, 3, preview.Changed)
+	require.Zero(t, preview.Skipped)
+	paths := make(map[string]struct{}, len(preview.Entries))
+	for _, entry := range preview.Entries {
+		paths[entry.Path] = struct{}{}
+	}
+	require.Contains(t, paths, "compose.yaml")
+	require.Contains(t, paths, ".env.example")
+	require.Contains(t, paths, ".env.template")
+	require.NotContains(t, paths, "secret/private.key")
+
+	result, err := service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.CommitSHA)
+	workspace, err := service.repositoryPath(repository.UUID)
+	require.NoError(t, err)
+	repo, err := gitclient.PlainOpen(workspace)
+	require.NoError(t, err)
+	tree, err := repositoryCommitTree(repo, "main")
+	require.NoError(t, err)
+	for _, path := range []string{"stacks/app/compose.yaml", "stacks/app/.env.example", "stacks/app/.env.template"} {
+		_, err = tree.File(path)
+		require.NoError(t, err, path)
+	}
+	_, err = tree.File("stacks/app/secret/private.key")
+	require.Error(t, err)
+}
+
 func TestComposeOnlyPushIgnoresMutableUnselectedFiles(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)
@@ -298,6 +360,9 @@ func TestComposeOnlyDoesNotOpenUnselectedDirectories(t *testing.T) {
 	policy := syncPolicy{
 		profile: syncProfileComposeOnly,
 		compose: map[string]struct{}{"compose.yaml": {}},
+		// A basename rule used to make the collector search every directory,
+		// including protected application data, merely to find this template.
+		includes: mustRules([]string{".env.example"}),
 	}
 
 	files, err := collectStackFiles(denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "secrets"}, ".", false, policy)
@@ -315,9 +380,12 @@ func TestComposeOnlyExplicitFileDoesNotOpenItsUnrelatedSiblingTree(t *testing.T)
 	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "config", "application.conf"), []byte("enabled=true\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "config", "locked", "secret.conf"), []byte("secret=true\n"), 0o600))
 	policy := syncPolicy{
-		profile:  syncProfileComposeOnly,
-		compose:  map[string]struct{}{"compose.yaml": {}},
-		includes: mustRules([]string{"config/application.conf"}),
+		profile:          syncProfileComposeOnly,
+		compose:          map[string]struct{}{"compose.yaml": {}},
+		includes:         mustRules([]string{"config/application.conf"}),
+		excludes:         mustRules([]string{"config/**"}),
+		selectionEnabled: true,
+		selectedRoots:    map[string]struct{}{".": {}},
 	}
 
 	files, err := collectStackFiles(denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "locked"}, ".", false, policy)
@@ -349,6 +417,7 @@ func TestComposeOnlyRepositoryDoesNotLoadUnselectedGitTrees(t *testing.T) {
 		synthetic.Entries = append(synthetic.Entries, object.TreeEntry{Name: fmt.Sprintf("large-data-%05d", index), Mode: filemode.Dir, Hash: plumbing.ZeroHash})
 	}
 	policy := syncPolicy{profile: syncProfileComposeOnly, compose: map[string]struct{}{"compose.yaml": {}}}
+	policy.includes = mustRules([]string{".env.example"})
 
 	files, err := collectRepositoryTreeFiles(repository, &synthetic, ".", false, policy)
 	require.NoError(t, err)

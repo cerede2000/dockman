@@ -1728,7 +1728,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if shouldSkipPath(childRel, entry.IsDir()) {
 				continue
 			}
-			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.protectsCompose(childRel) && !policy.protectsProvision(childRel) {
+			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.explicitlyIncludes(childRel, entry.IsDir()) && !policy.protectsCompose(childRel) && !policy.protectsProvision(childRel) {
 				if entry.IsDir() && policy.containsCompose(childRel) {
 					child := targetFS.Join(dir, entry.Name())
 					childCount, err := walk(child, childRel)
@@ -1937,7 +1937,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 			if shouldSkipPath(rel, isDirectory) {
 				continue
 			}
-			if policy.excludesPath(rel, isDirectory, ignoreRules) && !policy.protectsCompose(rel) && !policy.protectsProvision(rel) {
+			if policy.excludesPath(rel, isDirectory, ignoreRules) && !policy.explicitlyIncludes(rel, isDirectory) && !policy.protectsCompose(rel) && !policy.protectsProvision(rel) {
 				if isDirectory && policy.containsCompose(rel) {
 					subtree, err := current.Tree(entry.Name)
 					if err != nil {
@@ -2196,6 +2196,16 @@ func (policy syncPolicy) selectsPath(relative string, directory bool) (selected,
 		return true, true
 	}
 	relative = strings.Trim(filepath.ToSlash(relative), "/")
+	// An explicit path inclusion is an operator decision and may extend a root
+	// Compose selection into a supporting subdirectory. Basename-only rules are
+	// deliberately excluded from traversal: searching every subtree for one
+	// filename would reopen secrets, sockets and application-data directories.
+	if policy.explicitlyIncludes(relative, directory) {
+		return true, true
+	}
+	if directory && policy.explicitIncludeCanMatchBelow(relative) {
+		traverse = true
+	}
 	for root := range policy.selectedRoots {
 		root = strings.Trim(root, "/")
 		if root == "." {
@@ -2310,7 +2320,7 @@ func mustRules(patterns []string) []ignoreRule {
 }
 
 func (policy syncPolicy) includesFile(relative string) bool {
-	if matchesIgnoreRule(policy.includes, relative, false) {
+	if policy.explicitlyIncludes(relative, false) {
 		return true
 	}
 	if policy.profile == syncProfileComposeOnly {
@@ -2320,6 +2330,10 @@ func (policy syncPolicy) includesFile(relative string) bool {
 		return true
 	}
 	return matchesIgnoreRule(composeConfigRules, relative, false)
+}
+
+func (policy syncPolicy) explicitlyIncludes(relative string, directory bool) bool {
+	return matchesIgnoreRule(policy.includes, relative, directory)
 }
 
 func (policy syncPolicy) excludesPath(relative string, directory bool, localRules []ignoreRule) bool {
@@ -2395,13 +2409,12 @@ func (policy syncPolicy) traversesComposeOnlyDirectory(directory string) bool {
 		return true
 	}
 	directory = strings.Trim(filepath.ToSlash(directory), "/")
+	return policy.explicitIncludeCanMatchBelow(directory)
+}
+
+func (policy syncPolicy) explicitIncludeCanMatchBelow(directory string) bool {
 	for _, rule := range policy.includes {
-		// A basename rule is deliberately valid at every depth, so its search
-		// cannot safely be narrowed to one subtree.
-		if rule.basename {
-			return true
-		}
-		if includeRuleCanMatchBelowDirectory(rule, directory) {
+		if !rule.basename && includeRuleCanMatchBelowDirectory(rule, directory) {
 			return true
 		}
 	}
