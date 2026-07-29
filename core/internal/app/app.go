@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/RA341/dockman/internal/app/middleware"
 	"github.com/RA341/dockman/internal/app/ui"
@@ -126,6 +127,9 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	// previous update once the local docker host is reachable.
 	if dkSrv, err := hostManager.GetDockerService(host.LocalDocker); err == nil {
 		docker.CleanupSelfUpdateHelper(context.Background(), dkSrv.Container.Cli())
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		docker.CleanupFileBrowserHelpers(cleanupCtx, dkSrv.Container.Cli())
+		cancel()
 	}
 
 	fileSrv := files.New(

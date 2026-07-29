@@ -321,6 +321,10 @@ func (h *FileHandler) searchFile(w http.ResponseWriter, r *http.Request) {
 
 // ahh yes the jason protocol
 func writeJason(ws *websocket.Conn, response SearchResponse) {
+	if err := ws.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		log.Warn().Err(err).Msg("Error setting search websocket deadline")
+		return
+	}
 	err := ws.WriteJSON(&response)
 	if err != nil {
 		log.Warn().Err(err).

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -143,9 +144,13 @@ func (h *Handler) VolumeDelete(ctx context.Context, req *connect.Request[v1.Dele
 	} else if req.Msg.Unused {
 		err = dkSrv.Container.VolumesPruneUnunsed(ctx)
 	} else {
+		var deleteErrors []error
 		for _, vols := range req.Msg.VolumeIds {
-			err = dkSrv.Container.VolumesDelete(ctx, vols, false)
+			if deleteErr := dkSrv.Container.VolumesDelete(ctx, vols, false); deleteErr != nil {
+				deleteErrors = append(deleteErrors, fmt.Errorf("delete volume %s: %w", vols, deleteErr))
+			}
 		}
+		err = errors.Join(deleteErrors...)
 	}
 
 	return connect.NewResponse(&v1.DeleteVolumeResponse{}), err

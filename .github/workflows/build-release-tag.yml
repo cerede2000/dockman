@@ -5,8 +5,7 @@ on:
     branches:
       - release
     paths:
-      - Dockerfile
-      - Dockerfile.updater
+      - pkg/docker/Dockerfile
       - .github/workflows/action-docker.yml
       - .github/workflows/build-release-tag.yml
       - .github/workflows/build-release.yml
@@ -26,40 +25,43 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_tag: ${{ steps.get_tag.outputs.tag }}
-      major_version: ${{ steps.major_version.outputs.major }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "lts/*"
 
       - name: Install semantic-release plugins
         run: |
           npm install --no-save \
-            @semantic-release/git \
-            @semantic-release/changelog -D
+            semantic-release@25.0.8 \
+            @semantic-release/git@11.0.1 \
+            @semantic-release/changelog@7.0.0 -D
 
       - name: Generate Release Tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: npx --no-install semantic-release
 
       - name: Get Release Tag
         id: get_tag
-        uses: "WyriHaximus/github-action-get-previous-tag@v1"
+        uses: WyriHaximus/github-action-get-previous-tag@27c04b107bd8de27966ed909e0992078a9121de8 # v1
 
       - name: Trigger docker.yml workflow
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_REF: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.get_tag.outputs.tag }}
         if: ${{ steps.get_tag.outputs.tag != '' }}
         # ref_name will be release
         run: |
           gh workflow run release-build.yml \
-            --repo ${{ github.repository }} \
-            --ref ${{ github.ref_name }} \
-            -f tag_name=${{ steps.get_tag.outputs.tag }}
+            --repo "$TARGET_REPOSITORY" \
+            --ref "$TARGET_REF" \
+            -f "tag_name=$RELEASE_TAG"

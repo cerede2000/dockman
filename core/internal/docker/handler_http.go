@@ -170,6 +170,10 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if r.URL.Query().Get("debug") != "" && !h.allowSelfExec {
+		http.Error(w, "privileged debug containers are disabled by policy; set DOCKMAN_ALLOW_SELF_EXEC=true and recreate Dockman to enable this unsafe troubleshooting mode temporarily", http.StatusForbidden)
+		return
+	}
 	if err = h.checkExecAllowed(r.Context(), dkSrv, contId); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return

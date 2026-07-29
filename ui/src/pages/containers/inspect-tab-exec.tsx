@@ -32,7 +32,8 @@ const debugImageOptions = ["nixery.dev/shell/fish", "nixery.dev/shell/bash", "ni
 
 const InspectTabExec = ({containerID}: { containerID: string; }) => {
     const {showError} = useSnackbar();
-    const fitAddonRef = useRef<FitAddon>(new FitAddon());
+    const fitAddonRef = useRef<FitAddon>(null!);
+    if (fitAddonRef.current === null) fitAddonRef.current = new FitAddon();
 
     const [selectedCmd, setSelectedCmd] = useState<string>('/bin/sh');
     const [debuggerImage, setDebuggerImage] = useState("");

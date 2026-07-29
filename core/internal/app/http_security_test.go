@@ -44,6 +44,20 @@ func TestOriginPolicy(t *testing.T) {
 	}
 }
 
+func TestOriginPolicyRefusesWildcardConfiguration(t *testing.T) {
+	conf := &config.AppConfig{AllowedOrigins: "*"}
+	handler := enforceOriginPolicy(conf, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://dockman.local/api/protected/ping", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusForbidden)
+	}
+}
+
 func TestRequestBodyLimitsUseLargerFileAllowance(t *testing.T) {
 	conf := &config.AppConfig{HTTPMaxBodyMB: 1, HTTPMaxUploadMB: 2}
 	handler := limitRequestBodies(conf, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

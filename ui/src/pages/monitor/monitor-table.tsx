@@ -114,7 +114,6 @@ interface MonitorTableProps {
     onToggleContainers: (ids: string[], on: boolean) => void;
     onToggleStack: (stack: string, on: boolean) => void;
     onToggleAllStacks: (stacks: string[], on: boolean) => void;
-    onToggleAllContainers: (ids: string[], on: boolean) => void;
     expanded: Record<string, boolean>;
     onToggleExpand: (stack: string) => void;
     sortField: MonitorSortField | null;
@@ -261,7 +260,7 @@ export function MonitorTable(props: MonitorTableProps) {
                                             : someStacksSelected && !allStacksSelected}
                                         disabled={!props.containerListMode && selectedContainers.length > 0}
                                         onChange={e => props.containerListMode
-                                            ? props.onToggleAllContainers(visibleContainerIDs, e.target.checked)
+                                            ? props.onToggleContainers(visibleContainerIDs, e.target.checked)
                                             : onToggleAllStacks(selectableStacks, e.target.checked)}
                                         sx={{color: t.textDim, p: 0.5}}
                                     />
@@ -290,7 +289,7 @@ export function MonitorTable(props: MonitorTableProps) {
                                         value={nameSearch}
                                         onChange={event => onNameSearchChange(event.target.value)}
                                         placeholder="Filter name"
-                                        inputProps={{'aria-label': 'Filter by container or stack name'}}
+                                        slotProps={{input: {'aria-label': 'Filter by container or stack name'}}}
                                         sx={{
                                             minWidth: 0,
                                             flex: 1,

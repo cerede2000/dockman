@@ -13,10 +13,10 @@ const bytesPerMiB = 1024 * 1024
 
 func enforceOriginPolicy(conf *config.AppConfig, next http.Handler) http.Handler {
 	allowed := make(map[string]struct{})
-	allowAll := false
 	for _, origin := range conf.GetAllowedOrigins() {
 		if origin == "*" {
-			allowAll = true
+			// Authenticated administration endpoints, terminals and filesystem
+			// access must never become cross-origin wildcard resources.
 			continue
 		}
 		allowed[origin] = struct{}{}
@@ -24,7 +24,7 @@ func enforceOriginPolicy(conf *config.AppConfig, next http.Handler) http.Handler
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := strings.TrimSuffix(strings.TrimSpace(r.Header.Get("Origin")), "/")
-		if origin == "" || allowAll || requestIsSameOrigin(r, origin) {
+		if origin == "" || requestIsSameOrigin(r, origin) {
 			next.ServeHTTP(w, r)
 			return
 		}

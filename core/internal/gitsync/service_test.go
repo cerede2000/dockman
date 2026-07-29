@@ -111,6 +111,55 @@ func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	require.Equal(t, "local change", string(contents))
 }
 
+func TestResetRepositoryToRemoteRecoversDivergedHistory(t *testing.T) {
+	service, _ := testService(t, true)
+	remotePath, _ := createTestRemote(t)
+	row := Repository{
+		UUID: uuid.NewString(), Name: "diverged-repository", Provider: "test", RemoteURL: remotePath,
+		DefaultBranch: "main", Mode: "managed", Status: "cloning",
+	}
+	require.NoError(t, service.store.SaveRepository(&row))
+	require.NoError(t, service.cloneRepository(context.Background(), row))
+	row.Status = "ready"
+	require.NoError(t, service.store.SaveRepository(&row))
+
+	workspace, err := service.repositoryPath(row.UUID)
+	require.NoError(t, err)
+	local, err := gitclient.PlainOpen(workspace)
+	require.NoError(t, err)
+	temporary, temporaryPath, cleanup := compactTestCheckout(t, local, row.DefaultBranch)
+	commitTestFile(t, temporary, temporaryPath, "local-only.txt", "discard me")
+	cleanup()
+
+	externalPath := t.TempDir()
+	external, err := gitclient.PlainClone(externalPath, false, &gitclient.CloneOptions{
+		URL: remotePath, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true,
+	})
+	require.NoError(t, err)
+	commitTestFile(t, external, externalPath, "remote-only.txt", "keep me")
+	require.NoError(t, external.Push(&gitclient.PushOptions{}))
+
+	status, err := service.FetchRepository(context.Background(), row.UUID)
+	require.NoError(t, err)
+	require.True(t, status.Diverged)
+	require.Positive(t, status.Ahead)
+	require.Positive(t, status.Behind)
+
+	status, err = service.ResetRepositoryToRemote(context.Background(), row.UUID)
+	require.NoError(t, err)
+	require.Equal(t, "up-to-date", status.State)
+	require.Zero(t, status.Ahead)
+	require.Zero(t, status.Behind)
+	require.Equal(t, status.RemoteHead, status.Head)
+	local, err = service.openRepository(row)
+	require.NoError(t, err)
+	requireGitFileContent(t, local, row.DefaultBranch, "remote-only.txt", "keep me")
+	tree, err := repositoryCommitTree(local, row.DefaultBranch)
+	require.NoError(t, err)
+	_, err = tree.File("local-only.txt")
+	require.Error(t, err)
+}
+
 func TestInspectAndCreateMissingRemoteBranch(t *testing.T) {
 	service, _ := testService(t, true)
 	remotePath, _ := createTestRemote(t)

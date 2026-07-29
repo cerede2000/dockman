@@ -3,6 +3,7 @@ package host
 import (
 	"fmt"
 
+	containerSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/moby/moby/client"
 	"github.com/pkg/sftp"
 	ssh2 "golang.org/x/crypto/ssh"
@@ -24,6 +25,7 @@ type ActiveHost struct {
 
 func (a *ActiveHost) Close() (err error) {
 	if a.DockerClient != nil {
+		containerSrv.ReleaseClientState(a.DockerClient)
 		err = a.DockerClient.Close()
 		if err != nil {
 			return fmt.Errorf("close docker client: %w", err)
@@ -37,7 +39,7 @@ func (a *ActiveHost) Close() (err error) {
 		}
 	}
 
-	if a.SFTPClient != nil {
+	if a.SSHClient != nil {
 		err = a.SSHClient.Close()
 		if err != nil {
 			return err

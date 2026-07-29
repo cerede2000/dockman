@@ -10,7 +10,7 @@ import {
     Add, ArchiveOutlined, BlockOutlined, CheckCircleOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
     FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, PauseCircleOutlined, PlayCircleOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined,
 } from "@mui/icons-material";
-import {withProtectedAPI} from "../../lib/api.ts";
+import {gitAPI as api, GitAPIError as APIError, gitComparisonLanguage as comparisonLanguage, gitDateLabel as dateLabel} from "../../lib/git-api.ts";
 import {formatBytes} from "../../lib/editor.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 import {useCopyButton} from "../../hooks/copy.ts";
@@ -93,22 +93,6 @@ interface RepositoryForm {
     private: boolean;
 }
 
-interface APIErrorBody {
-    error?: string;
-    code?: string;
-    branch?: string;
-    sourceBranch?: string;
-    canCreate?: boolean;
-    canCreateFromDefault?: boolean;
-    canCreateEmpty?: boolean;
-}
-
-class APIError extends Error {
-    constructor(public readonly status: number, public readonly body: APIErrorBody) {
-        super(body.error || `HTTP ${status}`);
-    }
-}
-
 interface StackTarget { host: string; path: string; composePaths: string[]; scope: "all_stacks" | "folder"; stackCount: number; }
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
@@ -170,18 +154,6 @@ const emptyRepository: RepositoryForm = {
     description: "", private: true,
 };
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-    const headers = new Headers(init?.headers);
-    if (init?.body) headers.set("Content-Type", "application/json");
-    const response = await fetch(withProtectedAPI(`/git${path}`), {...init, headers});
-    if (!response.ok) {
-        const body = await response.json().catch(() => ({error: response.statusText})) as APIErrorBody;
-        throw new APIError(response.status, body);
-    }
-    if (response.status === 204) return undefined as T;
-    return response.json() as Promise<T>;
-}
-
 function authLabel(type: AuthType) {
     if (type === "https_token") return "GitHub HTTPS token";
     if (type === "ssh_key") return "SSH key";
@@ -194,22 +166,6 @@ function statusColor(state?: string): "default" | "success" | "warning" | "error
     if (state === "diverged" || state === "dirty") return "warning";
     if (state === "error") return "error";
     return "default";
-}
-
-function dateLabel(value?: string) {
-    return value ? new Date(value).toLocaleString() : "—";
-}
-
-function comparisonLanguage(path: string) {
-    const name = path.toLocaleLowerCase();
-    if (name.endsWith(".json")) return "json";
-    if (name.endsWith(".xml")) return "xml";
-    if (name.endsWith(".sh") || name.endsWith(".bash")) return "shell";
-    if (name.endsWith(".sql")) return "sql";
-    if (name.endsWith(".toml") || name.endsWith(".ini") || name.endsWith(".cfg") || name.endsWith(".conf")) return "ini";
-    if (name.endsWith(".md")) return "markdown";
-    if (name.endsWith(".yml") || name.endsWith(".yaml")) return "yaml";
-    return "plaintext";
 }
 
 interface ComposePathSelectorProps {
@@ -284,6 +240,8 @@ export default function TabGit() {
     const [repositoryForm, setRepositoryForm] = useState<RepositoryForm>(emptyRepository);
     const [missingBranch, setMissingBranch] = useState<{branch: string; sourceBranch: string; canCreateFromDefault: boolean; canCreateEmpty: boolean} | null>(null);
     const [deleteRepository, setDeleteRepository] = useState<Repository | null>(null);
+    const [resetRepository, setResetRepository] = useState<Repository | null>(null);
+    const [resetRepositoryConfirmation, setResetRepositoryConfirmation] = useState("");
     const [historyRepository, setHistoryRepository] = useState<Repository | null>(null);
     const [operations, setOperations] = useState<Operation[]>([]);
     const [bindings, setBindings] = useState<Binding[]>([]);
@@ -384,7 +342,7 @@ export default function TabGit() {
 
     const load = useCallback(async () => {
         setLoading(true);
-        try {
+        await (async () => {
             const nextFeature = await api<GitFeatureStatus>("/status");
             setFeature(nextFeature);
             if (!nextFeature.enabled) {
@@ -403,11 +361,9 @@ export default function TabGit() {
             setBindings(nextBindings);
             setStackTargets(nextTargets);
             await loadRepositoryStatuses(nextRepositories);
-        } catch (error) {
+        })().catch((error) => {
             showError(`Unable to load Git settings: ${(error as Error).message}`);
-        } finally {
-            setLoading(false);
-        }
+        }).finally(() => setLoading(false));
     }, [loadRepositoryStatuses, showError]);
 
     useEffect(() => { void load(); }, [load]);
@@ -440,47 +396,43 @@ export default function TabGit() {
     };
 
     const saveCredential = async () => {
+        const path = editingCredential ? `/credentials/${editingCredential.id}` : "/credentials";
+        const method = editingCredential ? "PUT" : "POST";
+        const successMessage = editingCredential ? "Git credential updated." : "Git credential created.";
         setBusy("credential-save");
-        try {
-            const path = editingCredential ? `/credentials/${editingCredential.id}` : "/credentials";
-            await api<Credential>(path, {method: editingCredential ? "PUT" : "POST", body: JSON.stringify(credentialForm)});
-            showSuccess(editingCredential ? "Git credential updated." : "Git credential created.");
+        await (async () => { try {
+            await api<Credential>(path, {method, body: JSON.stringify(credentialForm)});
+            showSuccess(successMessage);
             setCredentialDialogOpen(false);
             await load();
         } catch (error) {
             showError((error as Error).message);
-        } finally {
-            setBusy(null);
-        }
+        } })().finally(() => setBusy(null));
     };
 
     const testCredential = async (credential: Credential) => {
         setBusy(`credential-test-${credential.id}`);
-        try {
+        await (async () => { try {
             const result = await api<{message: string}>(`/credentials/${credential.id}/test`, {
                 method: "POST", body: JSON.stringify({repositoryUrl: repositoryUrl.trim()}),
             });
             showSuccess(result.message);
         } catch (error) {
             showError((error as Error).message);
-        } finally {
-            setBusy(null);
-        }
+        } })().finally(() => setBusy(null));
     };
 
     const confirmDeleteCredential = async () => {
         if (!deleteCredential) return;
         setBusy(`credential-delete-${deleteCredential.id}`);
-        try {
+        await (async () => { try {
             await api<void>(`/credentials/${deleteCredential.id}`, {method: "DELETE"});
             showSuccess("Git credential deleted.");
             setDeleteCredential(null);
             await load();
         } catch (error) {
             showError((error as Error).message);
-        } finally {
-            setBusy(null);
-        }
+        } })().finally(() => setBusy(null));
     };
 
     const openRepositoryCreate = () => {
@@ -490,15 +442,16 @@ export default function TabGit() {
     };
 
     const saveRepository = async (branchCreationMode?: BranchCreationMode) => {
+        const requestedBranchCreationMode = branchCreationMode || "";
         setBusy("repository-save");
-        try {
+        await (async () => { try {
             if (repositoryForm.mode === "import") {
                 await api<Repository>("/repositories", {
                     method: "POST",
                     body: JSON.stringify({
                         name: repositoryForm.name, remoteUrl: repositoryForm.remoteUrl,
                         defaultBranch: repositoryForm.defaultBranch, credentialId: repositoryForm.credentialId,
-                        branchCreationMode: branchCreationMode || "",
+                        branchCreationMode: requestedBranchCreationMode,
                     }),
                 });
                 showSuccess("Repository imported into Dockman.");
@@ -527,14 +480,12 @@ export default function TabGit() {
             }
             showError((error as Error).message);
             await load();
-        } finally {
-            setBusy(null);
-        }
+        } })().finally(() => setBusy(null));
     };
 
     const repositoryAction = async (repository: Repository, action: "fetch" | "pull" | "push") => {
         setBusy(`${action}-${repository.id}`);
-        try {
+        await (async () => { try {
             const next = await api<RepositoryStatus>(`/repositories/${repository.id}/${action}`, {method: "POST"});
             setRepositoryStatuses((current) => ({...current, [repository.id]: next}));
             showSuccess(`${action[0].toUpperCase()}${action.slice(1)} completed for ${repository.name}.`);
@@ -542,9 +493,27 @@ export default function TabGit() {
         } catch (error) {
             showError((error as Error).message);
             await load();
-        } finally {
-            setBusy(null);
-        }
+        } })().finally(() => setBusy(null));
+    };
+
+    const confirmResetRepository = async () => {
+        if (!resetRepository) return;
+        const repository = resetRepository;
+        setBusy(`reset-${repository.id}`);
+        await (async () => { try {
+            const next = await api<RepositoryStatus>(`/repositories/${repository.id}/reset-to-remote`, {
+                method: "POST",
+                body: JSON.stringify({confirmation: resetRepositoryConfirmation}),
+            });
+            setRepositoryStatuses((current) => ({...current, [repository.id]: next}));
+            setResetRepository(null);
+            setResetRepositoryConfirmation("");
+            showSuccess(`Local Git state reset to ${repository.defaultBranch} on the remote. Stack files were not changed.`);
+            await load();
+        } catch (error) {
+            showError((error as Error).message);
+            await load();
+        } })().finally(() => setBusy(null));
     };
 
     const openHistory = async (repository: Repository) => {
@@ -560,16 +529,14 @@ export default function TabGit() {
     const confirmDeleteRepository = async () => {
         if (!deleteRepository) return;
         setBusy(`repository-delete-${deleteRepository.id}`);
-        try {
+        await (async () => { try {
             await api<void>(`/repositories/${deleteRepository.id}`, {method: "DELETE"});
             showSuccess("Local repository workspace deleted. The GitHub repository was not modified.");
             setDeleteRepository(null);
             await load();
         } catch (error) {
             showError((error as Error).message);
-        } finally {
-            setBusy(null);
-        }
+        } })().finally(() => setBusy(null));
     };
 
     const openBindingCreate = () => {
@@ -581,11 +548,11 @@ export default function TabGit() {
     };
 
     const saveBinding = async () => {
+        const target = stackTargets.find((item) => item.host === bindingForm.host && item.path === bindingForm.stackPath);
+        const selected = target?.composePaths.filter((path) => bindingComposePaths.has(path)) || [];
+        const composeSelectionMode = target && selected.length < target.composePaths.length ? "selected" : "all";
         setBusy("binding-save");
-        try {
-            const target = stackTargets.find((item) => item.host === bindingForm.host && item.path === bindingForm.stackPath);
-            const selected = target?.composePaths.filter((path) => bindingComposePaths.has(path)) || [];
-            const composeSelectionMode = target && selected.length < target.composePaths.length ? "selected" : "all";
+        await (async () => {
             const binding = await api<Binding>("/bindings", {method: "POST", body: JSON.stringify({repositoryId: bindingForm.repositoryId, host: bindingForm.host, stackPath: bindingForm.stackPath, subPath: bindingForm.subPath, autoReconcile: bindingForm.autoReconcile, initialSync: bindingForm.initialSync, composeSelectionMode, selectedComposePaths: selected})});
             if (binding.initialSyncState === "error") showError(`Folder linked, but initialization failed: ${binding.initialSyncError || "unknown error"}`);
             else if (binding.initialSyncState === "reconciled") showSuccess("Folder linked: Dockman and Git were identical, so the synchronization baseline was established automatically.");
@@ -594,20 +561,20 @@ export default function TabGit() {
             else showSuccess("Complete folder linked to the Git repository.");
             setBindingDialogOpen(false);
             await load();
-        } catch (error) {
+        })().catch((error) => {
             showError((error as Error).message);
-        } finally { setBusy(null); }
+        }).finally(() => setBusy(null));
     };
 
     const previewTransfer = async (binding: Binding, direction: TransferDirection, sensitive = false, resolvedPath?: string, selectedPath?: string, conflictMode = false) => {
+        const confirmation = sensitive ? sensitiveConfirmation : "";
         if (!conflictMode) setConflictDecisions({});
         if (!sensitive) {
             setIncludeSensitive(false); setSensitiveConfirmation("");
             if (commitMessageRef.current) commitMessageRef.current.value = "";
         }
         setBusy(`preview-${binding.id}`);
-        try {
-            const confirmation = sensitive ? sensitiveConfirmation : "";
+        await (async () => {
             const preview = await api<TransferPreview>(`/bindings/${binding.id}/preview/${direction}`, {
                 method: "POST", body: JSON.stringify({includeSensitive: sensitive, sensitiveConfirmation: confirmation}),
             });
@@ -619,8 +586,8 @@ export default function TabGit() {
             setPreviewSearch(""); setPreviewStatus(currentConflictMode ? "conflict" : "all"); setPreviewPageInput("1"); setSelectedPreviewPaths(new Set());
             setResolvedConflictPaths(resolvedPath && preview.entries.some((entry) => entry.path === resolvedPath && entry.status === "conflict") ? new Set([resolvedPath]) : new Set());
             setSelectedTransferPaths(selectedPath && preview.entries.some((entry) => entry.path === selectedPath && ["add", "modify", "remove_control", "conflict"].includes(entry.status)) ? new Set([selectedPath]) : new Set());
-        } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => showError((error as Error).message))
+            .finally(() => setBusy(null));
     };
 
     const closeTransfer = () => {
@@ -637,7 +604,7 @@ export default function TabGit() {
         const completedBinding = transferBinding;
         const action = transferDirection === "stack_to_repository" ? "export" : "import";
         setBusy(`transfer-${transferBinding.id}`);
-        try {
+        await (async () => {
             const result = await api<TransferResult>(`/bindings/${transferBinding.id}/${action}`, {
                 method: "POST", body: JSON.stringify({includeSensitive, sensitiveConfirmation, commitMessage: commitMessageRef.current?.value || "", previewToken: transferPreview?.previewToken, resolvedPaths: [...resolvedConflictPaths], selectedPaths: [...selectedTransferPaths]}),
             });
@@ -645,24 +612,24 @@ export default function TabGit() {
             closeTransfer();
             if (completedBinding.autoSyncEnabled) await api<AutoSyncResult>(`/bindings/${completedBinding.id}/automation/run`, {method: "POST"});
             await load();
-        } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => showError((error as Error).message))
+            .finally(() => setBusy(null));
     };
 
     const runOrphanAction = async (composePath: string, action: "restore" | "archive" | "delete") => {
         if (!transferBinding) return;
         setBusy(`orphan-${action}-${composePath}`);
-        try {
+        await (async () => {
             const encoded = composePath.split("/").map(encodeURIComponent).join("/");
             const result = await api<{message: string; backup?: string}>(`/bindings/${transferBinding.id}/orphan/${encoded}`, {
                 method: "POST", body: JSON.stringify({action, confirmation: action === "restore" ? "" : orphanConfirmation}),
             });
             showSuccess(result.message + (result.backup ? ` Backup: ${result.backup}` : ""));
             setOrphanDecision(null); setOrphanConfirmation(""); closeTransfer(); await load();
-        } catch (error) {
+        })().catch(async (error) => {
             showError((error as Error).message);
             await previewTransfer(transferBinding, "repository_to_stack", false);
-        } finally { setBusy(null); }
+        }).finally(() => setBusy(null));
     };
 
     const runLocalDeletionAction = async (entry: PreviewEntry, action: "restore" | "delete_git" | "exclude") => {
@@ -679,7 +646,7 @@ export default function TabGit() {
             return;
         }
         setBusy(`local-deletion-${action}-${entry.path}`);
-        try {
+        await (async () => {
             const encoded = composePath.split("/").map(encodeURIComponent).join("/");
             const result = await api<{message: string}>(`/bindings/${transferBinding.id}/local-deletion/${encoded}`, {
                 method: "POST", body: JSON.stringify({
@@ -692,20 +659,20 @@ export default function TabGit() {
             setLocalDeletionDecision(null); setLocalDeletionConfirmation("");
             await previewTransfer(transferBinding, transferDirection, false);
             await load();
-        } catch (error) {
+        })().catch((error) => {
             showError((error as Error).message);
-        } finally { setBusy(null); }
+        }).finally(() => setBusy(null));
     };
 
     const compareConflict = async (entry: PreviewEntry) => {
         if (!transferBinding) return;
         setBusy(`compare-${entry.path}`);
-        try {
+        await (async () => { try {
             setComparison(await api<FileComparison>(`/bindings/${transferBinding.id}/compare/${transferDirection}`, {
                 method: "POST", body: JSON.stringify({path: entry.path, includeSensitive, sensitiveConfirmation}),
             }));
         } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().finally(() => setBusy(null));
     };
 
     const keepCurrentSource = (path: string) => {
@@ -737,7 +704,7 @@ export default function TabGit() {
         const dockmanPaths = Object.entries(conflictDecisions).filter(([, decision]) => decision === "dockman").map(([path]) => path);
         if (gitPaths.length + dockmanPaths.length === 0) return;
         setBusy(`transfer-${transferBinding.id}`);
-        try {
+        await (async () => { try {
             if (gitPaths.length > 0) {
                 await api<TransferResult>(`/bindings/${transferBinding.id}/import`, {method: "POST", body: JSON.stringify({
                     previewToken: transferPreview.previewToken, resolvedPaths: gitPaths, selectedPaths: gitPaths,
@@ -747,7 +714,9 @@ export default function TabGit() {
                 const preview = await api<TransferPreview>(`/bindings/${transferBinding.id}/preview/stack_to_repository`, {method: "POST", body: JSON.stringify({})});
                 const currentConflicts = new Set(preview.entries.filter((entry) => entry.status === "conflict").map((entry) => entry.path));
                 const stillConflicting = dockmanPaths.filter((path) => currentConflicts.has(path));
-                if (stillConflicting.length !== dockmanPaths.length) throw new Error("Conflict state changed during resolution; refresh and review the remaining files.");
+                if (stillConflicting.length !== dockmanPaths.length) {
+                    return Promise.reject(new Error("Conflict state changed during resolution; refresh and review the remaining files."));
+                }
                 await api<TransferResult>(`/bindings/${transferBinding.id}/export`, {method: "POST", body: JSON.stringify({
                     previewToken: preview.previewToken, resolvedPaths: dockmanPaths, selectedPaths: dockmanPaths,
                     commitMessage: `chore(stack): resolve Git conflicts for ${transferBinding.stackPath}`,
@@ -761,18 +730,20 @@ export default function TabGit() {
         } catch (error) {
             showError((error as Error).message);
             await load();
-        } finally { setBusy(null); }
+        } })().finally(() => setBusy(null));
     };
 
     const confirmDeleteBinding = async (forget: boolean) => {
         if (!deleteBinding) return;
+        const deletePath = `/bindings/${deleteBinding.id}${forget ? "?forget=true" : ""}`;
+        const successMessage = forget ? "Stack link and synchronization baseline forgotten. No file was deleted." : "Stack link removed. Its synchronization baseline can be restored by recreating the same link.";
         setBusy(`binding-delete-${deleteBinding.id}`);
-        try {
-            await api<void>(`/bindings/${deleteBinding.id}${forget ? "?forget=true" : ""}`, {method: "DELETE"});
-            showSuccess(forget ? "Stack link and synchronization baseline forgotten. No file was deleted." : "Stack link removed. Its synchronization baseline can be restored by recreating the same link.");
+        await (async () => { try {
+            await api<void>(deletePath, {method: "DELETE"});
+            showSuccess(successMessage);
             setDeleteBinding(null); await load();
         } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().finally(() => setBusy(null));
     };
 
     const openBindingPolicy = (binding: Binding) => {
@@ -783,7 +754,7 @@ export default function TabGit() {
     const saveBindingPolicy = async () => {
         if (!policyBinding) return;
         setBusy(`binding-policy-${policyBinding.id}`);
-        try {
+        await (async () => { try {
             await api<Binding>(`/bindings/${policyBinding.id}/policy`, {method: "PUT", body: JSON.stringify({
                 profile: policyForm.profile,
                 includePatterns: policyForm.includes.split("\n"),
@@ -793,7 +764,7 @@ export default function TabGit() {
             setPolicyBinding(null);
             await load();
         } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().finally(() => setBusy(null));
     };
 
     const refreshBindingComposeCatalog = async (binding: Binding) => {
@@ -804,20 +775,19 @@ export default function TabGit() {
 
     const openComposeSelection = async (binding: Binding) => {
         setBusy(`binding-compose-refresh-${binding.id}`);
-        try {
+        await (async () => {
             const refreshed = await refreshBindingComposeCatalog(binding);
             const statuses = await api<Array<{bindingId: string; composePath: string; state: string}>>(`/stack-statuses?host=${encodeURIComponent(refreshed.host)}`);
             setComposeBinding(refreshed);
             setComposePathStates(Object.fromEntries(statuses.filter((status) => status.bindingId === refreshed.id).map((status) => [status.composePath, status.state])));
             setSelectedComposePaths(new Set(refreshed.selectedComposePaths || (refreshed.composeSelectionMode === "selected" ? [] : refreshed.composePaths)));
-        } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };
 
     const saveComposeSelection = async () => {
         if (!composeBinding) return;
         setBusy(`binding-compose-${composeBinding.id}`);
-        try {
+        await (async () => {
             const selected = composeBinding.composePaths.filter((path) => selectedComposePaths.has(path));
             const mode = selected.length === composeBinding.composePaths.length ? "all" : "selected";
             const updated = await api<Binding>(`/bindings/${composeBinding.id}/compose-selection`, {
@@ -826,20 +796,18 @@ export default function TabGit() {
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
             setComposeBinding(null);
             showSuccess(mode === "all" ? "All currently discovered stacks are synchronized. Future local stacks remain unselected until approved." : `${selected.length} stack${selected.length === 1 ? "" : "s"} selected for synchronization.`);
-        } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };
 
     const openBindingAutomation = async (binding: Binding) => {
         setBusy(`binding-compose-refresh-${binding.id}`);
-        try {
+        await (async () => {
             const refreshed = await refreshBindingComposeCatalog(binding);
             setAutomationBinding(refreshed);
             setAutomationForm({enabled: refreshed.autoSyncEnabled, autoReconcile: refreshed.autoReconcileEnabled, intervalMinutes: refreshed.autoSyncIntervalMinutes || 15, deployEnabled: refreshed.autoDeployEnabled, deployNewStacks: refreshed.autoDeployNewStacks, deployRollback: refreshed.autoDeployRollbackEnabled, deployComposePaths: refreshed.autoDeployComposePaths || []});
             setDeployments([]);
             void api<Deployment[]>(`/bindings/${binding.id}/deployments`).then(setDeployments).catch(() => setDeployments([]));
-        } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };
 
     const openRepositoryPolicy = (repository: Repository) => {
@@ -850,13 +818,13 @@ export default function TabGit() {
     const saveRepositoryPolicy = async () => {
         if (!policyRepository) return;
         setBusy(`repository-policy-${policyRepository.id}`);
-        try {
+        await (async () => { try {
             await api<Repository>(`/repositories/${policyRepository.id}/policy`, {method: "PUT", body: JSON.stringify({excludePatterns: repositoryExcludePatterns.split("\n")})});
             showSuccess("Repository-wide exclusions updated.");
             setPolicyRepository(null);
             await load();
         } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().finally(() => setBusy(null));
     };
 
     const openBindingState = (binding: Binding) => {
@@ -917,33 +885,31 @@ export default function TabGit() {
     const saveBindingAutomation = async () => {
         if (!automationBinding) return;
         setBusy(`binding-automation-${automationBinding.id}`);
-        try {
+        await (async () => {
             await api<Binding>(`/bindings/${automationBinding.id}/automation`, {
                 method: "PUT", body: JSON.stringify(automationForm),
             });
             showSuccess(automationForm.deployEnabled ? "Automatic Git monitoring and controlled deployment enabled." : automationForm.enabled ? "Automatic Git monitoring enabled." : "Automatic Git monitoring disabled.");
             setAutomationBinding(null);
             await load();
-        } catch (error) { showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };
 
     const runBindingAutomation = async (binding: Binding) => {
         setBusy(`binding-auto-run-${binding.id}`);
-        try {
+        await (async () => {
             const result = await api<AutoSyncResult>(`/bindings/${binding.id}/automation/run`, {method: "POST"});
             if (result.state === "conflict" || result.state === "blocked" || result.state === "error") showError(result.message);
             else if (result.state === "partial") showWarning(result.message);
             else showSuccess(result.message);
             await load();
-        } catch (error) { showError((error as Error).message); await load(); }
-        finally { setBusy(null); }
+        })().catch(async (error) => { showError((error as Error).message); await load(); }).finally(() => setBusy(null));
     };
 
     const toggleBindingAutomationPause = async (binding: Binding) => {
         const paused = !binding.autoSyncPaused;
         setBusy(`binding-auto-pause-${binding.id}`);
-        try {
+        await (async () => {
             const result = await api<{binding: Binding; sync?: AutoSyncResult}>(`/bindings/${binding.id}/automation/pause`, {
                 method: "PUT", body: JSON.stringify({paused}),
             });
@@ -953,10 +919,10 @@ export default function TabGit() {
             else if (result.sync?.state === "partial") showWarning(result.sync.message);
             else showSuccess(result.sync?.message || "Automatic synchronization resumed after a complete check.");
             await load();
-        } catch (error) {
+        })().catch(async (error) => {
             showError((error as Error).message);
             await load();
-        } finally { setBusy(null); }
+        }).finally(() => setBusy(null));
     };
 
     const addPreviewExclusions = async (entriesToExclude: Array<{path: string; directory: boolean}>) => {
@@ -972,14 +938,14 @@ export default function TabGit() {
             const entries = current.entries.map((entry) => {
                 const matches = exactPaths.has(entry.path) || directoryPaths.some((path) => entry.path === path || entry.path.startsWith(`${path}/`));
                 if (!matches || entry.status === "skipped_excluded") return entry;
-                if (entry.status === "add" || entry.status === "modify") changed--;
-                if (!entry.status.startsWith("skipped_")) skipped++;
+                if (entry.status === "add" || entry.status === "modify") changed -= 1;
+                if (!entry.status.startsWith("skipped_")) skipped += 1;
                 return {...entry, status: "skipped_excluded" as const};
             });
             return {...current, entries, changed: Math.max(0, changed), skipped};
         });
         setBusy(`binding-exclusion-${transferBinding.id}`);
-        try {
+        await (async () => {
             const updated = await api<Binding>(`/bindings/${transferBinding.id}/exclusions/batch`, {
                 method: "POST", body: JSON.stringify({entries: entriesToExclude}),
             });
@@ -990,8 +956,7 @@ export default function TabGit() {
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
             setSelectedPreviewPaths(new Set()); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set());
             showSuccess(entriesToExclude.length === 1 ? `${entriesToExclude[0].directory ? "Folder" : "File"} ${entriesToExclude[0].path} excluded.` : `${entriesToExclude.length} items excluded.`);
-        } catch (error) { setTransferPreview(previousPreview); showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => { setTransferPreview(previousPreview); showError((error as Error).message); }).finally(() => setBusy(null));
     };
 
     const addPreviewInclusions = async (entriesToInclude: PreviewEntry[]) => {
@@ -1004,14 +969,14 @@ export default function TabGit() {
             let skipped = current.skipped;
             const entries = current.entries.map((entry) => {
                 if (!paths.has(entry.path) || entry.status !== "skipped_type") return entry;
-                changed++;
-                skipped--;
+                changed += 1;
+                skipped -= 1;
                 return {...entry, status: "add" as const};
             });
             return {...current, entries, changed, skipped: Math.max(0, skipped)};
         });
         setBusy(`binding-inclusion-${transferBinding.id}`);
-        try {
+        await (async () => {
             const updated = await api<Binding>(`/bindings/${transferBinding.id}/inclusions/batch`, {
                 method: "POST", body: JSON.stringify({paths: entriesToInclude.map((entry) => entry.path)}),
             });
@@ -1022,8 +987,7 @@ export default function TabGit() {
             setBindings((current) => current.map((binding) => binding.id === updated.id ? updated : binding));
             setSelectedPreviewPaths(new Set()); setResolvedConflictPaths(new Set()); setSelectedTransferPaths(new Set());
             showSuccess(`${entriesToInclude.length} file${entriesToInclude.length === 1 ? "" : "s"} allowed by the synchronization policy.`);
-        } catch (error) { setTransferPreview(previousPreview); showError((error as Error).message); }
-        finally { setBusy(null); }
+        })().catch((error) => { setTransferPreview(previousPreview); showError((error as Error).message); }).finally(() => setBusy(null));
     };
 
     const changePreviewPage = (page: number) => {
@@ -1102,6 +1066,7 @@ export default function TabGit() {
                                         <Tooltip title="Fetch remote state"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "fetch")}><RefreshOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         <Tooltip title="Pull fast-forward changes"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "pull")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         <Tooltip title="Push local commits"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "push")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
+                                        {gitStatus && (gitStatus.diverged || gitStatus.ahead > 0) && <Tooltip title="Discard Dockman's local Git commits and reset to the remote branch"><span><IconButton size="small" color="warning" disabled={busy !== null || !repository.workspacePresent} onClick={() => { setResetRepositoryConfirmation(""); setResetRepository(repository); }}><UndoOutlined fontSize="small"/></IconButton></span></Tooltip>}
                                         <Tooltip title="Repository-wide exclusions"><IconButton size="small" disabled={busy !== null} onClick={() => openRepositoryPolicy(repository)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Operation history"><IconButton size="small" disabled={busy !== null} onClick={() => void openHistory(repository)}><HistoryOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Remove local workspace"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteRepository(repository)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
@@ -1446,6 +1411,15 @@ export default function TabGit() {
 
         <Dialog open={deleteRepository !== null} onClose={() => busy === null && setDeleteRepository(null)} maxWidth="xs" fullWidth>
             <DialogTitle>Remove managed repository?</DialogTitle><DialogContent><Alert severity="warning" sx={{mb: 2}}>This deletes only Dockman’s isolated local clone. It never deletes the GitHub repository.</Alert><Typography>Remove <strong>{deleteRepository?.name}</strong> and its local operation history?</Typography></DialogContent><DialogActions><Button onClick={() => setDeleteRepository(null)} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" onClick={() => void confirmDeleteRepository()} disabled={busy !== null}>Remove local clone</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={resetRepository !== null} onClose={() => busy === null && setResetRepository(null)} maxWidth="sm" fullWidth>
+            <DialogTitle>Reset local Git state to remote?</DialogTitle><DialogContent><Stack spacing={2}>
+                <Alert severity="warning">This discards commits that exist only in Dockman’s isolated Git repository. It does not modify stack files, containers, remote history, or synchronization baselines.</Alert>
+                <Typography>Use this after a rejected push or diverged history. The next stack synchronization will expose any real file differences through the normal preview and conflict workflow.</Typography>
+                <Typography>Type <strong>RESET LOCAL GIT STATE</strong> to confirm.</Typography>
+                <TextField value={resetRepositoryConfirmation} onChange={(event) => setResetRepositoryConfirmation(event.target.value)} autoComplete="off" autoFocus/>
+            </Stack></DialogContent><DialogActions><Button onClick={() => { setResetRepository(null); setResetRepositoryConfirmation(""); }} disabled={busy !== null}>Cancel</Button><Button color="warning" variant="contained" onClick={() => void confirmResetRepository()} disabled={busy !== null || resetRepositoryConfirmation !== "RESET LOCAL GIT STATE"}>{busy?.startsWith("reset-") && <CircularProgress size={16} sx={{mr: 1}}/>}Reset to remote</Button></DialogActions>
         </Dialog>
 
         <Dialog open={deleteCredential !== null} onClose={() => busy === null && setDeleteCredential(null)} maxWidth="xs" fullWidth>

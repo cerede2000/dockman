@@ -254,7 +254,9 @@ func (s *Service) inspectRemoteBranch(ctx context.Context, row Repository) (remo
 		return remoteBranchState{}, err
 	}
 	remote := gitclient.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name: "origin", URLs: []string{row.RemoteURL}})
-	references, err := remote.ListContext(ctx, &gitclient.ListOptions{Auth: auth})
+	networkCtx, cancel := gitNetworkContext(ctx)
+	defer cancel()
+	references, err := remote.ListContext(networkCtx, &gitclient.ListOptions{Auth: auth})
 	if err != nil {
 		return remoteBranchState{}, fmt.Errorf("check remote branches: %w", err)
 	}
@@ -322,11 +324,13 @@ func (s *Service) createRemoteBranchFromDefault(ctx context.Context, row Reposit
 	if err != nil {
 		return err
 	}
-	repository, err := gitclient.PlainCloneContext(ctx, temporary, false, &gitclient.CloneOptions{
+	cloneCtx, cancelClone := gitNetworkContext(ctx)
+	repository, err := gitclient.PlainCloneContext(cloneCtx, temporary, false, &gitclient.CloneOptions{
 		URL: row.RemoteURL, RemoteName: "origin", Auth: auth,
 		ReferenceName: plumbing.NewBranchReferenceName(sourceBranch), SingleBranch: true,
 		Tags: gitclient.NoTags, NoCheckout: true, Depth: 1,
 	})
+	cancelClone()
 	if err != nil {
 		return fmt.Errorf("clone source branch: %w", err)
 	}
@@ -339,7 +343,9 @@ func (s *Service) createRemoteBranchFromDefault(ctx context.Context, row Reposit
 		return fmt.Errorf("prepare branch reference: %w", err)
 	}
 	refSpec := config.RefSpec(targetReference.String() + ":" + targetReference.String())
-	if err := repository.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
+	pushCtx, cancelPush := gitNetworkContext(ctx)
+	defer cancelPush()
+	if err := repository.PushContext(pushCtx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
 		return fmt.Errorf("push branch: %w", err)
 	}
 	return nil
@@ -381,7 +387,9 @@ func (s *Service) createEmptyRemoteBranch(ctx context.Context, row Repository) e
 		return err
 	}
 	refSpec := config.RefSpec(targetReference.String() + ":" + targetReference.String())
-	if err := repository.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
+	pushCtx, cancelPush := gitNetworkContext(ctx)
+	defer cancelPush()
+	if err := repository.PushContext(pushCtx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth, RefSpecs: []config.RefSpec{refSpec}}); err != nil {
 		return fmt.Errorf("push empty branch: %w", err)
 	}
 	return nil
@@ -480,7 +488,9 @@ func (s *Service) fetchRepositoryLocked(ctx context.Context, id string) (Reposit
 		if err != nil {
 			return err
 		}
-		err = repo.FetchContext(ctx, &gitclient.FetchOptions{RemoteName: "origin", Auth: auth, Force: false, Prune: true, Tags: gitclient.NoTags})
+		networkCtx, cancel := gitNetworkContext(ctx)
+		defer cancel()
+		err = repo.FetchContext(networkCtx, &gitclient.FetchOptions{RemoteName: "origin", Auth: auth, Force: false, Prune: true, Tags: gitclient.NoTags})
 		if errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 			err = nil
 		}
@@ -632,7 +642,9 @@ func (s *Service) PushRepository(ctx context.Context, id string) (RepositoryGitS
 		if err != nil {
 			return err
 		}
-		err = repo.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth})
+		networkCtx, cancel := gitNetworkContext(ctx)
+		defer cancel()
+		err = repo.PushContext(networkCtx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth})
 		if errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 			return nil
 		}
@@ -643,6 +655,49 @@ func (s *Service) PushRepository(ctx context.Context, id string) (RepositoryGitS
 		return RepositoryGitStatus{}, err
 	}
 	return s.fetchRepositoryLocked(ctx, id)
+}
+
+// ResetRepositoryToRemote is the explicit recovery path for a managed Git
+// repository whose local commit history diverged from its remote. It only
+// moves Dockman's isolated repository reference: stack files and binding
+// baselines are deliberately left untouched and will be reconciled through
+// the normal preview/conflict workflow.
+func (s *Service) ResetRepositoryToRemote(ctx context.Context, id string) (RepositoryGitStatus, error) {
+	lock := s.repositoryLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, err := s.fetchRepositoryLocked(ctx, id); err != nil {
+		return RepositoryGitStatus{}, err
+	}
+	row, err := s.store.GetRepository(id)
+	if err != nil {
+		return RepositoryGitStatus{}, err
+	}
+	before, err := s.RepositoryStatus(id)
+	if err != nil {
+		return RepositoryGitStatus{}, err
+	}
+	if before.Ahead == 0 && !before.Diverged {
+		return before, nil
+	}
+	err = s.RunRepositoryOperation(ctx, id, "reset_to_remote", func(context.Context) error {
+		repo, err := s.openRepository(row)
+		if err != nil {
+			return err
+		}
+		remote, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", row.DefaultBranch), true)
+		if err != nil {
+			return fmt.Errorf("resolve fetched branch: %w", err)
+		}
+		return repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(row.DefaultBranch), remote.Hash()))
+	})
+	if err != nil {
+		s.recordRepositoryError(&row, err)
+		return RepositoryGitStatus{}, err
+	}
+	row.Status, row.LastError = "ready", ""
+	_ = s.store.SaveRepository(&row)
+	return s.RepositoryStatus(id)
 }
 
 func (s *Service) DeleteRepository(id string) error {
@@ -790,7 +845,9 @@ func (s *Service) cloneRepository(ctx context.Context, row Repository) error {
 	if err != nil {
 		return err
 	}
-	_, err = gitclient.PlainCloneContext(ctx, temporary, false, &gitclient.CloneOptions{
+	networkCtx, cancel := gitNetworkContext(ctx)
+	defer cancel()
+	_, err = gitclient.PlainCloneContext(networkCtx, temporary, false, &gitclient.CloneOptions{
 		URL: row.RemoteURL, RemoteName: "origin", Auth: auth,
 		ReferenceName: plumbing.NewBranchReferenceName(row.DefaultBranch), SingleBranch: true, Tags: gitclient.NoTags,
 		NoCheckout: true,

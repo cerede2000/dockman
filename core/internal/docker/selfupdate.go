@@ -149,7 +149,7 @@ func findSelfContainer(ctx context.Context, cli *client.Client) (container.Summa
 	}
 
 	hostname, _ := os.Hostname()
-	var fallback *container.Summary
+	var candidates []container.Summary
 	for i := range list.Items {
 		c := list.Items[i]
 		if c.Labels[dockmanContainerLabel] != "true" {
@@ -158,13 +158,13 @@ func findSelfContainer(ctx context.Context, cli *client.Client) (container.Summa
 		if hostname != "" && strings.HasPrefix(c.ID, hostname) {
 			return c, nil
 		}
-		if fallback == nil {
-			cpy := c
-			fallback = &cpy
-		}
+		candidates = append(candidates, c)
 	}
-	if fallback != nil {
-		return *fallback, nil
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(candidates) > 1 {
+		return container.Summary{}, fmt.Errorf("found %d Dockman containers but none matches this process hostname; refusing to restart an arbitrary instance", len(candidates))
 	}
 	return container.Summary{}, fmt.Errorf("could not find the Dockman container (label %s=true)", dockmanContainerLabel)
 }

@@ -236,11 +236,14 @@ export function useDockerStats(selectedPage?: string) {
     const [sortField, setSortField] = useState(SORT_FIELD.MEM);
     const [sortOrder, setSortOrder] = useState(ORDER.DSC);
     const [refreshInterval, setRefreshInterval] = useState(DEFAULT_REFRESH);
+    const [history, setHistory] = useState<Map<string, StatHistory>>(() => new Map());
     const isInitialLoad = useRef(true);
     const loadingRef = useRef(true);
     // sort settings exposed to the streaming loop without restarting it
     const sortRef = useRef({field: sortField, order: sortOrder});
-    sortRef.current = {field: sortField, order: sortOrder};
+    useEffect(() => {
+        sortRef.current = {field: sortField, order: sortOrder};
+    }, [sortField, sortOrder]);
     // Once the user sorts by hand we stop applying the dockman.yml default so a
     // late-arriving (or per-host) config never clobbers their choice.
     const userSorted = useRef(false)
@@ -286,6 +289,7 @@ export function useDockerStats(selectedPage?: string) {
                 flushTimer = null;
                 if (isCancelled) return;
                 applyRows(sortRows([...merged.values()], sortRef.current.field, sortRef.current.order));
+                setHistory(new Map(statHistories));
                 if (loadingRef.current) {
                     setLoading(false);
                     loadingRef.current = false;
@@ -447,6 +451,7 @@ export function useDockerStats(selectedPage?: string) {
         // The aggregate snapshot was computed from the same old samples. Do not
         // display it as current while the next complete cycle is still pending.
         setAggregates(null);
+        setHistory(new Map(statHistories));
     }, [applyRows]);
 
     return {
@@ -455,7 +460,7 @@ export function useDockerStats(selectedPage?: string) {
         // place, and the React Compiler memoizes lookups like history.get(name)
         // by reference — served the map itself, charts would freeze on their
         // first geometry forever
-        history: new Map(statHistories),
+        history,
         aggregates,
         loading,
         sortField,
@@ -494,6 +499,7 @@ export function useHostStats(enabled: boolean): HostStatsView | null {
 
         let cancelled = false;
         const fetchStats = async () => {
+            if (document.visibilityState === 'hidden') return;
             const {val} = await callRPC(() => dockerService.hostStats({}));
             if (cancelled || !val || val.memTotal === 0n) return;
 
@@ -518,9 +524,14 @@ export function useHostStats(enabled: boolean): HostStatsView | null {
 
         void fetchStats();
         const id = setInterval(fetchStats, DEFAULT_REFRESH);
+        const onVisibility = () => {
+            if (document.visibilityState === 'visible') void fetchStats();
+        };
+        document.addEventListener('visibilitychange', onVisibility);
         return () => {
             cancelled = true;
             clearInterval(id);
+            document.removeEventListener('visibilitychange', onVisibility);
         };
     }, [enabled, dockerService, selectedHost]);
 

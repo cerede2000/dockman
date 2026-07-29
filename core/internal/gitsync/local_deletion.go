@@ -296,7 +296,9 @@ func (s *Service) deleteLocallyDeletedFileFromGit(ctx context.Context, binding S
 	if err != nil {
 		return LocalDeletionActionResult{}, err
 	}
-	if err := repo.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
+	pushCtx, cancelPush := gitNetworkContext(ctx)
+	defer cancelPush()
+	if err := repo.PushContext(pushCtx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 		return LocalDeletionActionResult{}, fmt.Errorf("push Git file deletion: %w", err)
 	}
 	delete(baseline, filePath)
@@ -465,7 +467,9 @@ func (s *Service) deleteLocallyDeletedStackFromGit(ctx context.Context, binding 
 	if err != nil {
 		return LocalDeletionActionResult{}, err
 	}
-	if err := repo.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
+	pushCtx, cancelPush := gitNetworkContext(ctx)
+	defer cancelPush()
+	if err := repo.PushContext(pushCtx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 		return LocalDeletionActionResult{}, fmt.Errorf("push Git stack deletion: %w", err)
 	}
 	for path := range baseline {

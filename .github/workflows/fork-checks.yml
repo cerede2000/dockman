@@ -91,7 +91,14 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: "1"
-        run: go test ${{ github.event.inputs.test_path || './internal/auth/... ./internal/gitsync/...' }}
+          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/gitsync/...' }}
+        run: |
+          if [[ ! "$TEST_PATH" =~ ^(\./[A-Za-z0-9_./*-]+)([[:space:]]+\./[A-Za-z0-9_./*-]+)*$ ]]; then
+            echo "Invalid Go package list" >&2
+            exit 1
+          fi
+          read -r -a PACKAGES <<< "$TEST_PATH"
+          go test "${PACKAGES[@]}"
 
       - name: Build and test Docker target
         env:

@@ -174,9 +174,17 @@ const MetricsPending = -1
 
 // IdentityStats returns the summary's identity fields only, metrics pending.
 func IdentityStats(info container.Summary) Stats {
+	name := info.ID
+	if len(info.Names) > 0 {
+		name = info.Names[0]
+	}
+	id := info.ID
+	if len(id) > 12 {
+		id = id[:12]
+	}
 	return Stats{
-		ID:        info.ID[:12],
-		Name:      info.Names[0],
+		ID:        id,
+		Name:      name,
 		Image:     info.Image,
 		State:     string(info.State),
 		Health:    summaryHealth(info),

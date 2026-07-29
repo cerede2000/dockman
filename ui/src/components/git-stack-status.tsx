@@ -7,21 +7,10 @@ import {
 } from '@mui/icons-material';
 import {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router';
-import {withProtectedAPI} from '../lib/api.ts';
+import {gitAPI as request, gitDateLabel as dateLabel} from '../lib/git-api.ts';
 import {useSnackbar} from '../hooks/snackbar.ts';
 import {gitStatusSeverity, type GitStackStatus, refreshGitStackStatuses} from './git-stack-status-store.ts';
 import GitBindingRecovery from './git-binding-recovery.tsx';
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-    const headers = new Headers(init?.headers);
-    if (init?.body) headers.set('Content-Type', 'application/json');
-    const response = await fetch(withProtectedAPI(`/git${path}`), {...init, headers});
-    if (!response.ok) {
-        const body = await response.json().catch(() => ({error: response.statusText})) as {error?: string};
-        throw new Error(body.error || `HTTP ${response.status}`);
-    }
-    return response.json() as Promise<T>;
-}
 
 
 const colors = {neutral: '#9e9e9e', info: '#64b5f6', warning: '#ffb74d', error: '#ef5350', success: '#66bb6a'};
@@ -50,10 +39,6 @@ function stateLabel(status: GitStackStatus) {
     return status.state === 'up_to_date' || status.state === 'pending'
         ? 'Automatic synchronization paused'
         : `Automatic synchronization paused · ${label}`;
-}
-
-function dateLabel(value?: string) {
-    return value ? new Date(value).toLocaleString() : '—';
 }
 
 export default function GitStackStatusIndicator({status, size = 18, interactive = true, aggregateStatuses, bindingRoot = false}: {
@@ -101,34 +86,34 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
 
     const pause = async () => {
         setBusy(true);
-        try {
+        await (async () => {
             await request(`/bindings/${status.bindingId}/stack-status/${encodedComposePath}`, {method: 'PUT', body: JSON.stringify({paused: !status.automationPaused})});
             await refreshGitStackStatuses(status.host);
             showSuccess(status.automationPaused && (status.state === 'local_changes' || status.state === 'orphaned')
                 ? 'Local changes pushed and automatic Git synchronization resumed.'
                 : status.automationPaused ? 'Automatic Git synchronization resumed for this stack.' : 'Automatic Git synchronization paused for this stack.');
-        } catch (reason) {
+        })().catch((reason) => {
             showError((reason as Error).message);
-        } finally { setBusy(false); }
+        }).finally(() => setBusy(false));
     };
 
     const checkNow = async () => {
         setBusy(true);
-        try {
+        await (async () => {
             const result = await request<AutoSyncResult>(`/bindings/${status.bindingId}/automation/run`, {method: 'POST'});
             await refreshGitStackStatuses(status.host);
             if (result.state === 'blocked' || result.state === 'conflict' || result.state === 'partial') showWarning(result.message);
             else showSuccess(result.message || 'Git synchronization check completed.');
-        } catch (reason) {
+        })().catch(async (reason) => {
             showError((reason as Error).message);
             await refreshGitStackStatuses(status.host);
-        } finally { setBusy(false); }
+        }).finally(() => setBusy(false));
     };
 
     const toggleFolderLinkPause = async () => {
         const paused = !status.bindingAutomationPaused;
         setBusy(true);
-        try {
+        await (async () => {
             const result = await request<{sync?: AutoSyncResult}>(`/bindings/${status.bindingId}/automation/pause`, {
                 method: 'PUT', body: JSON.stringify({paused}),
             });
@@ -136,15 +121,15 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
             if (paused) showSuccess('Automatic synchronization paused for this folder link.');
             else if (result.sync?.state === 'blocked' || result.sync?.state === 'conflict' || result.sync?.state === 'partial' || result.sync?.state === 'error') showWarning(result.sync.message);
             else showSuccess(result.sync?.message || 'Folder link resumed after a complete synchronization check.');
-        } catch (reason) {
+        })().catch(async (reason) => {
             showError((reason as Error).message);
             await refreshGitStackStatuses(status.host);
-        } finally { setBusy(false); }
+        }).finally(() => setBusy(false));
     };
 
     const enableSynchronization = async (target = status, push = false) => {
         setBusy(true);
-        try {
+        await (async () => {
             const encoded = target.composePath.split('/').map(encodeURIComponent).join('/');
             await request(`/bindings/${target.bindingId}/stack-select/${encoded}`, {method: 'POST'});
             if (push) {
@@ -153,15 +138,15 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
             await refreshGitStackStatuses(target.host);
             showSuccess(push ? 'Stack selected and pushed to Git.' : 'Stack selected for Git synchronization. No file was pushed or deployed.');
             closePopover();
-        } catch (reason) {
+        })().catch(async (reason) => {
             showError((reason as Error).message);
             await refreshGitStackStatuses(target.host);
-        } finally { setBusy(false); }
+        }).finally(() => setBusy(false));
     };
 
     const resolveLocalDeletion = async (target: GitStackStatus, action: 'restore' | 'delete_git' | 'deselect' | 'exclude', path = '') => {
         setBusy(true);
-        try {
+        await (async () => {
             const encoded = target.composePath.split('/').map(encodeURIComponent).join('/');
             const result = await request<{message: string}>(`/bindings/${target.bindingId}/local-deletion/${encoded}`, {
                 method: 'POST', body: JSON.stringify({action, path, confirmation: action === 'delete_git' ? deleteGitConfirmation : ''}),
@@ -176,10 +161,10 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 setLocalDeletion(remaining);
                 if (remaining.files.length === 0) closePopover();
             } else if (!aggregateStatuses) closePopover();
-        } catch (reason) {
+        })().catch(async (reason) => {
             showError((reason as Error).message);
             await refreshGitStackStatuses(target.host);
-        } finally { setBusy(false); }
+        }).finally(() => setBusy(false));
     };
 
     const openRelevantGitView = (target = status) => {
@@ -200,19 +185,19 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
 
     const pushStack = async (target = status) => {
         setBusy(true);
-        try {
+        await (async () => {
             const encoded = target.composePath.split('/').map(encodeURIComponent).join('/');
             const result = await request<{message: string}>(`/bindings/${target.bindingId}/stack-push/${encoded}`, {method: 'POST'});
             await refreshGitStackStatuses(target.host);
             showSuccess(result.message);
             closePopover();
-        } catch (reason) {
+        })().catch(async (reason) => {
             showError((reason as Error).message);
             await refreshGitStackStatuses(target.host);
-        } finally {
+        }).finally(() => {
             setBusy(false);
             setConfirmPush(false);
-        }
+        });
     };
 
     return <>

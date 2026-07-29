@@ -16,6 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 	v1 "github.com/RA341/dockman/generated/docker/v1"
+	"github.com/RA341/dockman/internal/docker/compose"
 	contSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/internal/docker/updater"
 	"github.com/RA341/dockman/pkg/fileutil"
@@ -238,15 +239,54 @@ func (h *Handler) ContainerTop(ctx context.Context, req *connect.Request[v1.Cont
 // recreate the container on it with rollback on failure.
 func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.ContainerRequest], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return dkSrv.Updater.ContainersForceUpdate(
-			ctx,
-			func(pullCtx context.Context, imageTag string) error {
-				return dkSrv.Compose.PullImage(pullCtx, imageTag, writer)
-			},
-			writer,
-			req.Msg.ContainerIds...,
-		)
+		return withContainerUpdateLocks(ctx, dkSrv, req.Msg.ContainerIds, func() error {
+			return dkSrv.Updater.ContainersForceUpdate(
+				ctx,
+				func(pullCtx context.Context, imageTag string) error {
+					return dkSrv.Compose.PullImage(pullCtx, imageTag, writer)
+				},
+				writer,
+				req.Msg.ContainerIds...,
+			)
+		})
 	})
+}
+
+func withContainerUpdateLocks(ctx context.Context, dkSrv *Service, ids []string, action func() error) error {
+	containers, err := dkSrv.Container.ContainerListByIDs(ctx, ids...)
+	if err != nil {
+		return err
+	}
+	keys := make(map[string]struct{}, len(containers))
+	for _, row := range containers {
+		key := dkSrv.Compose.DockmanPath(row.Labels[api.ConfigFilesLabel])
+		if key == "" {
+			key = "container:" + row.ID
+		}
+		keys[key] = struct{}{}
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	slices.Sort(ordered)
+	unlocks := make([]func(), 0, len(ordered))
+	for _, key := range ordered {
+		unlock, ok := compose.TryLockStack(dkSrv.Host, key)
+		if !ok {
+			for index := len(unlocks) - 1; index >= 0; index-- {
+				unlocks[index]()
+			}
+			return fmt.Errorf("another action is already running for stack or container %s", key)
+		}
+		unlocks = append(unlocks, unlock)
+	}
+	defer func() {
+		for index := len(unlocks) - 1; index >= 0; index-- {
+			unlocks[index]()
+		}
+	}()
+	return action()
 }
 
 func (h *Handler) ContainerStats(ctx context.Context, req *connect.Request[v1.StatsRequest]) (*connect.Response[v1.StatsResponse], error) {

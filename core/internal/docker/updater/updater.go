@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -109,7 +111,7 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 
 	var errs []error
 	for _, cur := range list {
-		name := strings.TrimPrefix(cur.Names[0], "/")
+		name := summaryName(cur)
 		imgTag := cur.Image
 
 		// a reference without a repository tag (image removed/retagged, or
@@ -220,7 +222,11 @@ func WithNotifyOnly() UpdateOption {
 }
 
 func WithConfig(conf *containersUpdateConfig) UpdateOption {
-	return func(c *containersUpdateConfig) { c = conf }
+	return func(c *containersUpdateConfig) {
+		if conf != nil {
+			*c = *conf
+		}
+	}
 }
 
 // containersUpdateLoop Core updater,
@@ -295,7 +301,7 @@ func (u *Service) containerUpdate(
 ) {
 	if hasDisableUpdateLabel(&cur) && !updateConfig.ForceUpdate {
 		log.Warn().
-			Str("id", cur.ID).Str("name", cur.Names[0]).
+			Str("id", cur.ID).Str("name", summaryName(cur)).
 			Msg("updates are disabled for this container")
 		return
 	}
@@ -304,14 +310,14 @@ func (u *Service) containerUpdate(
 
 	updateAvailable, _, err := u.ImageUpdateAvailable(ctx, imgTag)
 	if err != nil {
-		log.Warn().Str("cont", cur.Names[0]).
+		log.Warn().Str("cont", summaryName(cur)).
 			Err(err).Msg("Failed to get image metadata, skipping...")
 		return
 	}
 
 	if !updateAvailable {
 		log.Info().
-			Str("container", cur.Names[0]).Str("img", imgTag).
+			Str("container", summaryName(cur)).Str("img", imgTag).
 			Msgf("Image already up to date, skipping")
 		return
 	}
@@ -361,13 +367,29 @@ func hasDockmanLabel(cont *container.Summary) bool {
 	return value == "true"
 }
 
+func summaryName(cont container.Summary) string {
+	if len(cont.Names) == 0 {
+		if len(cont.ID) > 12 {
+			return cont.ID[:12]
+		}
+		return cont.ID
+	}
+	return strings.TrimPrefix(cont.Names[0], "/")
+}
+
 // UpdateDockman updates a running dockman container
 // by pinging the sidecar updater service
 //
 // containerID is the id of the current dockman container
 func UpdateDockman(containerID, updaterUrl string) error {
 	fullUrl := fmt.Sprintf("%s/%s", updaterUrl, containerID)
-	resp, err := http.Get(fullUrl)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fullUrl, nil)
+	if err != nil {
+		return fmt.Errorf("unable to create updater request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("unable to send request updater: %w", err)
 	}
@@ -394,13 +416,26 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 
 	wasRunning := inspectedData.State != nil && inspectedData.State.Running
 
-	// container at rest: swap in place, leave it stopped
+	// A stopped container still gets a create-before-remove swap. Creating the
+	// replacement under a temporary name validates the image, networks and full
+	// configuration while the original container remains recoverable.
 	if !wasRunning {
+		newContainer, createErr := u.containerCreate(ctx, imageTag, containerName+"_updated", inspectedData)
+		if createErr != nil {
+			return fmt.Errorf("failed to create replacement for stopped container %s; original container was preserved: %w", containerName, createErr)
+		}
 		if _, err := u.cli().ContainerRemove(ctx, oldContainer.ID, client.ContainerRemoveOptions{}); err != nil {
+			cleanupCtx, cancel := rollbackContext(ctx)
+			defer cancel()
+			if _, cleanupErr := u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); cleanupErr != nil {
+				log.Warn().Err(cleanupErr).Str("container", newContainer.ID).Msg("failed to clean up replacement after preserving stopped container")
+			}
 			return fmt.Errorf("failed to remove old container %s: %w", containerName, err)
 		}
-		if _, err := u.containerCreate(ctx, imageTag, containerName, inspectedData); err != nil {
-			return fmt.Errorf("failed to create container %s: %w", containerName, err)
+		renameCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		if _, err := u.cli().ContainerRename(renameCtx, newContainer.ID, client.ContainerRenameOptions{NewName: containerName}); err != nil {
+			return fmt.Errorf("replacement container %s was created safely but could not take its final name (currently %s_updated): %w", containerName, containerName, err)
 		}
 		return nil
 	}
@@ -421,7 +456,7 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
 	}
 
-	if err = u.ContainerHealthCheck(newContainer.ID, &inspectedData); err != nil {
+	if err = u.ContainerHealthCheck(ctx, newContainer.ID, &inspectedData); err != nil {
 		if _, rmErr := u.cli().ContainerRemove(ctx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
 			log.Warn().Err(rmErr).Msg("failed to clean up the replacement container")
 		}
@@ -430,10 +465,19 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 
 	// healthy: drop the old container and take over its name
 	if _, err := u.cli().ContainerRemove(ctx, oldContainer.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
-		log.Warn().Err(err).Msgf("failed to remove old container %s", containerName)
+		cleanupCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		_, _ = u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true})
+		_, restartErr := u.cli().ContainerStart(cleanupCtx, oldContainer.ID, client.ContainerStartOptions{})
+		if restartErr != nil {
+			return fmt.Errorf("failed to remove old container %s and rollback restart failed: %v (remove error: %w)", containerName, restartErr, err)
+		}
+		return fmt.Errorf("failed to remove old container %s; replacement removed and old container restarted: %w", containerName, err)
 	}
-	if _, err := u.cli().ContainerRename(ctx, newContainer.ID, client.ContainerRenameOptions{NewName: containerName}); err != nil {
-		log.Warn().Err(err).Msgf("failed to rename the new container to %s", containerName)
+	renameCtx, cancel := rollbackContext(ctx)
+	defer cancel()
+	if _, err := u.cli().ContainerRename(renameCtx, newContainer.ID, client.ContainerRenameOptions{NewName: containerName}); err != nil {
+		return fmt.Errorf("container update completed but replacement %s could not take final name %s; manual recovery is required: %w", newContainer.ID, containerName, err)
 	}
 
 	log.Info().Msgf("Successfully updated container %s", containerName)
@@ -443,13 +487,19 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 func (u *Service) containerRollbackToOldContainer(ctx context.Context, oldContainerID, containerName string, originalErr error) error {
 	log.Warn().Msgf("Rolling back to old container %s", containerName)
 
-	_, err := u.cli().ContainerStart(ctx, oldContainerID, client.ContainerStartOptions{})
+	rollbackCtx, cancel := rollbackContext(ctx)
+	defer cancel()
+	_, err := u.cli().ContainerStart(rollbackCtx, oldContainerID, client.ContainerStartOptions{})
 	if err != nil {
 		return fmt.Errorf("rollback failed - cannot restart old container: %w (original error: %v)", err, originalErr)
 	}
 
 	log.Info().Msgf("Successfully rolled back to old container %s", containerName)
 	return fmt.Errorf("update failed, rolled back to previous version: %w", originalErr)
+}
+
+func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 }
 
 // containerCreate creates a new container carrying the old one's whole
@@ -486,12 +536,12 @@ func (u *Service) containerCreate(
 	return created, nil
 }
 
-func (u *Service) ContainerHealthCheck(containerID string, c *container.InspectResponse) error {
+func (u *Service) ContainerHealthCheck(ctx context.Context, containerID string, c *container.InspectResponse) error {
 	log.Info().Msg("Starting healthcheck for container")
 
-	eg := errgroup.Group{}
+	eg, healthCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
-		err := u.containerHealthCheckUptime(containerID, c)
+		err := u.containerHealthCheckUptime(healthCtx, containerID, c)
 		if err != nil {
 			return fmt.Errorf("uptime healthcheck failed\n%w", err)
 		}
@@ -499,7 +549,7 @@ func (u *Service) ContainerHealthCheck(containerID string, c *container.InspectR
 	})
 
 	eg.Go(func() error {
-		err := u.containerHealthCheckPing(c)
+		err := u.containerHealthCheckPing(healthCtx, c)
 		if err != nil {
 			return fmt.Errorf("endpoint ping healthcheck failed\n%w", err)
 		}
@@ -515,7 +565,7 @@ func (u *Service) ContainerHealthCheck(containerID string, c *container.InspectR
 
 const DockmanHealthCheckUptimeLabel = "dockman.update.healthcheck.uptime"
 
-func (u *Service) containerHealthCheckUptime(containerID string, c *container.InspectResponse) error {
+func (u *Service) containerHealthCheckUptime(ctx context.Context, containerID string, c *container.InspectResponse) error {
 	lab := c.Config.Labels[DockmanHealthCheckUptimeLabel]
 	expectedUptime, err := time.ParseDuration(lab)
 	if err != nil {
@@ -525,11 +575,19 @@ func (u *Service) containerHealthCheckUptime(containerID string, c *container.In
 
 	// wait for 1.5 times the expected time, to skip any container shenanigans
 	// on 1x the container uptime was not matching expectedUptime for some reason
-	timer := time.NewTimer(time.Duration(float64(expectedUptime) * 1.5))
+	if expectedUptime <= 0 || expectedUptime > 10*time.Minute {
+		return fmt.Errorf("expected uptime must be greater than zero and at most 10m")
+	}
+	wait := time.Duration(float64(expectedUptime) * 1.5)
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	<-timer.C
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
 
-	inspect, err := u.cli().ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
+	inspect, err := u.cli().ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return err
 	}
@@ -556,7 +614,7 @@ func (u *Service) containerHealthCheckUptime(containerID string, c *container.In
 const DockmanHealthCheckPingLabel = "dockman.update.healthcheck.ping"
 const DockmanHealthCheckPingTimeLabel = "dockman.update.healthcheck.time"
 
-func (u *Service) containerHealthCheckPing(c *container.InspectResponse) error {
+func (u *Service) containerHealthCheckPing(ctx context.Context, c *container.InspectResponse) error {
 	endpoint := c.Config.Labels[DockmanHealthCheckPingLabel]
 	if endpoint == "" {
 		log.Warn().Msg("healthcheck ping endpoint is empty skipping check")
@@ -570,11 +628,38 @@ func (u *Service) containerHealthCheckPing(c *container.InspectResponse) error {
 		return nil
 	}
 
+	if pingAfter < 0 || pingAfter > 10*time.Minute {
+		return fmt.Errorf("ping delay must be between zero and 10m")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return fmt.Errorf("healthcheck endpoint must be an absolute HTTP or HTTPS URL")
+	}
+	if err := validateHealthcheckHost(parsed.Hostname(), c); err != nil {
+		return err
+	}
 	timer := time.NewTimer(pingAfter)
 	defer timer.Stop()
-	<-timer.C
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
 
-	resp, err := http.Get(endpoint)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create healthcheck request: %w", err)
+	}
+	pingClient := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if err := validateHealthcheckHost(req.URL.Hostname(), c); err != nil {
+			return err
+		}
+		if len(via) >= 3 {
+			return errors.New("too many healthcheck redirects")
+		}
+		return nil
+	}}
+	resp, err := pingClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("failed to ping %s: %w", endpoint, err)
 	}
@@ -586,6 +671,27 @@ func (u *Service) containerHealthCheckPing(c *container.InspectResponse) error {
 	}
 
 	return nil
+}
+
+func validateHealthcheckHost(host string, c *container.InspectResponse) error {
+	allowed := map[string]struct{}{"localhost": {}}
+	for _, address := range []string{"127.0.0.1", "::1"} {
+		allowed[address] = struct{}{}
+	}
+	if c != nil && c.NetworkSettings != nil {
+		for _, endpoint := range c.NetworkSettings.Networks {
+			if endpoint != nil && endpoint.IPAddress.IsValid() {
+				allowed[endpoint.IPAddress.String()] = struct{}{}
+			}
+		}
+	}
+	if _, ok := allowed[strings.ToLower(host)]; ok {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("healthcheck endpoint host %q is refused; use loopback or one of the container IP addresses", host)
 }
 
 func (u *Service) ImageUpdateAvailable(ctx context.Context, imageName string) (bool, string, error) {

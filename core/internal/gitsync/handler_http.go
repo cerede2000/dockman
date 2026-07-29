@@ -32,6 +32,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /repositories/{id}/fetch", h.fetchRepository)
 	mux.HandleFunc("POST /repositories/{id}/pull", h.pullRepository)
 	mux.HandleFunc("POST /repositories/{id}/push", h.pushRepository)
+	mux.HandleFunc("POST /repositories/{id}/reset-to-remote", h.resetRepositoryToRemote)
 	mux.HandleFunc("GET /repositories/{id}/operations", h.repositoryOperations)
 	mux.HandleFunc("DELETE /repositories/{id}", h.deleteRepository)
 	mux.HandleFunc("GET /stack-targets", h.listStackTargets)
@@ -461,9 +462,13 @@ func (h *HTTPHandler) deleteBinding(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
 	}
-	binding, _ := h.service.store.GetBinding(r.PathValue("id"))
+	binding, err := h.service.store.GetBinding(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
 	forget := r.URL.Query().Get("forget") == "true"
-	if err := h.service.DeleteBinding(r.PathValue("id"), forget); err != nil {
+	if err = h.service.DeleteBinding(r.PathValue("id"), forget); err != nil {
 		writeServiceError(w, err)
 		return
 	}
@@ -618,6 +623,29 @@ func (h *HTTPHandler) pullRepository(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) pushRepository(w http.ResponseWriter, r *http.Request) {
 	h.repositoryAction(w, r, h.service.PushRepository)
+}
+
+func (h *HTTPHandler) resetRepositoryToRemote(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input struct {
+		Confirmation string `json:"confirmation"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if input.Confirmation != "RESET LOCAL GIT STATE" {
+		writeAPIError(w, http.StatusBadRequest, `type "RESET LOCAL GIT STATE" to confirm`)
+		return
+	}
+	status, err := h.service.ResetRepositoryToRemote(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (h *HTTPHandler) repositoryAction(w http.ResponseWriter, r *http.Request, action func(context.Context, string) (RepositoryGitStatus, error)) {

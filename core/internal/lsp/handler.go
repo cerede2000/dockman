@@ -3,6 +3,7 @@ package lsp
 import (
 	"fmt"
 	"github.com/RA341/dockman/pkg/fileutil"
+	wsu "github.com/RA341/dockman/pkg/ws"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 	"net/http"
@@ -32,7 +33,7 @@ func WebSocketHandler(up websocket.Upgrader) http.HandlerFunc {
 		if err = StartLSP(WithStream(stream), WithZapLogger()); err != nil {
 			log.Error().Err(err).Msg("Failed to start LSP server")
 			// Optionally send close message with error
-			_ = conn.WriteMessage(
+			_ = wsu.WriteMessage(conn,
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(
 					websocket.CloseInternalServerErr, err.Error(),
@@ -65,7 +66,7 @@ func (s *WebSocketStream) Read(p []byte) (n int, err error) {
 }
 
 func (s *WebSocketStream) Write(p []byte) (n int, err error) {
-	err = s.conn.WriteMessage(websocket.TextMessage, p)
+	err = wsu.WriteMessage(s.conn, websocket.TextMessage, p)
 	if err != nil {
 		return 0, err
 	}

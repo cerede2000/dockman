@@ -23,7 +23,8 @@ export function LogsPanel() {
     const revealNonce = useTerminalAction(state => state.revealNonce);
 
     const {tabs, activeTab, setActiveTab, close, clearAll} = useTerminalTabs();
-    const fitAddonRef = useRef<FitAddon>(new FitAddon());
+    const fitAddonRef = useRef<FitAddon>(null!);
+    if (fitAddonRef.current === null) fitAddonRef.current = new FitAddon();
 
     // floating mode: only a slim bar stays docked; the body overlays the
     // content above it while the pointer is over the bar or the body

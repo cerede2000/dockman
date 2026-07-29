@@ -1039,7 +1039,9 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if err := repo.PushContext(ctx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
+		pushCtx, cancelPush := gitNetworkContext(ctx)
+		defer cancelPush()
+		if err := repo.PushContext(pushCtx, &gitclient.PushOptions{RemoteName: "origin", Auth: auth}); err != nil && !errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 			return fmt.Errorf("push stack export: %w", err)
 		}
 		compactRepositoryObjects(repo, binding.RepositoryUUID)
@@ -2195,7 +2197,16 @@ func (policy syncPolicy) selectsPath(relative string, directory bool) (selected,
 	relative = strings.Trim(filepath.ToSlash(relative), "/")
 	for root := range policy.selectedRoots {
 		root = strings.Trim(root, "/")
-		if root == "." || relative == root || strings.HasPrefix(relative, root+"/") {
+		if root == "." {
+			// A Compose manifest at the binding root owns root files only. It
+			// must not implicitly re-select every nested stack that the operator
+			// explicitly deselected.
+			if !directory && !strings.Contains(relative, "/") {
+				return true, true
+			}
+			continue
+		}
+		if relative == root || strings.HasPrefix(relative, root+"/") {
 			return true, true
 		}
 		if directory && strings.HasPrefix(root, relative+"/") {
@@ -3152,37 +3163,6 @@ func hasTrackedDeletedCompose(source, target map[string]transferFile, baseline m
 		}
 	}
 	return false
-}
-
-func pruneBindingBackups(backupFS *os.Root, bindingID string, retain int) error {
-	if retain < 1 {
-		return errors.New("backup retention must keep at least one archive")
-	}
-	directory, err := backupFS.Open(bindingID)
-	if err != nil {
-		return err
-	}
-	entries, readErr := directory.ReadDir(-1)
-	closeErr := directory.Close()
-	if readErr != nil {
-		return readErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".tar.gz") {
-			names = append(names, entry.Name())
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names[:max(0, len(names)-retain)] {
-		if err := backupFS.Remove(filepath.Join(bindingID, name)); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Service) removeBindingBackups(bindingID string) error {

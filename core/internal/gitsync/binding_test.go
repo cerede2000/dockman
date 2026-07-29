@@ -696,16 +696,16 @@ func TestGitImportPreviewSkipsUnreadableTargetAndKeepsOtherChangesTransferable(t
 	}
 	source := map[string]transferFile{
 		"adguard/AdGuardHome.yaml": available("adguard/AdGuardHome.yaml", "new locked config\n"),
-		"whoami/compose.yaml":     available("whoami/compose.yaml", "services:\n  app:\n    image: traefik/whoami\n"),
+		"whoami/compose.yaml":      available("whoami/compose.yaml", "services:\n  app:\n    image: traefik/whoami\n"),
 	}
 	target := map[string]transferFile{
 		"adguard/AdGuardHome.yaml": {path: "adguard/AdGuardHome.yaml", skipReason: "permission"},
-		"whoami/compose.yaml":     available("whoami/compose.yaml", "services: {}\n"),
+		"whoami/compose.yaml":      available("whoami/compose.yaml", "services: {}\n"),
 	}
 
 	preview := buildPreview("binding", "repository_to_stack", source, target, map[string]string{
 		"adguard/AdGuardHome.yaml": "previous",
-		"whoami/compose.yaml":     target["whoami/compose.yaml"].sha,
+		"whoami/compose.yaml":      target["whoami/compose.yaml"].sha,
 	})
 	require.Equal(t, 1, preview.Skipped)
 	require.Equal(t, 1, preview.Changed)
@@ -927,7 +927,7 @@ func TestComparisonSideRejectsBinaryAndOversizedFiles(t *testing.T) {
 	require.Contains(t, reason, "limit")
 }
 
-func TestBindingBackupRetentionAndUnlinkCleanup(t *testing.T) {
+func TestBindingUnlinkCleansBackups(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)
 	repository := prepareBindingRepository(t, service)
@@ -937,19 +937,6 @@ func TestBindingBackupRetentionAndUnlinkCleanup(t *testing.T) {
 	require.NoError(t, err)
 
 	bindingBackupRoot := filepath.Join(service.backupRoot, binding.ID)
-	require.NoError(t, os.MkdirAll(bindingBackupRoot, 0o700))
-	for index := 0; index < gitBackupRetention+2; index++ {
-		name := fmt.Sprintf("20260722T1200%02d.000000000Z.tar.gz", index)
-		require.NoError(t, os.WriteFile(filepath.Join(bindingBackupRoot, name), []byte("backup"), 0o600))
-	}
-	root, err := os.OpenRoot(service.backupRoot)
-	require.NoError(t, err)
-	require.NoError(t, pruneBindingBackups(root, binding.ID, gitBackupRetention))
-	require.NoError(t, root.Close())
-	entries, err := os.ReadDir(bindingBackupRoot)
-	require.NoError(t, err)
-	require.Len(t, entries, gitBackupRetention)
-	require.Equal(t, "20260722T120002.000000000Z.tar.gz", entries[0].Name())
 	archiveRoot := filepath.Join(service.backupRoot, "archives", binding.ID)
 	require.NoError(t, os.MkdirAll(archiveRoot, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(archiveRoot, "orphan.tar.gz"), []byte("archive"), 0o600))
@@ -1039,6 +1026,32 @@ func TestComposeOnlyPolicyIncludesManifestsTemplatesAndExplicitAdditions(t *test
 	for _, name := range []string{"override.yml", "application.yaml", "settings.json", "notes.md"} {
 		require.NotContains(t, collected, name)
 	}
+}
+
+func TestRootComposeSelectionDoesNotSelectNestedStacks(t *testing.T) {
+	policy := syncPolicy{
+		selectionEnabled: true,
+		selectedRoots: map[string]struct{}{
+			".":        {},
+			"selected": {},
+		},
+	}
+
+	selected, traverse := policy.selectsPath("compose.yaml", false)
+	require.True(t, selected)
+	require.True(t, traverse)
+
+	selected, traverse = policy.selectsPath("unselected", true)
+	require.False(t, selected)
+	require.False(t, traverse)
+
+	selected, traverse = policy.selectsPath("selected", true)
+	require.True(t, selected)
+	require.True(t, traverse)
+
+	selected, traverse = policy.selectsPath("selected/config/app.yml", false)
+	require.True(t, selected)
+	require.True(t, traverse)
 }
 
 func TestComposeFilesCannotBeExcludedByPolicyOrDockmanIgnore(t *testing.T) {

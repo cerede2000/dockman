@@ -31,6 +31,30 @@ func TestExecPolicyRejectsDockmanBeforeWebSocketUpgrade(t *testing.T) {
 	}
 }
 
+func TestExecPolicyRejectsLocalHostShellBeforeWebSocketUpgrade(t *testing.T) {
+	handler := newExecPolicyTestHandler(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/shell", nil)
+	req = req.WithContext(hostMid.SetHost(context.Background(), contSrv.LocalClient))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusForbidden, res.Code)
+	require.Contains(t, res.Body.String(), "DOCKMAN_ALLOW_SELF_EXEC=true")
+}
+
+func TestExecPolicyRejectsPrivilegedDebugBeforeWebSocketUpgrade(t *testing.T) {
+	handler := newExecPolicyTestHandler(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/exec/other-id?debug=1&image=example/debug", nil)
+	req = req.WithContext(hostMid.SetHost(context.Background(), contSrv.LocalClient))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	require.Equal(t, http.StatusForbidden, res.Code)
+	require.Contains(t, res.Body.String(), "privileged debug containers are disabled")
+}
+
 func TestExecPolicyCanBeExplicitlyEnabled(t *testing.T) {
 	handler := newExecPolicyTestHandler(t, true)
 	req := httptest.NewRequest(http.MethodGet, "/exec/self-id/options", nil)

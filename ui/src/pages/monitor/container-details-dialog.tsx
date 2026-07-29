@@ -353,7 +353,8 @@ function Networks({containerID, containers, inspect, onChanged}: {
 function ExecTerminal({active, containerID, running}: {active: boolean, containerID: string, running: boolean}) {
     const createExecUrl = useContainerExecWsUrl();
     const createOptionsUrl = useContainerExecOptionsUrl();
-    const fitAddon = useRef(new FitAddon());
+    const fitAddon = useRef<FitAddon>(null!);
+    if (fitAddon.current === null) fitAddon.current = new FitAddon();
     const xterm = useRef<XTerm | null>(null);
     const [shells, setShells] = useState<string[] | null>(null);
     const [shellError, setShellError] = useState('');
@@ -574,7 +575,12 @@ export default function ContainerDetailsDialog({open, row, containers, history, 
             setProcessCount(0);
         }
     }, [client, containerID, containerState]);
-    useEffect(() => { if (open) {setTab('overview'); setProcessCount(null); void load();} }, [open, load]);
+    useEffect(() => {
+        if (!open) return;
+        setTab('overview');
+        setProcessCount(null);
+    }, [open, containerID]);
+    useEffect(() => { if (open) void load(); }, [open, load]);
     useEffect(() => { if (open && !row) onClose(); }, [open, row, onClose]);
     if (!row) return null;
     const state = row.info.state; const active = ['running', 'restarting', 'paused'].includes(state); const paused = state === 'paused';
@@ -641,7 +647,7 @@ export default function ContainerDetailsDialog({open, row, containers, history, 
                     <Box hidden={tab !== 'security'}><Security inspect={inspect}/></Box>
                     <Box hidden={tab !== 'resources'}><Resources inspect={inspect}/></Box>
                     <Box hidden={tab !== 'health'}><Health inspect={inspect}/></Box>
-                    <Box hidden={tab !== 'inspect'} sx={{height: '100%'}}><JsonInspect raw={raw}/></Box>
+                    {tab === 'inspect' && <Box sx={{height: '100%'}}><JsonInspect raw={raw}/></Box>}
                 </>}
                 </Box>
             </Box>

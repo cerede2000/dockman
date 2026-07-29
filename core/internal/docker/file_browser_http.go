@@ -173,6 +173,10 @@ func (h *HandlerHttp) containerFilesUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer target.cleanup()
+	if err = rejectContainerSymlinkPath(r.Context(), target, directory, true); err != nil {
+		writeBrowserError(w, fmt.Errorf("upload refused: %w", err))
+		return
+	}
 	if target.native {
 		if err = nativeFileUpload(r.Context(), target, targetPath(target.root, directory), filename, r.Body, r.ContentLength); err != nil {
 			writeBrowserError(w, fmt.Errorf("upload failed: %w", err))
@@ -218,6 +222,10 @@ func (h *HandlerHttp) containerFilesDownload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer target.cleanup()
+	if err = rejectContainerSymlinkPath(r.Context(), target, requested, true); err != nil {
+		writeBrowserError(w, fmt.Errorf("download refused: %w", err))
+		return
+	}
 	cli := target.cli
 	result, err := cli.CopyFromContainer(r.Context(), target.containerID, client.CopyFromContainerOptions{SourcePath: targetPath(target.root, requested)})
 	if err != nil {
@@ -260,6 +268,33 @@ func (h *HandlerHttp) containerFilesDownload(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+}
+
+// Docker's archive API resolves links relative to the container root rather
+// than the browser root. Check every existing path component with lstat-style
+// daemon metadata before using CopyTo/CopyFromContainer so a link below a
+// mounted volume cannot escape the intended browser subtree.
+func rejectContainerSymlinkPath(ctx context.Context, target browserTarget, requested string, requireLeaf bool) error {
+	cleaned := path.Clean("/" + strings.TrimPrefix(requested, "/"))
+	parts := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
+	current := target.root
+	for index, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		current = path.Join(current, part)
+		result, err := target.cli.ContainerStatPath(ctx, target.containerID, client.ContainerStatPathOptions{Path: current})
+		if err != nil {
+			if !requireLeaf && index == len(parts)-1 {
+				return nil
+			}
+			return err
+		}
+		if result.Stat.Mode&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic link component %q is outside the file browser safety model", current)
+		}
+	}
+	return nil
 }
 
 func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper bool, requestedPaths ...string) (browserTarget, error) {
@@ -305,6 +340,15 @@ func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper
 			target.helperPath, err = installFileHelper(r.Context(), dkSrv.Container.Cli(), id, inspect.Container.Image, rootReadOnly, inspect.Container.Mounts, requested)
 			if err == nil {
 				target.unlink = true
+				helperPath := target.helperPath
+				target.cleanup = func() {
+					cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_, cleanupErr := runContainerCommandAsUser(cleanupCtx, browserTarget{cli: dkSrv.Container.Cli(), containerID: id}, []string{helperPath, "--unlink", "--root", "/", "probe"}, "0")
+					if cleanupErr != nil {
+						log.Debug().Err(cleanupErr).Str("container", id).Msg("could not remove temporary file browser helper binary")
+					}
+				}
 			} else {
 				// Keep browsing useful for unusual mount namespaces, noexec
 				// filesystems and immutable images. Reads can still use native
@@ -319,6 +363,24 @@ func (h *HandlerHttp) prepareBrowserTarget(r *http.Request, writable, needHelper
 		return browserTarget{}, fmt.Errorf("invalid browser target")
 	}
 	return createVolumeBrowserTarget(r.Context(), dkSrv.Container.Cli(), id, writable)
+}
+
+// CleanupFileBrowserHelpers removes volume-browser helper containers left by
+// a process restart, crash, or OOM. Target-container helper binaries are
+// self-unlinking and also have a best-effort cleanup attached to each request.
+func CleanupFileBrowserHelpers(ctx context.Context, cli *client.Client) {
+	filters := client.Filters{}
+	filters.Add("label", fileHelperLabel+"=true")
+	rows, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
+	if err != nil {
+		log.Warn().Err(err).Msg("could not list stale file browser helpers")
+		return
+	}
+	for _, row := range rows.Items {
+		if _, err := cli.ContainerRemove(ctx, row.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
+			log.Warn().Err(err).Str("container", row.ID).Msg("could not remove stale file browser helper")
+		}
+	}
 }
 
 func createVolumeBrowserTarget(ctx context.Context, cli *client.Client, volumeName string, writable bool) (browserTarget, error) {

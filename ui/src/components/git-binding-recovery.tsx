@@ -6,6 +6,7 @@ import {
     TableHead, TableRow, Tabs, Tooltip, Typography,
 } from '@mui/material';
 import {CompareArrowsOutlined, CloudDownloadOutlined, DeleteOutlined, RestoreOutlined, UndoOutlined} from '@mui/icons-material';
+import {gitAPI as api, gitComparisonLanguage as comparisonLanguage, gitDateLabel as dateLabel} from '../lib/git-api.ts';
 import {withProtectedAPI} from '../lib/api.ts';
 import {formatBytes} from '../lib/editor.ts';
 import {useSnackbar} from '../hooks/snackbar.ts';
@@ -52,21 +53,6 @@ interface RollbackPreview {
 interface ComparisonSide { sha256: string; size: number; content?: string; }
 interface FileComparison { path: string; dockman: ComparisonSide; git: ComparisonSide; comparable: boolean; reason?: string; }
 
-const dateLabel = (value?: string) => value ? new Date(value).toLocaleString() : '—';
-const comparisonLanguage = (path: string) => path.endsWith('.json') ? 'json' : path.endsWith('.yml') || path.endsWith('.yaml') ? 'yaml' : path.endsWith('.toml') ? 'ini' : path.endsWith('.sh') ? 'shell' : 'plaintext';
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(withProtectedAPI(`/git${path}`), {
-        ...init,
-        headers: {'Content-Type': 'application/json', ...(init?.headers || {})},
-    });
-    if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `Request failed (${response.status})`);
-    }
-    return response.status === 204 ? undefined as T : response.json() as Promise<T>;
-}
-
 function activitySummary(operation: Operation) {
     if (operation.error) return operation.error;
     if (!operation.details) return '—';
@@ -102,31 +88,27 @@ export default function GitBindingRecovery({binding, initialTab, onClose}: {
 
     const load = useCallback(async () => {
         setLoading(true);
-        try {
+        await (async () => {
             const [nextOperations, nextBackups] = await Promise.all([
                 api<Operation[]>(`/bindings/${binding.id}/operations?limit=100&offset=${operationPage * 100}`),
                 api<Backup[]>(`/bindings/${binding.id}/backups?limit=100`),
             ]);
             setOperations(nextOperations);
             setBackups(nextBackups);
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setLoading(false);
-        }
+        }).finally(() => setLoading(false));
     }, [binding.id, operationPage, showError]);
 
     useEffect(() => { void load(); }, [load]);
 
     const loadCommits = useCallback(async () => {
         setCommitsLoading(true);
-        try {
+        await (async () => {
             setCommits(await api<BindingCommit[]>(`/bindings/${binding.id}/commits?limit=50`));
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setCommitsLoading(false);
-        }
+        }).finally(() => setCommitsLoading(false));
     }, [binding.id, showError]);
 
     useEffect(() => { if (tab === 'commits' && commits.length === 0) void loadCommits(); }, [commits.length, loadCommits, tab]);
@@ -136,48 +118,42 @@ export default function GitBindingRecovery({binding, initialTab, onClose}: {
 
     const openRestore = async (backup: Backup) => {
         setBusy(`preview-${backup.id}`);
-        try {
+        await (async () => {
             const preview = await api<RestorePreview>(`/bindings/${binding.id}/backups/${backup.id}/restore-preview`);
             setRestorePreview(preview);
             setSelectedPaths(new Set(preview.entries.filter((entry) => entry.action === 'restore' || entry.action === 'remove').map((entry) => entry.path)));
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setBusy(null);
-        }
+        }).finally(() => setBusy(null));
     };
 
     const restore = async () => {
         if (!restorePreview) return;
         setBusy(`restore-${restorePreview.backup.id}`);
-        try {
+        await (async () => {
             const result = await api<{message: string; safetyBackupId?: string}>(`/bindings/${binding.id}/backups/${restorePreview.backup.id}/restore`, {
                 method: 'POST', body: JSON.stringify({previewToken: restorePreview.token, selectedPaths: [...selectedPaths]}),
             });
             showSuccess(`${result.message}${result.safetyBackupId ? ' A safety backup was created.' : ''}`);
             setRestorePreview(null);
             await load();
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setBusy(null);
-        }
+        }).finally(() => setBusy(null));
     };
 
     const openCommitRollback = async (commit: BindingCommit) => {
         setBusy(`rollback-preview-${commit.sha}`);
-        try {
+        await (async () => {
             const preview = await api<RollbackPreview>(`/bindings/${binding.id}/rollback-preview`, {
                 method: 'POST', body: JSON.stringify({commitSha: commit.sha}),
             });
             setRollbackPreview(preview);
             setRollbackSelectedStacks(new Set(preview.composePaths));
             setRollbackSelectedPaths(new Set(preview.entries.filter((entry) => entry.action === 'restore' || entry.action === 'remove').map((entry) => entry.path)));
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setBusy(null);
-        }
+        }).finally(() => setBusy(null));
     };
 
     const toggleRollbackStack = (composePath: string, checked: boolean) => {
@@ -198,23 +174,21 @@ export default function GitBindingRecovery({binding, initialTab, onClose}: {
     const compareRollback = async (entry: RollbackEntry) => {
         if (!rollbackPreview) return;
         setBusy(`rollback-compare-${entry.path}`);
-        try {
+        await (async () => {
             const encoded = entry.path.split('/').map(encodeURIComponent).join('/');
             const comparison = await api<FileComparison>(`/bindings/${binding.id}/rollback-compare/${encoded}`, {
                 method: 'POST', body: JSON.stringify({commitSha: rollbackPreview.commit.sha, composePaths: rollbackPreview.composePaths}),
             });
             setRollbackComparison(comparison);
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setBusy(null);
-        }
+        }).finally(() => setBusy(null));
     };
 
     const applyCommitRollback = async () => {
         if (!rollbackPreview) return;
         setBusy(`rollback-${rollbackPreview.commit.sha}`);
-        try {
+        await (async () => {
             const result = await api<{message: string; safetyBackupId: string}>(`/bindings/${binding.id}/rollback`, {
                 method: 'POST', body: JSON.stringify({
                     commitSha: rollbackPreview.commit.sha, composePaths: rollbackPreview.composePaths,
@@ -225,26 +199,22 @@ export default function GitBindingRecovery({binding, initialTab, onClose}: {
             setRollbackPreview(null);
             setRollbackComparison(null);
             await load();
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setBusy(null);
-        }
+        }).finally(() => setBusy(null));
     };
 
     const removeBackup = async () => {
         if (!deleteBackup) return;
         setBusy(`delete-${deleteBackup.id}`);
-        try {
+        await (async () => {
             await api<void>(`/bindings/${binding.id}/backups/${deleteBackup.id}`, {method: 'DELETE'});
             showSuccess('Backup deleted.');
             setDeleteBackup(null);
             await load();
-        } catch (error) {
+        })().catch((error) => {
             showError(error instanceof Error ? error.message : String(error));
-        } finally {
-            setBusy(null);
-        }
+        }).finally(() => setBusy(null));
     };
 
     const download = (backup: Backup) => {

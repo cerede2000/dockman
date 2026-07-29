@@ -23,8 +23,9 @@ func Setup() (*Service, *ssh.MachineManagerDB) {
 	keyMan := ssh.NewGormKeyManager(db)
 	sshSrv := ssh.NewService(keyMan, macMan)
 	st := NewStore(db)
+	aliasStore := NewAliasStore(db)
 
-	return NewService(st, sshSrv), macMan
+	return NewService(st, aliasStore, sshSrv, testDir, ""), macMan
 }
 
 func TestAdd(t *testing.T) {
@@ -38,7 +39,6 @@ func TestAdd(t *testing.T) {
 		DockerSocket: "",
 		SSHID:        0,
 		SSHOptions: &ssh.MachineOptions{
-			Name:             "test",
 			Host:             "",
 			Port:             0,
 			User:             "",

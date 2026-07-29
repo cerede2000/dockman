@@ -186,6 +186,7 @@ func (s *Service) StartAutomation(ctx context.Context) {
 		return
 	}
 	go func() {
+		s.cleanupStaleProvisionStaging(time.Now())
 		timer := time.NewTimer(0)
 		defer timer.Stop()
 		for {
@@ -263,6 +264,15 @@ func (s *Service) RunBindingAutoSyncNow(ctx context.Context, id string) (AutoSyn
 func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeployment bool) (AutoSyncResult, error) {
 	releaseMemory := observeGitMemory("automatic Git to Dockman synchronization")
 	defer releaseMemory()
+	automationLock := s.repositoryLock("automation:" + id)
+	if !automationLock.TryLock() {
+		return AutoSyncResult{}, errors.New("automatic synchronization is already running for this folder link")
+	}
+	defer automationLock.Unlock()
+
+	// Read the binding only after serializing with policy/selection updates so
+	// a stack disabled concurrently cannot be synchronized one final time from
+	// a stale snapshot.
 	binding, err := s.store.GetBinding(id)
 	if err != nil {
 		return AutoSyncResult{}, err
@@ -273,11 +283,6 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 	if err := s.reconcileGitStackStatuses(binding); err != nil {
 		return AutoSyncResult{}, err
 	}
-	automationLock := s.repositoryLock("automation:" + id)
-	if !automationLock.TryLock() {
-		return AutoSyncResult{}, errors.New("automatic synchronization is already running for this folder link")
-	}
-	defer automationLock.Unlock()
 
 	attemptedAt := time.Now().UTC()
 	if len(s.activeAutomationComposePaths(binding)) == 0 && !(binding.AutoDeployEnabled && binding.AutoDeployNewStacks) {
@@ -437,7 +442,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 				return clearErr
 			}
 		}
-		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "pending") {
+		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "partial" || binding.AutoDeployState == "pending") {
 			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
 		}
 		changedPaths = excludeComposeStackPaths(changedPaths, result.SyncFailed)
@@ -476,7 +481,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 	if err != nil {
 		message := safeGitError(err)
 		_ = s.store.UpdateBindingAutoSyncState(id, "error", message, "", &attemptedAt, nil)
-		s.updateActiveStackStatuses(binding, stackSyncError, message, "", false)
+		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncError, message, "", false)
 		return AutoSyncResult{BindingID: id, State: "error", Message: message}, err
 	}
 	if result.State == "conflict" || result.State == "blocked" {

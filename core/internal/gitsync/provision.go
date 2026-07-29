@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -27,6 +28,41 @@ const (
 )
 
 var gitCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+func (s *Service) cleanupStaleProvisionStaging(now time.Time) {
+	bindings, err := s.store.ListBindings()
+	if err != nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		targetFS, root, err := s.resolveBindingStack(binding)
+		if err != nil {
+			continue
+		}
+		key := binding.Host + "\x00" + root
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		var stale []string
+		_ = targetFS.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil || !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".dockman-provision-staging-") {
+				return nil
+			}
+			info, infoErr := entry.Info()
+			if infoErr == nil && now.Sub(info.ModTime()) >= 24*time.Hour {
+				stale = append(stale, path)
+			}
+			return fs.SkipDir
+		})
+		for _, path := range stale {
+			if err := targetFS.RemoveAll(path); err != nil {
+				continue
+			}
+		}
+	}
+}
 
 type provisionManifest struct {
 	Version     int                   `yaml:"version"`

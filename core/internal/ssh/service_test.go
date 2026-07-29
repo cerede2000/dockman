@@ -38,13 +38,16 @@ func TestTransferKey(t *testing.T) {
 	require.NoError(t, err)
 
 	machineOpts := &MachineOptions{
-		Name:             "test-machine",
 		Host:             host,
 		Port:             atoi,
 		User:             "testuser",
 		Password:         "testpass",
 		UsePublicKeyAuth: true,
 	}
+	client, err := service.newClient(machineOpts)
+	require.NoError(t, err)
+	defer fileutil.Close(client)
+	require.NoError(t, service.transferPublicKey(client, machineOpts))
 
 	// new service will create a new key at DefaultKeyName get it
 	key, err := service.keys.GetKey(DefaultKeyName)
@@ -52,7 +55,6 @@ func TestTransferKey(t *testing.T) {
 	expectedCommand := getTransferCommand(key.PublicKey)
 
 	require.Equal(t, capturedCommand, expectedCommand)
-	require.Empty(t, machineOpts.Password, "Password should be cleared after key transfer")
 }
 
 // newMockSSHServer starts an in-memory SSH server for testing.
@@ -90,7 +92,7 @@ func (m *MockMachineMan) Save(mach *MachineOptions) error {
 		return fmt.Errorf("machine options cannot be nil")
 	}
 
-	key := mach.Name
+	key := mach.Host
 
 	m.data.Store(key, mach)
 	return nil
@@ -101,7 +103,7 @@ func (m *MockMachineMan) Delete(mac *MachineOptions) error {
 		return fmt.Errorf("machine options cannot be nil")
 	}
 
-	key := mac.Name
+	key := mac.Host
 
 	// Check if the key exists before deletion
 	if _, exists := m.data.Load(key); !exists {

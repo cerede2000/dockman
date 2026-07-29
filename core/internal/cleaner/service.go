@@ -143,6 +143,12 @@ func (s *Service) RunWithScheduler(host string, edit bool) error {
 	if err != nil {
 		return fmt.Errorf("invalid cleaner schedule for host %q: %w", host, err)
 	}
+	if getConfig.CronExpression != cronExpression {
+		getConfig.CronExpression = cronExpression
+		if err := s.store.UpdateConfig(&getConfig); err != nil {
+			return fmt.Errorf("persist migrated cleaner schedule for host %q: %w", host, err)
+		}
+	}
 
 	var jb gocron.Job
 	jobDef := gocron.CronJob(cronExpression, false)
@@ -187,6 +193,9 @@ func normalizedPruneCron(expression string, legacyInterval time.Duration) (strin
 	expression = strings.TrimSpace(expression)
 	if expression == "" {
 		if legacyInterval > 0 {
+			if legacyInterval < minimumPruneGap {
+				legacyInterval = minimumPruneGap
+			}
 			expression = fmt.Sprintf("@every %s", legacyInterval)
 		} else {
 			expression = defaultPruneCron
@@ -301,11 +310,20 @@ func (s *Service) clean(ctx context.Context, host string) {
 	if err != nil {
 		s.log.Err(err).Msg("failed to get docker config")
 		result.Err = err.Error()
+		if storeErr := s.store.AddResult(&result); storeErr != nil {
+			s.log.Err(storeErr).Msg("Failed to add cleaner error result")
+		}
+		return
 	}
 
 	if !pruneConfig.Enabled {
 		return
 	}
+	defer func() {
+		if err := s.store.AddResult(&result); err != nil {
+			s.log.Err(err).Msg("Failed to add result for cleaner")
+		}
+	}()
 
 	cli, err := s.cli(host)
 	if err != nil {
@@ -315,11 +333,6 @@ func (s *Service) clean(ctx context.Context, host string) {
 
 	s.Prune(ctx, &pruneConfig, cli.Client, &result)
 
-	err = s.store.AddResult(&result)
-	if err != nil {
-		s.log.Err(err).Msg("Failed to add result for cleaner")
-		return
-	}
 }
 
 func (s *Service) Prune(

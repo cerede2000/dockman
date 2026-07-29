@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	contSrv "github.com/RA341/dockman/internal/docker/container"
 	hostMid "github.com/RA341/dockman/internal/host/middleware"
 	fu "github.com/RA341/dockman/pkg/fileutil"
 	wsu "github.com/RA341/dockman/pkg/ws"
@@ -29,6 +30,10 @@ func (h *HandlerHttp) hostShell(w http.ResponseWriter, r *http.Request) {
 	host, err := hostMid.GetHost(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if host == contSrv.LocalClient && !h.allowSelfExec {
+		http.Error(w, "host shell inside Dockman is disabled by policy; set DOCKMAN_ALLOW_SELF_EXEC=true and recreate Dockman to enable it temporarily", http.StatusForbidden)
 		return
 	}
 
@@ -70,7 +75,7 @@ func (h *HandlerHttp) hostShell(w http.ResponseWriter, r *http.Request) {
 		for {
 			n, err := shell.Read(buf)
 			if n > 0 {
-				if werr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+				if werr := wsu.WriteMessage(ws, websocket.BinaryMessage, buf[:n]); werr != nil {
 					break
 				}
 			}

@@ -1,12 +1,23 @@
 package ws
 
 import (
+	"time"
+
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 )
 
 type WsWriter struct {
 	ws *websocket.Conn
+}
+
+const writeTimeout = 15 * time.Second
+
+func WriteMessage(ws *websocket.Conn, messageType int, data []byte) error {
+	if err := ws.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
+	}
+	return ws.WriteMessage(messageType, data)
 }
 
 // LimitClientMessages bounds browser-to-server frames without constraining
@@ -24,7 +35,7 @@ func NewWsWriter(ws *websocket.Conn) *WsWriter {
 }
 
 func (w *WsWriter) Write(p []byte) (n int, err error) {
-	err = w.ws.WriteMessage(websocket.TextMessage, p)
+	err = WriteMessage(w.ws, websocket.TextMessage, p)
 	if err != nil {
 		log.Warn().Err(err).Msg("Unable to write to websocket")
 		return len(p), err
@@ -62,7 +73,7 @@ func formatTermMessage(message string, color string) string {
 }
 
 func WsMustWrite(ws *websocket.Conn, message string) {
-	err := ws.WriteMessage(websocket.TextMessage, []byte(message))
+	err := WriteMessage(ws, websocket.TextMessage, []byte(message))
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to write to socket")
 		return

@@ -218,6 +218,7 @@ function MonitorPage() {
     }>>({});
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const scrollRestored = useRef(false);
+    const previousHost = useRef(host);
 
     // remember the expand/collapse choices for this host
     useEffect(() => {
@@ -243,6 +244,8 @@ function MonitorPage() {
     // the bottom panel tabs reference the previous host's containers
     const clearTabs = useTerminalTabs(state => state.clearAll);
     useEffect(() => {
+        if (previousHost.current === host) return;
+        previousHost.current = host;
         clearTabs();
         setSelectedContainers([]);
         setSelectedStacks([]);
@@ -402,7 +405,10 @@ function MonitorPage() {
         return counts;
     }, [containers]);
     useEffect(() => {
-        setStateFilters(current => current.filter(filter => stateCounts[filter] > 0));
+        setStateFilters(current => {
+            const next = current.filter(filter => stateCounts[filter] > 0);
+            return next.length === current.length ? current : next;
+        });
     }, [stateCounts]);
     const changeStateFilter = (filter: ContainerStateFilter | null, additive = false) => {
         setStateFilters(current => {
@@ -449,13 +455,11 @@ function MonitorPage() {
     // the list is event-driven, so a manual refresh often changes nothing
     // visible: give the button its own spinner so the fetch is observable
     const [refreshing, setRefreshing] = useState(false);
-    const handleRefresh = async () => {
+    const handleRefresh = () => {
         setRefreshing(true);
-        try {
-            await fetchContainers();
-        } finally {
+        return fetchContainers().finally(() => {
             setRefreshing(false);
-        }
+        });
     };
 
     // restore the saved scroll offset once the table is mounted with data
@@ -510,7 +514,7 @@ function MonitorPage() {
         if (changed) setStaleRows(next);
     }, [staleRows, containers, statsByName]);
 
-    async function containerAction(action: Exclude<RowAction, 'update'>, rpcName: ContainerActionRpc, message: string, ids: string[]) {
+    function containerAction(action: Exclude<RowAction, 'update'>, rpcName: ContainerActionRpc, message: string, ids: string[]) {
         const named = (containers?.list ?? []).filter(c => ids.includes(c.id));
         setRowBusy(prev => {
             const next = {...prev};
@@ -531,8 +535,7 @@ function MonitorPage() {
         if (action === 'start' || action === 'stop' || action === 'restart') {
             resetContainerStats(named.map(c => c.name));
         }
-        try {
-            const {err} = await callRPC(() => dockerService[rpcName]({containerIds: ids}));
+        return callRPC(() => dockerService[rpcName]({containerIds: ids})).then(async ({err}) => {
             if (err) {
                 showError(`Failed to ${action} containers: ${err}`);
                 // nothing changed on the daemon: unfreeze right away
@@ -546,13 +549,13 @@ function MonitorPage() {
             }
             setSelectedContainers(prev => prev.filter(id => !ids.includes(id)));
             await fetchContainers();
-        } finally {
+        }).finally(() => {
             setRowBusy(prev => {
                 const next = {...prev};
                 for (const id of ids) delete next[id];
                 return next;
             });
-        }
+        });
     }
 
     const rowRpc: Record<Exclude<RowAction, 'update'>, { rpc: ContainerActionRpc, message: string }> = {
@@ -933,7 +936,6 @@ function MonitorPage() {
                                     onToggleContainers={toggleContainers}
                                     onToggleStack={toggleStack}
                                     onToggleAllStacks={toggleAllStacks}
-                                    onToggleAllContainers={(ids, on) => toggleContainers(ids, on)}
                                     expanded={effectiveExpanded}
                                     onToggleExpand={(stack) => setExpanded(prev =>
                                         ({...prev, [stack]: !(prev[stack] ?? false)}))}
@@ -941,7 +943,11 @@ function MonitorPage() {
                                     sortOrder={sortOrder}
                                     onSortChange={handleSortChange}
                                     nameSearch={search}
-                                    onNameSearchChange={setSearch}
+                                    onNameSearchChange={(value) => {
+                                        setSearch(value);
+                                        setSelectedContainers([]);
+                                        setSelectedStacks([]);
+                                    }}
                                     nameSearchInputRef={searchInputRef}
                                     scrollRef={scrollRef}
                                     onScroll={(top) => {

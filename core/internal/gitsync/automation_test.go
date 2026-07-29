@@ -257,22 +257,23 @@ func TestAutoSyncRestoresPreviousStackWhenHealthCheckedDeploymentFails(t *testin
 	require.Len(t, deployments, deploymentCount+2, "manual retry checks the failing version, then restores the previous version again")
 
 	// Git is corrected in a new commit to the version already restored locally.
-	// There is intentionally nothing to transfer or redeploy, but the active
-	// rollback incident must be reconciled instead of keeping the link partial.
+	// There is nothing to transfer, but the active rollback incident is retried
+	// once so the deployment can be verified before the link becomes healthy.
 	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", previous)
 	reconciled, err := service.RunBindingAutoSync(context.Background(), binding.ID)
 	require.NoError(t, err)
 	require.Equal(t, "up_to_date", reconciled.State)
-	require.Equal(t, "Stack already matches Git", reconciled.Message)
+	require.Equal(t, "0 file(s) synchronized and 1 stack(s) deployed", reconciled.Message)
+	require.Len(t, deployments, deploymentCount+3, "the corrected commit is health-checked before clearing the rollback incident")
 	status, err := service.store.GitStackStatus(binding.ID, "compose.yaml")
 	require.NoError(t, err)
-	require.Equal(t, "idle", status.DeployState)
+	require.Equal(t, "success", status.DeployState)
 	require.Empty(t, status.DeployError)
 	resolved, err := service.store.GetBinding(binding.ID)
 	require.NoError(t, err)
 	require.Equal(t, "up_to_date", resolved.AutoSyncState)
-	require.Equal(t, "watching", resolved.AutoDeployState)
-	require.Empty(t, resolved.AutoDeployError)
+	require.Equal(t, "success", resolved.AutoDeployState)
+	require.Equal(t, "1 stack(s) deployed", resolved.AutoDeployError)
 }
 
 func TestAutoRollbackRefusesToOverwriteAFileChangedAfterImport(t *testing.T) {

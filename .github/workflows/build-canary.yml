@@ -3,17 +3,6 @@ name: Canary-Build
 on:
   workflow_dispatch:
 
-  push:
-    branches:
-      - main # publish a dev build on main
-    paths:
-      - Dockerfile
-      - Dockerfile.updater
-      - .github/workflows/action-docker.yml
-      - .github/workflows/build-canary.yml
-      - core/**
-      - ui/**
-
 permissions:
   contents: read   # To checkout the repository
   packages: write  # To push Docker images to GHCR

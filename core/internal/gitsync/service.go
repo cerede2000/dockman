@@ -22,8 +22,15 @@ import (
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/crypto/ssh"
 )
+
+const gitNetworkOperationTimeout = 3 * time.Minute
+
+func gitNetworkContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, gitNetworkOperationTimeout)
+}
 
 type secretPayload struct {
 	Token      string `json:"token,omitempty"`
@@ -85,6 +92,9 @@ type Service struct {
 	backupRetentionDays  int
 	maintenanceMu        sync.Mutex
 	lastMaintenanceAt    time.Time
+	hostKeysMu           sync.Mutex
+	hostKeys             []ssh.PublicKey
+	hostKeysFetchedAt    time.Time
 }
 
 // ConfigureEditorCoherence prevents an incoming transfer from overwriting a
@@ -372,11 +382,20 @@ func (s *Service) testCredential(ctx context.Context, input CredentialInput, rep
 }
 
 func (s *Service) githubHostKeys(ctx context.Context) ([]ssh.PublicKey, error) {
+	s.hostKeysMu.Lock()
+	defer s.hostKeysMu.Unlock()
+	if len(s.hostKeys) > 0 && time.Since(s.hostKeysFetchedAt) < 24*time.Hour {
+		return append([]ssh.PublicKey(nil), s.hostKeys...), nil
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.githubAPIBase+"/meta", nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
 	resp, err := s.http.Do(req)
 	if err != nil {
+		if len(s.hostKeys) > 0 {
+			log.Warn().Err(err).Msg("Using cached GitHub SSH host keys after metadata refresh failed")
+			return append([]ssh.PublicKey(nil), s.hostKeys...), nil
+		}
 		return nil, fmt.Errorf("retrieve GitHub SSH host keys: %w", err)
 	}
 	defer resp.Body.Close()
@@ -399,7 +418,9 @@ func (s *Service) githubHostKeys(ctx context.Context) ([]ssh.PublicKey, error) {
 	if len(keys) == 0 {
 		return nil, errors.New("GitHub API returned no usable SSH host key")
 	}
-	return keys, nil
+	s.hostKeys = append([]ssh.PublicKey(nil), keys...)
+	s.hostKeysFetchedAt = time.Now()
+	return append([]ssh.PublicKey(nil), keys...), nil
 }
 
 func trustedHostKeyCallback(hostKeys []ssh.PublicKey) ssh.HostKeyCallback {
@@ -416,7 +437,9 @@ func trustedHostKeyCallback(hostKeys []ssh.PublicKey) ssh.HostKeyCallback {
 func listRemote(ctx context.Context, remoteURL string, auth transport.AuthMethod) error {
 	remote := gitclient.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
 	opts := &gitclient.ListOptions{Auth: auth}
-	_, err := remote.ListContext(ctx, opts)
+	networkCtx, cancel := gitNetworkContext(ctx)
+	defer cancel()
+	_, err := remote.ListContext(networkCtx, opts)
 	return err
 }
 

@@ -116,8 +116,10 @@ const mutationRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
 
 export async function refreshGitStackStatuses(host: string) {
     if (!host) return;
+    // One-shot refreshes (for example after a file mutation) must not create a
+    // permanent zero-reference watcher. Only useGitStatusWatcher owns entries
+    // in this map and their timers/listeners.
     const watcher = watchers.get(host) ?? {references: 0, running: false};
-    watchers.set(host, watcher);
     if (watcher.running || document.visibilityState === 'hidden') return;
     watcher.running = true;
     try {

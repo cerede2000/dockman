@@ -55,6 +55,26 @@ type eventsHub struct {
 
 var eventHubs syncmap.Map[*client.Client, *eventsHub]
 
+// ReleaseClientState drops package-wide caches when a host connection is
+// closed or replaced. Without this hook, reconnecting a host leaves the old
+// moby client and its event/cache state reachable forever.
+func ReleaseClientState(cli *client.Client) {
+	if cli == nil {
+		return
+	}
+	if hub, ok := eventHubs.Load(cli); ok {
+		hub.mu.Lock()
+		if hub.stop != nil {
+			hub.stop()
+			hub.stop = nil
+		}
+		hub.subscribers = make(map[chan Event]struct{})
+		hub.mu.Unlock()
+	}
+	eventHubs.Delete(cli)
+	hostCaches.Delete(cli)
+}
+
 func hubFor(cli *client.Client) *eventsHub {
 	hub, _ := eventHubs.LoadOrStore(cli, &eventsHub{
 		subscribers: make(map[chan Event]struct{}),

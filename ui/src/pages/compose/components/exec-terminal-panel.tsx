@@ -11,7 +11,8 @@ import {copyText} from '../../../hooks/copy.ts';
 const sizes = [10, 12, 14, 16];
 
 export default function ExecTerminalPanel({tab, isActive}: {tab: TabTerminal; isActive: boolean}) {
-    const fit = useRef(new FitAddon());
+    const fit = useRef<FitAddon>(null!);
+    if (fit.current === null) fit.current = new FitAddon();
     const xterm = useRef<Terminal | null>(null);
     const createExecUrl = useContainerExecWsUrl();
     const createOptionsUrl = useContainerExecOptionsUrl();

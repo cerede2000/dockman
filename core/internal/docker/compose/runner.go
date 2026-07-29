@@ -93,7 +93,7 @@ func (r *RemoteRunner) Run(
 		case <-done:
 		}
 	}()
-	close(done)
+	defer close(done)
 
 	return session.Run(fullCmd)
 }

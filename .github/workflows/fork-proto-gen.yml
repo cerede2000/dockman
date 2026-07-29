@@ -33,22 +33,22 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.25"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "22"
 
       - name: Install buf + pinned plugins
         run: |
           set -euxo pipefail
-          go install github.com/bufbuild/buf/cmd/buf@latest
+          go install github.com/bufbuild/buf/cmd/buf@v1.47.2
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
           go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.19.1
           npm install -g @bufbuild/protoc-gen-es@2.11.0
@@ -66,11 +66,18 @@ jobs:
           cp -r generated/web/* ../ui/src/gen/
 
       - name: Commit regenerated stubs
+        env:
+          PROTO_PACKAGE: ${{ inputs.pkg }}
+          TARGET_REF: ${{ inputs.ref }}
         run: |
           set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          PKG="${{ inputs.pkg }}"
+          PKG="$PROTO_PACKAGE"
+          if [[ ! "$PKG" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+            echo "Invalid protobuf package name" >&2
+            exit 1
+          fi
           # Only commit the requested package's stubs so any incidental version
           # drift in unrelated generated files (left unstaged) is discarded,
           # keeping the contribution branch's diff minimal.
@@ -81,4 +88,4 @@ jobs:
           fi
           git status --short "core/generated/${PKG}" "ui/src/gen/${PKG}"
           git commit -m "chore(gen): regenerate ${PKG} stubs [skip ci]"
-          git push origin HEAD:${{ inputs.ref }}
+          git push origin "HEAD:${TARGET_REF}"

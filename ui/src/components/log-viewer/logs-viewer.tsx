@@ -62,6 +62,7 @@ interface LogsViewerProps {
 // scroll distance from the bottom under which the view is considered "at the
 // bottom" and auto-scroll stays engaged
 const BOTTOM_STICKINESS_PX = 40;
+const ZERO_NANOSECONDS = BigInt(0);
 
 const PREF_TIMESTAMPS = 'dockman-logs-timestamps';
 const PREF_WRAP = 'dockman-logs-wrap';
@@ -198,7 +199,7 @@ function LogRow({entry, lineNumber, query, isCurrentMatch, showTimestamps, showL
                 opacity: isInternal ? 0.85 : undefined,
             }}
         >
-            {showTimestamps && entry.timeNano !== 0n && (
+            {showTimestamps && entry.timeNano !== ZERO_NANOSECONDS && (
                 <span style={{color: theme.timestamp}}>{formatLogTime(entry.timeNano)} </span>
             )}
             {showName && entry.containerName !== "" && (
@@ -288,22 +289,23 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
         setReloadKey(k => k + 1);
     };
 
-    const boolToggle = (key: string, set: (fn: (prev: boolean) => boolean) => void) => () => set(prev => {
-        localStorage.setItem(key, String(!prev));
-        return !prev;
-    });
-    const toggleTimestamps = boolToggle(PREF_TIMESTAMPS, setShowTimestamps);
-    const toggleWrap = boolToggle(PREF_WRAP, setWrap);
-    const toggleNames = boolToggle(PREF_NAMES, setShowNames);
-    const toggleLineNumbers = boolToggle(PREF_LINE_NUMBERS, setShowLineNumbers);
-    const toggleLight = boolToggle(PREF_LIGHT, setLight);
+    const boolToggle = (key: string, value: boolean, set: (next: boolean) => void) => () => {
+        const next = !value;
+        set(next);
+        try { localStorage.setItem(key, String(next)); } catch { /* optional browser preference */ }
+    };
+    const toggleTimestamps = boolToggle(PREF_TIMESTAMPS, showTimestamps, setShowTimestamps);
+    const toggleWrap = boolToggle(PREF_WRAP, wrap, setWrap);
+    const toggleNames = boolToggle(PREF_NAMES, showNames, setShowNames);
+    const toggleLineNumbers = boolToggle(PREF_LINE_NUMBERS, showLineNumbers, setShowLineNumbers);
+    const toggleLight = boolToggle(PREF_LIGHT, light, setLight);
 
     const changeTail = (value: number) => {
-        localStorage.setItem(PREF_TAIL, String(value));
+        try { localStorage.setItem(PREF_TAIL, String(value)); } catch { /* optional browser preference */ }
         setTail(value);
     };
     const changeFontSize = (value: number) => {
-        localStorage.setItem(PREF_FONT_SIZE, String(value));
+        try { localStorage.setItem(PREF_FONT_SIZE, String(value)); } catch { /* optional browser preference */ }
         setFontSize(value);
     };
 
@@ -446,7 +448,7 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                 sx={[{
                     alignItems: "center",
                     flexWrap: "wrap"
-                }, ...(Array.isArray(toolbarRowSx) ? toolbarRowSx : [toolbarRowSx])]}>
+                }, toolbarRowSx]}>
                 <TextField
                     size="small"
                     placeholder="Search logs..."
@@ -609,7 +611,7 @@ export function LogsViewer({containers, isActive = true}: LogsViewerProps) {
                     useFlexGap
                     sx={[{
                         flexWrap: "wrap"
-                    }, ...(Array.isArray(toolbarRowSx) ? toolbarRowSx : [toolbarRowSx])]}>
+                    }, toolbarRowSx]}>
                     {containers.map((c, idx) => {
                         const enabled = !disabledIds.has(c.id);
                         return (

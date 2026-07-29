@@ -67,6 +67,8 @@ export function useLogsStream(params: LogsStreamParams) {
         let closed = false;
         let pending: LogEntry[] = [];
         let flushTimer: ReturnType<typeof setTimeout> | null = null;
+        let backoffTimer: ReturnType<typeof setTimeout> | null = null;
+        let wakeBackoff: (() => void) | null = null;
 
         const flush = () => {
             flushTimer = null;
@@ -171,7 +173,14 @@ export function useLogsStream(params: LogsStreamParams) {
 
                 flush();
                 setStatus('reconnecting');
-                await new Promise(resolve => setTimeout(resolve, backoff));
+                await new Promise<void>(resolve => {
+                    wakeBackoff = resolve;
+                    backoffTimer = setTimeout(() => {
+                        backoffTimer = null;
+                        wakeBackoff = null;
+                        resolve();
+                    }, backoff);
+                });
                 backoff = Math.min(backoff * 2, RETRY_MAX_MS);
             }
         };
@@ -181,6 +190,8 @@ export function useLogsStream(params: LogsStreamParams) {
             closed = true;
             abort.abort();
             if (flushTimer !== null) clearTimeout(flushTimer);
+            if (backoffTimer !== null) clearTimeout(backoffTimer);
+            wakeBackoff?.();
         };
     }, [client, idsKey, tail, since, until, follow, paused, reloadKey]);
 
