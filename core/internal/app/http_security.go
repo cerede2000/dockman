@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RA341/dockman/internal/config"
+	wsu "github.com/RA341/dockman/pkg/ws"
 )
 
 const bytesPerMiB = 1024 * 1024
@@ -25,11 +26,11 @@ func enforceOriginPolicy(conf *config.AppConfig, next http.Handler) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := strings.TrimSuffix(strings.TrimSpace(r.Header.Get("Origin")), "/")
 		if origin == "" || requestIsSameOrigin(r, origin) {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, wsu.WithValidatedOrigin(r))
 			return
 		}
 		if _, ok := allowed[origin]; ok {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, wsu.WithValidatedOrigin(r))
 			return
 		}
 		http.Error(w, "browser origin is not allowed", http.StatusForbidden)

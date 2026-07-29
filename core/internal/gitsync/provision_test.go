@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
 	"github.com/google/uuid"
@@ -92,6 +93,32 @@ func TestProvisionTransactionStagesAndRollsBackRemoval(t *testing.T) {
 	require.NoError(t, tx.apply(context.Background(), ".", operations))
 	require.NoError(t, tx.Commit())
 	require.NoDirExists(t, filepath.Join(root, "obsolete"))
+}
+
+func TestCleanupStaleProvisionStagingOnlyInspectsCataloguedStackRoots(t *testing.T) {
+	service, _ := testService(t, true)
+	root := configureTestStack(t, service)
+	now := time.Now().UTC()
+	stackRoot := filepath.Join(root, "app")
+	require.NoError(t, os.MkdirAll(stackRoot, 0o755))
+	stale := filepath.Join(stackRoot, ".dockman-provision-staging-"+uuid.NewString())
+	fresh := filepath.Join(stackRoot, ".dockman-provision-staging-"+uuid.NewString())
+	unrelated := filepath.Join(root, "data", ".dockman-provision-staging-"+uuid.NewString())
+	for _, directory := range []string{stale, fresh, unrelated} {
+		require.NoError(t, os.MkdirAll(directory, 0o700))
+	}
+	require.NoError(t, os.Chtimes(stale, now.Add(-25*time.Hour), now.Add(-25*time.Hour)))
+	require.NoError(t, os.Chtimes(unrelated, now.Add(-25*time.Hour), now.Add(-25*time.Hour)))
+	require.NoError(t, service.store.SaveBinding(&StackBinding{
+		UUID: uuid.NewString(), RepositoryUUID: uuid.NewString(), Host: "local", StackPath: "compose",
+		SubPath: ".", ComposePaths: "app/compose.yml", Enabled: true,
+	}))
+
+	service.cleanupStaleProvisionStaging(now)
+
+	require.NoDirExists(t, stale)
+	require.DirExists(t, fresh)
+	require.DirExists(t, unrelated, "unrelated data trees must not be walked or cleaned")
 }
 
 func TestProvisionRemovalRequiresExplicitRecursiveFlag(t *testing.T) {

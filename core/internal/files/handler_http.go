@@ -266,7 +266,7 @@ func decodeUploadFilename(encoded string) ([]byte, error) {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: wsu.CheckOrigin,
 }
 
 type SearchResponse struct {
@@ -294,6 +294,7 @@ func (h *FileHandler) searchFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer fu.Close(ws)
 	wsu.LimitClientMessages(ws)
+	defer wsu.KeepAlive(r.Context(), ws)()
 
 	var response SearchResponse
 

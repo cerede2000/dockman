@@ -23,7 +23,7 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: wsu.CheckOrigin,
 }
 
 type HandlerHttp struct {
@@ -188,6 +188,7 @@ func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
 	}
 	defer fu.Close(ws)
 	wsu.LimitClientMessages(ws)
+	defer wsu.KeepAlive(r.Context(), ws)()
 
 	query := r.URL.Query()
 	execCmd := getExecCmd(query, ws)
@@ -327,6 +328,7 @@ func (h *HandlerHttp) containerLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer fu.Close(ws)
 	wsu.LimitClientMessages(ws)
+	defer wsu.KeepAlive(r.Context(), ws)()
 
 	writer := wsu.NewWsWriter(ws)
 	go func() {

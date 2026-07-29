@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/goccy/go-yaml"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
 )
@@ -34,31 +35,44 @@ func (s *Service) cleanupStaleProvisionStaging(now time.Time) {
 	if err != nil {
 		return
 	}
-	seen := make(map[string]struct{}, len(bindings))
+	seen := make(map[string]struct{})
 	for _, binding := range bindings {
 		targetFS, root, err := s.resolveBindingStack(binding)
 		if err != nil {
 			continue
 		}
-		key := binding.Host + "\x00" + root
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		var stale []string
-		_ = targetFS.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil || !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".dockman-provision-staging-") {
-				return nil
+		for _, composePath := range splitPatternLines(binding.ComposePaths) {
+			directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(composePath)))
+			if directory == "." {
+				directory = ""
 			}
-			info, infoErr := entry.Info()
-			if infoErr == nil && now.Sub(info.ModTime()) >= 24*time.Hour {
-				stale = append(stale, path)
-			}
-			return fs.SkipDir
-		})
-		for _, path := range stale {
-			if err := targetFS.RemoveAll(path); err != nil {
+			stackRoot := targetFS.Join(root, filepath.FromSlash(directory))
+			key := binding.Host + "\x00" + stackRoot
+			if _, ok := seen[key]; ok {
 				continue
+			}
+			seen[key] = struct{}{}
+			// Staging directories are direct children of a provisioned stack.
+			// Inspect only catalogued stack roots instead of recursively walking
+			// the whole folder link and its potentially huge data trees.
+			entries, readErr := targetFS.ReadDir(stackRoot)
+			if readErr != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".dockman-provision-staging-") {
+					continue
+				}
+				info, infoErr := entry.Info()
+				if infoErr != nil || now.Sub(info.ModTime()) < 24*time.Hour {
+					continue
+				}
+				stale := targetFS.Join(stackRoot, entry.Name())
+				if removeErr := targetFS.RemoveAll(stale); removeErr != nil {
+					log.Warn().Str("path", stale).Err(removeErr).Msg("unable to remove stale Git provisioning staging directory")
+					continue
+				}
+				log.Info().Str("path", stale).Msg("removed stale Git provisioning staging directory")
 			}
 		}
 	}

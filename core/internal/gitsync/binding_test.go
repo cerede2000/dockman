@@ -1116,7 +1116,11 @@ func TestComposeOnlyPolicyIncludesManifestsTemplatesAndExplicitAdditions(t *test
 	for name, contents := range files {
 		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, name), []byte(contents), 0o644))
 	}
-	policy := syncPolicy{profile: syncProfileComposeOnly, includes: mustRules([]string{"application.conf"})}
+	policy := syncPolicy{
+		profile:  syncProfileComposeOnly,
+		includes: mustRules([]string{"application.conf"}),
+		compose:  map[string]struct{}{"compose.yaml": {}, "docker-compose.yml": {}},
+	}
 
 	collected, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false, policy)
 	require.NoError(t, err)
@@ -1126,6 +1130,74 @@ func TestComposeOnlyPolicyIncludesManifestsTemplatesAndExplicitAdditions(t *test
 	for _, name := range []string{"override.yml", "application.yaml", "settings.json", "notes.md"} {
 		require.NotContains(t, collected, name)
 	}
+}
+
+func TestComposeOnlyPolicyFailsClosedWithoutCatalog(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "secrets", "nested"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "secrets", "nested", "compose.yml"), []byte("services: {}\n"), 0o644))
+
+	_, err := collectStackFiles(denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "secrets"}, ".", false, syncPolicy{profile: syncProfileComposeOnly})
+	require.ErrorContains(t, err, "no Compose stack is catalogued")
+	require.ErrorContains(t, err, "refresh the Compose catalog")
+}
+
+func TestComposeOnlyAutomaticNewStackDiscoveryWorksFromEmptyCatalog(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	remoteChange(t, repository.RemoteURL, "stacks/app/new/compose.yml", "services:\n  app:\n    image: alpine\n")
+	_, err := service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	binding := StackBinding{
+		UUID: uuid.NewString(), RepositoryUUID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app",
+		SyncProfile: syncProfileComposeOnly, ComposeSelectionMode: composeSelectionSelected,
+		AutoSyncEnabled: true, AutoDeployEnabled: true, AutoDeployNewStacks: true, Enabled: true,
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+
+	_, source, target, err := service.loadTransferTrees(binding.UUID, "repository_to_stack", TransferInput{automation: true})
+	require.NoError(t, err)
+	require.NotNil(t, source["new/compose.yml"].open)
+	require.NotContains(t, target, "new/compose.yml")
+	stored, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.Empty(t, stored.ComposePaths, "discovery must remain transactional until the automatic preview is accepted")
+}
+
+func TestLargeDirectoryGuardRemainsActiveWithoutComposeCatalog(t *testing.T) {
+	result := map[string]transferFile{
+		"data/file.bin": {path: "data/file.bin"},
+	}
+	require.True(t, autoExcludeLargeDirectory(result, syncPolicy{profile: syncProfileComposeOnly}, "data", maxAutoDirectoryFiles+1))
+	require.NotContains(t, result, "data/file.bin")
+	require.Equal(t, "large_directory", result["data"].skipReason)
+}
+
+func TestComposeOnlyPolicyUsesCatalogAndTraversesPathIncludes(t *testing.T) {
+	stackRoot := t.TempDir()
+	for _, directory := range []string{"known", "config"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, directory), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "known", "compose.yml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "known", ".env.example"), []byte("TOKEN=example\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "config", "compose.yml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "config", "application.conf"), []byte("enabled=true\n"), 0o644))
+
+	policy := syncPolicy{
+		profile:  syncProfileComposeOnly,
+		includes: mustRules([]string{"config/*.conf"}),
+		compose:  map[string]struct{}{"known/compose.yml": {}},
+	}
+	files, err := collectStackFiles(filesystem.NewLocal(stackRoot), ".", false, policy)
+	require.NoError(t, err)
+	require.NotContains(t, files, "compose.yml", "a root Compose name outside the catalog must stay excluded")
+	require.NotContains(t, files, "config/compose.yml", "an explicitly traversed directory must not admit an uncatalogued Compose")
+	require.NotNil(t, files["known/compose.yml"].open)
+	require.NotNil(t, files["known/.env.example"].open)
+	require.NotNil(t, files["config/application.conf"].open)
 }
 
 func TestRootComposeSelectionDoesNotSelectNestedStacks(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 var DefaultUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true }, // WARNING: In production, check the origin!
+	CheckOrigin:     wsu.CheckOrigin,
 }
 
 // WebSocketHandler returns an http.Handler that upgrades the connection
@@ -28,6 +28,7 @@ func WebSocketHandler(up websocket.Upgrader) http.HandlerFunc {
 		}
 		// Ensure connection is closed when function exits
 		defer fileutil.Close(conn)
+		defer wsu.KeepAlive(r.Context(), conn)()
 
 		stream := &WebSocketStream{conn: conn}
 		if err = StartLSP(WithStream(stream), WithZapLogger()); err != nil {

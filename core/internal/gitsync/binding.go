@@ -267,7 +267,19 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	if err != nil {
 		return BindingView{}, err
 	}
-	compose := discoverComposeFiles(targetFS, targetRoot)
+	localCompose := discoverComposeFiles(targetFS, targetRoot)
+	repository, err := s.store.GetRepository(clean.RepositoryID)
+	if err != nil {
+		return BindingView{}, err
+	}
+	remoteCompose, err := s.repositoryComposeCatalog(repository, clean.SubPath)
+	if err != nil {
+		return BindingView{}, fmt.Errorf("discover repository Compose catalog: %w", err)
+	}
+	// Catalog both sides at link creation. This keeps an initially empty local
+	// folder safe in Compose-only mode while still allowing an existing Git
+	// stack to be imported without a separate manual refresh.
+	compose := uniqueSortedStrings(append(localCompose, remoteCompose...))
 	selectionMode, selectedCompose, err := normalizeComposeSelection(compose, clean.ComposeSelectionMode, clean.SelectedComposePaths, composeSelectionAll)
 	if err != nil {
 		return BindingView{}, err
@@ -343,7 +355,26 @@ func (s *Service) initializeBinding(ctx context.Context, row StackBinding, direc
 		// Link only: leave both sides untouched until the user previews a direction.
 	} else if _, err := s.PullRepository(ctx, row.RepositoryUUID); err != nil {
 		state, message = "error", safeGitError(err)
+	} else if refreshed, _, refreshErr := s.refreshBindingComposeCatalogLocked(row); refreshErr != nil {
+		state, message = "error", "refresh Compose catalog after pull: "+safeGitError(refreshErr)
 	} else {
+		if len(splitPatternLines(row.ComposePaths)) == 0 &&
+			normalizedComposeSelectionMode(row.ComposeSelectionMode) == composeSelectionAll &&
+			len(splitPatternLines(refreshed.ComposePaths)) > 0 {
+			// This is still the initial link operation, not a later discovery.
+			// Preserve the operator's initial "All stacks" choice after the pull
+			// instead of turning newly visible remote stacks into an empty explicit
+			// selection and falsely reconciling two empty inventories.
+			refreshed.ComposeSelectionMode = composeSelectionAll
+			refreshed.SelectedComposePaths = ""
+			if saveErr := s.store.SaveBinding(&refreshed); saveErr != nil {
+				return BindingView{}, saveErr
+			}
+			if reconcileErr := s.reconcileGitStackStatuses(refreshed); reconcileErr != nil {
+				return BindingView{}, reconcileErr
+			}
+		}
+		row = refreshed
 		identical := false
 		var reconcileErr error
 		if row.AutoReconcileEnabled {
@@ -433,6 +464,19 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 	policy, includes, excludes, err := normalizeBindingPolicy(input)
 	if err != nil {
 		return BindingView{}, err
+	}
+	if policy == syncProfileComposeOnly && len(splitPatternLines(row.ComposePaths)) == 0 {
+		refreshed, refreshErr := s.RefreshBindingComposeCatalog(id)
+		if refreshErr != nil {
+			return BindingView{}, fmt.Errorf("refresh Compose catalog before enabling Docker Compose only: %w", refreshErr)
+		}
+		row, err = s.store.GetBinding(refreshed.ID)
+		if err != nil {
+			return BindingView{}, err
+		}
+		if len(splitPatternLines(row.ComposePaths)) == 0 {
+			return BindingView{}, composeOnlyCatalogError()
+		}
 	}
 	row.SyncProfile = policy
 	row.IncludePatterns = strings.Join(includes, "\n")
@@ -833,6 +877,17 @@ func (s *Service) ListStackTargets() ([]StackTarget, error) {
 }
 
 func (s *Service) PreviewBinding(id, direction string, input TransferInput) (TransferPreview, error) {
+	if !input.automation {
+		binding, err := s.store.GetBinding(id)
+		if err != nil {
+			return TransferPreview{}, err
+		}
+		if binding.SyncProfile == syncProfileComposeOnly && len(splitPatternLines(binding.ComposePaths)) == 0 {
+			if _, err := s.RefreshBindingComposeCatalog(id); err != nil {
+				return TransferPreview{}, fmt.Errorf("refresh empty Compose catalog: %w", err)
+			}
+		}
+	}
 	binding, source, target, err := s.loadTransferTrees(id, direction, input)
 	if err != nil {
 		return TransferPreview{}, err
@@ -1650,6 +1705,26 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 	if err != nil {
 		return binding, nil, nil, err
 	}
+	// Automatic new-stack deployment may legitimately start with an empty
+	// catalog. Authorize only Compose paths newly discovered in the current Git
+	// tree for this cycle; normal Compose-only transfers still fail closed, and
+	// successful deployment registers the paths through the existing workflow.
+	if input.automation && policy.selectNewCompose {
+		remoteCompose, catalogErr := s.repositoryComposeCatalog(repositoryRow, binding.SubPath)
+		if catalogErr != nil {
+			return binding, nil, nil, fmt.Errorf("discover automatic Git stack candidates: %w", catalogErr)
+		}
+		if policy.selectedRoots == nil {
+			policy.selectedRoots = make(map[string]struct{})
+		}
+		for _, relative := range remoteCompose {
+			if _, known := policy.compose[relative]; known {
+				continue
+			}
+			policy.compose[relative] = struct{}{}
+			policy.selectedRoots[filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))] = struct{}{}
+		}
+	}
 	targetFS, targetRoot, err := s.resolveBindingStack(binding)
 	if err != nil {
 		return binding, nil, nil, err
@@ -1688,6 +1763,9 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 	policy := defaultSyncPolicy()
 	if len(policies) > 0 {
 		policy = policies[0]
+	}
+	if err := validateComposeOnlyCatalog(policy); err != nil {
+		return nil, err
 	}
 	policy = policy.withComposeDirectoryIndex()
 	ignoreRules, err := loadStackIgnoreRules(targetFS, root)
@@ -1833,7 +1911,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 }
 
 func autoExcludeLargeDirectory(result map[string]transferFile, policy syncPolicy, relative string, observed int) bool {
-	if relative == "" || len(policy.compose) == 0 || observed <= maxAutoDirectoryFiles || policy.containsCompose(relative) {
+	if relative == "" || observed <= maxAutoDirectoryFiles || policy.containsCompose(relative) {
 		return false
 	}
 	prefix := strings.TrimSuffix(filepath.ToSlash(relative), "/") + "/"
@@ -1900,6 +1978,9 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 				policy.selectedRoots[filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))] = struct{}{}
 			}
 		}
+	}
+	if err := validateComposeOnlyCatalog(policy); err != nil {
+		return nil, err
 	}
 	policy = policy.withComposeDirectoryIndex()
 	ignoreRules, err := loadRepositoryTreeIgnoreRules(tree)
@@ -2324,12 +2405,42 @@ func (policy syncPolicy) includesFile(relative string) bool {
 		return true
 	}
 	if policy.profile == syncProfileComposeOnly {
-		return isComposePath(relative) || matchesIgnoreRule(composeOnlyRules, relative, false)
+		if isComposePath(relative) {
+			return policy.catalogsCompose(relative)
+		}
+		return matchesIgnoreRule(composeOnlyRules, relative, false) && policy.hasComposeInFileDirectory(relative)
 	}
 	if policy.profile == syncProfileAllFiles {
 		return true
 	}
 	return matchesIgnoreRule(composeConfigRules, relative, false)
+}
+
+func composeOnlyCatalogError() error {
+	return errors.New("no Compose stack is catalogued for this folder link; refresh the Compose catalog before synchronizing")
+}
+
+func validateComposeOnlyCatalog(policy syncPolicy) error {
+	if policy.profile == syncProfileComposeOnly && len(policy.compose) == 0 {
+		return composeOnlyCatalogError()
+	}
+	return nil
+}
+
+func (policy syncPolicy) catalogsCompose(relative string) bool {
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+	_, catalogued := policy.compose[clean]
+	return catalogued
+}
+
+func (policy syncPolicy) hasComposeInFileDirectory(relative string) bool {
+	directory := path.Dir(filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative))))
+	for compose := range policy.compose {
+		if path.Dir(filepath.ToSlash(compose)) == directory {
+			return true
+		}
+	}
+	return false
 }
 
 func (policy syncPolicy) explicitlyIncludes(relative string, directory bool) bool {
@@ -2405,7 +2516,7 @@ func (policy syncPolicy) withComposeDirectoryIndex() syncPolicy {
 // directories that contain a known Compose manifest. Extra trees are visited
 // only when an explicit include rule can target them.
 func (policy syncPolicy) traversesComposeOnlyDirectory(directory string) bool {
-	if len(policy.compose) == 0 || policy.containsCompose(directory) {
+	if policy.containsCompose(directory) {
 		return true
 	}
 	directory = strings.Trim(filepath.ToSlash(directory), "/")

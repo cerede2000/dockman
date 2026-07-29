@@ -140,12 +140,14 @@ Une inclusion explicite peut réautoriser un fichier fonctionnel exclu par le pr
 
 **Objectif :** synchroniser uniquement les définitions de stacks et leurs modèles d'environnement.
 
-Inclus automatiquement :
+Inclus automatiquement, à condition d'appartenir au catalogue de stacks du folder link :
 
-- `compose.yml`, `compose.yaml` ;
+- `compose.yml`, `compose.yaml` réellement détectés comme stacks ;
 - `docker-compose.yml`, `docker-compose.yaml` ;
 - `.env.example`, `.env.sample`, `.env.template`, `.env.dist` ;
 - variantes telles que `.env.production.example` ou `.env.foo.template`.
+
+Les modèles `.env` automatiques doivent se trouver dans le même répertoire qu'un Compose catalogué. Un autre fichier portant simplement le nom `compose.yml` n'est pas synchronisé. Si le catalogue est vide, le profil échoue explicitement et propose de le rafraîchir au lieu de parcourir tout le folder link.
 
 Ne sont pas inclus automatiquement :
 
@@ -155,7 +157,7 @@ Ne sont pas inclus automatiquement :
 
 Des fichiers supplémentaires, par exemple `config/app.conf`, peuvent être ajoutés explicitement. Le moteur ne parcourt alors que les chemins pertinents ; il ne tente pas de lire les sous-dossiers sans rapport.
 
-**État :** ✅ implémenté et corrigé après les régressions `.env.example` et lecture des sous-dossiers secrets.
+**État :** ✅ implémenté et corrigé après les régressions `.env.example`, lecture des sous-dossiers secrets et ouverture sur catalogue vide.
 
 #### Compose + configuration
 
@@ -583,6 +585,8 @@ Un dossier volumineux hors stack est réduit à une entrée `large_directory` et
 - timeout de lecture des headers et idle timeout ;
 - réponses Git marquées `no-store` et `nosniff` ;
 - erreurs Git nettoyées pour éviter la fuite de credentials.
+- origine WebSocket validée à la fois par la politique globale et par chaque upgrader ;
+- ping/pong WebSocket pour fermer les clients disparus sans frame de fermeture.
 
 ### Filesystem
 
@@ -611,7 +615,9 @@ Un dossier volumineux hors stack est réduit à une entrée `large_directory` et
 | Identification/exclusion des gros dossiers | ✅ |
 | Fichier illisible isolé sans bloquer les autres stacks | ✅ |
 | Compose-only n'ouvre plus secrets/data hors politique | ✅ |
-| Compose-only limité aux vrais noms Compose | ✅ |
+| Compose-only limité aux Compose réellement catalogués | ✅ |
+| Catalogue Compose vide : échec fermé et rafraîchissement explicite/automatique | ✅ |
+| Auto-discovery depuis un catalogue vide sans enrôlement anticipé | ✅ |
 | `.env.example/sample/template/dist` rétablis | ✅ |
 | Inclusion explicite de fichiers de configuration en compose-only | ✅ |
 | Sélection massive, recherche, filtre et pagination | ✅ |
@@ -635,6 +641,8 @@ Un dossier volumineux hors stack est réduit à une entrée `large_directory` et
 | Logs Compose sans séquences ANSI | ✅ |
 | Rollback automatique et état réconcilié | ✅ |
 | Provisioning déclaratif et suppression protégée | ✅ |
+| Staging provisioning nettoyé sans parcours récursif des données | ✅ |
+| Origine WebSocket en défense profonde et keepalive ping/pong | ✅ |
 | Attribution de déploiement à la stack la plus profonde | ✅ revue actuelle |
 | Texte Settings cohérent avec l'auto-deploy opt-in | ✅ revue actuelle |
 
@@ -644,8 +652,8 @@ Un dossier volumineux hors stack est réduit à une entrée `large_directory` et
 
 - 38 fichiers Go dans le module Git Sync ;
 - 15 fichiers de tests ;
-- 153 fonctions de test ;
-- couverture mesurée du package Git Sync : **68,1 %** ;
+- 158 fonctions de test ;
+- couverture mesurée du package Git Sync : **68,4 %** ;
 - tests avec détecteur de races exécutés sur le package ;
 - tests de migrations SQLite ;
 - tests d'intégration App/Config/Compose ;
@@ -653,7 +661,7 @@ Un dossier volumineux hors stack est réduit à une entrée `large_directory` et
 - audit des dépendances Go/npm ;
 - scan de l'image multi-architecture par Trivy dans la CI.
 
-La couverture de 68,1 % est solide pour un module contenant beaucoup d'intégrations filesystem/Git/Compose, mais elle ne remplace pas les tests réels avec GitHub, socketproxy et plusieurs filesystems.
+La couverture de 68,4 % est solide pour un module contenant beaucoup d'intégrations filesystem/Git/Compose, mais elle ne remplace pas les tests réels avec GitHub, socketproxy et plusieurs filesystems.
 
 ### Scénarios d'acceptation prioritaires
 
