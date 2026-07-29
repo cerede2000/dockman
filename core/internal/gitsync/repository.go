@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -79,25 +80,29 @@ type GitHubRepositoryInput struct {
 }
 
 type RepositoryPolicyInput struct {
-	ExcludePatterns []string `json:"excludePatterns"`
+	ExcludePatterns   []string `json:"excludePatterns"`
+	CommitAuthorName  *string  `json:"commitAuthorName,omitempty"`
+	CommitAuthorEmail *string  `json:"commitAuthorEmail,omitempty"`
 }
 
 type RepositoryView struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	Provider         string     `json:"provider"`
-	RemoteURL        string     `json:"remoteUrl"`
-	DefaultBranch    string     `json:"defaultBranch"`
-	Mode             string     `json:"mode"`
-	CredentialID     *string    `json:"credentialId,omitempty"`
-	Status           string     `json:"status"`
-	LastError        string     `json:"lastError,omitempty"`
-	LastFetchedAt    *time.Time `json:"lastFetchedAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
-	WorkspacePresent bool       `json:"workspacePresent"`
-	StorageMode      string     `json:"storageMode"`
-	ExcludePatterns  []string   `json:"excludePatterns"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Provider          string     `json:"provider"`
+	RemoteURL         string     `json:"remoteUrl"`
+	DefaultBranch     string     `json:"defaultBranch"`
+	Mode              string     `json:"mode"`
+	CredentialID      *string    `json:"credentialId,omitempty"`
+	Status            string     `json:"status"`
+	LastError         string     `json:"lastError,omitempty"`
+	LastFetchedAt     *time.Time `json:"lastFetchedAt,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+	WorkspacePresent  bool       `json:"workspacePresent"`
+	StorageMode       string     `json:"storageMode"`
+	ExcludePatterns   []string   `json:"excludePatterns"`
+	CommitAuthorName  string     `json:"commitAuthorName"`
+	CommitAuthorEmail string     `json:"commitAuthorEmail"`
 }
 
 type RepositoryGitStatus struct {
@@ -151,10 +156,40 @@ func (s *Service) UpdateRepositoryPolicy(id string, input RepositoryPolicyInput)
 		return RepositoryView{}, fmt.Errorf("invalid repository exclude patterns: %w", err)
 	}
 	row.ExcludePatterns = strings.Join(patterns, "\n")
+	authorName, authorEmail := row.CommitAuthorName, row.CommitAuthorEmail
+	if input.CommitAuthorName != nil {
+		authorName = *input.CommitAuthorName
+	}
+	if input.CommitAuthorEmail != nil {
+		authorEmail = *input.CommitAuthorEmail
+	}
+	authorName, authorEmail, err = normalizeCommitIdentity(authorName, authorEmail)
+	if err != nil {
+		return RepositoryView{}, err
+	}
+	row.CommitAuthorName, row.CommitAuthorEmail = authorName, authorEmail
 	if err := s.store.SaveRepository(&row); err != nil {
 		return RepositoryView{}, err
 	}
 	return s.repositoryView(row), nil
+}
+
+func normalizeCommitIdentity(name, email string) (string, string, error) {
+	name, email = strings.TrimSpace(name), strings.TrimSpace(email)
+	if name == "" {
+		name = "Dockman Git Sync"
+	}
+	if email == "" {
+		email = "dockman@localhost.invalid"
+	}
+	if len(name) > 100 || strings.ContainsAny(name, "\r\n<>") {
+		return "", "", errors.New("Git commit author name must be one line, at most 100 characters, and contain no angle brackets")
+	}
+	address, err := mail.ParseAddress(email)
+	if err != nil || address.Address != email || address.Name != "" || len(email) > 254 {
+		return "", "", errors.New("Git commit author email is invalid")
+	}
+	return name, email, nil
 }
 
 func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (RepositoryView, error) {
@@ -177,7 +212,8 @@ func (s *Service) CreateRepository(ctx context.Context, input RepositoryInput) (
 	}
 	row := Repository{
 		UUID: uuid.NewString(), Name: clean.Name, Provider: "github", RemoteURL: clean.RemoteURL,
-		DefaultBranch: clean.DefaultBranch, Mode: "managed", Status: "cloning",
+		DefaultBranch: clean.DefaultBranch, CommitAuthorName: "Dockman Git Sync",
+		CommitAuthorEmail: "dockman@localhost.invalid", Mode: "managed", Status: "cloning",
 	}
 	if clean.CredentialUUID != "" {
 		row.CredentialUUID = &clean.CredentialUUID
@@ -372,9 +408,9 @@ func (s *Service) createEmptyRemoteBranch(ctx context.Context, row Repository) e
 		return fmt.Errorf("open temporary worktree: %w", err)
 	}
 	now := time.Now().UTC()
-	if _, err := worktree.Commit("Initialize Dockman synchronization branch", &gitclient.CommitOptions{
-		Author:            &object.Signature{Name: "Dockman", Email: "dockman@localhost", When: now},
-		Committer:         &object.Signature{Name: "Dockman", Email: "dockman@localhost", When: now},
+	if _, err := worktree.Commit(s.commitMessageWithProvenance("Initialize Dockman synchronization branch", nil), &gitclient.CommitOptions{
+		Author:            repositoryCommitSignature(row, now),
+		Committer:         repositoryCommitSignature(row, now),
 		AllowEmptyCommits: true,
 	}); err != nil {
 		return fmt.Errorf("create initial empty commit: %w", err)
@@ -1055,7 +1091,8 @@ func (s *Service) repositoryView(row Repository) RepositoryView {
 		DefaultBranch: row.DefaultBranch, Mode: row.Mode, CredentialID: row.CredentialUUID,
 		Status: row.Status, LastError: row.LastError, LastFetchedAt: row.LastFetchedAt,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, WorkspacePresent: present, StorageMode: storageMode,
-		ExcludePatterns: splitPatternLines(row.ExcludePatterns),
+		ExcludePatterns:  splitPatternLines(row.ExcludePatterns),
+		CommitAuthorName: row.CommitAuthorName, CommitAuthorEmail: row.CommitAuthorEmail,
 	}
 }
 

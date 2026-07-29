@@ -28,6 +28,7 @@ type AppConfig struct {
 	GitStoragePath          string `config:"flag=gitStoragePath,env=GIT_STORAGE_PATH,default=,usage=Optional dedicated directory for Git repository objects and backups"`
 	GitHistoryRetentionDays int    `config:"flag=gitHistoryRetentionDays,env=GIT_HISTORY_RETENTION_DAYS,default=30,usage=Days to retain Git synchronization activity history"`
 	GitBackupRetentionDays  int    `config:"flag=gitBackupRetentionDays,env=GIT_BACKUP_RETENTION_DAYS,default=30,usage=Days to retain Git synchronization backups"`
+	GitCommitInstance       string `config:"flag=gitCommitInstance,env=GIT_COMMIT_INSTANCE,default=dockman,usage=Stable instance name recorded in Git commit provenance"`
 	UIPath                  string `config:"flag=ui,env=UI_PATH,default=dist,usage=Path to frontend files"`
 	LocalAddr               string `config:"flag=ma,env=MACHINE_ADDR,default=0.0.0.0,usage=Local machine IP address"`
 	ComposeRoot             string `config:"flag=cr,env=COMPOSE_ROOT,default=./compose,usage=Root directory for compose files"`

@@ -12,7 +12,6 @@ import (
 
 	gitclient "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 const (
@@ -288,7 +287,8 @@ func (s *Service) deleteLocallyDeletedFileFromGit(ctx context.Context, binding S
 	if err := worktree.AddWithOptions(&gitclient.AddOptions{Path: stagePath}); err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("stage Git file deletion: %w", err)
 	}
-	hash, err := worktree.Commit("chore(stack): delete "+filePath+" from Git", &gitclient.CommitOptions{Author: &object.Signature{Name: "Dockman Git Sync", Email: "dockman@localhost.invalid", When: time.Now().UTC()}})
+	message := s.commitMessageWithProvenance("chore(stack): delete "+filePath+" from Git", &binding)
+	hash, err := worktree.Commit(message, s.bindingCommitOptions(repositoryRow, &binding, time.Now()))
 	if err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("commit Git file deletion: %w", err)
 	}
@@ -459,7 +459,8 @@ func (s *Service) deleteLocallyDeletedStackFromGit(ctx context.Context, binding 
 	if err := worktree.AddWithOptions(&gitclient.AddOptions{Path: stagePath}); err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("stage Git stack deletion: %w", err)
 	}
-	hash, err := worktree.Commit("chore(stack): delete "+composePath+" from Git", &gitclient.CommitOptions{Author: &object.Signature{Name: "Dockman Git Sync", Email: "dockman@localhost.invalid", When: time.Now().UTC()}})
+	message := s.commitMessageWithProvenance("chore(stack): delete "+composePath+" from Git", &binding)
+	hash, err := worktree.Commit(message, s.bindingCommitOptions(repositoryRow, &binding, time.Now()))
 	if err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("commit Git stack deletion: %w", err)
 	}

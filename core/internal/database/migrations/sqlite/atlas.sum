@@ -1,4 +1,4 @@
-h1:krIXy81/O3gqHY6IdmD+u07zK4VD9RLWsh43nzMwx4Q=
+h1:JkKilNO8oLDkAZ1ZndA3l6MKxrWztDwGVAilwfg8hKc=
 20260208203619_mig.sql h1:xBogJIlN+Qqa/9+EkfhypXCAZ8Hlqawf9Vh4ZvllQkc=
 20260208221102_mig.sql h1:Qx+BFt3Ilnk8My/pLg74kR0Mpgz0DqcXeB4RsuM5qqI=
 20260722090000_git_sync_foundation.sql h1:zeelfWn1yknX4cx8az8Z3r/Ie8pr+2EJx4jwcYpAeyU=
@@ -15,3 +15,4 @@ h1:krIXy81/O3gqHY6IdmD+u07zK4VD9RLWsh43nzMwx4Q=
 20260724150000_git_deploy_auto_rollback.sql h1:7FiE5kclK2eTBUA1y7IWG/AqkLpR2H0fzWoDzA5+eSo=
 20260724160000_git_binding_auto_pause.sql h1:YbanHdD7Zq12BShBMUbDtlo7dRppxpWcBphoHISU3Nw=
 20260727090000_cleaner_cron_schedule.sql h1:Ag9QzrgdjxFNlTi8MuGML9Z5HdELhtM65fhrx7Z6/Os=
+20260729090000_git_commit_identity.sql h1:SPXMFqu5tQFSRpSOrmY5sVNTSVjtBZbIUIFS716gVcY=

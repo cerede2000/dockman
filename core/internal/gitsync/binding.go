@@ -1031,7 +1031,8 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if len(message) > 300 || strings.ContainsAny(message, "\r\n") {
 			return errors.New("commit message must be one line and at most 300 characters")
 		}
-		hash, err := worktree.Commit(message, &gitclient.CommitOptions{Author: &object.Signature{Name: "Dockman Git Sync", Email: "dockman@localhost.invalid", When: time.Now().UTC()}})
+		message = s.commitMessageWithProvenance(message, &binding)
+		hash, err := worktree.Commit(message, s.bindingCommitOptions(row, &binding, time.Now()))
 		if err != nil {
 			return fmt.Errorf("commit stack export: %w", err)
 		}

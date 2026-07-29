@@ -170,6 +170,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("invalid Git storage configuration")
 	}
 	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, gitWorkspaceRoot)
+	gitSyncSrv.ConfigureCommitProvenance(conf.GitCommitInstance)
 	if err := gitSyncSrv.ConfigureRetention(conf.GitHistoryRetentionDays, conf.GitBackupRetentionDays); err != nil {
 		log.Fatal().Err(err).Msg("invalid Git retention configuration")
 	}

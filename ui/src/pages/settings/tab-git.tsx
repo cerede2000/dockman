@@ -60,6 +60,8 @@ interface Repository {
     workspacePresent: boolean;
     storageMode: "compact" | "legacy";
     excludePatterns: string[];
+    commitAuthorName: string;
+    commitAuthorEmail: string;
 }
 
 interface RepositoryStatus {
@@ -274,6 +276,7 @@ export default function TabGit() {
     const automationDeploySelection = useMemo(() => new Set(automationForm.deployComposePaths), [automationForm.deployComposePaths]);
     const [policyRepository, setPolicyRepository] = useState<Repository | null>(null);
     const [repositoryExcludePatterns, setRepositoryExcludePatterns] = useState("");
+    const [repositoryCommitIdentity, setRepositoryCommitIdentity] = useState({name: "Dockman Git Sync", email: "dockman@localhost.invalid"});
     const [excludeMenu, setExcludeMenu] = useState<{anchor: HTMLElement; entry: PreviewEntry} | null>(null);
     const [previewPage, setPreviewPage] = useState(0);
     const [previewRowsPerPage, setPreviewRowsPerPage] = useState(50);
@@ -813,18 +816,22 @@ export default function TabGit() {
     const openRepositoryPolicy = (repository: Repository) => {
         setPolicyRepository(repository);
         setRepositoryExcludePatterns((repository.excludePatterns || []).join("\n"));
+        setRepositoryCommitIdentity({name: repository.commitAuthorName || "Dockman Git Sync", email: repository.commitAuthorEmail || "dockman@localhost.invalid"});
     };
 
     const saveRepositoryPolicy = async () => {
         if (!policyRepository) return;
         setBusy(`repository-policy-${policyRepository.id}`);
-        await (async () => { try {
-            await api<Repository>(`/repositories/${policyRepository.id}/policy`, {method: "PUT", body: JSON.stringify({excludePatterns: repositoryExcludePatterns.split("\n")})});
-            showSuccess("Repository-wide exclusions updated.");
+        await (async () => {
+            await api<Repository>(`/repositories/${policyRepository.id}/policy`, {method: "PUT", body: JSON.stringify({
+                excludePatterns: repositoryExcludePatterns.split("\n"),
+                commitAuthorName: repositoryCommitIdentity.name,
+                commitAuthorEmail: repositoryCommitIdentity.email,
+            })});
+            showSuccess("Repository policy and commit identity updated.");
             setPolicyRepository(null);
             await load();
-        } catch (error) { showError((error as Error).message); }
-        })().finally(() => setBusy(null));
+        })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };
 
     const openBindingState = (binding: Binding) => {
@@ -1067,7 +1074,7 @@ export default function TabGit() {
                                         <Tooltip title="Pull fast-forward changes"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "pull")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         <Tooltip title="Push local commits"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "push")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         {gitStatus && (gitStatus.diverged || gitStatus.ahead > 0) && <Tooltip title="Discard Dockman's local Git commits and reset to the remote branch"><span><IconButton size="small" color="warning" disabled={busy !== null || !repository.workspacePresent} onClick={() => { setResetRepositoryConfirmation(""); setResetRepository(repository); }}><UndoOutlined fontSize="small"/></IconButton></span></Tooltip>}
-                                        <Tooltip title="Repository-wide exclusions"><IconButton size="small" disabled={busy !== null} onClick={() => openRepositoryPolicy(repository)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
+                                        <Tooltip title="Repository policy and Git commit identity"><IconButton size="small" disabled={busy !== null} onClick={() => openRepositoryPolicy(repository)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Operation history"><IconButton size="small" disabled={busy !== null} onClick={() => void openHistory(repository)}><HistoryOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Remove local workspace"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteRepository(repository)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
                                     </TableCell>
@@ -1146,12 +1153,18 @@ export default function TabGit() {
         </Stack>
 
         <Dialog open={policyRepository !== null} onClose={() => busy === null && setPolicyRepository(null)} fullWidth maxWidth="sm">
-            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Repository-wide exclusions</DialogTitle>
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Repository policy and commit identity</DialogTitle>
             <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
                 <Alert severity="info">These rules apply to every folder link in this repository and in both synchronization directions. Compose files remain protected.</Alert>
                 <TextField label="Exclude rules" value={repositoryExcludePatterns} onChange={(event) => setRepositoryExcludePatterns(event.target.value)} multiline minRows={7} maxRows={16} placeholder={"/README.md\n/docs/**\n**/*.log"} helperText="One glob per line. Start with / to anchor a rule at the repository root; /README.md ignores only the root README." sx={{"& textarea": {fontFamily: "monospace"}}}/>
+                <Typography variant="subtitle2">Git commits created by Dockman</Typography>
+                <Stack direction={{xs: "column", sm: "row"}} spacing={2}>
+                    <TextField fullWidth label="Author name" value={repositoryCommitIdentity.name} onChange={(event) => setRepositoryCommitIdentity({...repositoryCommitIdentity, name: event.target.value})} slotProps={{htmlInput: {maxLength: 100}}} required/>
+                    <TextField fullWidth label="Author email" type="email" value={repositoryCommitIdentity.email} onChange={(event) => setRepositoryCommitIdentity({...repositoryCommitIdentity, email: event.target.value})} slotProps={{htmlInput: {maxLength: 254}}} required/>
+                </Stack>
+                <Alert severity="success">Each new commit also records the Dockman instance, Docker host, folder-link ID, and stack path in a <code>Dockman-Origin</code> trailer.</Alert>
             </Stack></DialogContent>
-            <DialogActions><Button onClick={() => setPolicyRepository(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveRepositoryPolicy()} disabled={busy !== null}>{busy?.startsWith("repository-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save exclusions</Button></DialogActions>
+            <DialogActions><Button onClick={() => setPolicyRepository(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveRepositoryPolicy()} disabled={busy !== null || !repositoryCommitIdentity.name.trim() || !repositoryCommitIdentity.email.trim()}>{busy?.startsWith("repository-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
         </Dialog>
 
         <Dialog open={bindingDialogOpen} onClose={() => busy === null && setBindingDialogOpen(false)} fullWidth maxWidth="md">

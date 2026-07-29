@@ -258,6 +258,37 @@ func TestComposeOnlyPushIgnoresMutableUnselectedFiles(t *testing.T) {
 	require.NotEmpty(t, result.CommitSHA)
 }
 
+func TestManualExportRecordsConfiguredIdentityAndOrigin(t *testing.T) {
+	service, _ := testService(t, true)
+	service.ConfigureCommitProvenance("homelab-primary")
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	repository.CommitAuthorName = "Dockman Production"
+	repository.CommitAuthorEmail = "dockman@example.test"
+	require.NoError(t, service.store.SaveRepository(&repository))
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yaml"), []byte("services:\n  app:\n    image: alpine\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	result, err := service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken})
+	require.NoError(t, err)
+
+	workspace, err := service.repositoryPath(repository.UUID)
+	require.NoError(t, err)
+	repo, err := gitclient.PlainOpen(workspace)
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(plumbing.NewHash(result.CommitSHA))
+	require.NoError(t, err)
+	require.Equal(t, "Dockman Production", commit.Author.Name)
+	require.Equal(t, "dockman@example.test", commit.Author.Email)
+	require.Contains(t, commit.Message, `Dockman-Origin: instance="homelab-primary"`)
+	require.Contains(t, commit.Message, `host="local"`)
+	require.Contains(t, commit.Message, `binding="`+binding.ID+`"`)
+	require.Contains(t, commit.Message, `stack="compose/app"`)
+}
+
 func TestComposeOnlyDoesNotOpenUnselectedDirectories(t *testing.T) {
 	stackRoot := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "secrets"), 0o700))

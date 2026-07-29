@@ -440,6 +440,29 @@ func TestDuplicateRepositoryIdentityIsRejectedPerBranch(t *testing.T) {
 	require.NoError(t, service.ensureRepositoryUnique(identity, "develop"))
 }
 
+func TestUpdateRepositoryPolicyConfiguresIdentityAndPreservesItForLegacyClients(t *testing.T) {
+	service, _ := testService(t, true)
+	repository := Repository{
+		UUID: uuid.NewString(), Name: "policy", Provider: "test", RemoteURL: "https://github.com/example/policy.git",
+		DefaultBranch: "main", CommitAuthorName: "Dockman Git Sync", CommitAuthorEmail: "dockman@localhost.invalid",
+		Mode: "managed", Status: "ready",
+	}
+	require.NoError(t, service.store.SaveRepository(&repository))
+	name, email := "Production Dockman", "dockman@example.test"
+	view, err := service.UpdateRepositoryPolicy(repository.UUID, RepositoryPolicyInput{
+		ExcludePatterns: []string{"/README.md"}, CommitAuthorName: &name, CommitAuthorEmail: &email,
+	})
+	require.NoError(t, err)
+	require.Equal(t, name, view.CommitAuthorName)
+	require.Equal(t, email, view.CommitAuthorEmail)
+
+	view, err = service.UpdateRepositoryPolicy(repository.UUID, RepositoryPolicyInput{ExcludePatterns: []string{"/docs/**"}})
+	require.NoError(t, err)
+	require.Equal(t, name, view.CommitAuthorName)
+	require.Equal(t, email, view.CommitAuthorEmail)
+	require.Equal(t, []string{"/docs/**"}, view.ExcludePatterns)
+}
+
 func createTestRemote(t *testing.T) (remotePath, seedPath string) {
 	t.Helper()
 	remotePath = filepath.Join(t.TempDir(), "remote.git")

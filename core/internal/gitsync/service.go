@@ -95,6 +95,7 @@ type Service struct {
 	hostKeysMu           sync.Mutex
 	hostKeys             []ssh.PublicKey
 	hostKeysFetchedAt    time.Time
+	commitInstance       string
 }
 
 // ConfigureEditorCoherence prevents an incoming transfer from overwriting a
@@ -129,7 +130,16 @@ func NewService(enabled bool, store *Store, vault *Vault, workspaceRoot ...strin
 			return errors.New("GitHub API redirect refused")
 		},
 	}
-	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, backupRoot: strings.TrimSuffix(root, string(os.PathSeparator)) + "-backups", historyRetentionDays: 30, backupRetentionDays: 30, locks: map[string]*sync.Mutex{}}
+	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, backupRoot: strings.TrimSuffix(root, string(os.PathSeparator)) + "-backups", historyRetentionDays: 30, backupRetentionDays: 30, commitInstance: "dockman", locks: map[string]*sync.Mutex{}}
+}
+
+// ConfigureCommitProvenance sets the stable instance label recorded in every
+// commit created by Dockman. It contains no secret and is sanitized again
+// before being embedded in the commit message.
+func (s *Service) ConfigureCommitProvenance(instance string) {
+	if instance = strings.TrimSpace(instance); instance != "" {
+		s.commitInstance = instance
+	}
 }
 
 func (s *Service) ConfigureRetention(historyDays, backupDays int) error {
