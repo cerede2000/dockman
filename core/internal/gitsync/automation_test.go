@@ -84,6 +84,67 @@ func TestFolderLinkPauseExcludesSchedulerAndResumeChecksImmediately(t *testing.T
 	require.Len(t, due, 1)
 }
 
+func TestAutomaticSyncImportsOnlyItsPerStackTargets(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	establishBindingBaseline(t, service, binding.ID)
+	_, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled:               true,
+		IntervalMinutes:       5,
+		AutoSyncSelectionMode: composeSelectionSelected,
+		AutoSyncComposePaths:  []string{"alpha/compose.yml"},
+	})
+	require.NoError(t, err)
+	repository, err := service.store.GetRepository(binding.RepositoryID)
+	require.NoError(t, err)
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/compose.yml", "services:\n  alpha:\n    image: alpine:3.24\n")
+	remoteChange(t, repository.RemoteURL, "stacks/beta/compose.yml", "services:\n  beta:\n    image: alpine:3.24\n")
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+	alpha, err := os.ReadFile(filepath.Join(stackRoot, "alpha", "compose.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(alpha), "alpine:3.24")
+	beta, err := os.ReadFile(filepath.Join(stackRoot, "beta", "compose.yml"))
+	require.NoError(t, err)
+	require.Equal(t, "services: {}\n", string(beta), "a manual-only stack must not be touched by the scheduler")
+
+	// The same Git commit was already observed while beta was manual-only.
+	// Enabling it must invalidate the commit shortcut and import it without
+	// requiring another remote commit.
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled:               true,
+		IntervalMinutes:       5,
+		AutoSyncSelectionMode: composeSelectionAll,
+	})
+	require.NoError(t, err)
+	result, err = service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+	beta, err = os.ReadFile(filepath.Join(stackRoot, "beta", "compose.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(beta), "alpine:3.24")
+}
+
+func TestAutomaticSyncCanKeepEveryLinkedStackManualOnly(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled:               true,
+		IntervalMinutes:       5,
+		AutoSyncSelectionMode: composeSelectionSelected,
+		AutoSyncComposePaths:  []string{},
+	})
+	require.NoError(t, err)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "paused", result.State)
+	require.Contains(t, result.Message, "excluded from automatic synchronization")
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Empty(t, service.activeAutomationComposePaths(row))
+}
+
 func TestDisablingAutomationClearsFolderLinkPause(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

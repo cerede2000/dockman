@@ -77,6 +77,8 @@ type BindingView struct {
 	Enabled                   bool       `json:"enabled"`
 	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
 	AutoSyncPaused            bool       `json:"autoSyncPaused"`
+	AutoSyncSelectionMode     string     `json:"autoSyncSelectionMode"`
+	AutoSyncComposePaths      []string   `json:"autoSyncComposePaths"`
 	AutoSyncIntervalMinutes   int        `json:"autoSyncIntervalMinutes"`
 	AutoSyncState             string     `json:"autoSyncState"`
 	AutoSyncError             string     `json:"autoSyncError,omitempty"`
@@ -495,6 +497,7 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 	if err != nil {
 		return BindingView{}, err
 	}
+	previousAutoTargets := strings.Join(autoSyncComposePaths(row), "\n")
 	repositoryLock := s.repositoryLock(row.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
@@ -514,7 +517,7 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 	}
 	row.ComposeSelectionMode = mode
 	row.SelectedComposePaths = strings.Join(selected, "\n")
-	// A deselected stack must never remain authorized for automatic deployment.
+	// A deselected stack must never remain authorized for automatic polling or deployment.
 	if mode == composeSelectionSelected {
 		allowed := make(map[string]struct{}, len(selected))
 		for _, relative := range selected {
@@ -527,12 +530,18 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 			}
 		}
 		row.AutoDeployComposePaths = strings.Join(deploy, "\n")
+		if normalizedComposeSelectionMode(row.AutoSyncSelectionMode) == composeSelectionSelected {
+			row.AutoSyncComposePaths = strings.Join(keepCataloguedPaths(splitPatternLines(row.AutoSyncComposePaths), allowed), "\n")
+		}
 		if row.AutoDeployEnabled && len(deploy) == 0 && !row.AutoDeployNewStacks {
 			row.AutoDeployEnabled = false
 			row.AutoDeployRollbackEnabled = false
 			row.AutoDeployState = "disabled"
 			row.AutoDeployError = ""
 		}
+	}
+	if strings.Join(autoSyncComposePaths(row), "\n") != previousAutoTargets {
+		row.LastAutoSyncCommit = ""
 	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
@@ -624,6 +633,7 @@ func (s *Service) refreshBindingComposeCatalogLocked(row StackBinding) (StackBin
 		row.ComposeSelectionMode = composeSelectionAll
 	}
 	row.SelectedComposePaths = strings.Join(uniqueSortedStrings(selected), "\n")
+	row.AutoSyncComposePaths = strings.Join(keepCataloguedPaths(splitPatternLines(row.AutoSyncComposePaths), discoveredSet), "\n")
 	row.AutoDeployComposePaths = strings.Join(keepCataloguedPaths(splitPatternLines(row.AutoDeployComposePaths), discoveredSet), "\n")
 	if err := s.store.SaveBinding(&row); err != nil {
 		return row, nil, err
@@ -1600,6 +1610,7 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns),
 		ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled,
 		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncPaused: row.AutoSyncPaused, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
+		AutoSyncSelectionMode: normalizedComposeSelectionMode(row.AutoSyncSelectionMode), AutoSyncComposePaths: autoSyncComposePaths(row),
 		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
 		LastAutoSyncAt: row.LastAutoSyncAt, LastAutoSyncSuccessAt: row.LastAutoSyncSuccessAt,
 		AutoDeployEnabled: row.AutoDeployEnabled, AutoDeployNewStacks: row.AutoDeployNewStacks,
@@ -2270,6 +2281,22 @@ func selectedComposePaths(binding StackBinding) []string {
 		return splitPatternLines(binding.ComposePaths)
 	}
 	return splitPatternLines(binding.SelectedComposePaths)
+}
+
+// autoSyncComposePaths returns the persistent automatic polling policy. It is
+// intentionally independent from the folder-link selection: a stack may stay
+// linked for safe manual transfers while being excluded from background Git
+// polling. Legacy links default to all selected stacks.
+func autoSyncComposePaths(binding StackBinding) []string {
+	selected := selectedComposePaths(binding)
+	if normalizedComposeSelectionMode(binding.AutoSyncSelectionMode) == composeSelectionAll {
+		return selected
+	}
+	allowed := make(map[string]struct{}, len(selected))
+	for _, path := range selected {
+		allowed[path] = struct{}{}
+	}
+	return keepCataloguedPaths(splitPatternLines(binding.AutoSyncComposePaths), allowed)
 }
 
 func (policy syncPolicy) selectsPath(relative string, directory bool) (selected, traverse bool) {

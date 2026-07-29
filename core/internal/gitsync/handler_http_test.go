@@ -74,3 +74,24 @@ func TestGitStackStatusAPIListsAndPausesNestedStack(t *testing.T) {
 	require.Equal(t, "alpha/compose.yml", updated.ComposePath)
 	require.True(t, updated.AutomationPaused)
 }
+
+func TestBindingAutomationAPIAcceptsPerStackTargets(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	handler := NewHTTPHandler(service)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/bindings/"+binding.ID+"/automation", strings.NewReader(`{
+		"enabled":true,
+		"intervalMinutes":5,
+		"autoSyncSelectionMode":"selected",
+		"autoSyncComposePaths":["beta/compose.yml"]
+	}`))
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+
+	var updated BindingView
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &updated))
+	require.Equal(t, composeSelectionSelected, updated.AutoSyncSelectionMode)
+	require.Equal(t, []string{"beta/compose.yml"}, updated.AutoSyncComposePaths)
+	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, updated.SelectedComposePaths)
+}

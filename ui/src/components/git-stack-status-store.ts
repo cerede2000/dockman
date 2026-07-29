@@ -17,6 +17,7 @@ export interface GitStackStatus {
     error?: string;
     conflictCount: number;
     autoSyncEnabled: boolean;
+    stackAutoSyncEnabled: boolean;
     bindingAutomationPaused: boolean;
     bindingSyncState: string;
     bindingSyncError?: string;

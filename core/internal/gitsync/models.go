@@ -60,6 +60,8 @@ type StackBinding struct {
 	Enabled                   bool   `gorm:"not null;default:true"`
 	AutoSyncEnabled           bool   `gorm:"not null;default:false"`
 	AutoSyncPaused            bool   `gorm:"not null;default:false"`
+	AutoSyncSelectionMode     string `gorm:"not null;default:all"`
+	AutoSyncComposePaths      string `gorm:"type:text"`
 	AutoSyncIntervalMinutes   int    `gorm:"not null;default:15"`
 	AutoSyncState             string `gorm:"not null;default:disabled"`
 	AutoSyncError             string `gorm:"type:text"`

@@ -308,6 +308,7 @@ func (s *Store) RestoreBinding(row *StackBinding) error {
 	return s.db.Unscoped().Model(&StackBinding{}).Where("uuid = ?", row.UUID).Updates(map[string]any{
 		"deleted_at": nil, "compose_paths": row.ComposePaths, "enabled": true,
 		"compose_selection_mode": row.ComposeSelectionMode, "selected_compose_paths": row.SelectedComposePaths,
+		"auto_sync_selection_mode": row.AutoSyncSelectionMode, "auto_sync_compose_paths": row.AutoSyncComposePaths,
 		"auto_reconcile_enabled": row.AutoReconcileEnabled, "initial_sync_state": row.InitialSyncState,
 		"initial_sync_error": row.InitialSyncError,
 	}).Error

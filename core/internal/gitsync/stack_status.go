@@ -44,6 +44,7 @@ type GitStackStatusView struct {
 	Error                     string     `json:"error,omitempty"`
 	ConflictCount             int        `json:"conflictCount"`
 	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
+	StackAutoSyncEnabled      bool       `json:"stackAutoSyncEnabled"`
 	BindingAutomationPaused   bool       `json:"bindingAutomationPaused"`
 	BindingSyncState          string     `json:"bindingSyncState"`
 	BindingSyncError          string     `json:"bindingSyncError,omitempty"`
@@ -107,10 +108,16 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 		return nil, err
 	}
 	bindingByID := make(map[string]StackBinding, len(bindings))
+	autoSyncByBinding := make(map[string]map[string]struct{}, len(bindings))
 	repositoryIDs := make(map[string]struct{})
 	for _, binding := range bindings {
 		if host == "" || binding.Host == host {
 			bindingByID[binding.UUID] = binding
+			autoTargets := make(map[string]struct{})
+			for _, composePath := range autoSyncComposePaths(binding) {
+				autoTargets[composePath] = struct{}{}
+			}
+			autoSyncByBinding[binding.UUID] = autoTargets
 			repositoryIDs[binding.RepositoryUUID] = struct{}{}
 		}
 	}
@@ -138,6 +145,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			state = stackSyncPending
 		}
 		deployEnabled := binding.AutoDeployEnabled && stringInSlice(row.ComposePath, splitPatternLines(binding.AutoDeployComposePaths))
+		_, stackAutoSyncEnabled := autoSyncByBinding[binding.UUID][row.ComposePath]
 		deployState := row.DeployState
 		if !deployEnabled {
 			deployState = "disabled"
@@ -145,7 +153,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			deployState = "idle"
 		}
 		var nextCheck *time.Time
-		if binding.AutoSyncEnabled && !binding.AutoSyncPaused && !row.AutomationPaused {
+		if binding.AutoSyncEnabled && stackAutoSyncEnabled && !binding.AutoSyncPaused && !row.AutomationPaused {
 			base := time.Now().UTC()
 			if binding.LastAutoSyncAt != nil {
 				base = *binding.LastAutoSyncAt
@@ -159,7 +167,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 			RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, row.ComposePath)),
 			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
-			AutoSyncEnabled: binding.AutoSyncEnabled, BindingAutomationPaused: binding.AutoSyncPaused, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
+			AutoSyncEnabled: binding.AutoSyncEnabled, StackAutoSyncEnabled: stackAutoSyncEnabled, BindingAutomationPaused: binding.AutoSyncPaused, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
 			AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
 			AutoDeployEnabled: deployEnabled, AutoDeployRollbackEnabled: deployEnabled && binding.AutoDeployRollbackEnabled,
 			AutoSyncInterval: normalizedAutoSyncInterval(binding.AutoSyncIntervalMinutes),
@@ -218,6 +226,7 @@ func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (
 	if err != nil {
 		return GitStackStatusView{}, err
 	}
+	previousAutoTargets := strings.Join(autoSyncComposePaths(binding), "\n")
 	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
@@ -230,6 +239,9 @@ func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (
 		binding.ComposeSelectionMode = composeSelectionAll
 	}
 	binding.SelectedComposePaths = strings.Join(selected, "\n")
+	if strings.Join(autoSyncComposePaths(binding), "\n") != previousAutoTargets {
+		binding.LastAutoSyncCommit = ""
+	}
 	if err := s.store.SaveBinding(&binding); err != nil {
 		return GitStackStatusView{}, err
 	}
@@ -278,8 +290,8 @@ func (s *Service) SetGitStackAutomationPause(bindingID, composePath string, paus
 	if err != nil {
 		return GitStackStatusView{}, err
 	}
-	if !stringInSlice(composePath, selectedComposePaths(binding)) {
-		return GitStackStatusView{}, errors.New("stack is not selected for Git synchronization")
+	if !stringInSlice(composePath, autoSyncComposePaths(binding)) {
+		return GitStackStatusView{}, errors.New("stack is not enabled for automatic Git synchronization")
 	}
 	if err := s.reconcileGitStackStatuses(binding); err != nil {
 		return GitStackStatusView{}, err
@@ -318,8 +330,8 @@ func (s *Service) ResumeGitStackAutomation(ctx context.Context, bindingID, compo
 	if err != nil {
 		return GitStackStatusView{}, false, err
 	}
-	if !stringInSlice(composePath, selectedComposePaths(binding)) {
-		return GitStackStatusView{}, false, errors.New("stack is not selected for Git synchronization")
+	if !stringInSlice(composePath, autoSyncComposePaths(binding)) {
+		return GitStackStatusView{}, false, errors.New("stack is not enabled for automatic Git synchronization")
 	}
 	if err := s.reconcileGitStackStatuses(binding); err != nil {
 		return GitStackStatusView{}, false, err
@@ -545,7 +557,7 @@ func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding,
 }
 
 func (s *Service) activeAutomationComposePaths(binding StackBinding) []string {
-	selected := selectedComposePaths(binding)
+	selected := autoSyncComposePaths(binding)
 	paused, err := s.store.PausedComposePaths(binding.UUID)
 	if err != nil || len(paused) == 0 {
 		return selected

@@ -168,6 +168,9 @@ func (s *Service) registerDiscoveredDeploymentTargets(binding StackBinding, targ
 	if normalizedComposeSelectionMode(binding.ComposeSelectionMode) == composeSelectionSelected {
 		binding.SelectedComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.SelectedComposePaths), targets...)), "\n")
 	}
+	if normalizedComposeSelectionMode(binding.AutoSyncSelectionMode) == composeSelectionSelected {
+		binding.AutoSyncComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.AutoSyncComposePaths), targets...)), "\n")
+	}
 	binding.AutoDeployComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.AutoDeployComposePaths), targets...)), "\n")
 	binding.AutoDeployState = "pending"
 	binding.AutoDeployError = "New Git stack discovered; waiting for controlled deployment"

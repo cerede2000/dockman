@@ -164,6 +164,66 @@ func TestGitStackPauseOnlyExcludesThatStackFromAutomation(t *testing.T) {
 	}
 }
 
+func TestPerStackAutoSyncPolicyKeepsManualSynchronizationAvailable(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+
+	updated, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled:               true,
+		IntervalMinutes:       5,
+		AutoSyncSelectionMode: composeSelectionSelected,
+		AutoSyncComposePaths:  []string{"alpha/compose.yml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, composeSelectionSelected, updated.AutoSyncSelectionMode)
+	require.Equal(t, []string{"alpha/compose.yml"}, updated.AutoSyncComposePaths)
+	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, updated.SelectedComposePaths,
+		"the folder-link selection must remain independent from the automatic policy")
+
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/compose.yml"}, service.activeAutomationComposePaths(row))
+
+	views, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.Len(t, views, 2)
+	require.True(t, views[0].Selected)
+	require.True(t, views[0].StackAutoSyncEnabled)
+	require.True(t, views[1].Selected, "manual Git synchronization must remain available")
+	require.False(t, views[1].StackAutoSyncEnabled)
+	require.Nil(t, views[1].NextCheckAt)
+	_, err = service.SetGitStackAutomationPause(binding.ID, "beta/compose.yml", true)
+	require.ErrorContains(t, err, "not enabled for automatic Git synchronization",
+		"temporary pause must not be confused with the persistent manual-only policy")
+}
+
+func TestLegacyAutoSyncPolicyDefaultsToAllSelectedStacks(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	row.AutoSyncSelectionMode = ""
+	row.AutoSyncComposePaths = ""
+	require.NoError(t, service.store.SaveBinding(&row))
+
+	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, service.activeAutomationComposePaths(row))
+	view, err := service.bindingView(row)
+	require.NoError(t, err)
+	require.Equal(t, composeSelectionAll, view.AutoSyncSelectionMode)
+	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, view.AutoSyncComposePaths)
+}
+
+func TestAutoDeployTargetMustAlsoBeAnAutoSyncTarget(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled:               true,
+		IntervalMinutes:       5,
+		AutoSyncSelectionMode: composeSelectionSelected,
+		AutoSyncComposePaths:  []string{"alpha/compose.yml"},
+		DeployEnabled:         true,
+		DeployComposePaths:    []string{"beta/compose.yml"},
+	})
+	require.ErrorContains(t, err, "excluded from automatic synchronization")
+}
+
 func TestManualStackPushResumesRecoveryPause(t *testing.T) {
 	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
 	composePath := filepath.Join(stackRoot, "alpha", "compose.yml")

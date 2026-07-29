@@ -20,13 +20,15 @@ const (
 )
 
 type BindingAutomationInput struct {
-	Enabled            bool     `json:"enabled"`
-	AutoReconcile      *bool    `json:"autoReconcile"`
-	IntervalMinutes    int      `json:"intervalMinutes"`
-	DeployEnabled      bool     `json:"deployEnabled"`
-	DeployNewStacks    bool     `json:"deployNewStacks"`
-	DeployRollback     bool     `json:"deployRollback"`
-	DeployComposePaths []string `json:"deployComposePaths"`
+	Enabled               bool     `json:"enabled"`
+	AutoReconcile         *bool    `json:"autoReconcile"`
+	IntervalMinutes       int      `json:"intervalMinutes"`
+	AutoSyncSelectionMode string   `json:"autoSyncSelectionMode"`
+	AutoSyncComposePaths  []string `json:"autoSyncComposePaths"`
+	DeployEnabled         bool     `json:"deployEnabled"`
+	DeployNewStacks       bool     `json:"deployNewStacks"`
+	DeployRollback        bool     `json:"deployRollback"`
+	DeployComposePaths    []string `json:"deployComposePaths"`
 }
 
 type BindingAutomationPauseInput struct {
@@ -61,6 +63,7 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	if err != nil {
 		return BindingView{}, err
 	}
+	previousAutoTargets := strings.Join(autoSyncComposePaths(row), "\n")
 	if input.IntervalMinutes == 0 {
 		input.IntervalMinutes = defaultAutoSyncIntervalMinutes
 	}
@@ -86,6 +89,20 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 		row.AutoReconcileEnabled = *input.AutoReconcile
 	}
 	row.AutoSyncIntervalMinutes = input.IntervalMinutes
+	if strings.TrimSpace(input.AutoSyncSelectionMode) != "" {
+		mode, paths, selectionErr := normalizeComposeSelection(selectedComposePaths(row), input.AutoSyncSelectionMode, input.AutoSyncComposePaths, composeSelectionAll)
+		if selectionErr != nil {
+			return BindingView{}, fmt.Errorf("invalid automatic synchronization targets: %w", selectionErr)
+		}
+		row.AutoSyncSelectionMode = mode
+		row.AutoSyncComposePaths = strings.Join(paths, "\n")
+	}
+	if strings.Join(autoSyncComposePaths(row), "\n") != previousAutoTargets {
+		// The repository HEAD may already have been observed while this stack was
+		// manual-only. Invalidate only the cheap commit shortcut so the newly
+		// enabled target is inspected on the next regular cycle.
+		row.LastAutoSyncCommit = ""
+	}
 	if input.Enabled {
 		if !wasAutoSyncEnabled || row.AutoSyncState == "" || row.AutoSyncState == "disabled" {
 			row.AutoSyncState = "watching"
@@ -98,6 +115,15 @@ func (s *Service) UpdateBindingAutomation(id string, input BindingAutomationInpu
 	deployPaths, err := validateDeploymentTargets(row, input.DeployEnabled, input.DeployNewStacks, input.DeployComposePaths)
 	if err != nil {
 		return BindingView{}, err
+	}
+	autoTargets := make(map[string]struct{})
+	for _, path := range autoSyncComposePaths(row) {
+		autoTargets[path] = struct{}{}
+	}
+	for _, path := range deployPaths {
+		if _, enabled := autoTargets[path]; !enabled {
+			return BindingView{}, fmt.Errorf("automatic deployment target is excluded from automatic synchronization: %s", path)
+		}
 	}
 	row.AutoDeployEnabled = input.DeployEnabled
 	row.AutoDeployNewStacks = input.DeployNewStacks
@@ -286,7 +312,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 
 	attemptedAt := time.Now().UTC()
 	if len(s.activeAutomationComposePaths(binding)) == 0 && !(binding.AutoDeployEnabled && binding.AutoDeployNewStacks) {
-		message := "All selected stacks are paused; Git synchronization was skipped"
+		message := "All selected stacks are paused or excluded from automatic synchronization; Git synchronization was skipped"
 		_ = s.store.UpdateBindingAutoSyncState(id, "watching", message, "", &attemptedAt, nil)
 		return AutoSyncResult{BindingID: id, State: "paused", Message: message}, nil
 	}
@@ -404,7 +430,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		}
 		if len(newTargets) == 0 && len(s.activeAutomationComposePaths(binding)) == 0 && len(preview.ComposeErrors) == 0 {
 			result.State = "paused"
-			result.Message = "All selected stacks are paused; no new Git stack was discovered"
+			result.Message = "All selected stacks are paused or excluded from automatic synchronization; no new Git stack was discovered"
 			return nil
 		}
 
