@@ -46,6 +46,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings/{id}/local-deletion/{composePath...}", h.listLocalStackDeletions)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
+	mux.HandleFunc("POST /bindings/{id}/policy-tree", h.bindingPolicyTree)
 	mux.HandleFunc("POST /bindings/{id}/refresh-compose", h.refreshBindingComposeCatalog)
 	mux.HandleFunc("PUT /bindings/{id}/compose-selection", h.updateBindingComposeSelection)
 	mux.HandleFunc("PUT /bindings/{id}/automation", h.updateBindingAutomation)
@@ -336,6 +337,23 @@ func (h *HTTPHandler) updateBindingPolicy(w http.ResponseWriter, r *http.Request
 	h.service.recordActivity(ActivityRecord{RepositoryID: row.RepositoryID, BindingID: row.ID, Type: "policy_update",
 		Trigger: "manual", Details: ActivityDetails{Action: "update"}})
 	writeJSON(w, http.StatusOK, row)
+}
+
+func (h *HTTPHandler) bindingPolicyTree(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input BindingPolicyTreeInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	view, err := h.service.BindingPolicyTree(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (h *HTTPHandler) updateRepositoryPolicy(w http.ResponseWriter, r *http.Request) {

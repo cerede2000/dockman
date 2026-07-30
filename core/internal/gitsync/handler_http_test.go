@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -94,4 +96,23 @@ func TestBindingAutomationAPIAcceptsPerStackTargets(t *testing.T) {
 	require.Equal(t, composeSelectionSelected, updated.AutoSyncSelectionMode)
 	require.Equal(t, []string{"beta/compose.yml"}, updated.AutoSyncComposePaths)
 	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, updated.SelectedComposePaths)
+}
+
+func TestBindingPolicyTreeAPIUsesUnsavedPolicy(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "debug.log"), []byte("debug\n"), 0o644))
+	handler := NewHTTPHandler(service)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/bindings/"+binding.ID+"/policy-tree", strings.NewReader(`{
+		"directory":"alpha",
+		"profile":"compose_config",
+		"includePatterns":["/alpha/debug.log"],
+		"excludePatterns":[]
+	}`))
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var view BindingPolicyTreeView
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &view))
+	require.Equal(t, "included", policyTreeEntryMap(view.Entries)["alpha/debug.log"].State)
 }
