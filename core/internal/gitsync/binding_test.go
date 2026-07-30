@@ -1262,6 +1262,46 @@ func TestBindingPolicyIsValidatedAndPersisted(t *testing.T) {
 	require.ErrorContains(t, err, "path traversal")
 }
 
+func TestBindingPolicyChangeInvalidatesStaleRedProjection(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	row.AutoSyncEnabled = true
+	row.AutoSyncState = "error"
+	row.AutoSyncError = "old configuration file error"
+	row.LastAutoSyncCommit = strings.Repeat("a", 40)
+	require.NoError(t, service.store.SaveBinding(&row))
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, []string{"alpha/compose.yml"}, map[string]any{
+		"state": stackSyncConflict, "error_message": "old conflict", "conflict_count": 1,
+	}))
+
+	updated, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	require.Equal(t, syncProfileComposeOnly, updated.SyncProfile)
+	persisted, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Empty(t, persisted.LastAutoSyncCommit, "the next cycle must inspect the new inventory even when Git did not move")
+	require.Equal(t, "watching", persisted.AutoSyncState)
+	require.Empty(t, persisted.AutoSyncError)
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncPending, status.State)
+	require.Empty(t, status.ErrorMessage)
+	require.Zero(t, status.ConflictCount)
+
+	// Saving the exact same policy is a no-op and must not hide a subsequently
+	// established real conflict.
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, []string{"alpha/compose.yml"}, map[string]any{
+		"state": stackSyncConflict, "error_message": "real Compose conflict", "conflict_count": 1,
+	}))
+	_, err = service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	status, err = service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncConflict, status.State)
+	require.Equal(t, "real Compose conflict", status.ErrorMessage)
+}
+
 func TestBindingExclusionsCanBeAddedFromPreviewPaths(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

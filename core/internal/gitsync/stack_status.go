@@ -70,9 +70,11 @@ func initialStackSyncState(binding StackBinding) string {
 	switch binding.InitialSyncState {
 	case "reconciled", "imported", "exported":
 		return stackSyncUpToDate
-	case "error":
-		return stackSyncError
 	default:
+		// An initial-sync failure belongs to the Folder Link until a bounded
+		// preview identifies an exact stack/file failure. Keeping new rows pending
+		// prevents a transient repository error from painting every stack red and
+		// from being resurrected during application startup reconciliation.
 		return stackSyncPending
 	}
 }
@@ -141,11 +143,30 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 		}
 		repository := repositoryByID[binding.RepositoryUUID]
 		state := row.State
+		stackError := row.ErrorMessage
+		// Releases before the binding/stack error split copied one transient
+		// repository failure into every stack row. Repair that legacy projection
+		// on read: the Folder Link remains red, while a stack with a previous
+		// successful check keeps its last known healthy state.
+		if binding.AutoSyncState == "error" && state == stackSyncError && stackError != "" && stackError == binding.AutoSyncError {
+			stackError = ""
+			if row.LastSuccessAt != nil {
+				state = stackSyncUpToDate
+			} else {
+				state = stackSyncPending
+			}
+		}
 		if row.AutomationPaused && state == stackSyncChecking {
 			state = stackSyncPending
 		}
 		deployEnabled := binding.AutoDeployEnabled && stringInSlice(row.ComposePath, splitPatternLines(binding.AutoDeployComposePaths))
 		_, stackAutoSyncEnabled := autoSyncByBinding[binding.UUID][row.ComposePath]
+		if binding.AutoSyncState == "syncing" && stackAutoSyncEnabled && !binding.AutoSyncPaused && !row.AutomationPaused {
+			switch state {
+			case stackSyncPending, stackSyncUpToDate, stackSyncRemoteChanges:
+				state = stackSyncChecking
+			}
+		}
 		deployState := row.DeployState
 		if !deployEnabled {
 			deployState = "disabled"
@@ -166,7 +187,7 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 			ComposePath: row.ComposePath, FullComposePath: filepath.ToSlash(filepath.Join(binding.StackPath, row.ComposePath)),
 			RepositoryID: repository.UUID, RepositoryName: repository.Name, RepositoryBranch: repository.DefaultBranch,
 			RepositorySubPath: filepath.ToSlash(filepath.Join(binding.SubPath, row.ComposePath)),
-			State:             state, Selected: true, Error: row.ErrorMessage, ConflictCount: row.ConflictCount,
+			State:             state, Selected: true, Error: stackError, ConflictCount: row.ConflictCount,
 			AutoSyncEnabled: binding.AutoSyncEnabled, StackAutoSyncEnabled: stackAutoSyncEnabled, BindingAutomationPaused: binding.AutoSyncPaused, BindingSyncState: binding.AutoSyncState, BindingSyncError: binding.AutoSyncError,
 			AutomationPaused: row.AutomationPaused, PauseReason: row.PauseReason,
 			AutoDeployEnabled: deployEnabled, AutoDeployRollbackEnabled: deployEnabled && binding.AutoDeployRollbackEnabled,

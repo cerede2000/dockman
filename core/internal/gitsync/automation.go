@@ -317,13 +317,10 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 		return AutoSyncResult{BindingID: id, State: "paused", Message: message}, nil
 	}
 	_ = s.store.UpdateBindingAutoSyncState(id, "syncing", "", "", &attemptedAt, nil)
-	// A file save already gives us authoritative local-dirty state. Preserve it
-	// while checking Git so an unchanged remote commit cannot paint it green.
-	if binding.AutoSyncState == "partial" {
-		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncChecking, "", "", false, stackSyncError)
-	} else {
-		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncChecking, "", "", false)
-	}
+	// "syncing" is a transient binding-level state. Do not persist "checking"
+	// into every stack row: if a repository fetch fails, the last authoritative
+	// per-stack state must survive instead of turning unrelated stacks red.
+	// ListGitStackStatusViews projects the spinner from this binding state.
 	result := AutoSyncResult{BindingID: id, State: "syncing"}
 	var synchronizedCommit string
 	skippedStackScan := false
@@ -512,7 +509,6 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 	if err != nil {
 		message := safeGitError(err)
 		_ = s.store.UpdateBindingAutoSyncState(id, "error", message, "", &attemptedAt, nil)
-		s.updateActiveStackStatusesPreservingLocal(binding, stackSyncError, message, "", false)
 		return AutoSyncResult{BindingID: id, State: "error", Message: message}, err
 	}
 	if result.State == "conflict" || result.State == "blocked" {

@@ -422,10 +422,13 @@ func (s *Service) initializeBinding(ctx context.Context, row StackBinding, direc
 	switch state {
 	case "reconciled", "imported", "exported":
 		stackState, success = stackSyncUpToDate, true
-	case "error":
-		stackState = stackSyncError
 	}
-	updates := map[string]any{"state": stackState, "error_message": message, "last_checked_at": &now}
+	// The initial operation can fail before a per-stack preview exists (clone,
+	// fetch, credentials, branch). Keep that error on the Folder Link instead of
+	// copying it to every selected stack. Exact preview errors are recorded by
+	// recordPreviewStackStatuses when they can be attributed safely.
+	stackMessage := ""
+	updates := map[string]any{"state": stackState, "error_message": stackMessage, "last_checked_at": &now}
 	if success {
 		updates["last_success_at"] = &now
 	}
@@ -480,11 +483,45 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 			return BindingView{}, composeOnlyCatalogError()
 		}
 	}
+	// Serialize the final policy update with the automatic worker. The optional
+	// catalog refresh above takes this same lock internally, so acquire it only
+	// after that operation has completed.
+	automationLock := s.repositoryLock("automation:" + id)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	row, err = s.store.GetBinding(id)
+	if err != nil {
+		return BindingView{}, err
+	}
+	currentPolicy := row.SyncProfile
+	if currentPolicy == "" {
+		currentPolicy = syncProfileComposeConfig
+	}
+	policyChanged := currentPolicy != policy || row.IncludePatterns != strings.Join(includes, "\n") || row.ExcludePatterns != strings.Join(excludes, "\n")
 	row.SyncProfile = policy
 	row.IncludePatterns = strings.Join(includes, "\n")
 	row.ExcludePatterns = strings.Join(excludes, "\n")
+	if policyChanged {
+		// A prior error/conflict may belong to a file that this policy no longer
+		// selects. Invalidate the commit shortcut and mark the projection pending
+		// until the next bounded preview computes the new authoritative state.
+		row.LastAutoSyncCommit = ""
+		row.AutoSyncError = ""
+		if row.AutoSyncEnabled {
+			row.AutoSyncState = "watching"
+		} else {
+			row.AutoSyncState = "disabled"
+		}
+	}
 	if err := s.store.SaveBinding(&row); err != nil {
 		return BindingView{}, err
+	}
+	if policyChanged {
+		if err := s.store.UpdateGitStackStatuses(row.UUID, selectedComposePaths(row), map[string]any{
+			"state": stackSyncPending, "error_message": "", "conflict_count": 0,
+		}); err != nil {
+			return BindingView{}, err
+		}
 	}
 	return s.bindingView(row)
 }

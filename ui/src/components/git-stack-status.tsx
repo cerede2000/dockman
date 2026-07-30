@@ -59,7 +59,9 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
     const [recoveryTab, setRecoveryTab] = useState<'activity' | 'backups' | null>(null);
     const {showError, showSuccess, showWarning} = useSnackbar();
     const navigate = useNavigate();
-    const severity = status ? gitStatusSeverity(status) : 'neutral';
+    const aggregateBindingError = Boolean(aggregateStatuses?.some((target) => target.bindingSyncState === 'error'));
+    const aggregateBindingErrors = useMemo(() => Array.from(new Set((aggregateStatuses || []).filter((target) => target.bindingSyncState === 'error' && target.bindingSyncError).map((target) => target.bindingSyncError!))), [aggregateStatuses]);
+    const severity = aggregateBindingError ? 'error' : status ? gitStatusSeverity(status) : 'neutral';
     const color = (status?.bindingAutomationPaused || status?.automationPaused) && (severity === 'success' || severity === 'neutral') ? colors.neutral : colors[severity];
     const error = status?.deployState === 'failed' || status?.deployState === 'rollback_failed' || status?.deployState === 'rolled_back' ? status.deployError : status?.error;
     const encodedComposePath = useMemo(() => status?.composePath.split('/').map(encodeURIComponent).join('/') ?? '', [status?.composePath]);
@@ -225,6 +227,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
             {aggregateStatuses && aggregateStatuses.length > 0 ? <Stack spacing={1.25} sx={{p: 1.75, userSelect: 'text'}}>
                 <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><Sync sx={{color}}/><Box><Typography sx={{fontWeight: 700}}>Linked folder synchronization</Typography><Typography variant="caption" color="text.secondary">{aggregateStatuses.length} stack{aggregateStatuses.length === 1 ? '' : 's'} in this folder</Typography></Box></Stack>
                 <Alert severity={severity === 'error' ? 'error' : severity === 'warning' ? 'warning' : 'info'}>{bindingRoot ? 'This is the root of this folder link. Pausing it suspends scheduled synchronization for every stack below without changing their selection or deployment settings.' : 'This is an aggregate indicator. Resolve each affected stack below; no action is applied blindly to the whole folder.'}</Alert>
+                {aggregateBindingErrors.map((message) => <Alert key={message} severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}><strong>The latest Folder Link check failed.</strong> Stack-specific states were preserved. {message}</Alert>)}
                 {bindingRoot && status.autoSyncEnabled && <Stack direction="row" spacing={1} sx={{alignItems: 'center', flexWrap: 'wrap'}}>
                     <Button size="small" variant="outlined" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Sync now</Button>
                     <Button size="small" color={status.bindingAutomationPaused ? 'success' : 'warning'} variant="outlined" startIcon={busy ? <CircularProgress size={14}/> : status.bindingAutomationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void toggleFolderLinkPause()}>{status.bindingAutomationPaused ? 'Resume & check now' : 'Pause folder link'}</Button>
@@ -265,6 +268,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 {status.conflictCount > 0 && <Alert severity="error">{status.conflictCount} conflict{status.conflictCount === 1 ? '' : 's'} require a manual decision.</Alert>}
                 {status.state === 'local_changes' && <Alert severity="warning">Dockman contains changes that are not on Git yet. Review them, then commit and push. Automatic Git → Dockman synchronization never pushes local changes by itself.</Alert>}
                 {status.bindingSyncState === 'blocked' && <Alert severity="warning" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}><strong>Automatic synchronization is blocked.</strong>{status.bindingSyncError ? ` ${status.bindingSyncError}` : ''}</Alert>}
+                {status.bindingSyncState === 'error' && <Alert severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}><strong>The latest Folder Link check failed.</strong> The last known state of this stack was preserved because no stack-specific change was established.{status.bindingSyncError ? ` ${status.bindingSyncError}` : ''}</Alert>}
                 {status.bindingAutomationPaused && <Alert severity="info">Automatic synchronization is paused for the complete folder link. Resume it from its root folder or from Settings → Git.</Alert>}
                 {status.autoSyncEnabled && !status.stackAutoSyncEnabled && <Alert severity="info">This stack remains linked but is excluded from scheduled synchronization by its per-stack policy. Manual preview, push and pull actions remain available.</Alert>}
                 {status.state === 'locally_deleted' && <Alert severity="warning">A synchronized {localDeletion?.wholeStack ? 'stack' : 'file'} was deleted locally but still exists on Git. Choose explicitly whether to restore it, delete it from Git, or stop synchronizing it.</Alert>}

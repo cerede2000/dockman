@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -50,6 +51,57 @@ func TestGitStackStatusIndexTracksExactNestedStack(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stackSyncPending, views[0].State)
 	require.Equal(t, binding.ID, views[0].BindingID)
+}
+
+func TestStackCheckingStateIsProjectedWithoutOverwritingStoredState(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	row.AutoSyncEnabled = true
+	row.AutoSyncState = "syncing"
+	require.NoError(t, service.store.SaveBinding(&row))
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, binding.SelectedComposePaths, map[string]any{"state": stackSyncUpToDate}))
+
+	views, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.NotEmpty(t, views)
+	for _, view := range views {
+		require.Equal(t, stackSyncChecking, view.State)
+	}
+	stored, err := service.store.GitStackStatuses(binding.ID)
+	require.NoError(t, err)
+	for _, status := range stored {
+		require.Equal(t, stackSyncUpToDate, status.State, "checking is a transient projection, not a persisted destructive state")
+	}
+}
+
+func TestLegacyBindingErrorCopiedToStacksIsProjectedAtFolderLevelOnly(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	row, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	row.AutoSyncState = "error"
+	row.AutoSyncError = "temporary repository connection failure"
+	require.NoError(t, service.store.SaveBinding(&row))
+	now := time.Now().UTC()
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, binding.SelectedComposePaths, map[string]any{
+		"state": stackSyncError, "error_message": row.AutoSyncError, "last_success_at": &now,
+	}))
+
+	views, err := service.ListGitStackStatusViews("local")
+	require.NoError(t, err)
+	require.NotEmpty(t, views)
+	for _, view := range views {
+		require.Equal(t, stackSyncUpToDate, view.State)
+		require.Empty(t, view.Error)
+		require.Equal(t, "error", view.BindingSyncState)
+		require.Equal(t, row.AutoSyncError, view.BindingSyncError)
+	}
+}
+
+func TestInitialFolderLinkFailureDoesNotInitializeEveryStackAsError(t *testing.T) {
+	require.Equal(t, stackSyncPending, initialStackSyncState(StackBinding{InitialSyncState: "error"}))
+	require.Equal(t, stackSyncPending, initialStackSyncState(StackBinding{InitialSyncState: "checking"}))
+	require.Equal(t, stackSyncUpToDate, initialStackSyncState(StackBinding{InitialSyncState: "reconciled"}))
 }
 
 func TestNewComposeCreatedByEditorIsCataloguedUnselectedAndCanBeEnabled(t *testing.T) {

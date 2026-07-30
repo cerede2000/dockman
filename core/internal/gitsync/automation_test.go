@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RA341/dockman/internal/host/filesystem"
 	gitclient "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/stretchr/testify/require"
@@ -702,6 +703,61 @@ func establishBindingBaseline(t *testing.T, service *Service, bindingID string) 
 	require.NoError(t, err)
 	_, err = service.ExportBinding(context.Background(), bindingID, TransferInput{PreviewToken: preview.PreviewToken})
 	require.NoError(t, err)
+}
+
+func TestRepositoryFailureDoesNotPaintUnchangedStacksRed(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	establishBindingBaseline(t, service, binding.ID)
+	_, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+
+	repository, err := service.store.GetRepository(binding.RepositoryID)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(repository.RemoteURL))
+	_, err = service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.Error(t, err)
+
+	rows, err := service.store.GitStackStatuses(binding.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	for _, row := range rows {
+		require.Equal(t, stackSyncUpToDate, row.State, "a repository-level failure must preserve the last authoritative stack state")
+		require.Empty(t, row.ErrorMessage)
+	}
+	failedBinding, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "error", failedBinding.AutoSyncState)
+	require.NotEmpty(t, failedBinding.AutoSyncError, "the failure remains visible on the Folder Link")
+}
+
+func TestComposeOnlyStaysGreenAcrossUnchangedCyclesAndIgnoresDataTrees(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha", "data"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "data", "runtime.db"), []byte("mutable data\n"), 0o600))
+	service.ConfigureStackAccess(func(host, stackPath string) (filesystem.FileSystem, string, error) {
+		return denyReadDirFS{FileSystem: filesystem.NewLocal(stackRoot), baseName: "data"}, ".", nil
+	}, func() []string { return []string{"local"} }, filepath.Join(t.TempDir(), "backups"))
+
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+
+	for cycle := 0; cycle < 3; cycle++ {
+		result, runErr := service.RunBindingAutoSync(context.Background(), binding.ID)
+		require.NoError(t, runErr)
+		require.Equal(t, "up_to_date", result.State)
+		rows, rowsErr := service.store.GitStackStatuses(binding.ID)
+		require.NoError(t, rowsErr)
+		for _, row := range rows {
+			require.Equal(t, stackSyncUpToDate, row.State, "cycle %d must not invent a stack error", cycle+1)
+			require.Empty(t, row.ErrorMessage)
+		}
+	}
 }
 
 func remoteChange(t *testing.T, remoteURL, name, contents string) {
