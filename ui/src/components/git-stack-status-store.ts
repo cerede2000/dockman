@@ -45,6 +45,15 @@ interface GitStatusStore {
 }
 
 const normalizePath = (value: string) => value.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
+// The explicit synchronization state is the compatibility-safe source of
+// truth. Older/persisted projections may omit or temporarily report the
+// selected boolean even though a real stack status (up_to_date, checking,
+// conflict, …) exists. Only `unselected` represents a catalogued stack that
+// is not linked and must stay unbadged in the Files view.
+const normalizeSelection = (row: GitStackStatus): GitStackStatus => {
+    const selected = row.state !== 'unselected';
+    return row.selected === selected ? row : {...row, selected};
+};
 const statusFingerprint = (row: GitStackStatus) => JSON.stringify(row);
 // Zustand uses React's useSyncExternalStore. Returning a freshly allocated
 // fallback from a selector makes the snapshot look different on every read and
@@ -98,7 +107,8 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
     trackedFilesByHost: {},
     setHost: (host, rows) => set((state) => {
         const previous = state.byHost[host] ?? {};
-        const next = Object.fromEntries(rows.map((row) => {
+        const next = Object.fromEntries(rows.map((rawRow) => {
+            const row = normalizeSelection(rawRow);
             const path = normalizePath(row.fullComposePath);
             const current = previous[path];
             return [path, current && statusFingerprint(current) === statusFingerprint(row) ? current : row];
