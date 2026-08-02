@@ -164,6 +164,47 @@ func TestExplicitCheckFetchesRemoteComposeAfterIgnoredLocalEdit(t *testing.T) {
 	require.Equal(t, updated.LastAutoSyncCommit, status.LastCommit)
 }
 
+func TestComposeOnlyExplicitCheckImportsChangedEnvironmentTemplates(t *testing.T) {
+	service, stackRoot, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	binding.SyncProfile = syncProfileComposeOnly
+	require.NoError(t, service.store.SaveBinding(&binding))
+	templates := map[string]string{
+		".env.example":       "PORT=8080\n",
+		".env.sample":        "LOG_LEVEL=info\n",
+		".env.prod.template": "WORKERS=2\n",
+	}
+	for name, contents := range templates {
+		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", name), []byte(contents), 0o644))
+	}
+	establishBindingBaseline(t, service, binding.UUID)
+	_, err = service.UpdateBindingAutomation(binding.UUID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+
+	repository, err := service.store.GetRepository(binding.RepositoryUUID)
+	require.NoError(t, err)
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/.env.example", "PORT=9090\n")
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/.env.sample", "LOG_LEVEL=debug\n")
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/.env.prod.template", "WORKERS=4\n")
+	result, err := service.RunBindingAutoSyncNow(context.Background(), binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+	require.Equal(t, 3, result.Changed)
+	for name, expected := range map[string]string{
+		".env.example": "PORT=9090\n", ".env.sample": "LOG_LEVEL=debug\n", ".env.prod.template": "WORKERS=4\n",
+	} {
+		contents, readErr := os.ReadFile(filepath.Join(stackRoot, "alpha", name))
+		require.NoError(t, readErr)
+		require.Equal(t, expected, string(contents), name)
+	}
+	second, err := service.RunBindingAutoSyncNow(context.Background(), binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", second.State)
+	require.Zero(t, second.Changed)
+	require.NotContains(t, second.Message, "stack scan skipped", "Check now must perform an authoritative inventory even when the commit is unchanged")
+}
+
 func TestAutomaticSyncCanKeepEveryLinkedStackManualOnly(t *testing.T) {
 	service, _, binding := prepareMultiStackBinding(t)
 	_, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{

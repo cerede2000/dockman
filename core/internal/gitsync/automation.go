@@ -281,13 +281,14 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 }
 
 // RunBindingAutoSyncNow is an explicit user-triggered synchronization. Unlike
-// background polling, it may retry a failed or rolled-back deployment on the
-// same Git commit after the operator has corrected the runtime environment.
+// background polling, it always rebuilds the selected stack inventories and
+// may retry a failed or rolled-back deployment on the same Git commit. The
+// commit-only shortcut remains reserved for idle background polling.
 func (s *Service) RunBindingAutoSyncNow(ctx context.Context, id string) (AutoSyncResult, error) {
 	return s.runBindingAutoSync(ctx, id, true)
 }
 
-func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeployment bool) (AutoSyncResult, error) {
+func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bool) (AutoSyncResult, error) {
 	releaseMemory := observeGitMemory("automatic Git to Dockman synchronization")
 	defer releaseMemory()
 	automationLock := s.repositoryLock("automation:" + id)
@@ -360,14 +361,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, retryDeploy
 				}
 			}
 		}
-		retryCurrentDeployment := retryDeployment && binding.AutoDeployEnabled &&
-			(binding.AutoDeployState == "failed" || binding.AutoDeployState == "partial" || binding.AutoDeployState == "pending")
 		// A red synchronization state must be re-evaluated even when Git did not
 		// move. The underlying local permission, transient read failure or edited
 		// file may have been fixed since the previous cycle. Healthy bindings keep
 		// the cheap commit-only fast path, so there is no idle CPU regression.
 		recheckSynchronizationError := s.bindingHasActiveStackState(binding, stackSyncError)
-		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head && !retryCurrentDeployment && !recheckSynchronizationError {
+		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head && !explicit && !recheckSynchronizationError {
 			skippedStackScan = true
 			if s.bindingHasActiveStackState(binding, stackSyncLocalDeleted) {
 				localDeletionBlock = true
