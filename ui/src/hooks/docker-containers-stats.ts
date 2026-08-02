@@ -344,6 +344,11 @@ export function useDockerStats(selectedPage?: string) {
                 // wobbling through mixed old/new values while results trickle
                 gotStats.current = true;
                 pruneHistory(seenNames, !selectedPage);
+                // A fast stats stream commonly completes before the 200 ms
+                // progressive-paint timer fires. That timer is cancelled just
+                // above, so publish the completed history here as well or the
+                // sparklines remain on their empty placeholder indefinitely.
+                setHistory(new Map(statHistories));
                 const finalRows = sortRows(
                     [...merged.values()].filter(c => seen.has(c.id)),
                     sortRef.current.field, sortRef.current.order,
