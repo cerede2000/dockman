@@ -448,6 +448,72 @@ func TestRepositoryBindingPathsCannotOverlap(t *testing.T) {
 	require.False(t, pathsOverlap("stacks/app", "stacks/database"))
 }
 
+func TestSelectedParentBindingAllowsDisjointNestedFolderLink(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := t.TempDir()
+	service.ConfigureStackAccess(func(host, stackPath string) (filesystem.FileSystem, string, error) {
+		if host != "local" || (stackPath != "compose" && !strings.HasPrefix(stackPath, "compose/")) {
+			return nil, "", os.ErrNotExist
+		}
+		root := strings.TrimPrefix(stackPath, "compose")
+		root = strings.TrimPrefix(root, "/")
+		if root == "" {
+			root = "."
+		}
+		return filesystem.NewLocal(stackRoot), root, nil
+	}, func() []string { return []string{"local"} }, filepath.Join(t.TempDir(), "backups"))
+	for _, directory := range []string{"group/alpha", "group/beta"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, filepath.FromSlash(directory)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, filepath.FromSlash(directory), "compose.yml"), []byte("services: {}\n"), 0o644))
+	}
+
+	firstRepository := prepareBindingRepository(t, service)
+	remotePath, _ := createTestRemote(t)
+	secondRepository := Repository{UUID: uuid.NewString(), Name: "binding-repository-second-branch", Provider: "test", RemoteURL: remotePath, DefaultBranch: "main", Mode: "managed", Status: "cloning"}
+	require.NoError(t, service.store.SaveRepository(&secondRepository))
+	require.NoError(t, service.cloneRepository(context.Background(), secondRepository))
+	secondRepository.Status = "ready"
+	require.NoError(t, service.store.SaveRepository(&secondRepository))
+
+	parent, err := service.CreateBinding(BindingInput{
+		RepositoryID: firstRepository.UUID, Host: "local", StackPath: "compose/group", SubPath: "stacks",
+		ComposeSelectionMode: composeSelectionSelected, SelectedComposePaths: []string{"alpha/compose.yml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/compose.yml"}, parent.SelectedComposePaths)
+
+	child, err := service.CreateBinding(BindingInput{
+		RepositoryID: secondRepository.UUID, Host: "local", StackPath: "compose/group/beta", SubPath: ".",
+	})
+	require.NoError(t, err, "an unowned sibling subtree must be linkable to another repository branch")
+	require.Equal(t, "compose/group/beta", child.StackPath)
+
+	_, err = service.UpdateBindingComposeSelection(parent.ID, BindingComposeSelectionInput{Mode: composeSelectionAll})
+	require.ErrorContains(t, err, "overlaps files selected by existing link")
+	_, err = service.EnableGitStackSynchronization(parent.ID, "beta/compose.yml")
+	require.ErrorContains(t, err, "overlaps files selected by existing link")
+	_, err = service.UpdateBindingPolicy(parent.ID, BindingPolicyInput{Profile: syncProfileComposeConfig, IncludePatterns: []string{"beta/config/**"}})
+	require.ErrorContains(t, err, "overlaps files selected by existing link")
+}
+
+func TestNestedStackFoldersAreOfferedAsIndependentLinkTargets(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	for _, directory := range []string{"group/alpha", "group/beta"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, filepath.FromSlash(directory)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, filepath.FromSlash(directory), "compose.yml"), []byte("services: {}\n"), 0o644))
+	}
+	targets, err := service.ListStackTargets()
+	require.NoError(t, err)
+	byPath := make(map[string]StackTarget, len(targets))
+	for _, target := range targets {
+		byPath[target.Path] = target
+	}
+	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, byPath["compose/group"].ComposePaths)
+	require.Equal(t, []string{"compose.yml"}, byPath["compose/group/alpha"].ComposePaths)
+	require.Equal(t, []string{"compose.yml"}, byPath["compose/group/beta"].ComposePaths)
+}
+
 func TestCompleteStacksFolderIsDiscoveredAndLinkedOnce(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

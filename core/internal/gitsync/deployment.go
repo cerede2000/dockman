@@ -174,6 +174,12 @@ func (s *Service) registerDiscoveredDeploymentTargets(binding StackBinding, targ
 	binding.AutoDeployComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.AutoDeployComposePaths), targets...)), "\n")
 	binding.AutoDeployState = "pending"
 	binding.AutoDeployError = "New Git stack discovered; waiting for controlled deployment"
+	ownershipLock := s.repositoryLock("binding-ownership:" + binding.Host)
+	ownershipLock.Lock()
+	defer ownershipLock.Unlock()
+	if err := s.validateBindingLocalOwnership(binding, binding.UUID); err != nil {
+		return binding, fmt.Errorf("new Git stack would overlap another Folder Link: %w", err)
+	}
 	if err := s.store.SaveBinding(&binding); err != nil {
 		return binding, err
 	}

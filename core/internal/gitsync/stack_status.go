@@ -248,6 +248,9 @@ func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (
 		return GitStackStatusView{}, err
 	}
 	previousAutoTargets := strings.Join(autoSyncComposePaths(binding), "\n")
+	ownershipLock := s.repositoryLock("binding-ownership:" + binding.Host)
+	ownershipLock.Lock()
+	defer ownershipLock.Unlock()
 	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
@@ -260,6 +263,9 @@ func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (
 		binding.ComposeSelectionMode = composeSelectionAll
 	}
 	binding.SelectedComposePaths = strings.Join(selected, "\n")
+	if err := s.validateBindingLocalOwnership(binding, binding.UUID); err != nil {
+		return GitStackStatusView{}, err
+	}
 	if strings.Join(autoSyncComposePaths(binding), "\n") != previousAutoTargets {
 		binding.LastAutoSyncCommit = ""
 	}

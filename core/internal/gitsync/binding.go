@@ -265,6 +265,9 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	if !s.enabled {
 		return BindingView{}, errors.New("Git synchronization is disabled")
 	}
+	ownershipLock := s.repositoryLock("binding-ownership:" + strings.TrimSpace(input.Host))
+	ownershipLock.Lock()
+	defer ownershipLock.Unlock()
 	clean, targetFS, targetRoot, err := s.validateBindingInput(input)
 	if err != nil {
 		return BindingView{}, err
@@ -501,6 +504,12 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 	row.SyncProfile = policy
 	row.IncludePatterns = strings.Join(includes, "\n")
 	row.ExcludePatterns = strings.Join(excludes, "\n")
+	ownershipLock := s.repositoryLock("binding-ownership:" + row.Host)
+	ownershipLock.Lock()
+	defer ownershipLock.Unlock()
+	if err := s.validateBindingLocalOwnership(row, row.UUID); err != nil {
+		return BindingView{}, err
+	}
 	if policyChanged {
 		// A prior error/conflict may belong to a file that this policy no longer
 		// selects. Invalidate the commit shortcut and mark the projection pending
@@ -535,6 +544,9 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 		return BindingView{}, err
 	}
 	previousAutoTargets := strings.Join(autoSyncComposePaths(row), "\n")
+	ownershipLock := s.repositoryLock("binding-ownership:" + row.Host)
+	ownershipLock.Lock()
+	defer ownershipLock.Unlock()
 	repositoryLock := s.repositoryLock(row.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
@@ -554,6 +566,9 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 	}
 	row.ComposeSelectionMode = mode
 	row.SelectedComposePaths = strings.Join(selected, "\n")
+	if err := s.validateBindingLocalOwnership(row, row.UUID); err != nil {
+		return BindingView{}, err
+	}
 	// A deselected stack must never remain authorized for automatic polling or deployment.
 	if mode == composeSelectionSelected {
 		allowed := make(map[string]struct{}, len(selected))
@@ -905,19 +920,27 @@ func (s *Service) ListStackTargets() ([]StackTarget, error) {
 		}
 		composeRoot := discoverComposeFiles(targetFS, root)
 		result = append(result, StackTarget{Host: host, Path: "compose", ComposePaths: composeRoot, Scope: "all_stacks", StackCount: countComposeFolders(composeRoot)})
-		entries, err := targetFS.ReadDir(root)
-		if err != nil {
-			continue
+		// Derive every nested source-folder choice from the single bounded root
+		// catalog. Re-scanning each directory would become quadratic on large
+		// trees and previously exposed only first-level folders, forcing distinct
+		// nested groups to share one broad source root and then fail overlap checks.
+		groups := make(map[string][]string)
+		for _, composePath := range composeRoot {
+			directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(composePath)))
+			for directory != "." && directory != "" && directory != "/" {
+				relative := strings.TrimPrefix(composePath, strings.Trim(directory, "/")+"/")
+				groups[directory] = append(groups[directory], relative)
+				directory = filepath.ToSlash(filepath.Dir(filepath.FromSlash(directory)))
+			}
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-				continue
-			}
-			rel := targetFS.Join(root, entry.Name())
-			compose := discoverComposeFiles(targetFS, rel)
-			if len(compose) > 0 {
-				result = append(result, StackTarget{Host: host, Path: filepath.ToSlash(filepath.Join("compose", entry.Name())), ComposePaths: compose, Scope: "folder", StackCount: countComposeFolders(compose)})
-			}
+		directories := make([]string, 0, len(groups))
+		for directory := range groups {
+			directories = append(directories, directory)
+		}
+		sort.Strings(directories)
+		for _, directory := range directories {
+			compose := uniqueSortedStrings(groups[directory])
+			result = append(result, StackTarget{Host: host, Path: filepath.ToSlash(filepath.Join("compose", directory)), ComposePaths: compose, Scope: "folder", StackCount: countComposeFolders(compose)})
 		}
 	}
 	return result, nil
@@ -1577,12 +1600,16 @@ func (s *Service) validateBindingInput(input BindingInput) (BindingInput, filesy
 		return input, nil, "", err
 	}
 	for _, row := range rows {
-		if row.Host == input.Host && pathsOverlap(row.StackPath, input.StackPath) {
-			return input, nil, "", fmt.Errorf("source folder overlaps existing link %s on host %s; remove the narrower link before linking its parent", row.StackPath, row.Host)
-		}
 		if row.RepositoryUUID == input.RepositoryID && pathsOverlap(row.SubPath, input.SubPath) {
 			return input, nil, "", fmt.Errorf("repository path overlaps stack link %s on host %s", row.StackPath, row.Host)
 		}
+	}
+	candidate := StackBinding{
+		Host: input.Host, StackPath: input.StackPath, ComposeSelectionMode: input.ComposeSelectionMode,
+		SelectedComposePaths: strings.Join(input.SelectedComposePaths, "\n"),
+	}
+	if err := s.validateBindingLocalOwnership(candidate, ""); err != nil {
+		return input, nil, "", err
 	}
 	targetFS, targetRoot, err := s.stackResolver(input.Host, input.StackPath)
 	if err != nil {
@@ -1603,6 +1630,92 @@ func pathsOverlap(left, right string) bool {
 		return true
 	}
 	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
+}
+
+type bindingOwnership struct {
+	path      string
+	recursive bool
+}
+
+// validateBindingLocalOwnership permits nested Folder Links only when their
+// effective Compose selections are disjoint. A link in "all" mode reserves
+// its complete source tree; a selected link owns only the directories of its
+// approved Compose manifests. This lets sibling subfolders target independent
+// branches without ever giving two links authority over the same live files.
+func (s *Service) validateBindingLocalOwnership(candidate StackBinding, ignoreID string) error {
+	rows, err := s.store.ListBindings()
+	if err != nil {
+		return err
+	}
+	for _, existing := range rows {
+		if existing.UUID == ignoreID || existing.Host != candidate.Host || !pathsOverlap(existing.StackPath, candidate.StackPath) {
+			continue
+		}
+		if bindingOwnershipsOverlap(existing, candidate) || bindingIncludeMayReach(existing, candidate.StackPath) || bindingIncludeMayReach(candidate, existing.StackPath) {
+			return fmt.Errorf("source folder overlaps files selected by existing link %s on host %s; choose a disjoint subfolder or deselect those stacks first", existing.StackPath, existing.Host)
+		}
+	}
+	return nil
+}
+
+func bindingOwnershipsOverlap(left, right StackBinding) bool {
+	for _, leftOwnership := range bindingOwnerships(left) {
+		for _, rightOwnership := range bindingOwnerships(right) {
+			if ownershipsOverlap(leftOwnership, rightOwnership) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func bindingOwnerships(binding StackBinding) []bindingOwnership {
+	root := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
+	if normalizedComposeSelectionMode(binding.ComposeSelectionMode) == composeSelectionAll {
+		return []bindingOwnership{{path: root, recursive: true}}
+	}
+	result := make([]bindingOwnership, 0)
+	seen := make(map[bindingOwnership]struct{})
+	for _, composePath := range selectedComposePaths(binding) {
+		directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(composePath)))
+		ownership := bindingOwnership{path: root, recursive: false}
+		if directory != "." && directory != "" {
+			ownership.path = strings.Trim(filepath.ToSlash(filepath.Join(root, directory)), "/")
+			ownership.recursive = true
+		}
+		if _, exists := seen[ownership]; !exists {
+			seen[ownership] = struct{}{}
+			result = append(result, ownership)
+		}
+	}
+	return result
+}
+
+func ownershipsOverlap(left, right bindingOwnership) bool {
+	if left.path == right.path {
+		return true
+	}
+	return left.recursive && strings.HasPrefix(right.path, left.path+"/") ||
+		right.recursive && strings.HasPrefix(left.path, right.path+"/")
+}
+
+func bindingIncludeMayReach(binding StackBinding, targetRoot string) bool {
+	bindingRoot := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
+	targetRoot = strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(targetRoot))), "/")
+	if targetRoot == bindingRoot || !strings.HasPrefix(targetRoot, bindingRoot+"/") {
+		return false
+	}
+	relative := strings.TrimPrefix(targetRoot, bindingRoot+"/")
+	rules, err := rulesFromPatterns(splitPatternLines(binding.IncludePatterns))
+	if err != nil {
+		return true
+	}
+	for _, rule := range rules {
+		if !rule.basename && (matchesIgnoreRule([]ignoreRule{rule}, relative, false) || includeRuleCanMatchBelowDirectory(rule, relative)) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateRelativePath(value string, allowDot bool) error {
