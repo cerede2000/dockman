@@ -33,6 +33,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /repositories/{id}/pull", h.pullRepository)
 	mux.HandleFunc("POST /repositories/{id}/push", h.pushRepository)
 	mux.HandleFunc("POST /repositories/{id}/reset-to-remote", h.resetRepositoryToRemote)
+	mux.HandleFunc("GET /repositories/{id}/stack-catalog", h.repositoryStackCatalog)
 	mux.HandleFunc("GET /repositories/{id}/operations", h.repositoryOperations)
 	mux.HandleFunc("DELETE /repositories/{id}", h.deleteRepository)
 	mux.HandleFunc("GET /stack-targets", h.listStackTargets)
@@ -80,6 +81,18 @@ func NewHTTPHandler(service *Service) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) repositoryStackCatalog(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.RepositoryStackCatalog(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) pushGitStack(w http.ResponseWriter, r *http.Request) {

@@ -97,6 +97,7 @@ interface RepositoryForm {
 }
 
 interface StackTarget { host: string; path: string; composePaths: string[]; scope: "all_stacks" | "folder"; stackCount: number; }
+interface RepositoryStackCatalog { repositoryId: string; branch: string; composePaths: string[]; }
 interface Binding {
     id: string; repositoryId: string; repositoryName: string; host: string; stackPath: string;
     subPath: string; composePaths: string[]; syncProfile: "compose_only" | "compose_config" | "all_files";
@@ -145,6 +146,12 @@ function defaultRepositoryFolder(stackPath: string): string {
     const normalized = stackPath.trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
     const name = normalized.split("/").filter(Boolean).at(-1);
     return name ? `stacks/${name}` : "stacks";
+}
+
+function defaultGitImportFolder(repository?: Repository): string {
+    const name = (repository?.name || "git-import").trim().toLocaleLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "git-import";
+    return `compose/${name}`;
 }
 
 const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_permission", "skipped_large_directory", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
@@ -253,6 +260,10 @@ export default function TabGit() {
     const [bindingDialogOpen, setBindingDialogOpen] = useState(false);
     const [bindingForm, setBindingForm] = useState({repositoryId: "", host: "", stackPath: "", subPath: "stacks", targetMode: "repository_folder" as "repository_folder" | "repository_root", autoReconcile: true, initialSync: "none" as "none" | TransferDirection});
     const [bindingComposePaths, setBindingComposePaths] = useState<Set<string>>(() => new Set());
+    const [gitImportDialogOpen, setGitImportDialogOpen] = useState(false);
+    const [gitImportForm, setGitImportForm] = useState({repositoryId: "", host: "", stackPath: ""});
+    const [gitImportCatalog, setGitImportCatalog] = useState<RepositoryStackCatalog | null>(null);
+    const [gitImportComposePaths, setGitImportComposePaths] = useState<Set<string>>(() => new Set());
     const [transferBinding, setTransferBinding] = useState<Binding | null>(null);
     const [transferDirection, setTransferDirection] = useState<TransferDirection>("stack_to_repository");
     const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
@@ -551,6 +562,53 @@ export default function TabGit() {
         setBindingForm({repositoryId: repositories[0]?.id || "", host: first?.host || "", stackPath, subPath: defaultRepositoryFolder(stackPath), targetMode: "repository_folder", autoReconcile: true, initialSync: "none"});
         setBindingComposePaths(new Set(first?.composePaths || []));
         setBindingDialogOpen(true);
+    };
+
+    const loadGitImportCatalog = async (repositoryId: string) => {
+        setBusy("git-import-catalog");
+        await (async () => {
+            await api<RepositoryStatus>(`/repositories/${repositoryId}/pull`, {method: "POST"});
+            const catalog = await api<RepositoryStackCatalog>(`/repositories/${repositoryId}/stack-catalog`);
+            setGitImportCatalog(catalog);
+            setGitImportComposePaths(new Set(catalog.composePaths));
+            if (catalog.composePaths.length === 0) showWarning("No Compose stack was found on this repository branch.");
+        })().catch((error) => {
+            setGitImportCatalog(null);
+            setGitImportComposePaths(new Set());
+            showError(`Unable to inspect Git stacks: ${(error as Error).message}`);
+        }).finally(() => setBusy(null));
+    };
+
+    const openGitStackImport = () => {
+        const repository = repositories[0];
+        const host = stackTargets.find((target) => target.scope === "all_stacks")?.host || stackTargets[0]?.host || "local";
+        setGitImportForm({repositoryId: repository?.id || "", host, stackPath: defaultGitImportFolder(repository)});
+        setGitImportCatalog(null);
+        setGitImportComposePaths(new Set());
+        setGitImportDialogOpen(true);
+        if (repository) void loadGitImportCatalog(repository.id);
+    };
+
+    const importGitStacks = async () => {
+        const paths = gitImportCatalog?.composePaths.filter((path) => gitImportComposePaths.has(path)) || [];
+        if (paths.length === 0) return;
+        setBusy("git-stack-import");
+        await (async () => {
+            const binding = await api<Binding>("/bindings", {method: "POST", body: JSON.stringify({
+                repositoryId: gitImportForm.repositoryId,
+                host: gitImportForm.host,
+                stackPath: gitImportForm.stackPath,
+                subPath: ".",
+                autoReconcile: true,
+                initialSync: "repository_to_stack",
+                composeSelectionMode: paths.length === gitImportCatalog?.composePaths.length ? "all" : "selected",
+                selectedComposePaths: paths,
+            })});
+            if (binding.initialSyncState === "error") throw new Error(binding.initialSyncError || "Git stack import failed");
+            setGitImportDialogOpen(false);
+            showSuccess(`${paths.length} Git stack${paths.length === 1 ? "" : "s"} imported into ${gitImportForm.stackPath}. The Folder Link is ready.`);
+            await load();
+        })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };
 
     const saveBinding = async () => {
@@ -1094,7 +1152,10 @@ export default function TabGit() {
                         <Typography variant="h6">Folder links</Typography>
                         <Typography variant="body2" color="text.secondary">Link a complete stacks root to a Git folder or a dedicated repository. Its full subfolder tree is preserved automatically.</Typography>
                     </Box>
-                    <Button variant="contained" startIcon={<LinkOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openBindingCreate}>Link folder</Button>
+                    <Stack direction="row" spacing={1}>
+                        <Button variant="outlined" startIcon={<CloudDownloadOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openGitStackImport}>Import from Git</Button>
+                        <Button variant="contained" startIcon={<LinkOutlined/>} disabled={repositories.length === 0 || busy !== null} onClick={openBindingCreate}>Link folder</Button>
+                    </Stack>
                 </Stack>
                 <TableContainer><Table size="small">
                     <TableHead><TableRow><TableCell>Source folder</TableCell><TableCell>Git destination</TableCell><TableCell>Compose files</TableCell><TableCell>Automatic Git → Dockman</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
@@ -1200,6 +1261,36 @@ export default function TabGit() {
                 <Alert severity={bindingForm.initialSync === "none" ? "info" : "warning"}>{bindingForm.initialSync === "none" ? "The link remains non-destructive. If both sides are identical, automatic reconciliation records their common baseline without copying anything." : bindingForm.initialSync === "stack_to_repository" ? "Dockman becomes the explicit source for differing files. Git-only files are preserved; allowed changes are committed and pushed." : "Git becomes the explicit source for differing files. Dockman-only files are preserved; changed files are backed up before import. Nothing is deployed automatically."}</Alert>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setBindingDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBinding()} disabled={busy !== null || !bindingForm.repositoryId || !bindingForm.host.trim() || !bindingForm.stackPath.trim() || !bindingForm.subPath.trim()}>{busy === "binding-save" && <CircularProgress size={16} sx={{mr: 1}}/>}Link</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={gitImportDialogOpen} onClose={() => busy === null && setGitImportDialogOpen(false)} fullWidth maxWidth="md">
+            <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><CloudDownloadOutlined/>Import stacks from Git</DialogTitle>
+            <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                <Alert severity="info">Select one or more Compose stacks already present on Git. Dockman creates the missing local folders, imports the allowed files, and creates the Folder Link in one protected operation. Nothing is deployed automatically.</Alert>
+                <FormControl><InputLabel>Repository and branch</InputLabel><Select label="Repository and branch" value={gitImportForm.repositoryId} onChange={(event) => {
+                    const repositoryId = event.target.value;
+                    const repository = repositories.find((item) => item.id === repositoryId);
+                    setGitImportForm({...gitImportForm, repositoryId, stackPath: defaultGitImportFolder(repository)});
+                    setGitImportCatalog(null); setGitImportComposePaths(new Set());
+                    void loadGitImportCatalog(repositoryId);
+                }}>
+                    {repositories.map((repository) => <MenuItem key={repository.id} value={repository.id}>{repository.name} — {repository.defaultBranch}</MenuItem>)}
+                </Select></FormControl>
+                <Stack direction={{xs: "column", sm: "row"}} spacing={2}>
+                    <FormControl fullWidth><InputLabel>Docker host</InputLabel><Select label="Docker host" value={gitImportForm.host} onChange={(event) => setGitImportForm({...gitImportForm, host: event.target.value})}>
+                        {[...new Set(stackTargets.map((target) => target.host))].map((host) => <MenuItem key={host} value={host}>{host}</MenuItem>)}
+                    </Select></FormControl>
+                    <TextField fullWidth label="Local destination folder" value={gitImportForm.stackPath} onChange={(event) => setGitImportForm({...gitImportForm, stackPath: event.target.value})} placeholder="compose/my-repository" helperText="A missing folder is created automatically. Existing files are never deleted."/>
+                </Stack>
+                {busy === "git-import-catalog" && <Box sx={{display: "flex", justifyContent: "center", py: 5}}><CircularProgress/></Box>}
+                {busy !== "git-import-catalog" && gitImportCatalog && <Box>
+                    <Stack direction="row" sx={{alignItems: "center", justifyContent: "space-between", mb: 1}}><Typography variant="subtitle2">Stacks available on Git</Typography><Chip size="small" variant="outlined" label={gitImportCatalog.branch}/></Stack>
+                    <ComposePathSelector paths={gitImportCatalog.composePaths} selectedPaths={gitImportComposePaths} onChange={setGitImportComposePaths} selectedLabel="will be imported" unselectedLabel="not imported" maxHeight="38vh"/>
+                </Box>}
+                {busy !== "git-import-catalog" && gitImportCatalog?.composePaths.length === 0 && <Alert severity="warning">No compose.yml, compose.yaml, docker-compose.yml or docker-compose.yaml was found on this branch.</Alert>}
+                <Alert severity="warning">The selected Git branch is pulled before discovery and again before import. Compose files are validated, the operation is confined to the destination folder, and any existing changed file is backed up before replacement.</Alert>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setGitImportDialogOpen(false)} disabled={busy !== null}>Cancel</Button><Button variant="contained" startIcon={<CloudDownloadOutlined/>} onClick={() => void importGitStacks()} disabled={busy !== null || !gitImportForm.repositoryId || !gitImportForm.host.trim() || !gitImportForm.stackPath.trim() || gitImportComposePaths.size === 0}>{busy === "git-stack-import" && <CircularProgress size={16} sx={{mr: 1}}/>}Import and link</Button></DialogActions>
         </Dialog>
 
         <Dialog open={transferBinding !== null} onClose={() => busy === null && closeTransfer()} fullWidth maxWidth="md">

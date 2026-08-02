@@ -98,6 +98,25 @@ func TestBindingAutomationAPIAcceptsPerStackTargets(t *testing.T) {
 	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, updated.SelectedComposePaths)
 }
 
+func TestRepositoryStackCatalogListsGitOnlyStacks(t *testing.T) {
+	service, _ := testService(t, true)
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "apps/alpha/compose.yml", "services: {}\n")
+	remoteChange(t, repository.RemoteURL, "apps/beta/docker-compose.yaml", "services: {}\n")
+	_, err := service.PullRepository(t.Context(), repository.UUID)
+	require.NoError(t, err)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/repositories/"+repository.UUID+"/stack-catalog", nil)
+	NewHTTPHandler(service).ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var catalog RepositoryStackCatalog
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &catalog))
+	require.Equal(t, repository.UUID, catalog.RepositoryID)
+	require.Equal(t, "main", catalog.Branch)
+	require.Equal(t, []string{"apps/alpha/compose.yml", "apps/beta/docker-compose.yaml"}, catalog.ComposePaths)
+}
+
 func TestBindingPolicyTreeAPIUsesUnsavedPolicy(t *testing.T) {
 	service, stackRoot, binding := prepareMultiStackBinding(t)
 	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "debug.log"), []byte("debug\n"), 0o644))

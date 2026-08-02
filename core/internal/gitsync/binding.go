@@ -131,6 +131,12 @@ type StackTarget struct {
 	StackCount   int      `json:"stackCount"`
 }
 
+type RepositoryStackCatalog struct {
+	RepositoryID string   `json:"repositoryId"`
+	Branch       string   `json:"branch"`
+	ComposePaths []string `json:"composePaths"`
+}
+
 type TransferInput struct {
 	IncludeSensitive      bool     `json:"includeSensitive"`
 	SensitiveConfirmation string   `json:"sensitiveConfirmation"`
@@ -276,6 +282,19 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	repository, err := s.store.GetRepository(clean.RepositoryID)
 	if err != nil {
 		return BindingView{}, err
+	}
+	// A Git-first link must validate the requested Compose selection against
+	// the current remote branch, not against a possibly stale local catalog.
+	// The initialization phase pulls again under the transfer lock before any
+	// write, preserving the normal preview-token race protection.
+	if strings.TrimSpace(clean.InitialSync) == "repository_to_stack" {
+		if _, err := s.PullRepository(ctx, clean.RepositoryID); err != nil {
+			return BindingView{}, fmt.Errorf("refresh repository before Git stack import: %w", err)
+		}
+		repository, err = s.store.GetRepository(clean.RepositoryID)
+		if err != nil {
+			return BindingView{}, err
+		}
 	}
 	remoteCompose, err := s.repositoryComposeCatalog(repository, clean.SubPath)
 	if err != nil {
@@ -944,6 +963,25 @@ func (s *Service) ListStackTargets() ([]StackTarget, error) {
 		}
 	}
 	return result, nil
+}
+
+// RepositoryStackCatalog lists Compose manifests from the managed branch
+// without touching the live stacks filesystem. It powers the Git-first import
+// flow where no local directory exists yet; the normal binding import remains
+// responsible for fetching, validating, backing up and writing the files.
+func (s *Service) RepositoryStackCatalog(repositoryID string) (RepositoryStackCatalog, error) {
+	if !s.enabled {
+		return RepositoryStackCatalog{}, errors.New("Git synchronization is disabled")
+	}
+	repository, err := s.store.GetRepository(strings.TrimSpace(repositoryID))
+	if err != nil {
+		return RepositoryStackCatalog{}, err
+	}
+	compose, err := s.repositoryComposeCatalog(repository, ".")
+	if err != nil {
+		return RepositoryStackCatalog{}, fmt.Errorf("discover repository Compose catalog: %w", err)
+	}
+	return RepositoryStackCatalog{RepositoryID: repository.UUID, Branch: repository.DefaultBranch, ComposePaths: compose}, nil
 }
 
 func (s *Service) PreviewBinding(id, direction string, input TransferInput) (TransferPreview, error) {

@@ -158,6 +158,39 @@ func TestBindingCanInitializeFromDockmanOrGit(t *testing.T) {
 	})
 }
 
+func TestGitFirstImportCreatesMissingLocalFoldersForSelectedStacks(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := t.TempDir()
+	service.ConfigureStackAccess(func(host, stackPath string) (filesystem.FileSystem, string, error) {
+		if host != "local" || (stackPath != "compose" && !strings.HasPrefix(stackPath, "compose/")) {
+			return nil, "", os.ErrNotExist
+		}
+		relative := strings.Trim(strings.TrimPrefix(stackPath, "compose"), "/")
+		if relative == "" {
+			relative = "."
+		}
+		return filesystem.NewLocal(stackRoot), relative, nil
+	}, func() []string { return []string{"local"} }, filepath.Join(t.TempDir(), "backups"))
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "alpha/compose.yml", "services:\n  alpha:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "alpha/.env.example", "PORT=8080\n")
+	remoteChange(t, repository.RemoteURL, "beta/compose.yml", "services:\n  beta:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "ignored/compose.yml", "services:\n  ignored:\n    image: alpine:3.23\n")
+
+	binding, err := service.CreateBindingContext(context.Background(), BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose/git-import", SubPath: ".",
+		InitialSync: "repository_to_stack", ComposeSelectionMode: composeSelectionSelected,
+		SelectedComposePaths: []string{"alpha/compose.yml", "beta/compose.yml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "imported", binding.InitialSyncState)
+	require.FileExists(t, filepath.Join(stackRoot, "git-import", "alpha", "compose.yml"))
+	require.FileExists(t, filepath.Join(stackRoot, "git-import", "alpha", ".env.example"))
+	require.FileExists(t, filepath.Join(stackRoot, "git-import", "beta", "compose.yml"))
+	require.NoFileExists(t, filepath.Join(stackRoot, "git-import", "ignored", "compose.yml"))
+	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, binding.SelectedComposePaths)
+}
+
 func TestPreviewSkipsSensitiveFilesUnlessExplicitlyConfirmed(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)
