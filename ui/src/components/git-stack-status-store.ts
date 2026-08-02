@@ -45,15 +45,6 @@ interface GitStatusStore {
 }
 
 const normalizePath = (value: string) => value.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
-// The explicit synchronization state is the compatibility-safe source of
-// truth. Older/persisted projections may omit or temporarily report the
-// selected boolean even though a real stack status (up_to_date, checking,
-// conflict, …) exists. Only `unselected` represents a catalogued stack that
-// is not linked and must stay unbadged in the Files view.
-const normalizeSelection = (row: GitStackStatus): GitStackStatus => {
-    const selected = row.state !== 'unselected';
-    return row.selected === selected ? row : {...row, selected};
-};
 const statusFingerprint = (row: GitStackStatus) => JSON.stringify(row);
 // Zustand uses React's useSyncExternalStore. Returning a freshly allocated
 // fallback from a selector makes the snapshot look different on every read and
@@ -61,6 +52,19 @@ const statusFingerprint = (row: GitStackStatus) => JSON.stringify(row);
 // empty snapshot referentially stable until the first response for this host.
 const EMPTY_GIT_STACK_STATUSES: Record<string, GitStackStatus> = Object.freeze({});
 const EMPTY_GIT_STATUS_LIST: GitStackStatus[] = [];
+
+// A compose file can legitimately appear more than once in the API projection:
+// for example, a broad "all stacks" Folder Link catalogues it as unselected
+// while a more specific Folder Link actually synchronizes it. The Files and
+// Monitor views expose one badge per compose path, so the selected association
+// must always win regardless of database/API ordering. Two equally selected
+// rows are not a valid overlapping-link configuration; keeping the first one is
+// deterministic and avoids making the displayed action target oscillate.
+const preferStatusForPath = (current: GitStackStatus | undefined, candidate: GitStackStatus) => {
+    if (!current) return candidate;
+    if (current.selected !== candidate.selected) return candidate.selected ? candidate : current;
+    return current;
+};
 
 export function gitStatusSeverity(status: GitStackStatus): 'neutral' | 'info' | 'warning' | 'error' | 'success' {
     if (status.deployState === 'failed' || status.deployState === 'rollback_failed' || status.state === 'conflict' || status.state === 'error') return 'error';
@@ -107,9 +111,13 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
     trackedFilesByHost: {},
     setHost: (host, rows) => set((state) => {
         const previous = state.byHost[host] ?? {};
-        const next = Object.fromEntries(rows.map((rawRow) => {
-            const row = normalizeSelection(rawRow);
+        const projected: Record<string, GitStackStatus> = {};
+        for (const rawRow of rows) {
+            const row = rawRow;
             const path = normalizePath(row.fullComposePath);
+            projected[path] = preferStatusForPath(projected[path], row);
+        }
+        const next = Object.fromEntries(Object.entries(projected).map(([path, row]) => {
             const current = previous[path];
             return [path, current && statusFingerprint(current) === statusFingerprint(row) ? current : row];
         }));
