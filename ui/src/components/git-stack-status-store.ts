@@ -160,9 +160,20 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
     }})),
 }));
 
-const watchers = new Map<string, {references: number; timer?: ReturnType<typeof setInterval>; running: boolean; onVisible?: () => void}>();
+const watchers = new Map<string, {references: number; timer?: ReturnType<typeof setInterval>; onVisible?: () => void}>();
+const statusRefreshes = new Map<string, Promise<void>>();
 const mutationRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
 const trackedFileRequests = new Map<string, {paths: Set<string>; timer?: ReturnType<typeof setTimeout>}>();
+const trackedFileGenerations = new Map<string, number>();
+
+const trackedFileKey = (host: string, path: string) => `${host}\0${normalizePath(path)}`;
+const trackedFileGeneration = (host: string, path: string) => trackedFileGenerations.get(trackedFileKey(host, path)) ?? 0;
+const bumpTrackedFileGeneration = (host: string, path: string) => {
+    const key = trackedFileKey(host, path);
+    const next = (trackedFileGenerations.get(key) ?? 0) + 1;
+    trackedFileGenerations.set(key, next);
+    return next;
+};
 
 async function flushTrackedFileRequests(host: string) {
     const pending = trackedFileRequests.get(host);
@@ -171,13 +182,23 @@ async function flushTrackedFileRequests(host: string) {
     const paths = Array.from(pending.paths);
     for (let offset = 0; offset < paths.length; offset += 500) {
         const chunk = paths.slice(offset, offset + 500);
+        const generations = new Map(chunk.map((path) => [normalizePath(path), trackedFileGeneration(host, path)]));
         try {
             const response = await fetch(withProtectedAPI('/git/tracked-files'), {
                 method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({host, paths: chunk}),
             });
             if (!response.ok) continue;
             const result = await response.json() as {trackedPaths: string[]; files?: GitTrackedFileInfo[]};
-            useGitStatusStore.getState().setTrackedFiles(host, chunk, result.trackedPaths ?? [], result.files ?? []);
+            // A policy mutation may have completed while this batched read was
+            // in flight. Never let that older answer resurrect a cloud badge.
+            const current = chunk.filter((path) => trackedFileGeneration(host, path) === generations.get(normalizePath(path)));
+            const currentSet = new Set(current.map(normalizePath));
+            useGitStatusStore.getState().setTrackedFiles(
+                host,
+                current,
+                (result.trackedPaths ?? []).filter((path) => currentSet.has(normalizePath(path))),
+                (result.files ?? []).filter((file) => currentSet.has(normalizePath(file.path))),
+            );
         } catch {
             // Git is optional. Leave unknown entries unbadged; a remount can
             // retry without creating a persistent worker or noisy error.
@@ -193,24 +214,31 @@ function requestTrackedFile(host: string, path: string) {
     trackedFileRequests.set(host, pending);
 }
 
-export async function refreshGitStackStatuses(host: string) {
+export async function refreshGitStackStatuses(host: string, authoritative = true) {
     if (!host) return;
-    // One-shot refreshes (for example after a file mutation) must not create a
-    // permanent zero-reference watcher. Only useGitStatusWatcher owns entries
-    // in this map and their timers/listeners.
-    const watcher = watchers.get(host) ?? {references: 0, running: false};
-    if (watcher.running || document.visibilityState === 'hidden') return;
-    watcher.running = true;
-    try {
-        const response = await fetch(withProtectedAPI(`/git/stack-statuses?host=${encodeURIComponent(host)}`));
-        if (!response.ok) return;
-        useGitStatusStore.getState().setHost(host, await response.json() as GitStackStatus[]);
-    } catch {
-        // Git is optional and hosts can be offline. Keep the last projection;
-        // the single bounded watcher will retry on its normal interval.
-    } finally {
-        watcher.running = false;
-    }
+    if (!authoritative && document.visibilityState === 'hidden') return;
+
+    const current = statusRefreshes.get(host);
+    if (current && !authoritative) return current;
+
+    // A mutation must be observed after every older request has completed.
+    // Chaining instead of dropping the refresh prevents a pre-mutation read
+    // from leaving an orange badge until the next poll or full page reload.
+    const previous = current?.catch(() => undefined) ?? Promise.resolve();
+    const request = previous.then(async () => {
+        try {
+            const response = await fetch(withProtectedAPI(`/git/stack-statuses?host=${encodeURIComponent(host)}`));
+            if (!response.ok) return;
+            useGitStatusStore.getState().setHost(host, await response.json() as GitStackStatus[]);
+        } catch {
+            // Git is optional and hosts can be offline. Keep the last projection;
+            // the single bounded watcher will retry on its normal interval.
+        }
+    });
+    statusRefreshes.set(host, request);
+    await request.finally(() => {
+        if (statusRefreshes.get(host) === request) statusRefreshes.delete(host);
+    });
 }
 
 export function markGitStackLocal(host: string, changedPath: string) {
@@ -224,20 +252,20 @@ export function markGitStackLocal(host: string, changedPath: string) {
     if (pendingRefresh) clearTimeout(pendingRefresh);
     mutationRefreshes.set(host, setTimeout(() => {
         mutationRefreshes.delete(host);
-        void refreshGitStackStatuses(host);
+        void refreshGitStackStatuses(host, false);
     }, 100));
 }
 
 export function useGitStatusWatcher(host: string) {
     useEffect(() => {
         if (!host) return;
-        const watcher = watchers.get(host) ?? {references: 0, running: false};
+        const watcher = watchers.get(host) ?? {references: 0};
         watcher.references++;
         watchers.set(host, watcher);
         if (watcher.references === 1) {
-            void refreshGitStackStatuses(host);
-            watcher.timer = setInterval(() => void refreshGitStackStatuses(host), 30_000);
-            watcher.onVisible = () => document.visibilityState === 'visible' && void refreshGitStackStatuses(host);
+            void refreshGitStackStatuses(host, false);
+            watcher.timer = setInterval(() => void refreshGitStackStatuses(host, false), 30_000);
+            watcher.onVisible = () => document.visibilityState === 'visible' && void refreshGitStackStatuses(host, false);
             document.addEventListener('visibilitychange', watcher.onVisible);
         }
         return () => {
@@ -283,6 +311,7 @@ export function useGitTrackedFileInfo(host: string, path: string) {
 
 export async function setGitFileTracking(host: string, file: GitTrackedFileInfo, tracked: boolean) {
     if (!file.bindingId) throw new Error('This file is not attached to a selected Git stack');
+    bumpTrackedFileGeneration(host, file.path);
     const response = await fetch(withProtectedAPI('/git/file-tracking'), {
         method: 'PUT', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({host, path: file.path, bindingId: file.bindingId, tracked}),
@@ -297,8 +326,21 @@ export async function setGitFileTracking(host: string, file: GitTrackedFileInfo,
     }
     const updated = await response.json() as GitTrackedFileInfo;
     useGitStatusStore.getState().setTrackedFile(host, updated);
-    await refreshGitStackStatuses(host);
+    await refreshGitStackStatuses(host, true);
     return updated;
+}
+
+export async function refreshGitTrackedFile(host: string, path: string) {
+    const normalized = normalizePath(path);
+    const generation = bumpTrackedFileGeneration(host, normalized);
+    const response = await fetch(withProtectedAPI('/git/tracked-files'), {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({host, paths: [normalized]}),
+    });
+    if (!response.ok) throw new Error(`Git file badge refresh failed (${response.status})`);
+    const result = await response.json() as {trackedPaths: string[]; files?: GitTrackedFileInfo[]};
+    if (trackedFileGeneration(host, normalized) !== generation) return useGitStatusStore.getState().trackedFilesByHost[host]?.[normalized];
+    useGitStatusStore.getState().setTrackedFiles(host, [normalized], result.trackedPaths ?? [], result.files ?? []);
+    return useGitStatusStore.getState().trackedFilesByHost[host]?.[normalized];
 }
 
 export async function reconcileDeletedGitFile(host: string, file: GitTrackedFileInfo) {
@@ -315,9 +357,12 @@ export async function reconcileDeletedGitFile(host: string, file: GitTrackedFile
         } catch { /* keep the bounded fallback */ }
         throw new Error(message);
     }
-    const updated = await response.json() as GitTrackedFileInfo;
-    useGitStatusStore.getState().setTrackedFile(host, updated);
-    await refreshGitStackStatuses(host);
+    await response.json() as GitTrackedFileInfo;
+    // Re-read the effective policy instead of assuming that deletion always
+    // untracks the path: an exact one-file rule disappears, while a broad rule
+    // such as *.conf must continue to apply if the same name is recreated.
+    await refreshGitTrackedFile(host, file.path);
+    await refreshGitStackStatuses(host, true);
 }
 
 export function useGitFolderStatus(host: string, folderPath: string) {

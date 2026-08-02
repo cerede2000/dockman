@@ -235,6 +235,39 @@ func TestLocalAndGitDeletionSucceedsWhenFileWasNeverPushed(t *testing.T) {
 	require.Equal(t, stackSyncUpToDate, status.State)
 }
 
+func TestLocalAndGitDeletionRemovesExactRuleAndSettlesImmediately(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedFileDeletion(t)
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	path := filepath.Join(stackRoot, "alpha", "one-off.bin")
+	require.NoError(t, os.WriteFile(path, []byte("first\n"), 0o644))
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/one-off.bin", Tracked: true})
+	require.NoError(t, err)
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ExportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken, SelectedPaths: []string{"alpha/one-off.bin"}})
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(path))
+	service.MarkLocalChange("local", "compose/alpha/one-off.bin")
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{
+		Action: "delete_git", Path: "alpha/one-off.bin", Confirmation: deleteGitFileConfirmText,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.CommitSHA)
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State, "the completed delete must not require another synchronization")
+
+	stored, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.NotContains(t, splitPatternLines(stored.IncludePatterns), "/alpha/one-off.bin")
+	require.NoError(t, os.WriteFile(path, []byte("recreated\n"), 0o644))
+	tracked, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose/alpha/one-off.bin"}})
+	require.NoError(t, err)
+	require.Empty(t, tracked.TrackedPaths, "recreating the same name must not resurrect an exact context-menu rule")
+}
+
 func TestLocalFileDeletionRefusesToDeleteGitWhenRemoteChanged(t *testing.T) {
 	service, _, repository, binding := prepareTrackedFileDeletion(t)
 	remoteChange(t, repository.RemoteURL, "stacks/alpha/test.conf", "enabled=false\n")

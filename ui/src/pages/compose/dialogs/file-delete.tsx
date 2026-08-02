@@ -6,7 +6,7 @@ import {Alert, Box, CircularProgress, Stack, Typography} from "@mui/material"
 import {create} from "zustand";
 import {useFiles} from "../../../context/file-context.tsx";
 import {useHostStore} from "../state/files.ts";
-import {reconcileDeletedGitFile, refreshGitStackStatuses, useGitTrackedFileInfo} from "../../../components/git-stack-status-store.ts";
+import {reconcileDeletedGitFile, refreshGitStackStatuses, refreshGitTrackedFile, useGitTrackedFileInfo} from "../../../components/git-stack-status-store.ts";
 import {withProtectedAPI} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {useState} from "react";
@@ -62,7 +62,11 @@ const FileDelete = () => {
                     throw new Error(`${message}. The local deletion is preserved: restore it, exclude it, or retry the Git deletion from the stack synchronization popup.`)
                 }
                 const result = await response.json() as {message: string}
-                await refreshGitStackStatuses(host)
+                // The local delete schedules an intermediate status read. The
+                // authoritative refresh is chained after it so the committed
+                // Git deletion cannot leave a stale orange state in the UI.
+                await refreshGitTrackedFile(host, gitFile.path)
+                await refreshGitStackStatuses(host, true)
                 showSuccess(result.message)
             } else if (gitFile?.tracked && gitFile.mutable) {
                 // Re-evaluate the exact stack immediately. This removes a
