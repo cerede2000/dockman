@@ -288,10 +288,18 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                 }}
             >
                 <ListItemIcon sx={{minWidth: 32}}>
-                    {isComposeFolder ?
-                        <DockerFolderIcon/> :
-                        <Folder sx={{color: amber[800], fontSize: '1.1rem'}}/>
-                    }
+                    <Box sx={{position: 'relative', display: 'inline-flex', alignItems: 'center'}}>
+                        {isComposeFolder ?
+                            <DockerFolderIcon/> :
+                            <Folder sx={{color: amber[800], fontSize: '1.1rem'}}/>
+                        }
+                        {(exactGitStatus ?? aggregateGitStatus) && <Box sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, bgcolor: '#121212', borderRadius: '50%', lineHeight: 0}}>
+                            <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={13}
+                                                     interactive={Boolean(exactGitStatus) || Boolean(actionableFolderStatuses)}
+                                                     aggregateStatuses={actionableFolderStatuses}
+                                                     bindingRoot={Boolean(bindingRootStatuses)}/>
+                        </Box>}
+                    </Box>
                 </ListItemIcon>
 
                 <ListItemText
@@ -309,10 +317,6 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                     }}
                 />
 
-                <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={17}
-                                         interactive={Boolean(exactGitStatus) || Boolean(actionableFolderStatuses)}
-                                         aggregateStatuses={actionableFolderStatuses}
-                                         bindingRoot={Boolean(bindingRootStatuses)}/>
                 <StatusIndicator fileStatus={fileStatus}/>
 
                 <IconButton
@@ -431,7 +435,12 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
                 component={RouterLink}
             >
                 <ListItemIcon sx={{minWidth: 32}}>
-                    {<FileIcon filename={filename}/>}
+                    <Box sx={{position: 'relative', display: 'inline-flex', alignItems: 'center'}}>
+                        <FileIcon filename={filename}/>
+                        {gitStatus && <Box sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, bgcolor: '#121212', borderRadius: '50%', lineHeight: 0}}>
+                            <GitStackStatusIndicator status={gitStatus} size={13}/>
+                        </Box>}
+                    </Box>
                 </ListItemIcon>
 
                 <ListItemText
@@ -442,7 +451,6 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
                     }}
                 />
 
-                <GitStackStatusIndicator status={gitStatus} size={17}/>
                 <StatusIndicator fileStatus={fileStatus}/>
             </ListItemButton>
             <Menu

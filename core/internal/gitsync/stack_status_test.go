@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	gitclient "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,6 +53,32 @@ func TestGitStackStatusIndexTracksExactNestedStack(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stackSyncPending, views[0].State)
 	require.Equal(t, binding.ID, views[0].BindingID)
+}
+
+func TestManualStackSyncFetchesCurrentGitCommitAndOnlyImportsTargetStack(t *testing.T) {
+	service, stackRoot, repository, binding := prepareTrackedLocalDeletion(t)
+	externalPath := t.TempDir()
+	external, err := gitclient.PlainClone(externalPath, false, &gitclient.CloneOptions{
+		URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true,
+	})
+	require.NoError(t, err)
+	commitTestFile(t, external, externalPath, "stacks/alpha/compose.yml", "services:\n  alpha:\n    image: alpine:3.23\n")
+	require.NoError(t, external.Push(&gitclient.PushOptions{}))
+
+	stored, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.False(t, stored.AutoSyncEnabled, "the one-shot action must work for manual folder links")
+
+	result, err := service.SyncGitStackNow(context.Background(), binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "Stack synchronized from Git")
+	contents, err := os.ReadFile(filepath.Join(stackRoot, "alpha", "compose.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "alpine:3.23")
+	require.NoDirExists(t, filepath.Join(stackRoot, "beta"), "an unrelated local deletion must not be restored")
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State)
 }
 
 func TestComposeOnlyMutationStatusMatchesTransferPolicy(t *testing.T) {

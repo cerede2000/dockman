@@ -42,6 +42,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
 	mux.HandleFunc("POST /bindings/{id}/stack-select/{composePath...}", h.enableGitStackSynchronization)
 	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
+	mux.HandleFunc("POST /bindings/{id}/stack-sync/{composePath...}", h.syncGitStack)
 	mux.HandleFunc("POST /bindings/{id}/orphan/{composePath...}", h.resolveGitOrphan)
 	mux.HandleFunc("POST /bindings/{id}/local-deletion/{composePath...}", h.resolveLocalStackDeletion)
 	mux.HandleFunc("GET /bindings/{id}/local-deletion/{composePath...}", h.listLocalStackDeletions)
@@ -100,6 +101,18 @@ func (h *HTTPHandler) pushGitStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.service.PushGitStackAndResume(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) syncGitStack(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.SyncGitStackNow(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -274,7 +287,7 @@ func isMemoryIntensiveGitRequest(r *http.Request) bool {
 	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
 		return false
 	}
-	for _, marker := range []string{"/preview/", "/compare/", "/rollback", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/orphan/", "/local-deletion/", "/repositories"} {
+	for _, marker := range []string{"/preview/", "/compare/", "/rollback", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/stack-sync/", "/orphan/", "/local-deletion/", "/repositories"} {
 		if strings.Contains(r.URL.Path, marker) {
 			return true
 		}

@@ -462,6 +462,62 @@ func (s *Service) PushGitStackAndResume(ctx context.Context, bindingID, composeP
 	return result, nil
 }
 
+// SyncGitStackNow performs a safe, one-shot Git -> Dockman refresh for one
+// selected stack. Unlike folder-link automation it remains available in
+// manual mode, never deploys, and never propagates a deletion implicitly.
+func (s *Service) SyncGitStackNow(ctx context.Context, bindingID, composePath string) (TransferResult, error) {
+	automationLock := s.repositoryLock("automation:" + bindingID)
+	if !automationLock.TryLock() {
+		return TransferResult{}, errors.New("Git synchronization is currently running for this folder link; retry when it finishes")
+	}
+	defer automationLock.Unlock()
+
+	composePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(composePath))))
+	if err := validateRelativePath(composePath, false); err != nil {
+		return TransferResult{}, fmt.Errorf("invalid Compose path: %w", err)
+	}
+	binding, err := s.store.GetBinding(bindingID)
+	if err != nil {
+		return TransferResult{}, err
+	}
+	composePaths := selectedComposePaths(binding)
+	if !stringInSlice(composePath, composePaths) {
+		return TransferResult{}, errors.New("stack is not selected for Git synchronization")
+	}
+	// Refresh and fast-forward the compact local Git metadata first. The stack
+	// preview must compare against the provider's current commit, not the last
+	// scheduled fetch. PullRepository refuses ahead/diverged histories.
+	if _, err := s.PullRepository(ctx, binding.RepositoryUUID); err != nil {
+		return TransferResult{}, fmt.Errorf("refresh repository before stack synchronization: %w", err)
+	}
+
+	preview, err := s.PreviewBinding(bindingID, "repository_to_stack", TransferInput{})
+	if err != nil {
+		return TransferResult{}, err
+	}
+	selected, conflicts, preservedDeletion := stackImportPaths(preview, composePaths, composePath)
+	if conflicts > 0 {
+		return TransferResult{}, errors.New("synchronization refused: this stack has a conflict or a local deletion; review and resolve it before importing from Git")
+	}
+	if preservedDeletion {
+		return TransferResult{}, errors.New("synchronization requires a decision: this stack or one of its files was deleted on Git and is preserved locally")
+	}
+	if len(selected) == 0 {
+		return TransferResult{Message: "No Git change to import for this stack"}, nil
+	}
+	result, err := s.ImportBinding(ctx, bindingID, TransferInput{
+		PreviewToken:       preview.PreviewToken,
+		SelectedPaths:      selected,
+		compactResult:      true,
+		targetComposePaths: []string{composePath},
+	})
+	if err != nil {
+		return TransferResult{}, err
+	}
+	result.Message = fmt.Sprintf("Stack synchronized from Git (%d file(s)); no deployment was triggered", len(selected))
+	return result, nil
+}
+
 func stackTransferPaths(preview TransferPreview, composePaths []string, targetCompose string) ([]string, int) {
 	selected := make([]string, 0)
 	conflicts := 0
@@ -478,6 +534,31 @@ func stackTransferPaths(preview TransferPreview, composePaths []string, targetCo
 	}
 	sort.Strings(selected)
 	return selected, conflicts
+}
+
+func stackImportPaths(preview TransferPreview, composePaths []string, targetCompose string) ([]string, int, bool) {
+	selected := make([]string, 0)
+	conflicts := 0
+	preservedDeletion := false
+	for _, entry := range preview.Entries {
+		if !stringInSlice(targetCompose, composePathsForFile(composePaths, entry.Path)) {
+			continue
+		}
+		switch entry.Status {
+		case "add", "modify", "remove_control":
+			if entry.ConflictKind == "destination_deleted" {
+				conflicts++
+				continue
+			}
+			selected = append(selected, entry.Path)
+		case "conflict", "deleted_locally":
+			conflicts++
+		case "deleted_on_git":
+			preservedDeletion = true
+		}
+	}
+	sort.Strings(selected)
+	return selected, conflicts, preservedDeletion
 }
 
 func (s *Service) recordPreviewStackStatuses(binding StackBinding, preview TransferPreview) {

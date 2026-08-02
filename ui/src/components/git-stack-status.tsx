@@ -112,6 +112,19 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
         }).finally(() => setBusy(false));
     };
 
+    const syncStackNow = async (target = status) => {
+        setBusy(true);
+        await (async () => {
+            const encoded = target.composePath.split('/').map(encodeURIComponent).join('/');
+            const result = await request<{message: string}>(`/bindings/${target.bindingId}/stack-sync/${encoded}`, {method: 'POST'});
+            await refreshGitStackStatuses(target.host);
+            showSuccess(result.message || 'Stack synchronized from Git.');
+        })().catch(async (reason) => {
+            showError((reason as Error).message);
+            await refreshGitStackStatuses(target.host);
+        }).finally(() => setBusy(false));
+    };
+
     const toggleFolderLinkPause = async () => {
         const paused = !status.bindingAutomationPaused;
         setBusy(true);
@@ -244,6 +257,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                                 <Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy} onClick={() => { setDeleteGitTarget(target); setDeleteGitConfirmation(''); }}>Delete from Git</Button>
                             </>}
                             {!target.selected && <><Button size="small" color="success" startIcon={<Sync/>} disabled={busy} onClick={() => void enableSynchronization(target, false)}>Enable</Button><Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy} onClick={() => void enableSynchronization(target, true)}>Enable & push</Button></>}
+                            {target.selected && <Button size="small" startIcon={<CloudDownloadOutlined/>} disabled={busy} onClick={() => void syncStackNow(target)}>Sync now</Button>}
                             {target.state === 'local_changes' && <Button size="small" color="success" startIcon={<CloudUploadOutlined/>} disabled={busy} onClick={() => void pushStack(target)}>Push to Git</Button>}
                             {target.selected && target.state !== 'up_to_date' && target.state !== 'locally_deleted' && target.state !== 'local_changes' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView(target)}>Open details</Button>}
                         </Stack>
@@ -289,7 +303,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                 <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap'}}>
                     {!status.selected && <><Button size="small" color="success" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void enableSynchronization(status, false)}>Enable only</Button><Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy} onClick={() => void enableSynchronization(status, true)}>Enable & push</Button></>}
                     {status.state === 'locally_deleted' && localDeletion?.wholeStack && <><Button size="small" color="success" startIcon={<CloudDownloadOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'restore')}>Restore from Git</Button><Button size="small" startIcon={<LinkOffOutlined/>} disabled={busy} onClick={() => void resolveLocalDeletion(status, 'deselect')}>Stop synchronizing</Button><Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy || Boolean(deleteGitTarget)} onClick={() => { setDeleteGitTarget(status); setDeleteGitPath(''); }}>Delete from Git</Button></>}
-                    {status.selected && status.autoSyncEnabled && status.stackAutoSyncEnabled && !status.automationPaused && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <Sync/>} disabled={busy} onClick={() => void checkNow()}>Check now</Button>}
+                    {status.selected && <Button size="small" startIcon={busy ? <CircularProgress size={14}/> : <CloudDownloadOutlined/>} disabled={busy} onClick={() => void syncStackNow()}>Sync now</Button>}
                     {(status.state === 'local_changes' || status.state === 'orphaned') && <Button size="small" color="success" variant="contained" startIcon={<CloudUploadOutlined/>} disabled={busy || confirmPush} onClick={() => setConfirmPush(true)}>{status.state === 'orphaned' ? (status.pauseReason === 'recovery' ? 'Restore & resume' : 'Restore to Git') : (status.pauseReason === 'recovery' ? 'Push & resume' : 'Push to Git')}</Button>}
                     {status.selected && status.state !== 'locally_deleted' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView()}>{status.state === 'conflict' ? 'Resolve conflicts' : status.state === 'error' || ['failed', 'rollback_failed', 'rolled_back'].includes(status.deployState) ? 'Details' : status.state === 'local_changes' || status.state === 'orphaned' ? 'Review details' : 'Preview'}</Button>}
                     {status.autoSyncEnabled && status.stackAutoSyncEnabled && !status.bindingAutomationPaused && <Button size="small" color={status.automationPaused ? 'success' : 'warning'} startIcon={status.automationPaused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} disabled={busy} onClick={() => void pause()}>{status.automationPaused && (status.state === 'local_changes' || status.state === 'orphaned') ? 'Push & resume' : status.automationPaused ? 'Resume' : 'Pause'}</Button>}

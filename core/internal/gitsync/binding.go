@@ -147,6 +147,10 @@ type TransferInput struct {
 	SelectedPaths         []string `json:"selectedPaths"`
 	compactResult         bool
 	automation            bool
+	// targetComposePaths limits internal stack-scoped operations to the
+	// requested Compose owners. It is deliberately not exposed through JSON:
+	// public import requests keep the existing whole-binding semantics.
+	targetComposePaths []string
 }
 
 type PreviewEntry struct {
@@ -1428,12 +1432,17 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		composeErrors, composeFound := composeFileErrors(source)
+		validationPaths := selectedComposePaths(binding)
+		if len(input.targetComposePaths) > 0 {
+			validationPaths = input.targetComposePaths
+			composeErrors, composeFound = composeValidationForPaths(source, composeErrors, validationPaths)
+		}
 		if validationErr := firstComposeValidationError(composeErrors, composeFound); validationErr != nil && !input.automation {
-			if !hasTrackedDeletedCompose(source, target, baseline, selectedComposePaths(binding)) {
+			if !hasTrackedDeletedCompose(source, target, baseline, validationPaths) {
 				return validationErr
 			}
 		}
-		if !composeFound && !hasTrackedDeletedCompose(source, target, baseline, selectedComposePaths(binding)) {
+		if !composeFound && !hasTrackedDeletedCompose(source, target, baseline, validationPaths) {
 			return errors.New("repository path contains no compose file")
 		}
 		result.Preview = buildPreview(binding.UUID, "repository_to_stack", source, target, baseline)
@@ -1531,10 +1540,17 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return result, fmt.Errorf("repository files were imported but the synchronization state could not be refreshed: %w", stateErr)
 		}
 	}
-	if err == nil && result.Preview.Conflicts == 0 && result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0 {
+	statusRefreshSafe := result.Preview.Conflicts == 0 && result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0
+	if len(input.targetComposePaths) > 0 {
+		statusRefreshSafe = targetedPreviewResolved(result.Preview, selectedComposePaths(binding), input.targetComposePaths) &&
+			len(composePathsForFiles(input.targetComposePaths, result.EditorBlocked)) == 0
+	}
+	if err == nil && statusRefreshSafe {
 		paths := selectedComposePaths(binding)
 		if input.automation {
 			paths = s.activeAutomationComposePaths(binding)
+		} else if len(input.targetComposePaths) > 0 {
+			paths = input.targetComposePaths
 		}
 		now := time.Now().UTC()
 		safePaths := excludeStringValues(paths, result.ComposeBlocked)
@@ -1551,6 +1567,26 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		result.Preview.Entries = nil
 	}
 	return result, err
+}
+
+func targetedPreviewResolved(preview TransferPreview, allComposePaths, targets []string) bool {
+	for _, entry := range preview.Entries {
+		owners := composePathsForFile(allComposePaths, entry.Path)
+		owned := false
+		for _, owner := range owners {
+			if stringInSlice(owner, targets) {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+		if entry.Status == "conflict" || entry.Status == "deleted_on_git" || entry.Status == "deleted_locally" || entry.ConflictKind == "destination_deleted" {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) excludeDirtyEditorStacks(binding StackBinding, selected map[string]transferFile) (map[string]transferFile, []string) {
@@ -3470,6 +3506,26 @@ func composeFileErrors(files map[string]transferFile) (map[string]string, bool) 
 		}
 	}
 	return errorsByPath, found
+}
+
+func composeValidationForPaths(files map[string]transferFile, errorsByPath map[string]string, composePaths []string) (map[string]string, bool) {
+	filtered := make(map[string]string)
+	found := false
+	for _, composePath := range composePaths {
+		file, exists := files[composePath]
+		if !exists || file.open == nil {
+			if message, failed := errorsByPath[composePath]; failed {
+				filtered[composePath] = message
+				found = true
+			}
+			continue
+		}
+		found = true
+		if message, failed := errorsByPath[composePath]; failed {
+			filtered[composePath] = message
+		}
+	}
+	return filtered, found
 }
 
 func firstComposeValidationError(errorsByPath map[string]string, found bool) error {
