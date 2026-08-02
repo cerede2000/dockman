@@ -537,7 +537,7 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 	ownershipLock := s.repositoryLock("binding-ownership:" + row.Host)
 	ownershipLock.Lock()
 	defer ownershipLock.Unlock()
-	if err := s.validateBindingLocalOwnership(row, row.UUID); err != nil {
+	if err := s.validateBindingOwnership(row, row.UUID); err != nil {
 		return BindingView{}, err
 	}
 	if policyChanged {
@@ -596,7 +596,7 @@ func (s *Service) UpdateBindingComposeSelection(id string, input BindingComposeS
 	}
 	row.ComposeSelectionMode = mode
 	row.SelectedComposePaths = strings.Join(selected, "\n")
-	if err := s.validateBindingLocalOwnership(row, row.UUID); err != nil {
+	if err := s.validateBindingOwnership(row, row.UUID); err != nil {
 		return BindingView{}, err
 	}
 	// A deselected stack must never remain authorized for automatic polling or deployment.
@@ -1644,20 +1644,11 @@ func (s *Service) validateBindingInput(input BindingInput) (BindingInput, filesy
 	if s.stackResolver == nil {
 		return input, nil, "", errors.New("stack filesystem access is not configured")
 	}
-	rows, err := s.store.ListBindings()
-	if err != nil {
-		return input, nil, "", err
-	}
-	for _, row := range rows {
-		if row.RepositoryUUID == input.RepositoryID && pathsOverlap(row.SubPath, input.SubPath) {
-			return input, nil, "", fmt.Errorf("repository path overlaps stack link %s on host %s", row.StackPath, row.Host)
-		}
-	}
 	candidate := StackBinding{
-		Host: input.Host, StackPath: input.StackPath, ComposeSelectionMode: input.ComposeSelectionMode,
+		RepositoryUUID: input.RepositoryID, Host: input.Host, StackPath: input.StackPath, SubPath: input.SubPath, ComposeSelectionMode: input.ComposeSelectionMode,
 		SelectedComposePaths: strings.Join(input.SelectedComposePaths, "\n"),
 	}
-	if err := s.validateBindingLocalOwnership(candidate, ""); err != nil {
+	if err := s.validateBindingOwnership(candidate, ""); err != nil {
 		return input, nil, "", err
 	}
 	targetFS, targetRoot, err := s.stackResolver(input.Host, input.StackPath)
@@ -1684,6 +1675,44 @@ func pathsOverlap(left, right string) bool {
 type bindingOwnership struct {
 	path      string
 	recursive bool
+}
+
+func (s *Service) validateBindingOwnership(candidate StackBinding, ignoreID string) error {
+	if err := s.validateBindingRepositoryOwnership(candidate, ignoreID); err != nil {
+		return err
+	}
+	return s.validateBindingLocalOwnership(candidate, ignoreID)
+}
+
+// Repository ownership follows the same selection-aware rules as the live
+// stack filesystem. Two Folder Links on the same managed repository/branch may
+// use nested Git paths when their selected Compose roots are disjoint. An All
+// stacks link, a duplicate stack selection, or an explicit include reaching
+// the other subtree still fails closed.
+func (s *Service) validateBindingRepositoryOwnership(candidate StackBinding, ignoreID string) error {
+	rows, err := s.store.ListBindings()
+	if err != nil {
+		return err
+	}
+	candidateRepository := repositoryOwnershipBinding(candidate)
+	for _, existing := range rows {
+		if existing.UUID == ignoreID || existing.RepositoryUUID != candidate.RepositoryUUID || !pathsOverlap(existing.SubPath, candidate.SubPath) {
+			continue
+		}
+		existingRepository := repositoryOwnershipBinding(existing)
+		if bindingOwnershipsOverlap(existingRepository, candidateRepository) || bindingIncludeMayReach(existingRepository, candidateRepository.StackPath) || bindingIncludeMayReach(candidateRepository, existingRepository.StackPath) {
+			return fmt.Errorf("repository path overlaps files selected by existing link %s on host %s; choose unlinked Git stacks or deselect them from the other link first", existing.StackPath, existing.Host)
+		}
+	}
+	return nil
+}
+
+func repositoryOwnershipBinding(binding StackBinding) StackBinding {
+	binding.StackPath = binding.SubPath
+	if strings.TrimSpace(binding.StackPath) == "" {
+		binding.StackPath = "."
+	}
+	return binding
 }
 
 // validateBindingLocalOwnership permits nested Folder Links only when their

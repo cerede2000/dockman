@@ -596,7 +596,10 @@ export default function TabGit() {
                 syncProfile: gitImportForm.syncProfile,
                 autoReconcile: true,
                 initialSync: "repository_to_stack",
-                composeSelectionMode: paths.length === gitImportCatalog?.composePaths.length ? "all" : "selected",
+                // Importing every stack visible today must not silently reserve
+                // every future Git folder. "All stacks" remains an explicit
+                // Folder Link policy that the operator can enable afterwards.
+                composeSelectionMode: "selected",
                 selectedComposePaths: paths,
             })});
             if (binding.initialSyncState === "error") throw new Error(binding.initialSyncError || "Git stack import failed");

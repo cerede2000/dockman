@@ -530,6 +530,49 @@ func TestSelectedParentBindingAllowsDisjointNestedFolderLink(t *testing.T) {
 	require.ErrorContains(t, err, "overlaps files selected by existing link")
 }
 
+func TestGitRootImportAllowsStacksOutsideExistingRepositorySubfolderLink(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := t.TempDir()
+	service.ConfigureStackAccess(func(host, stackPath string) (filesystem.FileSystem, string, error) {
+		if host != "local" || (stackPath != "compose" && !strings.HasPrefix(stackPath, "compose/")) {
+			return nil, "", os.ErrNotExist
+		}
+		relative := strings.Trim(strings.TrimPrefix(stackPath, "compose"), "/")
+		if relative == "" {
+			relative = "."
+		}
+		return filesystem.NewLocal(stackRoot), relative, nil
+	}, func() []string { return []string{"local"} }, filepath.Join(t.TempDir(), "backups"))
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "existing/compose.yml", "services:\n  existing:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "new-stack/compose.yml", "services:\n  imported:\n    image: alpine:3.23\n")
+	_, err := service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "existing"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "existing", "compose.yml"), []byte("services:\n  existing:\n    image: alpine:3.23\n"), 0o644))
+
+	existing, err := service.CreateBinding(BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose/existing", SubPath: "existing",
+		ComposeSelectionMode: composeSelectionAll,
+	})
+	require.NoError(t, err)
+
+	imported, err := service.CreateBindingContext(context.Background(), BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: ".",
+		SyncProfile: syncProfileComposeOnly, InitialSync: "repository_to_stack",
+		ComposeSelectionMode: composeSelectionSelected, SelectedComposePaths: []string{"new-stack/compose.yml"},
+	})
+	require.NoError(t, err, "a Git-root import must allow stacks outside an existing selected subfolder link")
+	require.Equal(t, "imported", imported.InitialSyncState)
+	require.FileExists(t, filepath.Join(stackRoot, "new-stack", "compose.yml"))
+
+	_, err = service.UpdateBindingComposeSelection(imported.ID, BindingComposeSelectionInput{
+		Mode: composeSelectionSelected, ComposePaths: []string{"existing/compose.yml", "new-stack/compose.yml"},
+	})
+	require.ErrorContains(t, err, "repository path overlaps files selected by existing link")
+	require.NotEmpty(t, existing.ID)
+}
+
 func TestNestedStackFoldersAreOfferedAsIndependentLinkTargets(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)

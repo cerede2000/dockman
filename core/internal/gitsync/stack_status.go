@@ -263,7 +263,7 @@ func (s *Service) EnableGitStackSynchronization(bindingID, composePath string) (
 		binding.ComposeSelectionMode = composeSelectionAll
 	}
 	binding.SelectedComposePaths = strings.Join(selected, "\n")
-	if err := s.validateBindingLocalOwnership(binding, binding.UUID); err != nil {
+	if err := s.validateBindingOwnership(binding, binding.UUID); err != nil {
 		return GitStackStatusView{}, err
 	}
 	if strings.Join(autoSyncComposePaths(binding), "\n") != previousAutoTargets {

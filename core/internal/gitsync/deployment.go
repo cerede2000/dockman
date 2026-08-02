@@ -177,7 +177,7 @@ func (s *Service) registerDiscoveredDeploymentTargets(binding StackBinding, targ
 	ownershipLock := s.repositoryLock("binding-ownership:" + binding.Host)
 	ownershipLock.Lock()
 	defer ownershipLock.Unlock()
-	if err := s.validateBindingLocalOwnership(binding, binding.UUID); err != nil {
+	if err := s.validateBindingOwnership(binding, binding.UUID); err != nil {
 		return binding, fmt.Errorf("new Git stack would overlap another Folder Link: %w", err)
 	}
 	if err := s.store.SaveBinding(&binding); err != nil {
