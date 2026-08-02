@@ -40,6 +40,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("GET /stack-statuses", h.listGitStackStatuses)
 	mux.HandleFunc("POST /tracked-files", h.gitTrackedFiles)
+	mux.HandleFunc("PUT /file-tracking", h.setGitFileTracking)
 	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
 	mux.HandleFunc("POST /bindings/{id}/stack-select/{composePath...}", h.enableGitStackSynchronization)
 	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
@@ -196,6 +197,23 @@ func (h *HTTPHandler) gitTrackedFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *HTTPHandler) setGitFileTracking(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input GitFileTrackingInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.SetGitFileTracking(input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
@@ -305,7 +323,7 @@ func isMemoryIntensiveGitRequest(r *http.Request) bool {
 	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/automation/run") {
 		return false
 	}
-	for _, marker := range []string{"/preview/", "/compare/", "/rollback", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/stack-sync/", "/orphan/", "/local-deletion/", "/repositories"} {
+	for _, marker := range []string{"/preview/", "/compare/", "/rollback", "/import", "/export", "/fetch", "/pull", "/push", "/stack-push/", "/stack-sync/", "/orphan/", "/local-deletion/", "/file-tracking", "/repositories"} {
 		if strings.Contains(r.URL.Path, marker) {
 			return true
 		}

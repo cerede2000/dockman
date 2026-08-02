@@ -1432,10 +1432,10 @@ export default function TabGit() {
 
         <Dialog open={policyBinding !== null} onClose={() => busy === null && setPolicyBinding(null)} fullWidth maxWidth="lg" slotProps={{paper: {sx: {width: "min(1400px, calc(100vw - 32px))", maxWidth: "none", height: "min(900px, calc(100vh - 48px))"}}}}>
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Synchronization policy</DialogTitle>
-            <DialogContent dividers><Stack spacing={2} sx={{pt: .5, height: "100%"}}>
+            <DialogContent dividers sx={{overflow: "hidden"}}><Stack spacing={2} sx={{pt: .5, height: "100%", minHeight: 0}}>
                 <Alert severity="info">The policy applies in both directions. Compose files stay protected. Special files, Git metadata and files over 100 MiB are always excluded.</Alert>
-                <Box sx={{display: "grid", gridTemplateColumns: {xs: "1fr", lg: "390px minmax(0, 1fr)"}, gap: 2, minHeight: 0, flex: 1}}>
-                    <Stack spacing={2} sx={{minWidth: 0}}>
+                <Box sx={{display: "grid", gridTemplateColumns: {xs: "1fr", lg: "390px minmax(0, 1fr)"}, gap: 2, minHeight: 0, flex: 1, overflow: {xs: "auto", lg: "hidden"}}}>
+                    <Stack spacing={2} sx={{minWidth: 0, minHeight: 0, overflowY: "auto", pr: .5, "& .MuiAlert-message": {minWidth: 0, overflowWrap: "anywhere"}}}>
                         <FormControl><InputLabel>Base profile</InputLabel><Select label="Base profile" value={policyForm.profile} onChange={(event) => setPolicyForm({...policyForm, profile: event.target.value as GitPolicyForm["profile"]})}>
                             <MenuItem value="compose_only">Docker Compose only — manifests and environment templates</MenuItem>
                             <MenuItem value="compose_config">Compose configuration — recommended</MenuItem>
@@ -1445,10 +1445,10 @@ export default function TabGit() {
                         <TextField label="Additional include rules" value={policyForm.includes} onChange={(event) => setPolicyForm({...policyForm, includes: event.target.value})} multiline minRows={5} maxRows={12} placeholder={"scripts/**\ncustom-file\n*.py"} helperText="One relative glob per line. These rules extend the selected profile." sx={{"& textarea": {fontFamily: "monospace"}}}/>
                         <TextField label="Exclude rules" value={policyForm.excludes} onChange={(event) => setPolicyForm({...policyForm, excludes: event.target.value})} multiline minRows={5} maxRows={12} placeholder={"**/data/**\n**/cache/**\n*.log"} helperText="One relative glob per line. A precise include can opt a chosen item back in." sx={{"& textarea": {fontFamily: "monospace"}}}/>
                         <Alert severity="info">Nothing is added or excluded by the selector until you change a checkbox. Existing Folder Link rules are preserved exactly.</Alert>
+                        <Typography variant="caption" color="text.secondary" sx={{display: "block", overflowWrap: "anywhere"}}>Docker Compose only includes compose.yml/compose.yaml, docker-compose.yml/docker-compose.yaml and conventional .env.example/.sample/.template/.dist files. Other YAML files are filtered. The configuration profile also includes JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Explicit include rules can extend either profile; sensitive files remain protected separately.</Typography>
                     </Stack>
                     {policyBinding && <GitPolicyFileTree bindingId={policyBinding.id} policy={policyForm} onChange={setPolicyForm} disabled={busy !== null}/>}
                 </Box>
-                <Typography variant="caption" color="text.secondary">Docker Compose only includes compose.yml/compose.yaml, docker-compose.yml/docker-compose.yaml and conventional .env.example/.sample/.template/.dist files. Other YAML files are filtered. The configuration profile also includes JSON, TOML, INI, CONF, templates, shell scripts, SQL, documentation, Dockerfile, Containerfile, Caddyfile and environment files. Explicit include rules can extend either profile; sensitive files remain protected separately.</Typography>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
         </Dialog>

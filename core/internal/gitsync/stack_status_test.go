@@ -156,6 +156,76 @@ func TestGitTrackedFilesUsesEffectivePolicyAndSelectedStacks(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	require.Equal(t, []string{"compose/alpha/.env.example", "compose/alpha/test/.env.example"}, result.TrackedPaths)
+	require.Len(t, result.Files, 6)
+	byPath := make(map[string]GitTrackedFileView, len(result.Files))
+	for _, file := range result.Files {
+		byPath[file.Path] = file
+	}
+	require.True(t, byPath["compose/alpha/.env.example"].Linked)
+	require.True(t, byPath["compose/alpha/.env.example"].Mutable)
+	require.Equal(t, binding.ID, byPath["compose/alpha/.env.example"].BindingID)
+	require.Equal(t, "alpha/compose.yml", byPath["compose/alpha/.env.example"].ComposePath)
+	require.False(t, byPath["compose/alpha/test/.env"].Mutable)
+	require.Contains(t, byPath["compose/alpha/test/.env"].Reason, "sensitive")
+	require.False(t, byPath["compose/beta/.env.example"].Linked)
+	require.False(t, byPath["another/.env.example"].Linked)
+}
+
+func TestFilesContextCanAddAndRemoveAnOrdinaryGitFile(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "runtime.bin"), []byte("payload\n"), 0o644))
+
+	added, err := service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/runtime.bin", Tracked: true})
+	require.NoError(t, err)
+	require.True(t, added.Tracked)
+	stored, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, splitPatternLines(stored.IncludePatterns), "/alpha/runtime.bin")
+	tracked, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose/alpha/runtime.bin"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"compose/alpha/runtime.bin"}, tracked.TrackedPaths)
+
+	removed, err := service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/runtime.bin", Tracked: false})
+	require.NoError(t, err)
+	require.False(t, removed.Tracked)
+	stored, err = service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.NotContains(t, splitPatternLines(stored.IncludePatterns), "/alpha/runtime.bin")
+	require.Contains(t, splitPatternLines(stored.ExcludePatterns), "/alpha/runtime.bin")
+	tracked, err = service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose/alpha/runtime.bin"}})
+	require.NoError(t, err)
+	require.Empty(t, tracked.TrackedPaths)
+}
+
+func TestExactFilesContextExclusionOverridesABroadInclude(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly, IncludePatterns: []string{"alpha/**"}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "application.conf"), []byte("enabled=true\n"), 0o644))
+
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/application.conf", Tracked: false})
+	require.NoError(t, err)
+	tracked, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose/alpha/application.conf"}})
+	require.NoError(t, err)
+	require.Empty(t, tracked.TrackedPaths)
+	preview, err := service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	for _, entry := range preview.Entries {
+		if entry.Path == "alpha/application.conf" {
+			require.Equal(t, "skipped_excluded", entry.Status, "the exact context-menu exclusion must also apply to transfer inventory")
+		}
+	}
+}
+
+func TestFilesContextCannotChangeProtectedGitFiles(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", ".env"), []byte("TOKEN=secret\n"), 0o600))
+	_, err := service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/.env", Tracked: true})
+	require.ErrorContains(t, err, "sensitive")
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/compose.yml", Tracked: false})
+	require.ErrorContains(t, err, "Compose manifests")
 }
 
 func TestManualStackPushReconcilesStaleSensitiveOnlyChange(t *testing.T) {

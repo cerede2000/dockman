@@ -30,7 +30,7 @@ export interface FilesContextType {
 
     addFile: (filename: string, isDir: boolean) => Promise<void>
     copyFile: (srcFilename: string, destFilename: string, isDir: boolean) => Promise<void>
-    deleteFile: (filename: string) => Promise<void>
+    deleteFile: (filename: string) => Promise<boolean>
     renameFile: (oldFilename: string, newFile: string) => Promise<void>
     listFiles: (path: string, depthIndex: number[]) => Promise<void>
 
@@ -157,6 +157,8 @@ function FilesProvider({children}: { children: ReactNode }) {
         const {err} = await callRPC(() => client.delete({filename}))
         if (err) {
             showError(err)
+            await fetchFiles()
+            return false
         } else {
             markGitStackLocal(host, filename)
             showSuccess(`Deleted ${filename}`)
@@ -165,6 +167,7 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         await fetchFiles()
+        return true
     }
 
     const renameFile = async (

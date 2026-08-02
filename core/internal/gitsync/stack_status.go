@@ -72,7 +72,26 @@ type GitTrackedFilesInput struct {
 }
 
 type GitTrackedFilesView struct {
-	TrackedPaths []string `json:"trackedPaths"`
+	TrackedPaths []string             `json:"trackedPaths"`
+	Files        []GitTrackedFileView `json:"files"`
+}
+
+type GitTrackedFileView struct {
+	Path         string `json:"path"`
+	BindingID    string `json:"bindingId,omitempty"`
+	ComposePath  string `json:"composePath,omitempty"`
+	RelativePath string `json:"relativePath,omitempty"`
+	Linked       bool   `json:"linked"`
+	Tracked      bool   `json:"tracked"`
+	Mutable      bool   `json:"mutable"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type GitFileTrackingInput struct {
+	Host      string `json:"host"`
+	Path      string `json:"path"`
+	BindingID string `json:"bindingId"`
+	Tracked   bool   `json:"tracked"`
 }
 
 func initialStackSyncState(binding StackBinding) string {
@@ -284,6 +303,7 @@ func (s *Service) GitTrackedFiles(input GitTrackedFilesInput) (GitTrackedFilesVi
 		trackers = append(trackers, tracker{binding: binding, policy: policy.withComposeDirectoryIndex(), ignore: ignore})
 	}
 	tracked := make([]string, 0, len(input.Paths))
+	files := make([]GitTrackedFileView, 0, len(input.Paths))
 	seen := make(map[string]struct{}, len(input.Paths))
 	for _, raw := range input.Paths {
 		fullPath := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(raw)))), "/")
@@ -297,6 +317,7 @@ func (s *Service) GitTrackedFiles(input GitTrackedFilesInput) (GitTrackedFilesVi
 			continue
 		}
 		seen[fullPath] = struct{}{}
+		view := GitTrackedFileView{Path: fullPath}
 		for _, tracker := range trackers {
 			binding := tracker.binding
 			root := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
@@ -310,17 +331,42 @@ func (s *Service) GitTrackedFiles(input GitTrackedFilesInput) (GitTrackedFilesVi
 				}
 				relative = strings.TrimPrefix(fullPath, root+"/")
 			}
-			if len(composePathsForFile(selectedComposePaths(binding), relative)) == 0 {
+			composePaths := composePathsForFile(selectedComposePaths(binding), relative)
+			if len(composePaths) == 0 {
 				continue
 			}
-			if policyTracksLocalFile(tracker.policy, tracker.ignore, relative) {
+			view.Linked = true
+			view.BindingID = binding.UUID
+			view.ComposePath = composePaths[0]
+			view.RelativePath = relative
+			view.Mutable, view.Reason = mutableGitFilePolicyPath(tracker.policy, relative)
+			view.Tracked = policyTracksLocalFile(tracker.policy, tracker.ignore, relative)
+			if view.Tracked {
 				tracked = append(tracked, fullPath)
-				break
 			}
+			break
 		}
+		files = append(files, view)
 	}
 	sort.Strings(tracked)
-	return GitTrackedFilesView{TrackedPaths: tracked}, nil
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return GitTrackedFilesView{TrackedPaths: tracked, Files: files}, nil
+}
+
+func mutableGitFilePolicyPath(policy syncPolicy, relative string) (bool, string) {
+	if policy.protectsCompose(relative) {
+		return false, "Compose manifests are protected by the Folder Link"
+	}
+	if policy.protectsProvision(relative) {
+		return false, "provisioning control files are protected"
+	}
+	if isSensitivePath(relative) {
+		return false, "sensitive files require the separate one-time transfer confirmation"
+	}
+	if shouldSkipPath(relative, false) {
+		return false, "Dockman internal and special paths are never synchronized"
+	}
+	return true, ""
 }
 
 // EnableGitStackSynchronization atomically approves a catalogued local stack.
@@ -931,8 +977,7 @@ func policyTracksLocalFile(policy syncPolicy, ignoreRules []ignoreRule, relative
 	if !selected || shouldSkipPath(relative, false) {
 		return false
 	}
-	if policy.excludesPath(relative, false, ignoreRules) &&
-		!policy.explicitlyIncludes(relative, false) &&
+	if policy.exclusionApplies(relative, false, ignoreRules) &&
 		!policy.protectsCompose(relative) {
 		return false
 	}

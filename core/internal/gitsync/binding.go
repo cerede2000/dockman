@@ -911,6 +911,117 @@ func (s *Service) AddBindingInclusions(id string, paths []string) (BindingView, 
 	return s.bindingView(row)
 }
 
+// SetGitFileTracking changes one ordinary file through the Files context menu.
+// The server resolves and validates the owning Folder Link again; the browser
+// cannot use this shortcut to bypass Compose, provisioning, sensitive-file or
+// internal-path protections.
+func (s *Service) SetGitFileTracking(input GitFileTrackingInput) (GitTrackedFileView, error) {
+	input.Host = strings.TrimSpace(input.Host)
+	input.BindingID = strings.TrimSpace(input.BindingID)
+	fullPath := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(input.Path)))), "/")
+	if input.Host == "" || input.BindingID == "" {
+		return GitTrackedFileView{}, errors.New("host and bindingId are required")
+	}
+	if err := validateRelativePath(fullPath, false); err != nil {
+		return GitTrackedFileView{}, fmt.Errorf("invalid file path: %w", err)
+	}
+
+	automationLock := s.repositoryLock("automation:" + input.BindingID)
+	automationLock.Lock()
+	defer automationLock.Unlock()
+	binding, err := s.store.GetBinding(input.BindingID)
+	if err != nil {
+		return GitTrackedFileView{}, err
+	}
+	if binding.Host != input.Host {
+		return GitTrackedFileView{}, errors.New("file does not belong to this Folder Link host")
+	}
+	root := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
+	relative := fullPath
+	if root != "" && root != "." {
+		if !strings.HasPrefix(fullPath, root+"/") {
+			return GitTrackedFileView{}, errors.New("file is outside this Folder Link")
+		}
+		relative = strings.TrimPrefix(fullPath, root+"/")
+	}
+	composePaths := composePathsForFile(selectedComposePaths(binding), relative)
+	if len(composePaths) == 0 {
+		return GitTrackedFileView{}, errors.New("file is outside the selected synchronized stacks")
+	}
+	repository, err := s.store.GetRepository(binding.RepositoryUUID)
+	if err != nil {
+		return GitTrackedFileView{}, err
+	}
+	policy, err := policyFromBinding(binding, repository)
+	if err != nil {
+		return GitTrackedFileView{}, err
+	}
+	policy = policy.withComposeDirectoryIndex()
+	if mutable, reason := mutableGitFilePolicyPath(policy, relative); !mutable {
+		return GitTrackedFileView{}, errors.New(reason)
+	}
+	if input.Tracked {
+		targetFS, targetRoot, resolveErr := s.resolveBindingStack(binding)
+		if resolveErr != nil {
+			return GitTrackedFileView{}, resolveErr
+		}
+		info, statErr := targetFS.Stat(targetFS.Join(targetRoot, filepath.FromSlash(relative)))
+		if statErr != nil {
+			return GitTrackedFileView{}, fmt.Errorf("file cannot be synchronized: %w", statErr)
+		}
+		if !info.Mode().IsRegular() {
+			return GitTrackedFileView{}, errors.New("only regular files can be added from the Files context menu")
+		}
+	}
+
+	literal := escapeGlobLiteral(relative)
+	removeExact := func(patterns []string) []string {
+		result := make([]string, 0, len(patterns))
+		for _, pattern := range patterns {
+			if strings.TrimSpace(pattern) == literal || strings.TrimSpace(pattern) == "/"+literal {
+				continue
+			}
+			result = append(result, pattern)
+		}
+		return result
+	}
+	includes := removeExact(splitPatternLines(binding.IncludePatterns))
+	excludes := removeExact(splitPatternLines(binding.ExcludePatterns))
+	if input.Tracked {
+		includes = append(includes, "/"+literal)
+	} else {
+		excludes = append(excludes, "/"+literal)
+	}
+	profile, includes, excludes, err := normalizeBindingPolicy(BindingPolicyInput{Profile: binding.SyncProfile, IncludePatterns: includes, ExcludePatterns: excludes})
+	if err != nil {
+		return GitTrackedFileView{}, err
+	}
+	binding.SyncProfile = profile
+	binding.IncludePatterns = strings.Join(includes, "\n")
+	binding.ExcludePatterns = strings.Join(excludes, "\n")
+	if err := s.store.SaveBinding(&binding); err != nil {
+		return GitTrackedFileView{}, err
+	}
+	if !input.Tracked {
+		baseline, baselineErr := s.store.BindingBaseline(binding.UUID)
+		if baselineErr != nil {
+			return GitTrackedFileView{}, baselineErr
+		}
+		delete(baseline, relative)
+		if err := s.store.ReplaceBindingBaseline(binding.UUID, baseline); err != nil {
+			return GitTrackedFileView{}, err
+		}
+	}
+	if _, err := s.PreviewBinding(binding.UUID, "stack_to_repository", TransferInput{}); err != nil {
+		return GitTrackedFileView{}, fmt.Errorf("file policy saved but synchronization state could not be refreshed: %w", err)
+	}
+	if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
+		return GitTrackedFileView{}, fmt.Errorf("file policy saved but Folder Link state could not be refreshed: %w", err)
+	}
+	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePaths[0], Type: "policy_update", Trigger: "manual", Details: ActivityDetails{Action: map[bool]string{true: "include_file", false: "exclude_file"}[input.Tracked], Paths: []string{relative}}})
+	return GitTrackedFileView{Path: fullPath, BindingID: binding.UUID, ComposePath: composePaths[0], RelativePath: relative, Linked: true, Tracked: input.Tracked, Mutable: true}, nil
+}
+
 func (s *Service) DeleteBinding(id string, forget bool) error {
 	automationLock := s.repositoryLock("automation:" + id)
 	automationLock.Lock()
@@ -2081,7 +2192,7 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if shouldSkipPath(childRel, entry.IsDir()) {
 				continue
 			}
-			if policy.excludesPath(childRel, entry.IsDir(), ignoreRules) && !policy.explicitlyIncludes(childRel, entry.IsDir()) && !policy.protectsCompose(childRel) && !policy.protectsProvision(childRel) {
+			if policy.exclusionApplies(childRel, entry.IsDir(), ignoreRules) && !policy.protectsCompose(childRel) && !policy.protectsProvision(childRel) {
 				if entry.IsDir() && policy.containsCompose(childRel) {
 					child := targetFS.Join(dir, entry.Name())
 					childCount, err := walk(child, childRel)
@@ -2293,7 +2404,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 			if shouldSkipPath(rel, isDirectory) {
 				continue
 			}
-			if policy.excludesPath(rel, isDirectory, ignoreRules) && !policy.explicitlyIncludes(rel, isDirectory) && !policy.protectsCompose(rel) && !policy.protectsProvision(rel) {
+			if policy.exclusionApplies(rel, isDirectory, ignoreRules) && !policy.protectsCompose(rel) && !policy.protectsProvision(rel) {
 				if isDirectory && policy.containsCompose(rel) {
 					subtree, err := current.Tree(entry.Name)
 					if err != nil {
@@ -2736,6 +2847,31 @@ func (policy syncPolicy) hasComposeInFileDirectory(relative string) bool {
 
 func (policy syncPolicy) explicitlyIncludes(relative string, directory bool) bool {
 	return matchesIgnoreRule(policy.includes, relative, directory)
+}
+
+func (policy syncPolicy) exactlyIncludes(relative string, directory bool) bool {
+	return matchesExactPolicyRule(policy.includes, relative, directory)
+}
+
+func (policy syncPolicy) exactlyExcludes(relative string, directory bool) bool {
+	return matchesExactPolicyRule(policy.excludes, relative, directory)
+}
+
+func matchesExactPolicyRule(rules []ignoreRule, relative string, directory bool) bool {
+	literal := escapeGlobLiteral(strings.Trim(filepath.ToSlash(relative), "/"))
+	for _, rule := range rules {
+		if rule.pattern == literal && rule.directory == directory && !rule.basename {
+			return true
+		}
+	}
+	return false
+}
+
+func (policy syncPolicy) exclusionApplies(relative string, directory bool, localRules []ignoreRule) bool {
+	if !policy.excludesPath(relative, directory, localRules) {
+		return false
+	}
+	return !policy.explicitlyIncludes(relative, directory) || (policy.exactlyExcludes(relative, directory) && !policy.exactlyIncludes(relative, directory))
 }
 
 func (policy syncPolicy) excludesPath(relative string, directory bool, localRules []ignoreRule) bool {

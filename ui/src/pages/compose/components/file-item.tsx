@@ -8,11 +8,11 @@ import {
     ListItemIcon,
     ListItemText,
     Menu,
-    MenuItem, Tooltip
+    MenuItem, Tooltip, ListItemIcon as MenuItemIcon
 } from "@mui/material";
 import {useLocation, useNavigate} from 'react-router'
 import React, {type MouseEvent, useCallback, useEffect, useRef, useState} from 'react'
-import {CloudDoneOutlined, ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
+import {CloudDoneOutlined, CloudOffOutlined, CloudUploadOutlined, ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
 import {Link as RouterLink} from "react-router";
 import FileIcon, {DockerFolderIcon} from "./file-icon.tsx";
 import {amber} from "@mui/material/colors";
@@ -31,7 +31,12 @@ import {getContextKey} from "../../../context/tab-context.tsx";
 import type {Status} from "../../../gen/docker/v1/docker_pb.ts";
 import {stripQueryParams} from "../../../lib/strings.ts";
 import GitStackStatusIndicator from "../../../components/git-stack-status.tsx";
-import {useGitFolderStatuses, useGitStackStatus, useGitTrackedFile, worstGitStatus} from "../../../components/git-stack-status-store.ts";
+import {setGitFileTracking, useGitFolderStatuses, useGitStackStatus, useGitTrackedFile, useGitTrackedFileInfo, worstGitStatus} from "../../../components/git-stack-status-store.ts";
+
+const compactMenuSlotProps = (compact: boolean) => ({
+    paper: {sx: compact ? {minWidth: 150, '& .MuiMenuItem-root': {minHeight: 28, py: .25, px: 1.1, fontSize: '.78rem'}, '& .MuiListItemIcon-root': {minWidth: 27}, '& .MuiSvgIcon-root': {fontSize: 16}} : {}},
+    list: {dense: compact, sx: compact ? {py: .35} : {}},
+});
 
 
 export const useFileDnD = (entry: FsEntry) => {
@@ -369,6 +374,7 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                         ? {top: contextMenu.mouseY, left: contextMenu.mouseX}
                         : undefined
                 }
+                slotProps={compactMenuSlotProps(compact)}
             >
                 {contextActions}
             </Menu>
@@ -472,6 +478,7 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
                         ? {top: contextMenu.mouseY, left: contextMenu.mouseX}
                         : undefined
                 }
+                slotProps={compactMenuSlotProps(compact)}
             >
                 {contextActions}
             </Menu>
@@ -513,6 +520,10 @@ const useFileMenuCtx = (entry: FsEntry) => {
         setContextMenu(null);
     };
     const {showError, showSuccess} = useSnackbar()
+    const compact = useCompactMode(state => state.enabled)
+    const host = useHostStore(state => state.host)
+    const gitFile = useGitTrackedFileInfo(host, entry.isDir || isComposeFile(entry.filename) ? '' : entry.filename)
+    const [gitPolicyBusy, setGitPolicyBusy] = useState(false)
 
     const {downloadFile} = useFiles()
     const showCreate = useFileCreate(state => state.open)
@@ -585,6 +596,18 @@ const useFileMenuCtx = (entry: FsEntry) => {
                 })
             }}>
                 Download
+            </MenuItem>,
+        ] : []),
+        ...(!entry.isDir && gitFile?.linked && gitFile.mutable ? [
+            <MenuItem key="git-file-policy" dense={compact} disabled={gitPolicyBusy} onClick={() => {
+                closeCtxMenu()
+                setGitPolicyBusy(true)
+                void setGitFileTracking(host, gitFile, !gitFile.tracked).then(() => {
+                    showSuccess(gitFile.tracked ? 'File removed from Git synchronization' : 'File added to Git synchronization')
+                }).catch((reason) => showError((reason as Error).message)).finally(() => setGitPolicyBusy(false))
+            }}>
+                <MenuItemIcon>{gitFile.tracked ? <CloudOffOutlined/> : <CloudUploadOutlined/>}</MenuItemIcon>
+                {gitFile.tracked ? 'Stop Git sync' : 'Add to Git sync'}
             </MenuItem>,
         ] : []),
         (

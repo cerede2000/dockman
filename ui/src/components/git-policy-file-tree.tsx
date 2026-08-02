@@ -190,18 +190,18 @@ export default function GitPolicyFileTree({bindingId, policy, onChange, disabled
         });
     };
 
-    return <Stack spacing={1.25} sx={{minWidth: 0}}>
+    return <Stack spacing={1.25} sx={{minWidth: 0, minHeight: 0, height: "100%", overflow: "hidden"}}>
         <Stack direction="row" sx={{alignItems: "center", justifyContent: "space-between", gap: 1}}>
             <Box><Typography variant="subtitle2">File and folder selector</Typography><Typography variant="caption" color="text.secondary">Expand folders on demand. A checkbox creates one precise rule; untouched entries keep the base profile.</Typography></Box>
             <Button size="small" startIcon={<RefreshOutlined/>} onClick={refresh} disabled={disabled || loading.size > 0}>Refresh preview</Button>
         </Stack>
         {error && <Alert severity="error">{error}</Alert>}
         {warnings.map((warning) => <Alert key={warning} severity="warning">{warning}</Alert>)}
-        <Paper variant="outlined" sx={{overflow: "hidden", minHeight: 300}}>
+        <Paper variant="outlined" sx={{overflow: "hidden", minHeight: 0, flex: 1, display: "flex", flexDirection: "column"}}>
             <Box sx={{display: "grid", gridTemplateColumns: "minmax(280px, 1fr) 90px 120px minmax(180px, .8fr) 42px", px: 1, py: 1, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider"}}>
                 <Typography variant="caption" sx={{fontWeight: 700}}>PATH</Typography><Typography variant="caption" sx={{fontWeight: 700}}>SOURCE</Typography><Typography variant="caption" sx={{fontWeight: 700}}>POLICY</Typography><Typography variant="caption" sx={{fontWeight: 700}}>REASON</Typography><span/>
             </Box>
-            <Box sx={{maxHeight: "58vh", overflow: "auto"}}>{loading.has("") && !views[""] ? <Box sx={{display: "grid", placeItems: "center", py: 8}}><CircularProgress size={24}/></Box> : views[""]?.entries.length === 0 ? <Typography color="text.secondary" sx={{p: 4, textAlign: "center"}}>This linked folder is empty on Dockman and Git.</Typography> : renderDirectory("", 0)}</Box>
+            <Box sx={{minHeight: 0, flex: 1, overflow: "auto"}}>{loading.has("") && !views[""] ? <Box sx={{display: "grid", placeItems: "center", py: 8}}><CircularProgress size={24}/></Box> : views[""]?.entries.length === 0 ? <Typography color="text.secondary" sx={{p: 4, textAlign: "center"}}>This linked folder is empty on Dockman and Git.</Typography> : renderDirectory("", 0)}</Box>
         </Paper>
         <Typography variant="caption" color="text.secondary">The selector never bypasses hard protections for Git metadata, special files, symlinks, sensitive files or size limits. Use the advanced rules for broad patterns such as <code>*.log</code>.</Typography>
     </Stack>;

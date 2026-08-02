@@ -35,13 +35,25 @@ export interface GitStackStatus {
     lastDeployAt?: string;
 }
 
+export interface GitTrackedFileInfo {
+    path: string;
+    bindingId?: string;
+    composePath?: string;
+    relativePath?: string;
+    linked: boolean;
+    tracked: boolean;
+    mutable: boolean;
+    reason?: string;
+}
+
 interface GitStatusStore {
     byHost: Record<string, Record<string, GitStackStatus>>;
     aggregateByHost: Record<string, Record<string, GitStackStatus>>;
     folderStatusesByHost: Record<string, Record<string, GitStackStatus[]>>;
-    trackedFilesByHost: Record<string, Record<string, boolean>>;
+    trackedFilesByHost: Record<string, Record<string, GitTrackedFileInfo>>;
     setHost: (host: string, rows: GitStackStatus[]) => void;
-    setTrackedFiles: (host: string, checkedPaths: string[], trackedPaths: string[]) => void;
+    setTrackedFiles: (host: string, checkedPaths: string[], trackedPaths: string[], files?: GitTrackedFileInfo[]) => void;
+    setTrackedFile: (host: string, file: GitTrackedFileInfo) => void;
 }
 
 const normalizePath = (value: string) => value.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
@@ -131,13 +143,21 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
             folderStatusesByHost: {...state.folderStatusesByHost, [host]: folders.lists},
         };
     }),
-    setTrackedFiles: (host, checkedPaths, trackedPaths) => set((state) => {
+    setTrackedFiles: (host, checkedPaths, trackedPaths, files = []) => set((state) => {
         const current = state.trackedFilesByHost[host] ?? {};
         const next = {...current};
         const tracked = new Set(trackedPaths.map(normalizePath));
-        for (const path of checkedPaths) next[normalizePath(path)] = tracked.has(normalizePath(path));
+        const details = new Map(files.map((file) => [normalizePath(file.path), file]));
+        for (const path of checkedPaths) {
+            const normalized = normalizePath(path);
+            next[normalized] = details.get(normalized) ?? {path: normalized, linked: tracked.has(normalized), tracked: tracked.has(normalized), mutable: false};
+        }
         return {trackedFilesByHost: {...state.trackedFilesByHost, [host]: next}};
     }),
+    setTrackedFile: (host, file) => set((state) => ({trackedFilesByHost: {
+        ...state.trackedFilesByHost,
+        [host]: {...(state.trackedFilesByHost[host] ?? {}), [normalizePath(file.path)]: file},
+    }})),
 }));
 
 const watchers = new Map<string, {references: number; timer?: ReturnType<typeof setInterval>; running: boolean; onVisible?: () => void}>();
@@ -156,8 +176,8 @@ async function flushTrackedFileRequests(host: string) {
                 method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({host, paths: chunk}),
             });
             if (!response.ok) continue;
-            const result = await response.json() as {trackedPaths: string[]};
-            useGitStatusStore.getState().setTrackedFiles(host, chunk, result.trackedPaths ?? []);
+            const result = await response.json() as {trackedPaths: string[]; files?: GitTrackedFileInfo[]};
+            useGitStatusStore.getState().setTrackedFiles(host, chunk, result.trackedPaths ?? [], result.files ?? []);
         } catch {
             // Git is optional. Leave unknown entries unbadged; a remount can
             // retry without creating a persistent worker or noisy error.
@@ -245,11 +265,40 @@ export function useGitStackStatus(host: string, composePath: string) {
 
 export function useGitTrackedFile(host: string, path: string) {
     const normalized = normalizePath(path);
-    const tracked = useGitStatusStore((state) => state.trackedFilesByHost[host]?.[normalized]);
+    const file = useGitStatusStore((state) => state.trackedFilesByHost[host]?.[normalized]);
     useEffect(() => {
-        if (tracked === undefined) requestTrackedFile(host, normalized);
-    }, [host, normalized, tracked]);
-    return tracked === true;
+        if (file === undefined) requestTrackedFile(host, normalized);
+    }, [file, host, normalized]);
+    return file?.tracked === true;
+}
+
+export function useGitTrackedFileInfo(host: string, path: string) {
+    const normalized = normalizePath(path);
+    const file = useGitStatusStore((state) => state.trackedFilesByHost[host]?.[normalized]);
+    useEffect(() => {
+        if (file === undefined) requestTrackedFile(host, normalized);
+    }, [file, host, normalized]);
+    return file;
+}
+
+export async function setGitFileTracking(host: string, file: GitTrackedFileInfo, tracked: boolean) {
+    if (!file.bindingId) throw new Error('This file is not attached to a selected Git stack');
+    const response = await fetch(withProtectedAPI('/git/file-tracking'), {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({host, path: file.path, bindingId: file.bindingId, tracked}),
+    });
+    if (!response.ok) {
+        let message = `Git file policy failed (${response.status})`;
+        try {
+            const body = await response.json() as {error?: string; message?: string};
+            message = body.error || body.message || message;
+        } catch { /* keep the bounded fallback */ }
+        throw new Error(message);
+    }
+    const updated = await response.json() as GitTrackedFileInfo;
+    useGitStatusStore.getState().setTrackedFile(host, updated);
+    await refreshGitStackStatuses(host);
+    return updated;
 }
 
 export function useGitFolderStatus(host: string, folderPath: string) {

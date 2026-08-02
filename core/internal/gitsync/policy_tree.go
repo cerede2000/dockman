@@ -247,7 +247,7 @@ func evaluatePolicyTreeEntry(policy syncPolicy, localRules []ignoreRule, relativ
 		entry.State, entry.Reason = "excluded", "outside the selected stack folders"
 		return entry
 	}
-	if policy.excludesPath(relative, candidate.directory, localRules) && !entry.ExplicitlyIncluded {
+	if policy.exclusionApplies(relative, candidate.directory, localRules) {
 		entry.State, entry.Reason = "excluded", "matched by an exclusion rule"
 		return entry
 	}

@@ -206,6 +206,12 @@ func TestLocalFileDeletionRequiresConfirmationAndCanBeCommitted(t *testing.T) {
 	require.Error(t, err)
 	_, err = tree.File("stacks/alpha/compose.yml")
 	require.NoError(t, err)
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State, "the one-step Git deletion must immediately clear the stale local-deletion indicator")
+	updated, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", updated.AutoSyncState)
 }
 
 func TestLocalFileDeletionRefusesToDeleteGitWhenRemoteChanged(t *testing.T) {
