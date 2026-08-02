@@ -92,6 +92,7 @@ type GitFileTrackingInput struct {
 	Path      string `json:"path"`
 	BindingID string `json:"bindingId"`
 	Tracked   bool   `json:"tracked"`
+	Deleted   bool   `json:"deleted,omitempty"`
 }
 
 func initialStackSyncState(binding StackBinding) string {

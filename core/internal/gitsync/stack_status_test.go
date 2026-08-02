@@ -199,6 +199,50 @@ func TestFilesContextCanAddAndRemoveAnOrdinaryGitFile(t *testing.T) {
 	require.Empty(t, tracked.TrackedPaths)
 }
 
+func TestDeletingAFileRemovesOnlyItsPreciseContextMenuRule(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly, IncludePatterns: []string{"alpha/**"}})
+	require.NoError(t, err)
+	path := filepath.Join(stackRoot, "alpha", "one-off.bin")
+	require.NoError(t, os.WriteFile(path, []byte("payload\n"), 0o644))
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/one-off.bin", Tracked: true})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+	service.MarkLocalChange("local", "compose/alpha/one-off.bin")
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/one-off.bin", Deleted: true})
+	require.NoError(t, err)
+
+	stored, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"alpha/**"}, splitPatternLines(stored.IncludePatterns), "the broad operator rule must be preserved while the one-file rule is removed")
+	require.NoError(t, os.WriteFile(path, []byte("recreated\n"), 0o644))
+	tracked, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose/alpha/one-off.bin"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"compose/alpha/one-off.bin"}, tracked.TrackedPaths, "the remaining broad rule must still apply")
+}
+
+func TestDeletingAFileWithOnlyAPreciseRuleDoesNotTrackItsRecreation(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	path := filepath.Join(stackRoot, "alpha", "one-off.bin")
+	require.NoError(t, os.WriteFile(path, []byte("payload\n"), 0o644))
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/one-off.bin", Tracked: true})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+	service.MarkLocalChange("local", "compose/alpha/one-off.bin")
+	_, err = service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/one-off.bin", Deleted: true})
+	require.NoError(t, err)
+
+	stored, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Empty(t, stored.IncludePatterns)
+	require.NoError(t, os.WriteFile(path, []byte("recreated\n"), 0o644))
+	tracked, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose/alpha/one-off.bin"}})
+	require.NoError(t, err)
+	require.Empty(t, tracked.TrackedPaths)
+}
+
 func TestExactFilesContextExclusionOverridesABroadInclude(t *testing.T) {
 	service, stackRoot, binding := prepareMultiStackBinding(t)
 	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly, IncludePatterns: []string{"alpha/**"}})

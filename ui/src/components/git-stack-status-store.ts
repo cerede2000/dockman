@@ -301,6 +301,25 @@ export async function setGitFileTracking(host: string, file: GitTrackedFileInfo,
     return updated;
 }
 
+export async function reconcileDeletedGitFile(host: string, file: GitTrackedFileInfo) {
+    if (!file.bindingId) return;
+    const response = await fetch(withProtectedAPI('/git/file-tracking'), {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({host, path: file.path, bindingId: file.bindingId, tracked: false, deleted: true}),
+    });
+    if (!response.ok) {
+        let message = `Git deletion reconciliation failed (${response.status})`;
+        try {
+            const body = await response.json() as {error?: string; message?: string};
+            message = body.error || body.message || message;
+        } catch { /* keep the bounded fallback */ }
+        throw new Error(message);
+    }
+    const updated = await response.json() as GitTrackedFileInfo;
+    useGitStatusStore.getState().setTrackedFile(host, updated);
+    await refreshGitStackStatuses(host);
+}
+
 export function useGitFolderStatus(host: string, folderPath: string) {
     const normalized = normalizePath(folderPath);
     return useGitStatusStore((state) => state.aggregateByHost[host]?.[normalized]);

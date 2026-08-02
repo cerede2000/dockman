@@ -179,6 +179,12 @@ func (s *Service) resolveLocallyDeletedFile(ctx context.Context, binding StackBi
 		break
 	}
 	if !deleted {
+		if action == "delete_git" && !bindingFileExistsLocally(s, binding, filePath) {
+			// Deletion is idempotent. A newly included local file may be removed
+			// before its first push, in which case there is deliberately no
+			// preview tombstone or remote object to delete.
+			return s.deleteLocallyDeletedFileFromGit(ctx, binding, composePath, filePath)
+		}
 		return LocalDeletionActionResult{}, errors.New("file is no longer a pending local deletion; refresh its synchronization status")
 	}
 
@@ -229,13 +235,24 @@ func (s *Service) deleteLocallyDeletedFileFromGit(ctx context.Context, binding S
 	if local, exists := localFiles[filePath]; exists && local.open != nil {
 		return LocalDeletionActionResult{}, errors.New("Git deletion refused: the file exists locally again")
 	}
-	remote, exists := repositoryFiles[filePath]
-	if !exists || remote.open == nil {
-		return LocalDeletionActionResult{}, errors.New("Git deletion refused: the file no longer exists on Git")
-	}
 	baseline, err := s.store.BindingBaseline(binding.UUID)
 	if err != nil {
 		return LocalDeletionActionResult{}, err
+	}
+	remote, exists := repositoryFiles[filePath]
+	if !exists || remote.open == nil {
+		delete(baseline, filePath)
+		if err := s.store.ReplaceBindingBaseline(binding.UUID, baseline); err != nil {
+			return LocalDeletionActionResult{}, err
+		}
+		if _, err := s.removeDeletedFileExactInclusion(binding, filePath); err != nil {
+			return LocalDeletionActionResult{}, err
+		}
+		if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
+			return LocalDeletionActionResult{}, fmt.Errorf("file was already absent from Git but synchronization state could not be refreshed: %w", err)
+		}
+		s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual", Details: ActivityDetails{Action: "delete_git", Message: "File was already absent from Git", Paths: []string{filePath}}})
+		return LocalDeletionActionResult{Action: "delete_git", ComposePath: composePath, Message: "File deleted locally; it was already absent from Git, so no commit was needed"}, nil
 	}
 	baseSHA, tracked := baseline[filePath]
 	if !tracked {
@@ -305,12 +322,24 @@ func (s *Service) deleteLocallyDeletedFileFromGit(ctx context.Context, binding S
 	if err := s.store.ReplaceBindingBaseline(binding.UUID, baseline); err != nil {
 		return LocalDeletionActionResult{}, err
 	}
+	if _, err := s.removeDeletedFileExactInclusion(binding, filePath); err != nil {
+		return LocalDeletionActionResult{}, err
+	}
 	compactRepositoryObjects(repo, binding.RepositoryUUID)
 	if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
 		return LocalDeletionActionResult{}, fmt.Errorf("Git file deleted but synchronization state could not be refreshed: %w", err)
 	}
 	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePath, Type: "local_deletion_resolve", Trigger: "manual", CommitSHA: hash.String(), Details: ActivityDetails{Action: "delete_git", Paths: []string{filePath}}})
 	return LocalDeletionActionResult{Action: "delete_git", ComposePath: composePath, CommitSHA: hash.String(), Message: "File deleted from Git and committed; no Docker action was run"}, nil
+}
+
+func bindingFileExistsLocally(s *Service, binding StackBinding, relative string) bool {
+	targetFS, targetRoot, err := s.resolveBindingStack(binding)
+	if err != nil {
+		return false
+	}
+	info, err := targetFS.Stat(targetFS.Join(targetRoot, filepath.FromSlash(relative)))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func (s *Service) deselectLocallyDeletedStack(binding StackBinding, composePath string) (LocalDeletionActionResult, error) {

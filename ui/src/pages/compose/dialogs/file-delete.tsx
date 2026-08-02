@@ -6,7 +6,7 @@ import {Alert, Box, CircularProgress, Stack, Typography} from "@mui/material"
 import {create} from "zustand";
 import {useFiles} from "../../../context/file-context.tsx";
 import {useHostStore} from "../state/files.ts";
-import {refreshGitStackStatuses, useGitTrackedFileInfo} from "../../../components/git-stack-status-store.ts";
+import {reconcileDeletedGitFile, refreshGitStackStatuses, useGitTrackedFileInfo} from "../../../components/git-stack-status-store.ts";
 import {withProtectedAPI} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {useState} from "react";
@@ -64,6 +64,11 @@ const FileDelete = () => {
                 const result = await response.json() as {message: string}
                 await refreshGitStackStatuses(host)
                 showSuccess(result.message)
+            } else if (gitFile?.tracked && gitFile.mutable) {
+                // Re-evaluate the exact stack immediately. This removes a
+                // one-file rule created from the context menu, preserves broad
+                // rules, and clears false "push" states when Git never had it.
+                await reconcileDeletedGitFile(host, gitFile)
             }
             onClose()
         } catch (reason) {

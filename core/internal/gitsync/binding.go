@@ -960,7 +960,7 @@ func (s *Service) SetGitFileTracking(input GitFileTrackingInput) (GitTrackedFile
 	if mutable, reason := mutableGitFilePolicyPath(policy, relative); !mutable {
 		return GitTrackedFileView{}, errors.New(reason)
 	}
-	if input.Tracked {
+	if input.Tracked && !input.Deleted {
 		targetFS, targetRoot, resolveErr := s.resolveBindingStack(binding)
 		if resolveErr != nil {
 			return GitTrackedFileView{}, resolveErr
@@ -985,9 +985,15 @@ func (s *Service) SetGitFileTracking(input GitFileTrackingInput) (GitTrackedFile
 		}
 		return result
 	}
-	includes := removeExact(splitPatternLines(binding.IncludePatterns))
+	originalIncludes := splitPatternLines(binding.IncludePatterns)
+	includes := removeExact(originalIncludes)
 	excludes := removeExact(splitPatternLines(binding.ExcludePatterns))
-	if input.Tracked {
+	exactIncludeRemoved := len(includes) != len(originalIncludes)
+	if input.Deleted {
+		// A precise rule created from the Files context menu belongs to this
+		// concrete file lifecycle. Removing the file removes that rule as well,
+		// while broad operator rules (*.conf, folders, profiles) stay untouched.
+	} else if input.Tracked {
 		includes = append(includes, "/"+literal)
 	} else {
 		excludes = append(excludes, "/"+literal)
@@ -1002,7 +1008,7 @@ func (s *Service) SetGitFileTracking(input GitFileTrackingInput) (GitTrackedFile
 	if err := s.store.SaveBinding(&binding); err != nil {
 		return GitTrackedFileView{}, err
 	}
-	if !input.Tracked {
+	if !input.Tracked && (!input.Deleted || exactIncludeRemoved) {
 		baseline, baselineErr := s.store.BindingBaseline(binding.UUID)
 		if baselineErr != nil {
 			return GitTrackedFileView{}, baselineErr
@@ -1018,8 +1024,33 @@ func (s *Service) SetGitFileTracking(input GitFileTrackingInput) (GitTrackedFile
 	if err := s.settleBindingAfterOrphanDecision(binding.UUID); err != nil {
 		return GitTrackedFileView{}, fmt.Errorf("file policy saved but Folder Link state could not be refreshed: %w", err)
 	}
-	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePaths[0], Type: "policy_update", Trigger: "manual", Details: ActivityDetails{Action: map[bool]string{true: "include_file", false: "exclude_file"}[input.Tracked], Paths: []string{relative}}})
-	return GitTrackedFileView{Path: fullPath, BindingID: binding.UUID, ComposePath: composePaths[0], RelativePath: relative, Linked: true, Tracked: input.Tracked, Mutable: true}, nil
+	action := map[bool]string{true: "include_file", false: "exclude_file"}[input.Tracked]
+	if input.Deleted {
+		action = "reconcile_deleted_file"
+	}
+	s.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID, ComposePath: composePaths[0], Type: "policy_update", Trigger: "manual", Details: ActivityDetails{Action: action, Paths: []string{relative}}})
+	return GitTrackedFileView{Path: fullPath, BindingID: binding.UUID, ComposePath: composePaths[0], RelativePath: relative, Linked: true, Tracked: input.Tracked && !input.Deleted, Mutable: true}, nil
+}
+
+func (s *Service) removeDeletedFileExactInclusion(binding StackBinding, relative string) (StackBinding, error) {
+	literal := escapeGlobLiteral(relative)
+	current := splitPatternLines(binding.IncludePatterns)
+	includes := make([]string, 0, len(current))
+	for _, pattern := range current {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == literal || trimmed == "/"+literal {
+			continue
+		}
+		includes = append(includes, pattern)
+	}
+	if len(includes) == len(current) {
+		return binding, nil
+	}
+	binding.IncludePatterns = strings.Join(includes, "\n")
+	if err := s.store.SaveBinding(&binding); err != nil {
+		return binding, err
+	}
+	return binding, nil
 }
 
 func (s *Service) DeleteBinding(id string, forget bool) error {

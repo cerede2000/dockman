@@ -214,6 +214,27 @@ func TestLocalFileDeletionRequiresConfirmationAndCanBeCommitted(t *testing.T) {
 	require.Equal(t, "up_to_date", updated.AutoSyncState)
 }
 
+func TestLocalAndGitDeletionSucceedsWhenFileWasNeverPushed(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	path := filepath.Join(stackRoot, "alpha", "never-pushed.bin")
+	require.NoError(t, os.WriteFile(path, []byte("temporary\n"), 0o644))
+	_, err := service.SetGitFileTracking(GitFileTrackingInput{Host: "local", BindingID: binding.ID, Path: "compose/alpha/never-pushed.bin", Tracked: true})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+	service.MarkLocalChange("local", "compose/alpha/never-pushed.bin")
+
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/never-pushed.bin", Confirmation: deleteGitFileConfirmText})
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "already absent from Git")
+	require.Empty(t, result.CommitSHA)
+	stored, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.NotContains(t, splitPatternLines(stored.IncludePatterns), "/alpha/never-pushed.bin")
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State)
+}
+
 func TestLocalFileDeletionRefusesToDeleteGitWhenRemoteChanged(t *testing.T) {
 	service, _, repository, binding := prepareTrackedFileDeletion(t)
 	remoteChange(t, repository.RemoteURL, "stacks/alpha/test.conf", "enabled=false\n")
