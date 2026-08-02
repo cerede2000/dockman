@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import {useLocation, useNavigate} from 'react-router'
 import React, {type MouseEvent, useCallback, useEffect, useRef, useState} from 'react'
-import {ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
+import {CloudDoneOutlined, ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
 import {Link as RouterLink} from "react-router";
 import FileIcon, {DockerFolderIcon} from "./file-icon.tsx";
 import {amber} from "@mui/material/colors";
@@ -31,7 +31,7 @@ import {getContextKey} from "../../../context/tab-context.tsx";
 import type {Status} from "../../../gen/docker/v1/docker_pb.ts";
 import {stripQueryParams} from "../../../lib/strings.ts";
 import GitStackStatusIndicator from "../../../components/git-stack-status.tsx";
-import {useGitFolderStatus, useGitFolderStatuses, useGitStackStatus} from "../../../components/git-stack-status-store.ts";
+import {useGitFolderStatuses, useGitStackStatus, useGitTrackedFile, worstGitStatus} from "../../../components/git-stack-status-store.ts";
 
 
 export const useFileDnD = (entry: FsEntry) => {
@@ -218,19 +218,22 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
         return state.folderStatuses[context]?.[entry.filename] ?? state.openFiles[context]?.[entry.isComposeFolder];
     })
     const exactGitStatus = useGitStackStatus(host, entry.isComposeFolder ?? '')
-    const aggregateGitStatus = useGitFolderStatus(host, entry.filename)
     const aggregateGitStatuses = useGitFolderStatuses(host, entry.filename)
+    const selectedAggregateGitStatuses = aggregateGitStatuses.filter((status) => status.selected)
+    const aggregateGitStatus = worstGitStatus(selectedAggregateGitStatuses)
+    const visibleExactGitStatus = exactGitStatus?.selected ? exactGitStatus : undefined
     const normalizedFolder = entry.filename.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
-    const containsDirectStack = aggregateGitStatuses.some((status) => {
+    const containsDirectStack = selectedAggregateGitStatuses.some((status) => {
         const compose = status.fullComposePath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '')
         return compose.slice(0, Math.max(0, compose.lastIndexOf('/'))) === normalizedFolder
     })
-    const bindingRootStatuses = !exactGitStatus && aggregateGitStatuses.length > 0
-        && new Set(aggregateGitStatuses.map((status) => status.bindingId)).size === 1
-        && aggregateGitStatuses.every((status) => status.stackPath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '') === normalizedFolder)
-        ? aggregateGitStatuses : undefined
-    const actionableFolderStatuses = bindingRootStatuses ?? (!exactGitStatus && !containsDirectStack && aggregateGitStatuses.length > 0
-        ? aggregateGitStatuses : undefined)
+    const bindingRootStatuses = !visibleExactGitStatus && selectedAggregateGitStatuses.length > 0
+        && new Set(selectedAggregateGitStatuses.map((status) => status.bindingId)).size === 1
+        && selectedAggregateGitStatuses.every((status) => status.stackPath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '') === normalizedFolder)
+        ? selectedAggregateGitStatuses : undefined
+    const actionableFolderStatuses = bindingRootStatuses ?? (!visibleExactGitStatus && !containsDirectStack && selectedAggregateGitStatuses.length > 0
+        ? selectedAggregateGitStatuses : undefined)
+    const displayedGitStatus = visibleExactGitStatus ?? aggregateGitStatus
     useEffect(() => {
         // Track the stack status for any folder that contains a compose file,
         // regardless of the useComposeFolders display mode, so the status dot is
@@ -293,9 +296,9 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
                             <DockerFolderIcon/> :
                             <Folder sx={{color: amber[800], fontSize: '1.1rem'}}/>
                         }
-                        {(exactGitStatus ?? aggregateGitStatus) && <Box sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, bgcolor: '#121212', borderRadius: '50%', lineHeight: 0}}>
-                            <GitStackStatusIndicator status={exactGitStatus ?? aggregateGitStatus} size={13}
-                                                     interactive={Boolean(exactGitStatus) || Boolean(actionableFolderStatuses)}
+                        {displayedGitStatus && <Box sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, bgcolor: '#121212', borderRadius: '50%', lineHeight: 0}}>
+                            <GitStackStatusIndicator status={displayedGitStatus} size={13}
+                                                     interactive={Boolean(visibleExactGitStatus) || Boolean(actionableFolderStatuses)}
                                                      aggregateStatuses={actionableFolderStatuses}
                                                      bindingRoot={Boolean(bindingRootStatuses)}/>
                         </Box>}
@@ -389,6 +392,8 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
     })
     const host = useHostStore(state => state.host)
     const gitStatus = useGitStackStatus(host, filename)
+    const visibleGitStatus = gitStatus?.selected ? gitStatus : undefined
+    const trackedByGit = useGitTrackedFile(host, isComposeFile(filename) ? '' : filename)
     useEffect(() => {
         if (isComposeFile(filename)) {
             trackComposeStatus(filename);
@@ -437,9 +442,14 @@ const FileItemDisplay = ({entry, depth}: { entry: FsEntry, depth: number }) => {
                 <ListItemIcon sx={{minWidth: 32}}>
                     <Box sx={{position: 'relative', display: 'inline-flex', alignItems: 'center'}}>
                         <FileIcon filename={filename}/>
-                        {gitStatus && <Box sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, bgcolor: '#121212', borderRadius: '50%', lineHeight: 0}}>
-                            <GitStackStatusIndicator status={gitStatus} size={13}/>
+                        {visibleGitStatus && <Box sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, bgcolor: '#121212', borderRadius: '50%', lineHeight: 0}}>
+                            <GitStackStatusIndicator status={visibleGitStatus} size={13}/>
                         </Box>}
+                        {!visibleGitStatus && trackedByGit && <Tooltip title="Included in Git synchronization" arrow>
+                            <Box component="span" role="img" aria-label="Included in Git synchronization" sx={{position: 'absolute', right: -7, bottom: -7, zIndex: 1, width: 15, height: 15, display: 'grid', placeItems: 'center', bgcolor: '#121212', borderRadius: '50%', color: '#64b5f6'}}>
+                                <CloudDoneOutlined sx={{fontSize: 12}}/>
+                            </Box>
+                        </Tooltip>}
                     </Box>
                 </ListItemIcon>
 

@@ -39,6 +39,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /stack-targets", h.listStackTargets)
 	mux.HandleFunc("GET /bindings", h.listBindings)
 	mux.HandleFunc("GET /stack-statuses", h.listGitStackStatuses)
+	mux.HandleFunc("POST /tracked-files", h.gitTrackedFiles)
 	mux.HandleFunc("PUT /bindings/{id}/stack-status/{composePath...}", h.pauseGitStackAutomation)
 	mux.HandleFunc("POST /bindings/{id}/stack-select/{composePath...}", h.enableGitStackSynchronization)
 	mux.HandleFunc("POST /bindings/{id}/stack-push/{composePath...}", h.pushGitStack)
@@ -176,6 +177,23 @@ func (h *HTTPHandler) listGitStackStatuses(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+func (h *HTTPHandler) gitTrackedFiles(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input GitTrackedFilesInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.GitTrackedFiles(input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Request) {

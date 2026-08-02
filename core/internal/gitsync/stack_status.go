@@ -66,6 +66,15 @@ type GitStackPauseInput struct {
 	Paused bool `json:"paused"`
 }
 
+type GitTrackedFilesInput struct {
+	Host  string   `json:"host"`
+	Paths []string `json:"paths"`
+}
+
+type GitTrackedFilesView struct {
+	TrackedPaths []string `json:"trackedPaths"`
+}
+
 func initialStackSyncState(binding StackBinding) string {
 	switch binding.InitialSyncState {
 	case "reconciled", "imported", "exported":
@@ -231,6 +240,87 @@ func (s *Service) ListGitStackStatusViews(host string) ([]GitStackStatusView, er
 		return result[i].FullComposePath < result[j].FullComposePath
 	})
 	return result, nil
+}
+
+// GitTrackedFiles evaluates already displayed file paths against the exact
+// effective Folder Link policy. It does not scan the stack tree or Git
+// repository, so the Files view can render passive badges without adding a
+// background inventory or one request per row.
+func (s *Service) GitTrackedFiles(input GitTrackedFilesInput) (GitTrackedFilesView, error) {
+	input.Host = strings.TrimSpace(input.Host)
+	if input.Host == "" {
+		return GitTrackedFilesView{}, errors.New("host is required")
+	}
+	if len(input.Paths) > 1000 {
+		return GitTrackedFilesView{}, errors.New("at most 1000 file paths can be checked at once")
+	}
+	bindings, err := s.store.ListBindingsForHost(input.Host)
+	if err != nil {
+		return GitTrackedFilesView{}, err
+	}
+	type tracker struct {
+		binding StackBinding
+		policy  syncPolicy
+		ignore  []ignoreRule
+	}
+	trackers := make([]tracker, 0, len(bindings))
+	for _, binding := range bindings {
+		targetFS, targetRoot, resolveErr := s.resolveBindingStack(binding)
+		if resolveErr != nil {
+			continue
+		}
+		repository, repositoryErr := s.store.GetRepository(binding.RepositoryUUID)
+		if repositoryErr != nil {
+			continue
+		}
+		policy, policyErr := policyFromBinding(binding, repository)
+		if policyErr != nil {
+			continue
+		}
+		ignore, ignoreErr := loadStackIgnoreRules(targetFS, targetRoot)
+		if ignoreErr != nil {
+			continue
+		}
+		trackers = append(trackers, tracker{binding: binding, policy: policy.withComposeDirectoryIndex(), ignore: ignore})
+	}
+	tracked := make([]string, 0, len(input.Paths))
+	seen := make(map[string]struct{}, len(input.Paths))
+	for _, raw := range input.Paths {
+		fullPath := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(raw)))), "/")
+		if fullPath == "" || fullPath == "." {
+			continue
+		}
+		if err := validateRelativePath(fullPath, false); err != nil {
+			return GitTrackedFilesView{}, fmt.Errorf("invalid file path %q: %w", raw, err)
+		}
+		if _, duplicate := seen[fullPath]; duplicate {
+			continue
+		}
+		seen[fullPath] = struct{}{}
+		for _, tracker := range trackers {
+			binding := tracker.binding
+			root := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
+			relative := fullPath
+			if root != "" && root != "." {
+				if fullPath == root {
+					continue
+				}
+				if !strings.HasPrefix(fullPath, root+"/") {
+					continue
+				}
+				relative = strings.TrimPrefix(fullPath, root+"/")
+			}
+			if len(composePathsForFile(selectedComposePaths(binding), relative)) == 0 {
+				continue
+			}
+			if policyTracksLocalFile(tracker.policy, tracker.ignore, relative) {
+				tracked = append(tracked, fullPath)
+				break
+			}
+		}
+	}
+	sort.Strings(tracked)
+	return GitTrackedFilesView{TrackedPaths: tracked}, nil
 }
 
 // EnableGitStackSynchronization atomically approves a catalogued local stack.
@@ -808,15 +898,22 @@ func (s *Service) bindingTracksLocalMutation(binding StackBinding, relative stri
 		return true
 	}
 	policy = policy.withComposeDirectoryIndex()
-	selected, _ := policy.selectsPath(relative, false)
-	if !selected || shouldSkipPath(relative, false) {
-		return false
-	}
 	ignoreRules, err := loadStackIgnoreRules(targetFS, targetRoot)
 	if err != nil {
 		// Keep the mutation visible if the policy itself cannot be read. The
 		// subsequent preview will expose that actionable configuration error.
 		return true
+	}
+	return policyTracksLocalFile(policy, ignoreRules, relative)
+}
+
+func policyTracksLocalFile(policy syncPolicy, ignoreRules []ignoreRule, relative string) bool {
+	if isProvisionControlPath(relative) {
+		return false
+	}
+	selected, _ := policy.selectsPath(relative, false)
+	if !selected || shouldSkipPath(relative, false) {
+		return false
 	}
 	if policy.excludesPath(relative, false, ignoreRules) &&
 		!policy.explicitlyIncludes(relative, false) &&

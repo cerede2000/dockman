@@ -127,6 +127,25 @@ func TestComposeOnlyMutationStatusMatchesTransferPolicy(t *testing.T) {
 	require.Equal(t, stackSyncLocalChanges, alphaState(), "the catalogued Compose manifest must remain tracked")
 }
 
+func TestGitTrackedFilesUsesEffectivePolicyAndSelectedStacks(t *testing.T) {
+	service, stackRoot, binding := prepareMultiStackBinding(t)
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{
+		Mode: composeSelectionSelected, ComposePaths: []string{"alpha/compose.yml"},
+	})
+	require.NoError(t, err)
+	for _, path := range []string{"alpha/.env.example", "alpha/runtime.db", "beta/.env.example"} {
+		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, filepath.FromSlash(path)), []byte("test\n"), 0o644))
+	}
+
+	result, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{
+		"compose/alpha/.env.example", "compose/alpha/runtime.db", "compose/beta/.env.example", "another/.env.example",
+	}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"compose/alpha/.env.example"}, result.TrackedPaths)
+}
+
 func TestStackCheckingStateIsProjectedWithoutOverwritingStoredState(t *testing.T) {
 	service, _, binding := prepareMultiStackBinding(t)
 	row, err := service.store.GetBinding(binding.ID)
