@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import {useLocation, useNavigate} from 'react-router'
 import React, {type MouseEvent, useCallback, useEffect, useRef, useState} from 'react'
-import {CloudDoneOutlined, CloudOffOutlined, CloudUploadOutlined, ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
+import {CloudDoneOutlined, CloudOffOutlined, CloudUploadOutlined, ConstructionOutlined, ExpandLess, ExpandMore, Folder} from '@mui/icons-material'
 import {Link as RouterLink} from "react-router";
 import FileIcon, {DockerFolderIcon} from "./file-icon.tsx";
 import {amber} from "@mui/material/colors";
@@ -24,6 +24,7 @@ import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {useFileCreate} from "../dialogs/file-create.tsx";
 import {useFileDelete} from "../dialogs/file-delete.tsx";
 import {useFileRename} from "../dialogs/file-rename.tsx";
+import {useFileDockerBuild} from "../dialogs/file-docker-build.tsx";
 import {useAliasStore, useCompactMode, useFileDrag, useHostStore, useOpenFiles} from "../state/files.ts";
 import {useConfig} from "../../../hooks/config.ts";
 import {useComposeFileState} from "../state/status.ts";
@@ -37,6 +38,8 @@ const compactMenuSlotProps = (compact: boolean) => ({
     paper: {sx: compact ? {minWidth: 150, '& .MuiMenuItem-root': {minHeight: 28, py: .25, px: 1.1, fontSize: '.78rem'}, '& .MuiListItemIcon-root': {minWidth: 27}, '& .MuiSvgIcon-root': {fontSize: 16}} : {}},
     list: {dense: compact, sx: compact ? {py: .35} : {}},
 });
+
+const isDockerfile = (filename: string) => /^(dockerfile|containerfile)(\..+)?$/i.test(filename.replaceAll('\\', '/').split('/').pop() ?? '');
 
 
 export const useFileDnD = (entry: FsEntry) => {
@@ -529,6 +532,7 @@ const useFileMenuCtx = (entry: FsEntry) => {
     const showCreate = useFileCreate(state => state.open)
     const showDelete = useFileDelete(state => state.open)
     const showRename = useFileRename(state => state.open)
+    const showDockerBuild = useFileDockerBuild(state => state.open)
 
     const filename = entry.filename
 
@@ -585,6 +589,15 @@ const useFileMenuCtx = (entry: FsEntry) => {
             </MenuItem>
         ),
         ...(!entry.isDir ? [
+            ...(isDockerfile(filename) ? [
+                <MenuItem key="docker-build" dense={compact} onClick={() => {
+                    closeCtxMenu()
+                    showDockerBuild(filename)
+                }}>
+                    <MenuItemIcon><ConstructionOutlined/></MenuItemIcon>
+                    Build Docker image
+                </MenuItem>,
+            ] : []),
             <MenuItem key="download" onClick={() => {
                 closeCtxMenu()
                 downloadFile(filename, true).then(value => {

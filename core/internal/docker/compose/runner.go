@@ -76,7 +76,7 @@ func (r *RemoteRunner) Run(
 
 	fullCmd := fmt.Sprintf(
 		"cd %s && %s",
-		wd,
+		shellQuote(wd),
 		strings.Join(cmd, " "),
 	)
 

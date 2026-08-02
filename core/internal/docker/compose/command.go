@@ -5,8 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 )
+
+const dockmanDockerfilePrefix = "dockman://"
 
 // RunDockerCommand executes a user-provided docker CLI command line on this
 // host through the same runner compose uses (local exec or ssh), streaming
@@ -19,6 +22,11 @@ func (c *Service) RunDockerCommand(ctx context.Context, rawCommand string, strea
 	if len(args) == 0 || args[0] != "docker" {
 		return fmt.Errorf("only docker commands are allowed, e.g. docker run --rm nginx:alpine")
 	}
+	wd := "."
+	args, wd, err = c.prepareDockerBuild(args)
+	if err != nil {
+		return err
+	}
 
 	if stream != nil {
 		if _, err = stream.Write([]byte(green(strings.Join(args, " ")))); err != nil {
@@ -27,13 +35,83 @@ func (c *Service) RunDockerCommand(ctx context.Context, rawCommand string, strea
 	}
 
 	errWriter := new(bytes.Buffer)
-	if err = c.runner.Run(ctx, args, ".", stream, errWriter); err != nil {
+	if err = c.runner.Run(ctx, args, wd, stream, errWriter); err != nil {
 		if errWriter.Len() > 0 {
 			return fmt.Errorf("%s", errWriter.String())
 		}
 		return err
 	}
 	return nil
+}
+
+// prepareDockerBuild upgrades the legacy `docker build` spelling to Buildx and
+// resolves Dockerfiles selected from Dockman's Files tree. The dockman://
+// marker is internal and never reaches the Docker CLI; it lets the server map
+// an alias-relative browser path to the real local or SSH host directory.
+func (c *Service) prepareDockerBuild(args []string) ([]string, string, error) {
+	if len(args) < 2 || args[0] != "docker" {
+		return args, ".", nil
+	}
+	if args[1] == "build" {
+		args = append([]string{"docker", "buildx", "build"}, args[2:]...)
+		if !hasBuildOutputOption(args[3:]) {
+			args = append(args[:3], append([]string{"--load"}, args[3:]...)...)
+		}
+	}
+	if len(args) < 3 || args[1] != "buildx" || args[2] != "build" {
+		return args, ".", nil
+	}
+
+	wd := "."
+	for index := 3; index < len(args); index++ {
+		valueIndex := -1
+		switch {
+		case (args[index] == "-f" || args[index] == "--file") && index+1 < len(args):
+			valueIndex = index + 1
+		case strings.HasPrefix(args[index], "--file="):
+			valueIndex = index
+		}
+		if valueIndex < 0 {
+			continue
+		}
+		value := args[valueIndex]
+		inline := strings.HasPrefix(value, "--file=")
+		if inline {
+			value = strings.TrimPrefix(value, "--file=")
+		}
+		if !strings.HasPrefix(value, dockmanDockerfilePrefix) {
+			continue
+		}
+		filename := strings.TrimPrefix(value, dockmanDockerfilePrefix)
+		fileParts, err := c.parser(filename, c.hostname)
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve Dockerfile %q: %w", filename, err)
+		}
+		info, err := fileParts.Fs.Stat(fileParts.Relpath)
+		if err != nil {
+			return nil, "", fmt.Errorf("read Dockerfile %q: %w", filename, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, "", fmt.Errorf("Dockerfile %q is not a regular file", filename)
+		}
+		wd = path.Dir(fileParts.Fs.Join(fileParts.Fs.Root(), fileParts.Relpath))
+		base := path.Base(strings.ReplaceAll(fileParts.Relpath, "\\", "/"))
+		if inline {
+			args[valueIndex] = "--file=" + base
+		} else {
+			args[valueIndex] = base
+		}
+	}
+	return args, wd, nil
+}
+
+func hasBuildOutputOption(args []string) bool {
+	for _, arg := range args {
+		if arg == "--load" || arg == "--push" || arg == "-o" || arg == "--output" || strings.HasPrefix(arg, "-o=") || strings.HasPrefix(arg, "--output=") {
+			return true
+		}
+	}
+	return false
 }
 
 // splitCommandLine splits a command line into arguments, honoring single

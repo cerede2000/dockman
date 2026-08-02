@@ -98,7 +98,7 @@ FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
 
 # docker-cli powers the run-a-docker-command feature on the local host
 # (remote hosts run it over ssh); it also works through DOCKER_HOST/socketproxy.
-RUN apk add --no-cache tzdata su-exec docker-cli
+RUN apk add --no-cache tzdata su-exec docker-cli docker-cli-buildx
 
 COPY pkg/docker/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -148,7 +148,7 @@ COPY --from=back /out/dockman-file-helper-* /usr/local/libexec/
 
 COPY --from=front /frontend/dist/ ./dist
 
-RUN docker-compose version && docker --version
+RUN docker-compose version && docker --version && docker buildx version
 
 EXPOSE 8866
 

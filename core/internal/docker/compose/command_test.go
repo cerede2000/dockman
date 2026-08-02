@@ -1,10 +1,28 @@
 package compose
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/RA341/dockman/internal/host/filesystem"
 	"github.com/stretchr/testify/require"
 )
+
+type commandCaptureRunner struct {
+	args []string
+	wd   string
+}
+
+func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, _, _ io.Writer) error {
+	r.args = append([]string(nil), args...)
+	r.wd = wd
+	return nil
+}
 
 func TestSplitCommandLine(t *testing.T) {
 	args, err := splitCommandLine(`docker run --rm -p 8080:80 nginx:alpine`)
@@ -39,4 +57,40 @@ func TestSplitCommandLine(t *testing.T) {
 	args, err = splitCommandLine("   ")
 	require.NoError(t, err)
 	require.Empty(t, args)
+}
+
+func TestDockerBuildUsesBuildxAndLoadsTheImage(t *testing.T) {
+	runner := &commandCaptureRunner{}
+	service := &Service{runner: runner}
+	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build -t demo:local .", io.Discard))
+	require.Equal(t, []string{"docker", "buildx", "build", "--load", "-t", "demo:local", "."}, runner.args)
+	require.Equal(t, ".", runner.wd)
+}
+
+func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "apple music")
+	require.NoError(t, os.MkdirAll(directory, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte("FROM scratch\n"), 0o600))
+	runner := &commandCaptureRunner{}
+	service := &Service{
+		hostname: "local",
+		runner:   runner,
+		parser: func(filename, _ string) (Host, error) {
+			return Host{Fs: filesystem.NewLocal(root), Relpath: strings.TrimPrefix(filename, "compose/")}, nil
+		},
+	}
+	var output bytes.Buffer
+	err := service.RunDockerCommand(context.Background(), "docker buildx build --load --progress=plain --tag apple-music-rip:local --file 'dockman://compose/apple music/Dockerfile' .", &output)
+	require.NoError(t, err)
+	require.Equal(t, directory, runner.wd)
+	require.Equal(t, []string{"docker", "buildx", "build", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}, runner.args)
+	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
+}
+
+func TestDockerBuildPreservesExplicitPushOutput(t *testing.T) {
+	runner := &commandCaptureRunner{}
+	service := &Service{runner: runner}
+	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build --push -t registry.example/demo:latest .", io.Discard))
+	require.Equal(t, []string{"docker", "buildx", "build", "--push", "-t", "registry.example/demo:latest", "."}, runner.args)
 }

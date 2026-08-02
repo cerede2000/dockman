@@ -17,6 +17,7 @@ import FileSearch from "./dialogs/file-search.tsx";
 import FileCreate from "./dialogs/file-create.tsx";
 import FileDelete from "./dialogs/file-delete.tsx";
 import FileRename from "./dialogs/file-rename.tsx";
+import FileDockerBuild from "./dialogs/file-docker-build.tsx";
 import {useAliasStore, useCompactMode, useLastOpened} from "./state/files.ts";
 import AliasProvider, {useAlias} from "../../context/alias-context.tsx";
 import AliasDialog from "./components/add-alias-dialog.tsx";
@@ -112,6 +113,7 @@ export const ComposePage = () => {
                 <FileSearch/>
                 <FileDelete/>
                 <FileRename/>
+                <FileDockerBuild/>
             </Box>
             <AliasDialog host={host}/>
         </FilesProvider>
