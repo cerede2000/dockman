@@ -45,6 +45,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("POST /files/{kind}/{target}/upload", h.containerFilesUpload)
 	subMux.HandleFunc("GET /files/{kind}/{target}/download", h.containerFilesDownload)
 	subMux.HandleFunc("GET /logs/{contId}", h.containerLogs)
+	subMux.HandleFunc("GET /shell/options", h.hostShellOptions)
 	subMux.HandleFunc("GET /shell", h.hostShell)
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)

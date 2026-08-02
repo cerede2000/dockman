@@ -14,7 +14,7 @@ import {
     TerminalOutlined,
     VerticalSplit as PlacementIcon,
 } from "@mui/icons-material";
-import {useEffect} from "react";
+import {useEffect, useState} from "react";
 import {useCompactMode, usePinnedMode, useSideBarAction, useToolbarPlacement} from "../state/files.ts";
 import {useAlias} from "../../../context/alias-context.tsx";
 import {useNavigate} from "react-router";
@@ -22,7 +22,7 @@ import {type FolderAlias} from "../../../gen/host/v1/host_pb.ts";
 import {useAliasAddDialogState} from "./add-alias-dialog.tsx";
 import {useSidebarActions} from "../hooks/sidebar-actions.ts";
 import {YamlIcon} from "./file-icon.tsx";
-import {useHostShellWsUrl} from "../../../lib/api.ts";
+import {useHostShellWsUrl, useHostUrl} from "../../../lib/api.ts";
 
 // Shared style for the compact 40x40 rail buttons.
 const railBtnSx = {
@@ -54,11 +54,36 @@ const ActionSidebar = () => {
     const onSide = placement === 'side'
 
     const createShellUrl = useHostShellWsUrl()
+    const getHostUrl = useHostUrl()
     const execParams = useContainerExec(state => state.execParams)
+    const [hostShellPolicy, setHostShellPolicy] = useState<{allowed: boolean; reason: string}>({
+        allowed: false,
+        reason: 'Checking host shell policy…',
+    })
+
+    useEffect(() => {
+        let active = true
+        setHostShellPolicy({allowed: false, reason: 'Checking host shell policy…'})
+        void fetch(getHostUrl('/docker/shell/options'))
+            .then(async response => {
+                if (!response.ok) throw new Error(await response.text() || 'Unable to read host shell policy')
+                return response.json() as Promise<{allowed: boolean; reason?: string}>
+            })
+            .then(policy => {
+                if (active) setHostShellPolicy({allowed: policy.allowed, reason: policy.reason ?? ''})
+            })
+            .catch(() => {
+                if (active) setHostShellPolicy({allowed: false, reason: 'Host shell policy is unavailable'})
+            })
+        return () => {
+            active = false
+        }
+    }, [getHostUrl, host])
 
     // shell on the current host, in the open compose file's folder when a
     // file is being edited, otherwise in the runner user's home
     const openHostShell = () => {
+        if (!hostShellPolicy.allowed) return
         const dir = filename ? filename.split('/').slice(0, -1).pop() : ''
         const title = dir ? `${dir} (shell)` : `${host} (shell)`
         execParams(`shell:${host}/${filename || 'home'}`, title, createShellUrl(filename || undefined), true)
@@ -251,20 +276,25 @@ const ActionSidebar = () => {
                     </Tooltip>
 
                     <Tooltip
-                        title={filename ? `Host shell (${filename.split('/').slice(0, -1).pop()})` : "Host shell (home)"}
+                        title={!hostShellPolicy.allowed
+                            ? hostShellPolicy.reason
+                            : filename ? `Host shell (${filename.split('/').slice(0, -1).pop()})` : "Host shell (home)"}
                         placement="right"
                     >
-                        <IconButton
-                            onClick={openHostShell}
-                            sx={{
-                                color: 'rgba(255,255,255,0.5)',
-                                borderRadius: 0,
-                                width: '100%',
-                                '&:hover': {color: 'white'}
-                            }}
-                        >
-                            <Terminal fontSize="medium"/>
-                        </IconButton>
+                        <span style={{display: 'block', width: '100%'}}>
+                            <IconButton
+                                disabled={!hostShellPolicy.allowed}
+                                onClick={openHostShell}
+                                sx={{
+                                    color: 'rgba(255,255,255,0.5)',
+                                    borderRadius: 0,
+                                    width: '100%',
+                                    '&:hover': {color: 'white'}
+                                }}
+                            >
+                                <Terminal fontSize="medium"/>
+                            </IconButton>
+                        </span>
                     </Tooltip>
 
                     <Tooltip title="Terminal (Alt+F12)" placement="right">

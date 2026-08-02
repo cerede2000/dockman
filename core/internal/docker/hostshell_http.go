@@ -22,6 +22,32 @@ type shellResize struct {
 	Rows uint16 `json:"rows"`
 }
 
+const hostShellDisabledMessage = "host shell inside Dockman is disabled by policy; set DOCKMAN_ALLOW_SELF_EXEC=true and recreate Dockman to enable it temporarily"
+
+// hostShellOptions lets the UI fail closed before attempting a WebSocket
+// upgrade. The server-side check in hostShell remains authoritative.
+func (h *HandlerHttp) hostShellOptions(w http.ResponseWriter, r *http.Request) {
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	allowed := host != contSrv.LocalClient || h.allowSelfExec
+	reason := ""
+	if !allowed {
+		reason = hostShellDisabledMessage
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(struct {
+		Allowed bool   `json:"allowed"`
+		Reason  string `json:"reason,omitempty"`
+	}{Allowed: allowed, Reason: reason}); err != nil {
+		log.Debug().Err(err).Msg("could not encode host shell options")
+	}
+}
+
 // hostShell attaches a websocket to an interactive shell in the same context
 // compose and docker commands run in: the dockman container for the local
 // host, an ssh session for remote hosts. Optional query params: file (start
@@ -33,7 +59,7 @@ func (h *HandlerHttp) hostShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if host == contSrv.LocalClient && !h.allowSelfExec {
-		http.Error(w, "host shell inside Dockman is disabled by policy; set DOCKMAN_ALLOW_SELF_EXEC=true and recreate Dockman to enable it temporarily", http.StatusForbidden)
+		http.Error(w, hostShellDisabledMessage, http.StatusForbidden)
 		return
 	}
 

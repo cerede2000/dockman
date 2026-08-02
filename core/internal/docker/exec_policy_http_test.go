@@ -43,6 +43,36 @@ func TestExecPolicyRejectsLocalHostShellBeforeWebSocketUpgrade(t *testing.T) {
 	require.Contains(t, res.Body.String(), "DOCKMAN_ALLOW_SELF_EXEC=true")
 }
 
+func TestHostShellOptionsReflectSelfExecPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		host          string
+		allowSelfExec bool
+		allowed       bool
+	}{
+		{name: "local disabled by default", host: contSrv.LocalClient, allowed: false},
+		{name: "local explicitly enabled", host: contSrv.LocalClient, allowSelfExec: true, allowed: true},
+		{name: "remote shell is not self exec", host: "ssh-host", allowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newExecPolicyTestHandler(t, tc.allowSelfExec)
+			req := httptest.NewRequest(http.MethodGet, "/shell/options", nil)
+			req = req.WithContext(hostMid.SetHost(context.Background(), tc.host))
+			res := httptest.NewRecorder()
+
+			handler.ServeHTTP(res, req)
+
+			require.Equal(t, http.StatusOK, res.Code)
+			if tc.allowed {
+				require.JSONEq(t, `{"allowed":true}`, res.Body.String())
+			} else {
+				require.Contains(t, res.Body.String(), `"allowed":false`)
+				require.Contains(t, res.Body.String(), "DOCKMAN_ALLOW_SELF_EXEC=true")
+			}
+		})
+	}
+}
+
 func TestExecPolicyRejectsPrivilegedDebugBeforeWebSocketUpgrade(t *testing.T) {
 	handler := newExecPolicyTestHandler(t, false)
 	req := httptest.NewRequest(http.MethodGet, "/exec/other-id?debug=1&image=example/debug", nil)
