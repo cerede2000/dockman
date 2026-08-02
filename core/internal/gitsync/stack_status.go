@@ -676,6 +676,9 @@ func (s *Service) MarkLocalChange(host, changedPath string) {
 				binding = fresh
 			}
 		}
+		if !s.bindingTracksLocalMutation(binding, relative) {
+			continue
+		}
 		for _, composePath := range composePathsForFile(selectedComposePaths(binding), relative) {
 			state := stackSyncLocalChanges
 			if !bindingComposeExistsLocally(s, binding, composePath) {
@@ -686,6 +689,54 @@ func (s *Service) MarkLocalChange(host, changedPath string) {
 			})
 		}
 	}
+}
+
+// bindingTracksLocalMutation applies the same path policy as the transfer
+// inventory before publishing an editor mutation as a Git change. In
+// particular, Compose-only links must stay up to date when mutable application
+// data outside their allow-list is edited. Directory operations remain
+// conservative because a copy, rename, or deletion can affect several tracked
+// files at once and already triggers the bounded Compose catalog refresh above.
+func (s *Service) bindingTracksLocalMutation(binding StackBinding, relative string) bool {
+	relative = strings.Trim(filepath.ToSlash(relative), "/")
+	targetFS, targetRoot, err := s.resolveBindingStack(binding)
+	if err != nil {
+		return true
+	}
+	info, statErr := targetFS.Stat(targetFS.Join(targetRoot, filepath.FromSlash(relative)))
+	if statErr == nil && info.IsDir() {
+		return true
+	}
+	if isProvisionControlPath(relative) {
+		// Provision manifests are Git-side controls and are never exported from
+		// the live stack directory by collectStackFiles.
+		return false
+	}
+	repository, err := s.store.GetRepository(binding.RepositoryUUID)
+	if err != nil {
+		return true
+	}
+	policy, err := policyFromBinding(binding, repository)
+	if err != nil {
+		return true
+	}
+	policy = policy.withComposeDirectoryIndex()
+	selected, _ := policy.selectsPath(relative, false)
+	if !selected || shouldSkipPath(relative, false) {
+		return false
+	}
+	ignoreRules, err := loadStackIgnoreRules(targetFS, targetRoot)
+	if err != nil {
+		// Keep the mutation visible if the policy itself cannot be read. The
+		// subsequent preview will expose that actionable configuration error.
+		return true
+	}
+	if policy.excludesPath(relative, false, ignoreRules) &&
+		!policy.explicitlyIncludes(relative, false) &&
+		!policy.protectsCompose(relative) {
+		return false
+	}
+	return policy.includesFile(relative)
 }
 
 func bindingComposeExistsLocally(s *Service, binding StackBinding, composePath string) bool {

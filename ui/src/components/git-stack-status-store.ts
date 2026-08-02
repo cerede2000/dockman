@@ -136,31 +136,18 @@ export async function refreshGitStackStatuses(host: string) {
 }
 
 export function markGitStackLocal(host: string, changedPath: string) {
-    const rows = Object.values(useGitStatusStore.getState().byHost[host] ?? {});
-    const path = normalizePath(changedPath);
     // The server has already processed the successful file mutation before
     // this callback runs. Coalesce bursts (upload/copy/rename) into one compact
-    // status read so added and removed stacks appear immediately, including
-    // operations reported by their directory path rather than compose.yml.
+    // authoritative status read. The browser deliberately does not infer a
+    // local Git change: only the server knows the link profile, explicit rules,
+    // repository exclusions and .dockmanignore policy.
+    void changedPath;
     const pendingRefresh = mutationRefreshes.get(host);
     if (pendingRefresh) clearTimeout(pendingRefresh);
     mutationRefreshes.set(host, setTimeout(() => {
         mutationRefreshes.delete(host);
         void refreshGitStackStatuses(host);
     }, 100));
-    const candidates = rows.filter((row) => row.selected).map((row) => {
-        const compose = normalizePath(row.fullComposePath);
-        const separator = compose.lastIndexOf('/');
-        const root = separator < 0 ? '' : compose.slice(0, separator);
-        return {row, root};
-    }).filter(({root}) => root === '' || path === root || path.startsWith(`${root}/`));
-    const deepest = Math.max(-1, ...candidates.map(({root}) => root.length));
-    if (deepest < 0) return;
-    const targets = new Set(candidates.filter(({root}) => root.length === deepest).map(({row}) => row));
-    const now = new Date().toISOString();
-    useGitStatusStore.getState().setHost(host, rows.map((row) => targets.has(row) ? {
-        ...row, state: 'local_changes', error: undefined, conflictCount: 0, lastCheckedAt: now,
-    } : row));
 }
 
 export function useGitStatusWatcher(host: string) {

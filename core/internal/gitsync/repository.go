@@ -526,7 +526,12 @@ func (s *Service) fetchRepositoryLocked(ctx context.Context, id string) (Reposit
 		}
 		networkCtx, cancel := gitNetworkContext(ctx)
 		defer cancel()
-		err = repo.FetchContext(networkCtx, &gitclient.FetchOptions{RemoteName: "origin", Auth: auth, Force: false, Prune: true, Tags: gitclient.NoTags})
+		// Remote-tracking refs are a cache of the provider state, not local
+		// operator work. Refresh them authoritatively so Check now also observes
+		// a branch rewritten by a rebase/force-push instead of comparing against
+		// a stale origin/<branch> reference. Local branches remain untouched until
+		// the guarded fast-forward in PullRepository.
+		err = repo.FetchContext(networkCtx, &gitclient.FetchOptions{RemoteName: "origin", Auth: auth, Force: true, Prune: true, Tags: gitclient.NoTags})
 		if errors.Is(err, gitclient.NoErrAlreadyUpToDate) {
 			err = nil
 		}

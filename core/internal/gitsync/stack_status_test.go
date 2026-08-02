@@ -53,6 +53,52 @@ func TestGitStackStatusIndexTracksExactNestedStack(t *testing.T) {
 	require.Equal(t, binding.ID, views[0].BindingID)
 }
 
+func TestComposeOnlyMutationStatusMatchesTransferPolicy(t *testing.T) {
+	service, stackRoot, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	binding.SyncProfile = syncProfileComposeOnly
+	require.NoError(t, service.store.SaveBinding(&binding))
+
+	setAlphaState := func(state string) {
+		require.NoError(t, service.store.UpdateGitStackStatuses(binding.UUID, []string{"alpha/compose.yml"}, map[string]any{"state": state}))
+	}
+	alphaState := func() string {
+		status, statusErr := service.store.GitStackStatus(binding.UUID, "alpha/compose.yml")
+		require.NoError(t, statusErr)
+		return status.State
+	}
+
+	setAlphaState(stackSyncUpToDate)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha", "data"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "data", "runtime.db"), []byte("mutable\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/data/runtime.db")
+	require.Equal(t, stackSyncUpToDate, alphaState(), "a file outside the Compose-only inventory must not advertise a push")
+
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", ".env.example"), []byte("PORT=8080\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/.env.example")
+	require.Equal(t, stackSyncLocalChanges, alphaState(), "built-in environment templates are part of Compose-only synchronization")
+
+	setAlphaState(stackSyncUpToDate)
+	binding.IncludePatterns = "alpha/application.conf"
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "application.conf"), []byte("enabled=true\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/application.conf")
+	require.Equal(t, stackSyncLocalChanges, alphaState(), "an explicit include must opt a file into Compose-only synchronization")
+
+	setAlphaState(stackSyncUpToDate)
+	binding.IncludePatterns = ""
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, ".dockmanignore"), []byte("alpha/.env.example\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", ".env.example"), []byte("PORT=9090\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/.env.example")
+	require.Equal(t, stackSyncUpToDate, alphaState(), ".dockmanignore must suppress the mutation indicator exactly like preview and push")
+
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yml"), []byte("services:\n  alpha:\n    image: alpine\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/compose.yml")
+	require.Equal(t, stackSyncLocalChanges, alphaState(), "the catalogued Compose manifest must remain tracked")
+}
+
 func TestStackCheckingStateIsProjectedWithoutOverwritingStoredState(t *testing.T) {
 	service, _, binding := prepareMultiStackBinding(t)
 	row, err := service.store.GetBinding(binding.ID)

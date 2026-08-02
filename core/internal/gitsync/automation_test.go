@@ -127,6 +127,43 @@ func TestAutomaticSyncImportsOnlyItsPerStackTargets(t *testing.T) {
 	require.Contains(t, string(beta), "alpine:3.24")
 }
 
+func TestExplicitCheckFetchesRemoteComposeAfterIgnoredLocalEdit(t *testing.T) {
+	service, stackRoot, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	binding.SyncProfile = syncProfileComposeOnly
+	require.NoError(t, service.store.SaveBinding(&binding))
+	establishBindingBaseline(t, service, binding.UUID)
+	_, err = service.UpdateBindingAutomation(binding.UUID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+
+	// An unrelated mutable file in the same stack is outside the Compose-only
+	// inventory and must neither create a local push nor hide a remote commit.
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha", "data"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "data", "runtime.db"), []byte("local runtime state\n"), 0o644))
+	service.MarkLocalChange("local", "compose/alpha/data/runtime.db")
+	status, err := service.store.GitStackStatus(binding.UUID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State)
+
+	repository, err := service.store.GetRepository(binding.RepositoryUUID)
+	require.NoError(t, err)
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/compose.yml", "services:\n  alpha:\n    image: alpine:3.24\n")
+	result, err := service.RunBindingAutoSyncNow(context.Background(), binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+	contents, err := os.ReadFile(filepath.Join(stackRoot, "alpha", "compose.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "alpine:3.24")
+	updated, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.NotEmpty(t, updated.LastAutoSyncCommit, "an explicit check must fetch and record the new remote commit")
+	status, err = service.store.GitStackStatus(binding.UUID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State)
+	require.Equal(t, updated.LastAutoSyncCommit, status.LastCommit)
+}
+
 func TestAutomaticSyncCanKeepEveryLinkedStackManualOnly(t *testing.T) {
 	service, _, binding := prepareMultiStackBinding(t)
 	_, err := service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
