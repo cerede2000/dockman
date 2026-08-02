@@ -179,11 +179,12 @@ func TestGitFirstImportCreatesMissingLocalFoldersForSelectedStacks(t *testing.T)
 
 	binding, err := service.CreateBindingContext(context.Background(), BindingInput{
 		RepositoryID: repository.UUID, Host: "local", StackPath: "compose/git-import", SubPath: ".",
-		InitialSync: "repository_to_stack", ComposeSelectionMode: composeSelectionSelected,
+		InitialSync: "repository_to_stack", SyncProfile: syncProfileComposeOnly, ComposeSelectionMode: composeSelectionSelected,
 		SelectedComposePaths: []string{"alpha/compose.yml", "beta/compose.yml"},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "imported", binding.InitialSyncState)
+	require.Equal(t, syncProfileComposeOnly, binding.SyncProfile)
 	require.FileExists(t, filepath.Join(stackRoot, "git-import", "alpha", "compose.yml"))
 	require.FileExists(t, filepath.Join(stackRoot, "git-import", "alpha", ".env.example"))
 	require.FileExists(t, filepath.Join(stackRoot, "git-import", "beta", "compose.yml"))

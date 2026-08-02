@@ -55,6 +55,7 @@ type BindingInput struct {
 	Host                 string   `json:"host"`
 	StackPath            string   `json:"stackPath"`
 	SubPath              string   `json:"subPath"`
+	SyncProfile          string   `json:"syncProfile"`
 	AutoReconcile        *bool    `json:"autoReconcile"`
 	InitialSync          string   `json:"initialSync"`
 	ComposeSelectionMode string   `json:"composeSelectionMode"`
@@ -308,6 +309,13 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	if err != nil {
 		return BindingView{}, err
 	}
+	syncProfile := strings.TrimSpace(clean.SyncProfile)
+	if syncProfile == "" {
+		syncProfile = syncProfileComposeConfig
+	}
+	if syncProfile != syncProfileComposeOnly && syncProfile != syncProfileComposeConfig && syncProfile != syncProfileAllFiles {
+		return BindingView{}, errors.New("sync profile must be compose_only, compose_config or all_files")
+	}
 	autoReconcile := true
 	if clean.AutoReconcile != nil {
 		autoReconcile = *clean.AutoReconcile
@@ -340,6 +348,9 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 				}
 				archived.SelectedComposePaths = strings.Join(preserved, "\n")
 			}
+			if strings.TrimSpace(clean.SyncProfile) != "" {
+				archived.SyncProfile = syncProfile
+			}
 			archived.AutoReconcileEnabled = autoReconcile
 			archived.InitialSyncState = "checking"
 			archived.InitialSyncError = ""
@@ -360,7 +371,7 @@ func (s *Service) CreateBindingContext(ctx context.Context, input BindingInput) 
 	row := StackBinding{
 		UUID: uuid.NewString(), RepositoryUUID: clean.RepositoryID, Host: clean.Host,
 		StackPath: clean.StackPath, SubPath: clean.SubPath,
-		ComposePaths: strings.Join(compose, "\n"), ComposeSelectionMode: selectionMode, SelectedComposePaths: strings.Join(selectedCompose, "\n"), SyncProfile: syncProfileComposeConfig, Enabled: true,
+		ComposePaths: strings.Join(compose, "\n"), ComposeSelectionMode: selectionMode, SelectedComposePaths: strings.Join(selectedCompose, "\n"), SyncProfile: syncProfile, Enabled: true,
 		AutoSyncIntervalMinutes: defaultAutoSyncIntervalMinutes, AutoSyncState: "disabled",
 		AutoReconcileEnabled: autoReconcile, InitialSyncState: "checking",
 	}
