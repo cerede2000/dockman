@@ -103,6 +103,16 @@ func TestComposeOnlyMutationStatusMatchesTransferPolicy(t *testing.T) {
 	service.MarkLocalChange("local", "compose/alpha/data/runtime.db")
 	require.Equal(t, stackSyncUpToDate, alphaState(), "a file outside the Compose-only inventory must not advertise a push")
 
+	setAlphaState(stackSyncUpToDate)
+	binding.IncludePatterns = "alpha/**"
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha", "test"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "test", ".env"), []byte("TOKEN=do-not-sync\n"), 0o600))
+	service.MarkLocalChange("local", "compose/alpha/test/.env")
+	require.Equal(t, stackSyncUpToDate, alphaState(), "a broad include must not turn a protected environment file into a normal Git change")
+
+	binding.IncludePatterns = ""
+	require.NoError(t, service.store.SaveBinding(&binding))
 	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", ".env.example"), []byte("PORT=8080\n"), 0o644))
 	service.MarkLocalChange("local", "compose/alpha/.env.example")
 	require.Equal(t, stackSyncLocalChanges, alphaState(), "built-in environment templates are part of Compose-only synchronization")
@@ -129,21 +139,37 @@ func TestComposeOnlyMutationStatusMatchesTransferPolicy(t *testing.T) {
 
 func TestGitTrackedFilesUsesEffectivePolicyAndSelectedStacks(t *testing.T) {
 	service, stackRoot, binding := prepareMultiStackBinding(t)
-	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
+	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly, IncludePatterns: []string{"alpha/test/**"}})
 	require.NoError(t, err)
 	_, err = service.UpdateBindingComposeSelection(binding.ID, BindingComposeSelectionInput{
 		Mode: composeSelectionSelected, ComposePaths: []string{"alpha/compose.yml"},
 	})
 	require.NoError(t, err)
-	for _, path := range []string{"alpha/.env.example", "alpha/runtime.db", "beta/.env.example"} {
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha", "test"), 0o755))
+	for _, path := range []string{"alpha/.env.example", "alpha/runtime.db", "alpha/test/.env", "alpha/test/.env.example", "beta/.env.example"} {
 		require.NoError(t, os.WriteFile(filepath.Join(stackRoot, filepath.FromSlash(path)), []byte("test\n"), 0o644))
 	}
 
 	result, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{
-		"compose/alpha/.env.example", "compose/alpha/runtime.db", "compose/beta/.env.example", "another/.env.example",
+		"compose/alpha/.env.example", "compose/alpha/runtime.db", "compose/alpha/test/.env", "compose/alpha/test/.env.example",
+		"compose/beta/.env.example", "another/.env.example",
 	}})
 	require.NoError(t, err)
-	require.Equal(t, []string{"compose/alpha/.env.example"}, result.TrackedPaths)
+	require.Equal(t, []string{"compose/alpha/.env.example", "compose/alpha/test/.env.example"}, result.TrackedPaths)
+}
+
+func TestManualStackPushReconcilesStaleSensitiveOnlyChange(t *testing.T) {
+	service, stackRoot, _, binding := prepareTrackedLocalDeletion(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "alpha", "test"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "test", ".env"), []byte("TOKEN=do-not-sync\n"), 0o600))
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, []string{"alpha/compose.yml"}, map[string]any{"state": stackSyncLocalChanges}))
+
+	result, err := service.PushGitStackAndResume(context.Background(), binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "sensitive local files were not pushed")
+	status, err := service.store.GitStackStatus(binding.ID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncUpToDate, status.State)
 }
 
 func TestStackCheckingStateIsProjectedWithoutOverwritingStoredState(t *testing.T) {

@@ -538,11 +538,18 @@ func (s *Service) PushGitStackAndResume(ctx context.Context, bindingID, composeP
 	status, statusErr := s.store.GitStackStatus(bindingID, composePath)
 	result, err := s.PushGitStack(ctx, bindingID, composePath)
 	if err != nil {
-		if errors.Is(err, errNoTransferableLocalChanges) && statusErr == nil && status.AutomationPaused && status.PauseReason == stackPauseRecovery {
-			if resumeErr := s.store.SetGitStackPause(bindingID, composePath, false); resumeErr != nil {
-				return TransferResult{}, resumeErr
+		if errors.Is(err, errNoTransferableLocalChanges) {
+			if statusErr == nil && status.AutomationPaused && status.PauseReason == stackPauseRecovery {
+				if resumeErr := s.store.SetGitStackPause(bindingID, composePath, false); resumeErr != nil {
+					return TransferResult{}, resumeErr
+				}
+				return TransferResult{Message: "Stack already matches Git; automatic synchronization resumed"}, nil
 			}
-			return TransferResult{Message: "Stack already matches Git; automatic synchronization resumed"}, nil
+			// PreviewBinding has just recomputed the authoritative stack state.
+			// A stale local-change badge can therefore be acknowledged cleanly
+			// when the only local files are protected or outside the effective
+			// policy, instead of presenting a contradictory push error.
+			return TransferResult{Message: "Stack already matches Git; ignored, excluded, or sensitive local files were not pushed"}, nil
 		}
 		return TransferResult{}, err
 	}
@@ -909,6 +916,15 @@ func (s *Service) bindingTracksLocalMutation(binding StackBinding, relative stri
 
 func policyTracksLocalFile(policy syncPolicy, ignoreRules []ignoreRule, relative string) bool {
 	if isProvisionControlPath(relative) {
+		return false
+	}
+	// Real environment files, private keys and other sensitive paths require a
+	// separate one-time confirmation during an explicit transfer. They are not
+	// part of normal synchronization, even if a broad include rule matches
+	// them, so they must not produce a passive cloud badge or a pushable-change
+	// status. Safe .env.example/.sample/.template/.dist files are deliberately
+	// not classified as sensitive and continue through the regular policy.
+	if isSensitivePath(relative) {
 		return false
 	}
 	selected, _ := policy.selectsPath(relative, false)
