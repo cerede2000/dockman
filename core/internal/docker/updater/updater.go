@@ -708,12 +708,12 @@ func (u *Service) ImageUpdateAvailable(ctx context.Context, imageName string) (b
 		localDigest = img.ID
 	}
 
-	// Get remote image info
-	distributionInspect, err := u.cli().DistributionInspect(ctx, imageName, client.DistributionInspectOptions{})
+	// Query the public registry directly. This avoids requiring the Docker
+	// socket proxy's /distribution endpoint for a read-only metadata check.
+	remoteDigest, err := RegistryManifestDigest(ctx, imageName)
 	if err != nil {
 		return false, "", err
 	}
-	remoteDigest := string(distributionInspect.Descriptor.Digest)
 
 	localDigest = strings.TrimPrefix(localDigest, "sha256:")
 	remoteDigest = strings.TrimPrefix(remoteDigest, "sha256:")

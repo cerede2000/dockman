@@ -121,8 +121,9 @@ func (u *Service) CheckContainerUpdates(ctx context.Context) ([]ContainerUpdateC
 			result.CurrentDigest = localDigests[0]
 		}
 		if result.Status == ContainerUpdateError {
-			proxyDenied := strings.Contains(result.Reason, "socketproxy")
-			if len(localDigests) == 0 && !proxyDenied {
+			mustReport := strings.Contains(result.Reason, "authentication required") ||
+				strings.Contains(result.Reason, "rate limit")
+			if len(localDigests) == 0 && !mustReport {
 				result.Status = ContainerUpdateSkipped
 				result.Reason = "image has no repository digest and its tag could not be resolved; treating it as local"
 			}
@@ -162,15 +163,12 @@ func (u *Service) checkRemoteImage(ctx context.Context, image string) imageUpdat
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	remote, err := u.cli().DistributionInspect(lookupCtx, image, client.DistributionInspectOptions{})
+	remoteDigest, err := RegistryManifestDigest(lookupCtx, image)
 	if err != nil {
 		reason := "registry check: " + err.Error()
-		if strings.Contains(reason, "403 Forbidden") || strings.Contains(reason, "404 Not Found for API route") {
-			reason += "; if Docker is exposed through socketproxy, allow its read-only DISTRIBUTION endpoint"
-		}
 		return imageUpdateCheck{status: ContainerUpdateError, reason: reason}
 	}
-	digest := strings.TrimPrefix(string(remote.Descriptor.Digest), "sha256:")
+	digest := strings.TrimPrefix(remoteDigest, "sha256:")
 	if digest == "" {
 		return imageUpdateCheck{status: ContainerUpdateError, reason: "registry returned no digest"}
 	}
