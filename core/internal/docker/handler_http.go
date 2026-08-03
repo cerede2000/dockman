@@ -48,9 +48,34 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /shell/options", h.hostShellOptions)
 	subMux.HandleFunc("GET /shell", h.hostShell)
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
+	subMux.HandleFunc("POST /updates/check", h.checkContainerUpdates)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 
 	return subMux
+}
+
+func (h *HandlerHttp) checkContainerUpdates(w http.ResponseWriter, r *http.Request) {
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dkSrv, err := h.srv(host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("error getting docker service: %v", err), http.StatusBadRequest)
+		return
+	}
+	results, err := dkSrv.Updater.CheckContainerUpdates(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(struct {
+		Results any `json:"results"`
+	}{Results: results}); err != nil {
+		log.Debug().Err(err).Msg("could not encode container update scan")
+	}
 }
 
 var execShellCandidates = []string{

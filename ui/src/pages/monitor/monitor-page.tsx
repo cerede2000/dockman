@@ -11,6 +11,7 @@ import {
     SpaceDashboardOutlined,
     Stop,
     ShowChart,
+    Sync,
     UnfoldLess,
     UnfoldMore,
     Update,
@@ -26,7 +27,7 @@ import scrollbarStyles from '../../components/scrollbar-style.tsx';
 import {useDockerContainers} from '../../hooks/docker-containers.ts';
 import {useDockerStats, useHostStats} from '../../hooks/docker-containers-stats.ts';
 import {useConfig} from '../../hooks/config.ts';
-import {callRPC, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
+import {callRPC, useContainerExecWsUrl, useHostClient, useHostUrl} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useHostStore} from '../compose/state/files.ts';
 import {DockerService} from '../../gen/docker/v1/docker_pb.ts';
@@ -59,6 +60,16 @@ type ContainerActionRpc = 'containerStart' | 'containerStop' | 'containerRestart
 const monitorViewMemory = new Map<string, { expanded: Record<string, boolean>, scroll: number }>();
 
 type MonitorLayout = 'stacks' | 'containers';
+
+type UpdateScanResult = {
+    containerId: string;
+    containerName: string;
+    image: string;
+    status: 'available' | 'current' | 'skipped' | 'error';
+    currentDigest?: string;
+    remoteDigest?: string;
+    reason?: string;
+};
 
 function readMonitorPreference(key: string): string | null {
     try {
@@ -183,10 +194,11 @@ function MonitorPage() {
     const {containers, loading, fetchContainers} = useDockerContainers();
     const {history, containers: statContainers, aggregates, resetContainerStats} = useDockerStats("");
     const hostStats = useHostStats(true);
-    const {showSuccess, showError} = useSnackbar();
+    const {showSuccess, showError, showWarning} = useSnackbar();
     const {search, setSearch, searchInputRef} = useSearch();
     const navigate = useNavigate();
     const host = useHostStore(state => state.host);
+    const hostUrl = useHostUrl();
     const gitStatuses = useGitStackStatuses(host);
     const {dockYaml} = useConfig();
     // dockman.yml → monitor.stackRows: "compact" drops the stack rows' charts
@@ -209,6 +221,8 @@ function MonitorPage() {
     // the clicked one spins until the RPC and the list refetch settle
     const [rowBusy, setRowBusy] = useState<Record<string, RowAction>>({});
     const [detailsContainerID, setDetailsContainerID] = useState('');
+    const [updateScan, setUpdateScan] = useState<Record<string, UpdateScanResult>>({});
+    const updateScanRequest = useRef(0);
     // container name → pre-action snapshot: the stats stream keeps serving
     // the pre-action sample for a cycle or two, so these rows render pending
     // metrics ('–') until fresh evidence arrives (see the pruning effect)
@@ -253,6 +267,8 @@ function MonitorPage() {
         setDetailsContainerID('');
         setStaleRows({});
         setStateFilters([]);
+        updateScanRequest.current++;
+        setUpdateScan({});
         setExpanded(viewMemoryFor(host).expanded);
         scrollRestored.current = false;
     }, [clearTabs, host]);
@@ -295,7 +311,12 @@ function MonitorPage() {
         });
 
         const byStack = new Map<string, StackGroup>();
-        for (const c of list) {
+        for (const original of list) {
+            const scan = updateScan[original.id];
+            const c = scan
+                ? {...original, updateAvailable: scan.status === 'available'
+                    ? (scan.remoteDigest?.slice(0, 12) || 'new image') : ''}
+                : original;
             const key = monitorStackKey(c);
             const group = byStack.get(key) ?? {key, stack: c.stackName, servicePath: '', rows: [], stats: null};
             if (c.servicePath) {
@@ -338,7 +359,7 @@ function MonitorPage() {
                 }
                 return a.stack.localeCompare(b.stack) || a.key.localeCompare(b.key);
             });
-    }, [containers, gitStatuses, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows]);
+    }, [containers, gitStatuses, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows, updateScan]);
 
     const flatRows = useMemo(() => {
         const rows = groups.flatMap(group => group.rows);
@@ -356,15 +377,20 @@ function MonitorPage() {
     // details view is not accidentally closed by changing the monitor search.
     const detailsRow: MonitorRow | null = useMemo(() => {
         if (!detailsContainerID) return null;
-        const info = (containers?.list ?? []).find(c => c.id === detailsContainerID);
-        if (!info) return null;
+        const original = (containers?.list ?? []).find(c => c.id === detailsContainerID);
+        if (!original) return null;
+        const scan = updateScan[original.id];
+        const info = scan
+            ? {...original, updateAvailable: scan.status === 'available'
+                ? (scan.remoteDigest?.slice(0, 12) || 'new image') : ''}
+            : original;
         const exposesMetrics = ['running', 'restarting', 'paused'].includes(info.state);
         return {
             info,
             stats: staleRows[info.name] || !exposesMetrics ? undefined : statsByName.get(info.name),
             stackKey: monitorStackKey(info),
         };
-    }, [detailsContainerID, containers, staleRows, statsByName]);
+    }, [detailsContainerID, containers, staleRows, statsByName, updateScan]);
 
     // a live search opens every matching stack so the hits are visible;
     // the user's own expand/collapse choices come back once it clears
@@ -449,6 +475,7 @@ function MonitorPage() {
         }
         return map;
     }, [stackRuns]);
+    const batchUpdateRunning = stackRuns['update:batch'] === 'running';
 
     const allExpanded = groups.length > 0 && groups.every(g => effectiveExpanded[g.key] ?? false);
 
@@ -460,6 +487,30 @@ function MonitorPage() {
         return fetchContainers().finally(() => {
             setRefreshing(false);
         });
+    };
+
+    const scanUpdates = async () => {
+        const requestID = ++updateScanRequest.current;
+        try {
+            const response = await fetch(hostUrl('/docker/updates/check'), {method: 'POST'});
+            if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+            const payload = await response.json() as {results: UpdateScanResult[]};
+            if (requestID !== updateScanRequest.current) return;
+            const next = Object.fromEntries(payload.results.map(result => [result.containerId, result]));
+            setUpdateScan(next);
+            const available = payload.results.filter(result => result.status === 'available').length;
+            const failed = payload.results.filter(result => result.status === 'error').length;
+            if (failed > 0) {
+                showWarning(`${available} update${available === 1 ? '' : 's'} available; ${failed} image check${failed === 1 ? '' : 's'} failed`);
+            } else {
+                showSuccess(available > 0
+                    ? `${available} container update${available === 1 ? '' : 's'} available`
+                    : 'All eligible container images are up to date');
+            }
+        } catch (error) {
+            if (requestID !== updateScanRequest.current) return;
+            showError(`Image update check failed — ${error instanceof Error ? error.message : String(error)}`);
+        }
     };
 
     // restore the saved scroll offset once the table is mounted with data
@@ -580,8 +631,26 @@ function MonitorPage() {
                 if (error) showError(`Update ${name} failed — ${error}`);
                 else showSuccess(`Update ${name} finished`);
                 void fetchContainers();
+                void scanUpdates();
             },
         );
+    };
+
+    const startBatchUpdate = async (ids: string[], label: string) => {
+        if (ids.length === 0) return;
+        runAction(
+            'update:batch',
+            (_req, callOpts) => dockerService.containerUpdate({containerIds: ids}, callOpts),
+            'update',
+            [],
+            (error) => {
+                if (error) showError(`${label} failed — ${error}`);
+                else showSuccess(`${label} finished`);
+                void fetchContainers();
+                void scanUpdates();
+            },
+        );
+        setSelectedContainers([]);
     };
 
     const handleRowAction = (row: MonitorRow, action: RowAction) => {
@@ -737,16 +806,14 @@ function MonitorPage() {
         },
         {
             action: 'update', buttonText: 'Update', icon: <Update/>,
-            disabled: selectedContainers.length === 0 || selectedContainersBlocked,
-            handler: async () => {
-                const list = containers?.list ?? [];
-                for (const id of selectedContainers) {
-                    const c = list.find(x => x.id === id);
-                    if (c) startContainerUpdate(c.id, c.name);
-                }
-                setSelectedContainers([]);
-            },
-            tooltip: 'Pull the image and recreate when a newer one exists',
+            disabled: batchUpdateRunning || selectedContainers.length === 0 || selectedContainersBlocked ||
+                (Object.keys(updateScan).length > 0 && !selectedContainers.some(id => updateScan[id]?.status === 'available')),
+            handler: () => startBatchUpdate(
+                Object.keys(updateScan).length > 0
+                    ? selectedContainers.filter(id => updateScan[id]?.status === 'available')
+                    : selectedContainers,
+                'Selected container updates'),
+            tooltip: 'Update selected containers that have a newer image',
         },
         {
             action: 'remove', buttonText: 'Remove', icon: <Delete/>,
@@ -754,6 +821,34 @@ function MonitorPage() {
             handler: () => containerAction('remove', 'containerRemove', 'removed', selectedContainers),
             tooltip: '',
             confirm: `Remove ${selectedContainers.length} selected container${selectedContainers.length > 1 ? 's' : ''}?`,
+        },
+    ];
+
+    const currentContainerIDs = new Set((containers?.list ?? []).map(container => container.id));
+    const activeUpdateScan = Object.values(updateScan)
+        .filter(result => currentContainerIDs.has(result.containerId));
+    const availableUpdateIDs = activeUpdateScan
+        .filter(result => result.status === 'available')
+        .map(result => result.containerId);
+    const updateScanErrors = Object.fromEntries(activeUpdateScan
+        .filter(result => result.status === 'error')
+        .map(result => [result.containerId, result.reason || 'Unknown registry error']));
+    const updateScanErrorCount = Object.keys(updateScanErrors).length;
+    const updateScanSkippedCount = activeUpdateScan
+        .filter(result => result.status === 'skipped').length;
+    const updateScanActions = [
+        {
+            action: 'check-updates', buttonText: 'Check all images', icon: <Sync/>,
+            disabled: loading || batchUpdateRunning,
+            handler: scanUpdates,
+            tooltip: 'Check every distinct container image against its registry',
+        },
+        {
+            action: 'update-all-available', buttonText: `Update all (${availableUpdateIDs.length})`, icon: <Update/>,
+            disabled: batchUpdateRunning || availableUpdateIDs.length === 0,
+            handler: () => startBatchUpdate(availableUpdateIDs, 'All available container updates'),
+            tooltip: 'Update every container with a newer image',
+            confirm: `Update ${availableUpdateIDs.length} container${availableUpdateIDs.length === 1 ? '' : 's'} with a newer image?`,
         },
     ];
 
@@ -831,6 +926,18 @@ function MonitorPage() {
 
                     <Box sx={{px: 1.5, py: 0.75, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1}}>
                         <ActionButtons iconOnly actions={stacksMode ? stackBulkActions : containerBulkActions}/>
+
+                        <ActionButtons iconOnly actions={updateScanActions}/>
+
+                        {Object.keys(updateScan).length > 0 && <Chip
+                            size="small"
+                            variant="outlined"
+                            color={updateScanErrorCount > 0 || availableUpdateIDs.length > 0 ? 'warning' : 'success'}
+                            label={`${availableUpdateIDs.length} update${availableUpdateIDs.length === 1 ? '' : 's'}` +
+                                `${updateScanErrorCount > 0 ? ` · ${updateScanErrorCount} error${updateScanErrorCount === 1 ? '' : 's'}` : ''}` +
+                                `${updateScanSkippedCount > 0 ? ` · ${updateScanSkippedCount} skipped` : ''}`}
+                            sx={{height: 27, fontWeight: 700}}
+                        />}
 
                         <Divider orientation="vertical" flexItem sx={{mx: 0.25, borderColor: t.border}}/>
                         <ToggleButtonGroup
@@ -959,6 +1066,8 @@ function MonitorPage() {
                                     stackRuns={stackRuns}
                                     onStackOutput={(group) => openOutput(group.servicePath)}
                                     updateRuns={updateRuns}
+                                    batchUpdateRunning={batchUpdateRunning}
+                                    updateScanIssues={updateScanErrors}
                                     onUpdateOutput={(row) => openOutput(`update:${row.info.name}`)}
                                     onRowAction={handleRowAction}
                                     rowBusy={rowBusy}

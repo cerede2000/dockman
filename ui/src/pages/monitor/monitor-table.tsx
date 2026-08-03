@@ -135,6 +135,8 @@ interface MonitorTableProps {
     onStackOutput: (group: StackGroup) => void;
     // per-container update runs (keyed by name): busy indicator + output
     updateRuns: Record<string, 'running' | 'failed' | 'done'>;
+    batchUpdateRunning: boolean;
+    updateScanIssues: Record<string, string>;
     onUpdateOutput: (row: MonitorRow) => void;
     onRowAction: (row: MonitorRow, action: RowAction) => void;
     // container id → lifecycle action in flight: locks the row's buttons
@@ -616,6 +618,11 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
                             <Upgrade sx={{fontSize: 14, color: '#4db6ac'}}/>
                         </Tooltip>
                     )}
+                    {props.updateScanIssues[c.id] && (
+                        <Tooltip title={`Update check unavailable: ${props.updateScanIssues[c.id]}`} arrow>
+                            <WarningAmber sx={{fontSize: 14, color: '#ffb74d'}}/>
+                        </Tooltip>
+                    )}
                 </Stack>
                 <Typography noWrap sx={{color: t.textDim, fontSize: '0.7rem', fontFamily: t.mono}}>
                     {c.imageName}
@@ -717,7 +724,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
                     ? 'Update in progress…'
                     : c.updateAvailable ? `Update image (${c.updateAvailable} available)` : 'Update image'} arrow>
                     <span>
-                        <IconButton size="small" disabled={updRun === 'running' || !!busy || stackBusy}
+                        <IconButton size="small" disabled={updRun === 'running' || props.batchUpdateRunning || !!busy || stackBusy}
                                     onClick={() => onRowAction(row, 'update')}
                                     sx={{color: c.updateAvailable ? '#4db6ac' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
                             {updRun === 'running' ? spinner : <Update sx={{fontSize: 16}}/>}

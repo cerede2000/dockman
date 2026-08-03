@@ -100,9 +100,10 @@ function ActionButtons({actions, variant = 'outlined', iconOnly = false}: Action
                         <Button size="small" onClick={() => setConfirmation(null)} sx={{textTransform: 'none'}}>
                             Cancel
                         </Button>
-                        <Button size="small" variant="contained" color="error" onClick={confirm}
+                        <Button size="small" variant="contained"
+                                color={confirmation?.action.action === 'remove' ? 'error' : 'primary'} onClick={confirm}
                                 sx={{textTransform: 'none', fontWeight: 700}}>
-                            Remove
+                            {confirmation?.action.buttonText ?? 'Confirm'}
                         </Button>
                     </Stack>
                 </Stack>
