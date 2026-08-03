@@ -27,9 +27,8 @@ import {useFileRename} from "../dialogs/file-rename.tsx";
 import {useFileDockerBuild} from "../dialogs/file-docker-build.tsx";
 import {useAliasStore, useCompactMode, useFileDrag, useHostStore, useOpenFiles} from "../state/files.ts";
 import {useConfig} from "../../../hooks/config.ts";
-import {useComposeFileState} from "../state/status.ts";
+import {type ComposeDisplayStatus, useComposeFileState} from "../state/status.ts";
 import {getContextKey} from "../../../context/tab-context.tsx";
-import type {Status} from "../../../gen/docker/v1/docker_pb.ts";
 import {stripQueryParams} from "../../../lib/strings.ts";
 import GitStackStatusIndicator from "../../../components/git-stack-status.tsx";
 import {setGitFileTracking, useGitFolderStatuses, useGitStackStatus, useGitTrackedFile, useGitTrackedFileInfo, worstGitStatus} from "../../../components/git-stack-status-store.ts";
@@ -636,12 +635,16 @@ const useFileMenuCtx = (entry: FsEntry) => {
     return {closeCtxMenu, contextActions, contextMenu, handleContextMenu}
 }
 
-const StatusIndicator = ({fileStatus}: { fileStatus: Status }) => {
+const StatusIndicator = ({fileStatus}: { fileStatus: ComposeDisplayStatus }) => {
     const stackStatus = getStatusTheme(fileStatus);
+    const downStacks = fileStatus.stacksWithoutContainers ?? 0;
+    const stackSummary = downStacks > 0
+        ? ` · ${downStacks} stack${downStacks === 1 ? '' : 's'} down`
+        : '';
 
     return ((fileStatus) &&
         <Tooltip
-            title={`${fileStatus.servicesUp} running · ${fileStatus.servicesDown} stopped · ${fileStatus.servicesHealthy} healthy${fileStatus.servicesUnHealthy ? ` · ${fileStatus.servicesUnHealthy} in error` : ''}`}
+            title={`${stackStatus.label} · ${fileStatus.servicesUp} running · ${fileStatus.servicesDown} stopped${stackSummary} · ${fileStatus.servicesHealthy} healthy${fileStatus.servicesUnHealthy ? ` · ${fileStatus.servicesUnHealthy} in error` : ''}`}
             arrow placement="right">
             <Box
                 sx={{
@@ -650,8 +653,8 @@ const StatusIndicator = ({fileStatus}: { fileStatus: Status }) => {
                     borderRadius: '50%',
                     flexShrink: 0,
                     boxSizing: 'border-box',
-                    // filled dot for active states, hollow ring for a stopped
-                    // stack so it reads clearly differently from a green dot.
+                    // A Compose project with no containers is down (hollow).
+                    // Existing but stopped containers remain visible (solid grey).
                     // borderColor (not the `border` shorthand) resolves the token.
                     ...(stackStatus.filled
                         ? {bgcolor: stackStatus.color}
@@ -665,15 +668,20 @@ const StatusIndicator = ({fileStatus}: { fileStatus: Status }) => {
 
 export default StatusIndicator;
 
-const getStatusTheme = (status: Status | undefined) => {
+const getStatusTheme = (status: ComposeDisplayStatus | undefined) => {
     // Same observable-state semantics as Monitor. Exit codes are not used: a
     // manual Docker stop commonly exits with 137/143 and must remain neutral.
     if (!status) {
-        return {color: 'grey.500', label: 'Stopped', filled: false};
+        return {color: 'grey.500', label: 'Down', filled: false};
     }
     if (status.servicesUnHealthy > 0) return {color: 'error.main', label: 'Error', filled: true};
-    if (status.servicesUp > 0 && status.servicesDown > 0) return {color: 'warning.main', label: 'Partially running', filled: true};
+    if (status.servicesUp > 0 && (status.servicesDown > 0 || (status.stacksWithoutContainers ?? 0) > 0)) {
+        return {color: 'warning.main', label: 'Partially running', filled: true};
+    }
     if (status.servicesUp > 0) return {color: 'success.main', label: 'Running', filled: true};
-    // no running/unhealthy container -> stack is stopped
-    return {color: 'grey.500', label: 'Stopped', filled: false};
+    if (status.servicesDown > 0 && (status.stacksWithoutContainers ?? 0) > 0) {
+        return {color: 'warning.main', label: 'Mixed stopped and down stacks', filled: true};
+    }
+    if (status.servicesDown > 0) return {color: 'grey.500', label: 'Stopped', filled: true};
+    return {color: 'grey.500', label: 'Down', filled: false};
 };

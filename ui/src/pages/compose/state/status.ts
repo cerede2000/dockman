@@ -4,6 +4,11 @@ import {type Status, StatusSchema} from "../../../gen/docker/v1/docker_pb.ts";
 import {create as createMessage, equals} from "@bufbuild/protobuf";
 import {create} from "zustand";
 
+export type ComposeDisplayStatus = Status & {
+    stackFiles?: number;
+    stacksWithoutContainers?: number;
+};
+
 interface OpenFilesState {
     // contextKey -> Set of directory paths
     openFiles: Record<string, Record<string, Status>>;
@@ -12,7 +17,7 @@ interface OpenFilesState {
     knownFiles: Record<string, Record<string, Status>>;
     // Aggregate of the indexed compose statuses for every ancestor. This lets
     // a folder reflect stacks located several levels below it while collapsed.
-    folderStatuses: Record<string, Record<string, Status>>;
+    folderStatuses: Record<string, Record<string, ComposeDisplayStatus>>;
     delete: (dir: string, keep?: string) => void;
     trackComposeStatus: (path: string) => void;
     setStatus: (status: { [p: string]: Status }, contextKey?: string) => void
@@ -100,28 +105,51 @@ export const useComposeFileState = create<OpenFilesState>()(
                     }
                 }
 
-                const aggregates: Record<string, {servicesUp: number; servicesDown: number; servicesHealthy: number; servicesUnHealthy: number}> = {};
+                const aggregates: Record<string, {
+                    servicesUp: number;
+                    servicesDown: number;
+                    servicesHealthy: number;
+                    servicesUnHealthy: number;
+                    stackFiles: number;
+                    stacksWithoutContainers: number;
+                }> = {};
                 const knownStatuses = knownChanged ? nextKnown : previousKnown;
                 for (const [file, status] of Object.entries(knownStatuses)) {
+                    const hasContainers = status.servicesUp + status.servicesDown > 0;
                     const parts = file.replaceAll('\\', '/').split('/').filter(Boolean);
                     parts.pop();
                     while (parts.length > 0) {
                         const directory = parts.join('/');
-                        const aggregate = aggregates[directory] ??= {servicesUp: 0, servicesDown: 0, servicesHealthy: 0, servicesUnHealthy: 0};
+                        const aggregate = aggregates[directory] ??= {
+                            servicesUp: 0,
+                            servicesDown: 0,
+                            servicesHealthy: 0,
+                            servicesUnHealthy: 0,
+                            stackFiles: 0,
+                            stacksWithoutContainers: 0,
+                        };
                         aggregate.servicesUp += status.servicesUp;
                         aggregate.servicesDown += status.servicesDown;
                         aggregate.servicesHealthy += status.servicesHealthy;
                         aggregate.servicesUnHealthy += status.servicesUnHealthy;
+                        aggregate.stackFiles++;
+                        if (!hasContainers) aggregate.stacksWithoutContainers++;
                         parts.pop();
                     }
                 }
                 const previousFolders = state.folderStatuses[key] ?? {};
-                const nextFolders: Record<string, Status> = {};
+                const nextFolders: Record<string, ComposeDisplayStatus> = {};
                 for (const [directory, aggregate] of Object.entries(aggregates)) {
-                    const value = createMessage(StatusSchema, aggregate);
+                    const value = Object.assign(createMessage(StatusSchema, aggregate), {
+                        stackFiles: aggregate.stackFiles,
+                        stacksWithoutContainers: aggregate.stacksWithoutContainers,
+                    });
                     const previous = previousFolders[directory];
-                    nextFolders[directory] = previous && equals(StatusSchema, previous as Status, value)
-                        ? previous as Status
+                    nextFolders[directory] = previous
+                        && previous.stackFiles === value.stackFiles
+                        && previous.stacksWithoutContainers === value.stacksWithoutContainers
+                        && equals(StatusSchema, previous as Status, value)
+                        ? previous
                         : value;
                 }
                 const foldersChanged = Object.keys(previousFolders).length !== Object.keys(nextFolders).length
