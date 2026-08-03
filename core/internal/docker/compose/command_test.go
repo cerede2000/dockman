@@ -3,6 +3,7 @@ package compose
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,13 +15,19 @@ import (
 )
 
 type commandCaptureRunner struct {
-	args []string
-	wd   string
+	args  []string
+	wd    string
+	calls [][]string
+	failBuild bool
 }
 
 func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, _, _ io.Writer) error {
 	r.args = append([]string(nil), args...)
 	r.wd = wd
+	r.calls = append(r.calls, append([]string(nil), args...))
+	if r.failBuild && len(args) >= 3 && args[0] == "docker" && args[1] == "buildx" && args[2] == "build" {
+		return errors.New("build failed")
+	}
 	return nil
 }
 
@@ -63,7 +70,11 @@ func TestDockerBuildUsesBuildxAndLoadsTheImage(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build -t demo:local .", io.Discard))
-	require.Equal(t, []string{"docker", "buildx", "build", "--load", "--builder", "default", "-t", "demo:local", "."}, runner.args)
+	require.Len(t, runner.calls, 3)
+	require.Equal(t, []string{"docker", "buildx", "create", "--name"}, runner.calls[0][:4])
+	builder := runner.calls[0][4]
+	require.Equal(t, []string{"docker", "buildx", "build", "--builder", builder, "--load", "-t", "demo:local", "."}, runner.calls[1])
+	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
 	require.Equal(t, ".", runner.wd)
 }
 
@@ -84,7 +95,10 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 	err := service.RunDockerCommand(context.Background(), "docker buildx build --load --progress=plain --tag apple-music-rip:local --file 'dockman://compose/apple music/Dockerfile' .", &output)
 	require.NoError(t, err)
 	require.Equal(t, directory, runner.wd)
-	require.Equal(t, []string{"docker", "buildx", "build", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}, runner.args)
+	require.Len(t, runner.calls, 3)
+	builder := runner.calls[0][4]
+	require.Equal(t, []string{"docker", "buildx", "build", "--builder", builder, "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}, runner.calls[1])
+	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
 	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
 }
 
@@ -92,5 +106,24 @@ func TestDockerBuildPreservesExplicitPushOutput(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build --push -t registry.example/demo:latest .", io.Discard))
-	require.Equal(t, []string{"docker", "buildx", "build", "--builder", "default", "--push", "-t", "registry.example/demo:latest", "."}, runner.args)
+	require.Len(t, runner.calls, 3)
+	builder := runner.calls[0][4]
+	require.Equal(t, []string{"docker", "buildx", "build", "--builder", builder, "--push", "-t", "registry.example/demo:latest", "."}, runner.calls[1])
+	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
+}
+
+func TestExplicitBuildxCommandKeepsUserBuilderUntouched(t *testing.T) {
+	runner := &commandCaptureRunner{}
+	service := &Service{runner: runner}
+	require.NoError(t, service.RunDockerCommand(context.Background(), "docker buildx build --builder team-builder --push -t registry.example/demo:latest .", io.Discard))
+	require.Equal(t, [][]string{{"docker", "buildx", "build", "--builder", "team-builder", "--push", "-t", "registry.example/demo:latest", "."}}, runner.calls)
+}
+
+func TestManagedBuildRemovesBuilderAfterFailure(t *testing.T) {
+	runner := &commandCaptureRunner{failBuild: true}
+	service := &Service{runner: runner}
+	require.Error(t, service.RunDockerCommand(context.Background(), "docker build -t demo:broken .", io.Discard))
+	require.Len(t, runner.calls, 3)
+	builder := runner.calls[0][4]
+	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
 }
