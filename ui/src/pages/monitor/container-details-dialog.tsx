@@ -5,7 +5,7 @@ import {
 } from '@mui/material';
 import {
     Check, Close, Code, ContentCopy, Delete, DeleteSweep, Dns, FavoriteBorder, InfoOutlined, LabelOutlined, Lan,
-    Memory, Pause, PlayArrow, Refresh, RestartAlt, Security as SecurityIcon, Stop, Storage,
+    Memory, Pause, PlayArrow, ReceiptLong, Refresh, RestartAlt, Security as SecurityIcon, Stop, Storage,
     Subject, Terminal, Tune, Update, Visibility, VisibilityOff, PlayCircleOutlined, FolderOpenOutlined,
 } from '@mui/icons-material';
 import {type ReactElement, type ReactNode, useCallback, useEffect, useMemo, useRef, useState} from 'react';
@@ -38,6 +38,8 @@ interface Props {
     busy?: RowAction;
     stackBusy: boolean;
     updateRun?: 'running' | 'failed' | 'done';
+    batchUpdating: boolean;
+    onUpdateOutput: () => void;
     onClose: () => void;
     onAction: (row: MonitorRow, action: RowAction) => void;
 }
@@ -201,9 +203,9 @@ function PortsView({value}: {value: unknown}) {
     </Table></TableContainer>;
 }
 
-function Overview({row, inspect, history, processCount, onUpdate, updateRun}: {
+function Overview({row, inspect, history, processCount, onUpdate, updateRunning, onUpdateOutput}: {
     row: MonitorRow, inspect: JsonObject, history?: {cpu: number[]; mem: number[]}, processCount: number | null,
-    onUpdate: () => void, updateRun?: 'running' | 'failed' | 'done',
+    onUpdate: () => void, updateRunning: boolean, onUpdateOutput: () => void,
 }) {
     const state = asObject(inspect.State); const config = asObject(inspect.Config);
     const host = asObject(inspect.HostConfig); const network = asObject(inspect.NetworkSettings);
@@ -247,8 +249,10 @@ function Overview({row, inspect, history, processCount, onUpdate, updateRun}: {
                 <Stack direction="row" spacing={1} sx={{mt: 0.8, alignItems: 'center'}}>
                     <Chip size="small" color={row.info.updateAvailable ? 'warning' : 'success'}
                         label={row.info.updateAvailable ? `Update available: ${row.info.updateAvailable}` : 'Image up to date'}/>
-                    <Button size="small" variant="outlined" startIcon={updateRun === 'running' ? <CircularProgress size={14}/> : <Update/>}
-                        disabled={updateRun === 'running'} onClick={onUpdate}>Update</Button>
+                    <Button size="small" variant="outlined" startIcon={updateRunning ? <CircularProgress size={14}/> : <Update/>}
+                        disabled={updateRunning} onClick={onUpdate}>{updateRunning ? 'Updating…' : 'Update'}</Button>
+                    {updateRunning && <Button size="small" variant="contained" color="info" startIcon={<ReceiptLong/>}
+                        onClick={onUpdateOutput}>View progress</Button>}
                 </Stack>
             </Section>
         </Box>
@@ -557,7 +561,7 @@ function JsonInspect({raw}: {raw: string}) {
     </Paper>;
 }
 
-export default function ContainerDetailsDialog({open, row, containers, history, busy, stackBusy, updateRun, onClose, onAction}: Props) {
+export default function ContainerDetailsDialog({open, row, containers, history, busy, stackBusy, updateRun, batchUpdating, onUpdateOutput, onClose, onAction}: Props) {
     const client = useHostClient(DockerService); const [tab, setTab] = useState<TabID>('overview');
     const [raw, setRaw] = useState(''); const [inspect, setInspect] = useState<JsonObject>({});
     const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [processCount, setProcessCount] = useState<number | null>(null);
@@ -586,6 +590,7 @@ export default function ContainerDetailsDialog({open, row, containers, history, 
     const state = row.info.state; const active = ['running', 'restarting', 'paused'].includes(state); const paused = state === 'paused';
     const processAvailable = state === 'running' || state === 'paused';
     const locked = !!busy || stackBusy;
+    const updateRunning = updateRun === 'running' || batchUpdating;
     const fixedContent = ['logs', 'exec', 'processes', 'mounts', 'environment', 'labels', 'files'].includes(tab);
     return <Dialog open={open} onClose={onClose} maxWidth={false} fullWidth
         slotProps={{
@@ -609,7 +614,9 @@ export default function ContainerDetailsDialog({open, row, containers, history, 
                     <Tooltip title={paused ? 'Unpause' : 'Pause'}><span><IconButton disabled={locked || (!active && !paused)}
                         onClick={() => onAction(row, paused ? 'unpause' : 'pause')}
                         sx={{color: paused ? '#66bb6a' : '#ffb74d'}}>{paused ? <PlayCircleOutlined/> : <Pause/>}</IconButton></span></Tooltip>
-                    <Tooltip title="Update"><span><IconButton disabled={locked || updateRun === 'running'} onClick={() => onAction(row, 'update')}><Update/></IconButton></span></Tooltip>
+                    <Tooltip title={updateRunning ? 'Update in progress' : 'Update'}><span><IconButton disabled={locked || updateRunning} onClick={() => onAction(row, 'update')}>
+                        {updateRunning ? <CircularProgress size={18}/> : <Update/>}</IconButton></span></Tooltip>
+                    {updateRunning && <Tooltip title="View update progress"><IconButton color="info" onClick={onUpdateOutput}><ReceiptLong/></IconButton></Tooltip>}
                     <Tooltip title="Remove"><span><IconButton color="error" disabled={locked} onClick={event => setRemoveAnchor(event.currentTarget)}><Delete/></IconButton></span></Tooltip>
                     <Tooltip title="Refresh details"><span><IconButton disabled={loading} onClick={load}>{loading ? <CircularProgress size={18}/> : <Refresh/>}</IconButton></span></Tooltip>
                     <Button size="small" variant={tab === 'inspect' ? 'contained' : 'outlined'} startIcon={<InfoOutlined/>}
@@ -633,7 +640,8 @@ export default function ContainerDetailsDialog({open, row, containers, history, 
                 <Box sx={{flex: 1, minHeight: 0, overflow: fixedContent ? 'hidden' : 'auto', p: tab === 'logs' || tab === 'exec' || tab === 'files' ? 0 : 1.4,
                     userSelect: 'text', cursor: tab === 'logs' || tab === 'exec' ? 'default' : 'text', ...scrollbarStyles}}>
                 {loading && !raw ? <Box sx={{display: 'grid', placeItems: 'center', height: '100%'}}><CircularProgress/></Box> : <>
-                    <Box hidden={tab !== 'overview'}><Overview row={row} inspect={inspect} history={history} processCount={processCount} onUpdate={() => onAction(row, 'update')} updateRun={updateRun}/></Box>
+                    <Box hidden={tab !== 'overview'}><Overview row={row} inspect={inspect} history={history} processCount={processCount}
+                        onUpdate={() => onAction(row, 'update')} updateRunning={updateRunning} onUpdateOutput={onUpdateOutput}/></Box>
                     <Box hidden={tab !== 'logs'} sx={{height: '100%', minHeight: 0, overflow: 'hidden'}}><LogsViewer containers={[{id: row.info.id, name: row.info.name}]} isActive={tab === 'logs'}/></Box>
                     <Box hidden={tab !== 'exec'} sx={{height: '100%', minHeight: 0, overflow: 'hidden'}}><ExecTerminal active={tab === 'exec'} containerID={row.info.id} running={state === 'running'}/></Box>
                     <Box hidden={tab !== 'processes'} sx={{height: '100%', minHeight: 0}}>{processAvailable

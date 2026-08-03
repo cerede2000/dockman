@@ -41,6 +41,11 @@ type imageUpdateCheck struct {
 	reason       string
 }
 
+type inspectedImage struct {
+	repositoryDigests []string
+	err               error
+}
+
 // CheckContainerUpdates performs an on-demand, read-only scan. Registry work
 // is de-duplicated by image reference and bounded so a host with many
 // containers cannot create an unbounded burst against the daemon/proxy.
@@ -50,9 +55,17 @@ func (u *Service) CheckContainerUpdates(ctx context.Context) ([]ContainerUpdateC
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
 
+	// Inspect each distinct image before contacting a registry. Locally built
+	// images have no repository digest matching the tag used by the container;
+	// attempting to resolve that tag on Docker Hub would turn an ordinary local
+	// image into a misleading authentication/not-found error.
+	inspected := u.inspectImages(ctx, containers.Items)
 	byImage := make(map[string][]container.Summary)
 	for _, row := range containers.Items {
-		byImage[row.Image] = append(byImage[row.Image], row)
+		state := inspected[row.ImageID]
+		if state.err == nil && len(repositoryDigestsForImage(state.repositoryDigests, row.Image)) > 0 {
+			byImage[row.Image] = append(byImage[row.Image], row)
+		}
 	}
 	images := make([]string, 0, len(byImage))
 	for image := range byImage {
@@ -102,41 +115,35 @@ func (u *Service) CheckContainerUpdates(ctx context.Context) ([]ContainerUpdateC
 			continue
 		}
 
+		inspect := inspected[row.ImageID]
+		if inspect.err != nil {
+			result.Status = ContainerUpdateError
+			result.Reason = "inspect running image: " + inspect.err.Error()
+			results = append(results, result)
+			continue
+		}
+		localDigests := repositoryDigestsForImage(inspect.repositoryDigests, row.Image)
+		if len(localDigests) == 0 {
+			result.Status = ContainerUpdateSkipped
+			result.Reason = "locally built image; no matching repository digest"
+			results = append(results, result)
+			continue
+		}
+		if len(localDigests) > 0 {
+			result.CurrentDigest = localDigests[0]
+		}
+
 		remote := checks[row.Image]
 		result.Status, result.RemoteDigest, result.Reason = remote.status, remote.remoteDigest, remote.reason
 		if result.Status == ContainerUpdateSkipped {
 			results = append(results, result)
 			continue
 		}
-
-		inspect, inspectErr := u.cli().ImageInspect(ctx, row.ImageID)
-		if inspectErr != nil {
-			result.Status = ContainerUpdateError
-			result.Reason = "inspect running image: " + inspectErr.Error()
-			results = append(results, result)
-			continue
-		}
-		localDigests := repositoryDigests(inspect.RepoDigests)
-		if len(localDigests) > 0 {
-			result.CurrentDigest = localDigests[0]
-		}
 		if result.Status == ContainerUpdateError {
-			mustReport := strings.Contains(result.Reason, "authentication required") ||
-				strings.Contains(result.Reason, "rate limit")
-			if len(localDigests) == 0 && !mustReport {
-				result.Status = ContainerUpdateSkipped
-				result.Reason = "image has no repository digest and its tag could not be resolved; treating it as local"
-			}
 			results = append(results, result)
 			continue
 		}
-		if len(localDigests) == 0 {
-			// This is also what Docker exposes after a mutable tag moved away
-			// from the image still used by a running container. A resolvable
-			// registry digest therefore means that the running image differs.
-			result.Status = ContainerUpdateAvailable
-			result.Reason = "running image has no repository digest"
-		} else if slices.Contains(localDigests, result.RemoteDigest) {
+		if slices.Contains(localDigests, result.RemoteDigest) {
 			result.Status = ContainerUpdateCurrent
 		} else {
 			result.Status = ContainerUpdateAvailable
@@ -148,6 +155,46 @@ func (u *Service) CheckContainerUpdates(ctx context.Context) ([]ContainerUpdateC
 		return strings.Compare(strings.ToLower(a.ContainerName), strings.ToLower(b.ContainerName))
 	})
 	return results, nil
+}
+
+func (u *Service) inspectImages(ctx context.Context, containers []container.Summary) map[string]inspectedImage {
+	ids := make([]string, 0, len(containers))
+	seen := make(map[string]struct{}, len(containers))
+	for _, row := range containers {
+		if row.ImageID == "" {
+			continue
+		}
+		if _, exists := seen[row.ImageID]; exists {
+			continue
+		}
+		seen[row.ImageID] = struct{}{}
+		ids = append(ids, row.ImageID)
+	}
+	slices.Sort(ids)
+
+	result := make(map[string]inspectedImage, len(ids))
+	jobs := make(chan string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	workers := min(updateScanConcurrency, len(ids))
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				inspect, err := u.cli().ImageInspect(ctx, id)
+				mu.Lock()
+				result[id] = inspectedImage{repositoryDigests: inspect.RepoDigests, err: err}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, id := range ids {
+		jobs <- id
+	}
+	close(jobs)
+	wg.Wait()
+	return result
 }
 
 func (u *Service) checkRemoteImage(ctx context.Context, image string) imageUpdateCheck {
@@ -175,11 +222,23 @@ func (u *Service) checkRemoteImage(ctx context.Context, image string) imageUpdat
 	return imageUpdateCheck{status: ContainerUpdateCurrent, remoteDigest: digest}
 }
 
-func repositoryDigests(repoDigests []string) []string {
+func repositoryDigestsForImage(repoDigests []string, image string) []string {
+	target, err := parseRegistryImageReference(image)
+	if err != nil {
+		return nil
+	}
+	targetRepository := target.registry + "/" + target.repo
 	result := make([]string, 0, len(repoDigests))
 	for _, value := range repoDigests {
 		parts := strings.SplitN(value, "@sha256:", 2)
-		if len(parts) == 2 && parts[1] != "" && !slices.Contains(result, parts[1]) {
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		ref, refErr := parseRegistryImageReference(parts[0])
+		if refErr != nil || ref.registry+"/"+ref.repo != targetRepository {
+			continue
+		}
+		if !slices.Contains(result, parts[1]) {
 			result = append(result, parts[1])
 		}
 	}

@@ -2,6 +2,7 @@ import {
     Box,
     Button,
     Checkbox,
+    Chip,
     CircularProgress,
     IconButton,
     Link,
@@ -136,6 +137,7 @@ interface MonitorTableProps {
     // per-container update runs (keyed by name): busy indicator + output
     updateRuns: Record<string, 'running' | 'failed' | 'done'>;
     batchUpdateRunning: boolean;
+    batchUpdateIDs: string[];
     updateScanIssues: Record<string, string>;
     onUpdateOutput: (row: MonitorRow) => void;
     onRowAction: (row: MonitorRow, action: RowAction) => void;
@@ -569,6 +571,8 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
     const stackSelected = c.stackName !== '' && selectedStacks.includes(row.stackKey);
     const isChecked = stackSelected || selectedContainers.includes(c.id);
     const updRun = updateRuns[c.name];
+    const batchUpdating = props.batchUpdateRunning && props.batchUpdateIDs.includes(c.id);
+    const updateRunning = updRun === 'running' || batchUpdating;
 
     const memPercent = s && Number(s.memoryLimit) > 0
         ? (Number(s.memoryUsage) / Number(s.memoryLimit)) * 100 : 0;
@@ -583,7 +587,10 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
     const domains = [...new Set(c.IPAddress.filter(a => /[a-z]/i.test(a) && a.includes('.') && !a.includes(':')))];
 
     return (
-        <TableRow hover sx={{'&:hover': {bgcolor: t.rowHover}}}>
+        <TableRow hover sx={{
+            bgcolor: c.updateAvailable ? 'rgba(255,183,77,0.045)' : 'transparent',
+            '&:hover': {bgcolor: c.updateAvailable ? 'rgba(255,183,77,0.09)' : t.rowHover},
+        }}>
             <TableCell padding="checkbox" sx={{...bodyCell, borderLeft: `3px solid ${props.boundaryColor}`, width: 40, minWidth: 40, maxWidth: 40, px: 0.5}}>
                 <Checkbox
                     size="small"
@@ -613,9 +620,25 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
                             {c.stackName}
                         </Typography>
                     )}
-                    {c.updateAvailable && (
+                    {updateRunning ? (
+                        <Chip
+                            size="small"
+                            color="info"
+                            icon={<CircularProgress size={11} color="inherit"/>}
+                            label="Updating · View progress"
+                            onClick={() => onUpdateOutput(row)}
+                            sx={{height: 21, fontSize: '0.62rem', fontWeight: 800, cursor: 'pointer'}}
+                        />
+                    ) : c.updateAvailable && (
                         <Tooltip title={`Update available: ${c.updateAvailable}`} arrow>
-                            <Upgrade sx={{fontSize: 14, color: '#4db6ac'}}/>
+                            <Chip
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                icon={<Upgrade sx={{fontSize: '14px !important'}}/>}
+                                label="Update available"
+                                sx={{height: 21, fontSize: '0.62rem', fontWeight: 850}}
+                            />
                         </Tooltip>
                     )}
                     {props.updateScanIssues[c.id] && (
@@ -720,18 +743,23 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
                         </IconButton>
                     </span>
                 </Tooltip>
-                <Tooltip title={updRun === 'running'
+                <Tooltip title={updateRunning
                     ? 'Update in progress…'
                     : c.updateAvailable ? `Update image (${c.updateAvailable} available)` : 'Update image'} arrow>
                     <span>
-                        <IconButton size="small" disabled={updRun === 'running' || props.batchUpdateRunning || !!busy || stackBusy}
+                        <IconButton size="small" disabled={updateRunning || props.batchUpdateRunning || !!busy || stackBusy}
                                     onClick={() => onRowAction(row, 'update')}
-                                    sx={{color: c.updateAvailable ? '#4db6ac' : t.textDim, '&:hover': {color: t.text}, '&.Mui-disabled': disabledIcon}}>
-                            {updRun === 'running' ? spinner : <Update sx={{fontSize: 16}}/>}
+                                    sx={{
+                                        color: c.updateAvailable ? '#ffb74d' : t.textDim,
+                                        bgcolor: c.updateAvailable ? 'rgba(255,183,77,0.1)' : 'transparent',
+                                        '&:hover': {color: t.text, bgcolor: c.updateAvailable ? 'rgba(255,183,77,0.18)' : undefined},
+                                        '&.Mui-disabled': disabledIcon,
+                                    }}>
+                            {updateRunning ? spinner : <Update sx={{fontSize: 16}}/>}
                         </IconButton>
                     </span>
                 </Tooltip>
-                {updRun && (
+                {(updRun || batchUpdating) && (
                     <Tooltip title={updRun === 'failed' ? 'Update output (failed)' : 'Update output'} arrow>
                         <IconButton size="small" onClick={() => onUpdateOutput(row)}
                                     sx={{

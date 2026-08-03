@@ -1,4 +1,4 @@
-import {Box, Button, Chip, Divider, Fade, Paper, ToggleButton, ToggleButtonGroup, Tooltip} from '@mui/material';
+import {Box, Button, Chip, CircularProgress, Divider, Fade, Paper, ToggleButton, ToggleButtonGroup, Tooltip} from '@mui/material';
 import {
     AccountTreeOutlined,
     ArrowDownward,
@@ -15,6 +15,7 @@ import {
     UnfoldLess,
     UnfoldMore,
     Update,
+    Upgrade,
     ViewList,
 } from '@mui/icons-material';
 import {useEffect, useMemo, useRef, useState} from 'react';
@@ -212,6 +213,7 @@ function MonitorPage() {
     const [sortField, setSortField] = useState<MonitorSortField | null>(null);
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
     const [stateFilters, setStateFilters] = useState<ContainerStateFilter[]>([]);
+    const [updatesOnly, setUpdatesOnly] = useState(false);
     const [layout, setLayout] = useState<MonitorLayout>(() =>
         readMonitorPreference('dockman.monitor.layout') === 'containers' ? 'containers' : 'stacks');
     const [showContainerGraphs, setShowContainerGraphs] = useState(() =>
@@ -222,6 +224,7 @@ function MonitorPage() {
     const [rowBusy, setRowBusy] = useState<Record<string, RowAction>>({});
     const [detailsContainerID, setDetailsContainerID] = useState('');
     const [updateScan, setUpdateScan] = useState<Record<string, UpdateScanResult>>({});
+    const [batchUpdateIDs, setBatchUpdateIDs] = useState<string[]>([]);
     const updateScanRequest = useRef(0);
     // container name → pre-action snapshot: the stats stream keeps serving
     // the pre-action sample for a cycle or two, so these rows render pending
@@ -267,6 +270,8 @@ function MonitorPage() {
         setDetailsContainerID('');
         setStaleRows({});
         setStateFilters([]);
+        setUpdatesOnly(false);
+        setBatchUpdateIDs([]);
         updateScanRequest.current++;
         setUpdateScan({});
         setExpanded(viewMemoryFor(host).expanded);
@@ -298,6 +303,7 @@ function MonitorPage() {
             const matchesSearch = !query || [c.name, c.stackName, c.serviceName, c.servicePath]
                 .some(f => f.toLowerCase().includes(query));
             if (!matchesSearch) return false;
+            if (updatesOnly && updateScan[c.id]?.status !== 'available') return false;
             if (stateFilters.length === 0) return true;
             return stateFilters.some(filter => {
                 switch (filter) {
@@ -359,7 +365,7 @@ function MonitorPage() {
                 }
                 return a.stack.localeCompare(b.stack) || a.key.localeCompare(b.key);
             });
-    }, [containers, gitStatuses, statsByName, history, search, stateFilters, sortField, sortOrder, staleRows, updateScan]);
+    }, [containers, gitStatuses, statsByName, history, search, stateFilters, updatesOnly, sortField, sortOrder, staleRows, updateScan]);
 
     const flatRows = useMemo(() => {
         const rows = groups.flatMap(group => group.rows);
@@ -395,11 +401,11 @@ function MonitorPage() {
     // a live search opens every matching stack so the hits are visible;
     // the user's own expand/collapse choices come back once it clears
     const effectiveExpanded = useMemo(() => {
-        if (!search.trim() && stateFilters.length === 0) return expanded;
+        if (!search.trim() && stateFilters.length === 0 && !updatesOnly) return expanded;
         const all: Record<string, boolean> = {};
         for (const g of groups) all[g.key] = true;
         return all;
-    }, [search, stateFilters, expanded, groups]);
+    }, [search, stateFilters, updatesOnly, expanded, groups]);
 
     const total = containers?.list.length ?? 0;
 
@@ -437,6 +443,7 @@ function MonitorPage() {
         });
     }, [stateCounts]);
     const changeStateFilter = (filter: ContainerStateFilter | null, additive = false) => {
+        if (filter === null) setUpdatesOnly(false);
         setStateFilters(current => {
             if (filter === null) return [];
             if (!additive) return [filter];
@@ -638,6 +645,7 @@ function MonitorPage() {
 
     const startBatchUpdate = async (ids: string[], label: string) => {
         if (ids.length === 0) return;
+        setBatchUpdateIDs(ids);
         runAction(
             'update:batch',
             (_req, callOpts) => dockerService.containerUpdate({containerIds: ids}, callOpts),
@@ -646,6 +654,7 @@ function MonitorPage() {
             (error) => {
                 if (error) showError(`${label} failed — ${error}`);
                 else showSuccess(`${label} finished`);
+                setBatchUpdateIDs([]);
                 void fetchContainers();
                 void scanUpdates();
             },
@@ -836,6 +845,9 @@ function MonitorPage() {
     const updateScanErrorCount = Object.keys(updateScanErrors).length;
     const updateScanSkippedCount = activeUpdateScan
         .filter(result => result.status === 'skipped').length;
+    useEffect(() => {
+        if (updatesOnly && availableUpdateIDs.length === 0) setUpdatesOnly(false);
+    }, [updatesOnly, availableUpdateIDs.length]);
     const updateScanActions = [
         {
             action: 'check-updates', buttonText: 'Check all images', icon: <Sync/>,
@@ -931,12 +943,30 @@ function MonitorPage() {
 
                         {Object.keys(updateScan).length > 0 && <Chip
                             size="small"
-                            variant="outlined"
-                            color={updateScanErrorCount > 0 || availableUpdateIDs.length > 0 ? 'warning' : 'success'}
+                            variant={updatesOnly ? 'filled' : 'outlined'}
+                            color={updateScanErrorCount > 0 && availableUpdateIDs.length === 0 ? 'error'
+                                : availableUpdateIDs.length > 0 ? 'warning' : 'success'}
+                            icon={<Upgrade sx={{fontSize: '16px !important'}}/>}
                             label={`${availableUpdateIDs.length} update${availableUpdateIDs.length === 1 ? '' : 's'}` +
                                 `${updateScanErrorCount > 0 ? ` · ${updateScanErrorCount} error${updateScanErrorCount === 1 ? '' : 's'}` : ''}` +
                                 `${updateScanSkippedCount > 0 ? ` · ${updateScanSkippedCount} skipped` : ''}`}
-                            sx={{height: 27, fontWeight: 700}}
+                            clickable={availableUpdateIDs.length > 0}
+                            onClick={availableUpdateIDs.length > 0 ? () => {
+                                setUpdatesOnly(value => !value);
+                                setSelectedContainers([]);
+                                setSelectedStacks([]);
+                            } : undefined}
+                            onDelete={updatesOnly ? () => setUpdatesOnly(false) : undefined}
+                            sx={{height: 27, fontWeight: 800}}
+                        />}
+
+                        {batchUpdateRunning && <Chip
+                            size="small"
+                            color="info"
+                            icon={<CircularProgress size={13} color="inherit"/>}
+                            label={`Updating ${batchUpdateIDs.length} · View progress`}
+                            onClick={() => openOutput('update:batch')}
+                            sx={{height: 27, fontWeight: 800, cursor: 'pointer'}}
                         />}
 
                         <Divider orientation="vertical" flexItem sx={{mx: 0.25, borderColor: t.border}}/>
@@ -1067,8 +1097,12 @@ function MonitorPage() {
                                     onStackOutput={(group) => openOutput(group.servicePath)}
                                     updateRuns={updateRuns}
                                     batchUpdateRunning={batchUpdateRunning}
+                                    batchUpdateIDs={batchUpdateIDs}
                                     updateScanIssues={updateScanErrors}
-                                    onUpdateOutput={(row) => openOutput(`update:${row.info.name}`)}
+                                    onUpdateOutput={(row) => openOutput(
+                                        batchUpdateRunning && batchUpdateIDs.includes(row.info.id)
+                                            ? 'update:batch'
+                                            : `update:${row.info.name}`)}
                                     onRowAction={handleRowAction}
                                     rowBusy={rowBusy}
                                     onRowLogs={handleRowLogs}
@@ -1093,6 +1127,13 @@ function MonitorPage() {
                 busy={detailsRow ? rowBusy[detailsRow.info.id] : undefined}
                 stackBusy={!!(detailsRow?.info.servicePath && runningStacks[detailsRow.info.servicePath])}
                 updateRun={detailsRow ? updateRuns[detailsRow.info.name] : undefined}
+                batchUpdating={detailsRow ? batchUpdateRunning && batchUpdateIDs.includes(detailsRow.info.id) : false}
+                onUpdateOutput={() => {
+                    if (!detailsRow) return;
+                    openOutput(batchUpdateRunning && batchUpdateIDs.includes(detailsRow.info.id)
+                        ? 'update:batch'
+                        : `update:${detailsRow.info.name}`);
+                }}
                 onClose={() => setDetailsContainerID('')}
                 onAction={handleRowAction}
             />
