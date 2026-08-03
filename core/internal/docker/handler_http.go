@@ -14,6 +14,7 @@ import (
 	contSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/internal/docker/debug"
 	"github.com/RA341/dockman/internal/docker/updater"
+	"github.com/RA341/dockman/internal/notifications"
 	hostMid "github.com/RA341/dockman/internal/host/middleware"
 	fu "github.com/RA341/dockman/pkg/fileutil"
 	wsu "github.com/RA341/dockman/pkg/ws"
@@ -32,6 +33,7 @@ type HandlerHttp struct {
 	allowSelfExec    bool
 	updatePolicies   *updater.PolicyService
 	updateAutomation *updater.AutomationService
+	notifications    *notifications.Service
 }
 
 func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies ...*updater.PolicyService) http.Handler {
@@ -39,16 +41,20 @@ func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies ...*update
 	if len(policies) > 0 {
 		policyService = policies[0]
 	}
-	return newHandlerHttp(srv, allowSelfExec, policyService, nil)
+	return newHandlerHttp(srv, allowSelfExec, policyService, nil, nil)
 
 }
 
-func NewHandlerHttpWithUpdates(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService) http.Handler {
-	return newHandlerHttp(srv, allowSelfExec, policies, automation)
+func NewHandlerHttpWithUpdates(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService, notificationServices ...*notifications.Service) http.Handler {
+	var notificationService *notifications.Service
+	if len(notificationServices) > 0 {
+		notificationService = notificationServices[0]
+	}
+	return newHandlerHttp(srv, allowSelfExec, policies, automation, notificationService)
 }
 
-func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService) http.Handler {
-	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation}
+func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService, notificationService *notifications.Service) http.Handler {
+	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation, notifications: notificationService}
 	return hand.register()
 }
 
@@ -71,9 +77,73 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("DELETE /updates/policies", h.deleteUpdatePolicy)
 	subMux.HandleFunc("POST /updates/scan", h.runEnrolledUpdateScan)
 	subMux.HandleFunc("GET /updates/state", h.getUpdateState)
+	subMux.HandleFunc("GET /updates/notifications/smtp", h.getSMTPNotificationConfig)
+	subMux.HandleFunc("PUT /updates/notifications/smtp", h.saveSMTPNotificationConfig)
+	subMux.HandleFunc("POST /updates/notifications/smtp/test", h.testSMTPNotificationConfig)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 
 	return subMux
+}
+
+func (h *HandlerHttp) getSMTPNotificationConfig(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	config, deliveries, err := h.notifications.Get(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Config     notifications.ConfigView `json:"config"`
+		Deliveries []notifications.Delivery `json:"deliveries"`
+	}{Config: config, Deliveries: deliveries})
+}
+
+func (h *HandlerHttp) saveSMTPNotificationConfig(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	var input notifications.ConfigInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&input); err != nil {
+		http.Error(w, "invalid SMTP notification configuration: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	view, err := h.notifications.Save(host, input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, view)
+}
+
+func (h *HandlerHttp) testSMTPNotificationConfig(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	if err := h.notifications.Test(ctx, host); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HandlerHttp) notificationHost(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if h.notifications == nil {
+		http.Error(w, "SMTP notifications are unavailable", http.StatusServiceUnavailable)
+		return "", false
+	}
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return "", false
+	}
+	return host, true
 }
 
 func (h *HandlerHttp) getUpdateInventory(w http.ResponseWriter, r *http.Request) {

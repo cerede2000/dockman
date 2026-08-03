@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -98,6 +99,36 @@ func TestScheduledRunUsesOnlyMatchingSchedule(t *testing.T) {
 	}
 	if !slices.Equal(scanned, []string{"daily"}) {
 		t.Fatalf("scheduled scan crossed policy windows: %v", scanned)
+	}
+}
+
+func TestScheduledNotificationFailureDoesNotFailScan(t *testing.T) {
+	service, err := NewAutomationService(
+		testScanStore(t),
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			return []UpdateEnrollment{{ContainerID: "web", ContainerName: "web", Enrolled: true, Schedule: DefaultUpdateSchedule}}, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
+			return []ContainerUpdateCheck{{ContainerID: "web", ContainerName: "web", Status: ContainerUpdateAvailable}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	called := 0
+	service.SetNotifier(func(_ context.Context, run UpdateScanRun, checks []ContainerUpdateCheck) error {
+		called++
+		if run.Trigger != "scheduled" || len(checks) != 1 {
+			t.Fatalf("unexpected notification payload: %#v %#v", run, checks)
+		}
+		return errors.New("SMTP unavailable")
+	})
+	if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
+		t.Fatalf("notification failure failed the image scan: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("notifier called %d times", called)
 	}
 }
 

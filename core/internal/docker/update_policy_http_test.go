@@ -9,9 +9,19 @@ import (
 
 	"github.com/RA341/dockman/internal/docker/updater"
 	hostMid "github.com/RA341/dockman/internal/host/middleware"
+	"github.com/RA341/dockman/internal/notifications"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+type testNotificationSender struct {
+	messages []notifications.SMTPMessage
+}
+
+func (s *testNotificationSender) Send(_ context.Context, message notifications.SMTPMessage) error {
+	s.messages = append(s.messages, message)
+	return nil
+}
 
 func testUpdatePolicyHandler(t *testing.T) http.Handler {
 	t.Helper()
@@ -95,5 +105,44 @@ func TestEnrolledUpdateScanHTTP(t *testing.T) {
 	handler.ServeHTTP(response, policyRequest(http.MethodPost, "/updates/scan", ""))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"current":1`) {
 		t.Fatalf("unexpected scan response %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestSMTPNotificationHTTPNeverReturnsPassword(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&notifications.SMTPConfig{}, &notifications.NotificationState{}, &notifications.Delivery{}); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := notifications.NewVault([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &testNotificationSender{}
+	service := notifications.NewServiceWithSender(db, vault, sender)
+	handler := NewHandlerHttpWithUpdates(nil, false, nil, nil, service)
+
+	save := httptest.NewRecorder()
+	handler.ServeHTTP(save, policyRequest(http.MethodPut, "/updates/notifications/smtp", `{
+		"enabled":true,"server":"smtp.example.com","port":587,"security":"starttls",
+		"username":"dockman","password":"top-secret","fromAddress":"dockman@example.com",
+		"recipients":"ops@example.com","notifyUpdates":true,"notifyErrors":true
+	}`))
+	if save.Code != http.StatusOK || strings.Contains(save.Body.String(), "top-secret") || strings.Contains(save.Body.String(), `"password"`) {
+		t.Fatalf("save leaked the SMTP password (%d): %s", save.Code, save.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	handler.ServeHTTP(get, policyRequest(http.MethodGet, "/updates/notifications/smtp", ""))
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"hasPassword":true`) || strings.Contains(get.Body.String(), "top-secret") || strings.Contains(get.Body.String(), `"password"`) {
+		t.Fatalf("get leaked or lost the SMTP password state (%d): %s", get.Code, get.Body.String())
+	}
+
+	test := httptest.NewRecorder()
+	handler.ServeHTTP(test, policyRequest(http.MethodPost, "/updates/notifications/smtp/test", ""))
+	if test.Code != http.StatusNoContent || len(sender.messages) != 1 || sender.messages[0].Password != "top-secret" {
+		t.Fatalf("unexpected SMTP test result (%d): messages=%#v body=%s", test.Code, sender.messages, test.Body.String())
 	}
 }

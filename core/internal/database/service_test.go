@@ -15,7 +15,7 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 
 	require.NoError(t, migrate(db, migrationDir, migrationPath))
 	for _, table := range []string{
-		"git_credentials", "git_repositories", "git_stack_bindings", "git_binding_baselines", "git_operations", "git_deployments", "git_stack_statuses", "update_policies", "update_scan_results", "update_scan_runs",
+		"git_credentials", "git_repositories", "git_stack_bindings", "git_binding_baselines", "git_operations", "git_deployments", "git_stack_statuses", "update_policies", "update_scan_results", "update_scan_runs", "update_smtp_configs", "update_notification_states", "update_notification_deliveries",
 	} {
 		var count int
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count))

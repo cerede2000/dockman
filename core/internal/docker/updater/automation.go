@@ -116,6 +116,7 @@ func (s *ScanStore) PruneResults(host string, activeContainerIDs []string) error
 
 type InventoryProvider func(context.Context, string) ([]UpdateEnrollment, error)
 type ScanProvider func(context.Context, string, []string) ([]ContainerUpdateCheck, error)
+type ScanNotifier func(context.Context, UpdateScanRun, []ContainerUpdateCheck) error
 
 type ScheduledScan struct {
 	Schedule string    `json:"schedule"`
@@ -127,6 +128,7 @@ type AutomationService struct {
 	store     *ScanStore
 	inventory InventoryProvider
 	scan      ScanProvider
+	notify    ScanNotifier
 	scheduler gocron.Scheduler
 
 	jobsMu  sync.Mutex
@@ -150,6 +152,8 @@ func NewAutomationService(store *ScanStore, inventory InventoryProvider, scan Sc
 }
 
 func (s *AutomationService) Shutdown() error { return s.scheduler.Shutdown() }
+
+func (s *AutomationService) SetNotifier(notifier ScanNotifier) { s.notify = notifier }
 
 func NormalizeUpdateSchedule(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -299,6 +303,7 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 			if saveErr := s.store.Save(&run, checks); saveErr != nil {
 				return run, checks, saveErr
 			}
+			s.notifyScan(ctx, run, checks)
 			return run, checks, nil
 		}
 	}
@@ -311,7 +316,17 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 	if saveErr := s.store.Save(&run, nil); saveErr != nil {
 		return run, nil, errors.Join(err, saveErr)
 	}
+	s.notifyScan(ctx, run, nil)
 	return run, nil, err
+}
+
+func (s *AutomationService) notifyScan(ctx context.Context, run UpdateScanRun, checks []ContainerUpdateCheck) {
+	if s.notify == nil {
+		return
+	}
+	if err := s.notify(ctx, run, checks); err != nil {
+		log.Warn().Err(err).Str("host", run.Host).Str("trigger", run.Trigger).Msg("image scan notification failed")
+	}
 }
 
 func (s *AutomationService) State(host string) ([]UpdateScanResult, []UpdateScanRun, []ScheduledScan, error) {

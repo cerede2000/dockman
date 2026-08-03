@@ -30,6 +30,7 @@ import (
 	"github.com/RA341/dockman/internal/host/filesystem"
 	hostMiddleware "github.com/RA341/dockman/internal/host/middleware"
 	"github.com/RA341/dockman/internal/info"
+	"github.com/RA341/dockman/internal/notifications"
 	"github.com/RA341/dockman/internal/ssh"
 	"github.com/RA341/dockman/internal/viewer"
 	"github.com/RA341/dockman/pkg/argos"
@@ -54,6 +55,7 @@ type App struct {
 	GitSync          *gitsync.Service
 	UpdatePolicies   *updater.PolicyService
 	UpdateAutomation *updater.AutomationService
+	Notifications    *notifications.Service
 }
 
 func (a *App) VerifyServices() error {
@@ -157,6 +159,14 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		cleanerStore,
 	)
 	updatePolicySrv := updater.NewPolicyService(updater.NewPolicyStore(gormDB))
+	notificationVault, notificationKeyPath, err := notifications.LoadOrCreateVault(conf.ConfigDir, conf.NotificationMasterKeyFile)
+	if err != nil {
+		log.Fatal().Err(err).Msg("unable to initialize notification credential encryption")
+	}
+	if conf.NotificationMasterKeyFile == "" {
+		log.Warn().Str("path", notificationKeyPath).Msg("notification master key was generated locally; mount NOTIFICATION_MASTER_KEY_FILE as a Docker secret for production")
+	}
+	notificationSrv := notifications.NewService(gormDB, notificationVault)
 	updateAutomationSrv, err := updater.NewAutomationService(
 		updater.NewScanStore(gormDB),
 		func(ctx context.Context, hostname string) ([]updater.UpdateEnrollment, error) {
@@ -181,6 +191,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("unable to initialize automatic image scan scheduler")
 	}
+	updateAutomationSrv.SetNotifier(notificationSrv.NotifyScan)
 	go func() {
 		<-conf.ServerContext.Done()
 		if shutdownErr := updateAutomationSrv.Shutdown(); shutdownErr != nil {
@@ -300,6 +311,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		GitSync:          gitSyncSrv,
 		UpdatePolicies:   updatePolicySrv,
 		UpdateAutomation: updateAutomationSrv,
+		Notifications:    notificationSrv,
 	}
 	err = app.VerifyServices()
 	if err != nil {
@@ -537,7 +549,7 @@ func (a *App) registerApiHostRoutes(hostMux *http.ServeMux) {
 	withSubRouter(
 		hostMux,
 		"/docker",
-		docker.NewHandlerHttpWithUpdates(a.HostManager.GetDockerService, a.Config.AllowSelfExec, a.UpdatePolicies, a.UpdateAutomation),
+		docker.NewHandlerHttpWithUpdates(a.HostManager.GetDockerService, a.Config.AllowSelfExec, a.UpdatePolicies, a.UpdateAutomation, a.Notifications),
 	)
 	// cleaner
 	hostMux.Handle(cleaner.NewHandler(a.CleanerSrv))

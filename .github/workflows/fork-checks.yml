@@ -58,15 +58,14 @@ jobs:
       #
       # Upstream has some rough edges we route around so checks reflect real,
       # shipping code (extend these lists if we adopt one of them as a subject):
-      #   DEAD_PKGS    - not wired into any binary; `notifications` doesn't even
-      #                  compile. Excluded from everything.
+      #   DEAD_PKGS    - not wired into any binary and excluded from everything.
       #   STALE_TESTS  - package code compiles and ships, but its *_test.go files
       #                  are stale (drifted from the API) and fail to compile.
       #                  Excluded from vet/test only; still built.
       - name: Resolve package lists
         id: pkgs
         run: |
-          DEAD_PKGS='/internal/(notifications|lsp)$'
+          DEAD_PKGS='/internal/lsp$'
           STALE_TESTS='/internal/(host|ssh)$'
           ALL="$(go list -e ./internal/... ./pkg/...)"
           BUILD="$(echo "$ALL" | grep -vE "$DEAD_PKGS" | tr '\n' ' ')"
@@ -91,7 +90,7 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: "1"
-          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/gitsync/... ./internal/docker/updater/... ./internal/docker' }}
+          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/gitsync/... ./internal/notifications/... ./internal/docker/updater/... ./internal/docker' }}
         run: |
           if [[ ! "$TEST_PATH" =~ ^(\./[A-Za-z0-9_./*-]+)([[:space:]]+\./[A-Za-z0-9_./*-]+)*$ ]]; then
             echo "Invalid Go package list" >&2

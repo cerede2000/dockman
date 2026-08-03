@@ -29,8 +29,10 @@ import {
     AccountTreeOutlined,
     CheckCircleOutlined,
     EditOutlined,
+    EmailOutlined,
     HistoryOutlined,
     Refresh,
+    SendOutlined,
     ShieldOutlined,
     SpaceDashboardOutlined,
     SystemUpdateAlt,
@@ -91,6 +93,37 @@ type ScanRun = {
 
 type ScheduledScan = {schedule: string; nextRun: string; targets: number};
 
+type SMTPConfig = {
+    enabled: boolean;
+    server: string;
+    port: number;
+    security: 'starttls' | 'tls' | 'none';
+    username: string;
+    password: string;
+    fromAddress: string;
+    recipients: string;
+    notifyUpdates: boolean;
+    notifyErrors: boolean;
+    hasPassword: boolean;
+    configured: boolean;
+    updatedAt?: string;
+};
+
+type NotificationDelivery = {
+    id: number;
+    createdAt: string;
+    kind: string;
+    subject: string;
+    success: boolean;
+    error?: string;
+};
+
+const defaultSMTPConfig: SMTPConfig = {
+    enabled: false, server: '', port: 587, security: 'starttls', username: '', password: '',
+    fromAddress: '', recipients: '', notifyUpdates: true, notifyErrors: true,
+    hasPassword: false, configured: false,
+};
+
 const sourceLabels: Record<UpdateEnrollment['source'], string> = {
     none: 'Not enrolled',
     interface: 'Dockman policy',
@@ -118,6 +151,12 @@ export default function UpdatesPage() {
 	const [scanResults, setScanResults] = useState<Record<string, ScanResult>>({});
 	const [scanRuns, setScanRuns] = useState<ScanRun[]>([]);
 	const [schedules, setSchedules] = useState<ScheduledScan[]>([]);
+    const [smtpOpen, setSMTPOpen] = useState(false);
+    const [smtpSaving, setSMTPSaving] = useState(false);
+    const [smtpTesting, setSMTPTesting] = useState(false);
+    const [smtpConfig, setSMTPConfig] = useState<SMTPConfig>(defaultSMTPConfig);
+    const [smtpDraft, setSMTPDraft] = useState<SMTPConfig>(defaultSMTPConfig);
+    const [deliveries, setDeliveries] = useState<NotificationDelivery[]>([]);
     const [draft, setDraft] = useState<PolicyDraft>({
         targetType: 'container', enabled: true, schedule: '', rollbackEnabled: true,
     });
@@ -125,22 +164,30 @@ export default function UpdatesPage() {
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const response = await fetch(hostUrl('/docker/updates/inventory'));
+            const [response, stateResponse, smtpResponse] = await Promise.all([
+                fetch(hostUrl('/docker/updates/inventory')),
+                fetch(hostUrl('/docker/updates/state')),
+                fetch(hostUrl('/docker/updates/notifications/smtp')),
+            ]);
             if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
             const payload = await response.json() as {results: UpdateEnrollment[]};
             setRows(payload.results ?? []);
-			const stateResponse = await fetch(hostUrl('/docker/updates/state'));
 			if (!stateResponse.ok) throw new Error((await stateResponse.text()).trim() || `HTTP ${stateResponse.status}`);
 			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]};
 			setScanResults(Object.fromEntries((state.results ?? []).map(result => [result.containerId, result])));
 			setScanRuns(state.runs ?? []);
 			setSchedules(state.schedules ?? []);
+            if (!smtpResponse.ok) throw new Error((await smtpResponse.text()).trim() || `HTTP ${smtpResponse.status}`);
+            const smtp = await smtpResponse.json() as {config: SMTPConfig; deliveries: NotificationDelivery[]};
+            const nextSMTP = {...defaultSMTPConfig, ...(smtp.config ?? {}), password: ''};
+            setSMTPConfig(nextSMTP);
+            setDeliveries(smtp.deliveries ?? []);
         } catch (error) {
             showError(`Unable to load update policies — ${error instanceof Error ? error.message : String(error)}`);
         } finally {
             setLoading(false);
         }
-    }, [hostUrl, showError]);
+	}, [hostUrl, showError]);
 
     useEffect(() => { void load(); }, [load]);
 
@@ -245,11 +292,51 @@ export default function UpdatesPage() {
         }
     };
 
+    const openSMTP = () => {
+        setSMTPDraft({...smtpConfig, password: ''});
+        setSMTPOpen(true);
+    };
+
+    const saveSMTP = async () => {
+        setSMTPSaving(true);
+        try {
+            const response = await fetch(hostUrl('/docker/updates/notifications/smtp'), {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(smtpDraft),
+            });
+            if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+            const saved = await response.json() as SMTPConfig;
+            const next = {...defaultSMTPConfig, ...saved, password: ''};
+            setSMTPConfig(next);
+            setSMTPDraft(next);
+            showSuccess('SMTP notification configuration saved securely');
+        } catch (error) {
+            showError(`Unable to save SMTP configuration — ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setSMTPSaving(false);
+        }
+    };
+
+    const testSMTP = async () => {
+        setSMTPTesting(true);
+        try {
+            const response = await fetch(hostUrl('/docker/updates/notifications/smtp/test'), {method: 'POST'});
+            if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+            showSuccess('SMTP test message sent');
+            await load();
+        } catch (error) {
+            showError(`SMTP test failed — ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setSMTPTesting(false);
+        }
+    };
+
     return (
         <Box sx={{p: {xs: 1.5, md: 2.5}, maxWidth: 1500, mx: 'auto'}}>
             <PageHeader title="Updates" icon={<SystemUpdateAlt/>} right={<Stack direction="row" spacing={1}>
                 <Button startIcon={<Refresh/>} onClick={() => void load()} disabled={loading}>Refresh</Button>
 				<Button variant="contained" startIcon={<SystemUpdateAlt/>} onClick={() => void scanNow()} disabled={loading || scanning || enrolledCount === 0}>{scanning ? 'Scanning…' : 'Scan enrolled'}</Button>
+				<Button startIcon={<EmailOutlined/>} color={smtpConfig.enabled ? 'success' : 'inherit'} onClick={openSMTP}>SMTP</Button>
 				<Button startIcon={<SpaceDashboardOutlined/>} onClick={() => navigate(`/${host}/monitor`)}>Monitor</Button>
             </Stack>}/>
 
@@ -267,8 +354,8 @@ export default function UpdatesPage() {
 					<Typography variant="h4" color={availableCount > 0 ? 'warning.main' : 'inherit'}>{availableCount}</Typography>
 				</Paper>
                 <Paper variant="outlined" sx={{p: 1.75, flex: 2}}>
-                    <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="success"/><Typography sx={{fontWeight: 600}}>Opt-in foundation</Typography></Stack>
-					<Typography variant="body2" color="text.secondary">Image checks are scheduled automatically. Updates remain read-only: no container is recreated in this lot.</Typography>
+                    <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="success"/><Typography sx={{fontWeight: 600}}>Read-only automation</Typography></Stack>
+					<Typography variant="body2" color="text.secondary">Checks run automatically and SMTP can send change-only summaries. No container is recreated in this lot.</Typography>
                 </Paper>
             </Stack>
 
@@ -327,6 +414,14 @@ export default function UpdatesPage() {
 				</Paper>
 			</Stack>
 
+            {(smtpConfig.configured || deliveries.length > 0) && <Paper variant="outlined" sx={{mt: 2, p: 2}}>
+                <Stack direction={{xs: 'column', md: 'row'}} spacing={2} sx={{alignItems: {md: 'center'}}}>
+                    <Box sx={{flex: 1}}><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><EmailOutlined color={smtpConfig.enabled ? 'success' : 'disabled'}/><Typography variant="h6">SMTP notifications</Typography><Chip size="small" variant="outlined" color={smtpConfig.enabled ? 'success' : 'default'} label={smtpConfig.enabled ? 'Enabled' : 'Disabled'}/></Stack><Typography variant="body2" color="text.secondary">{smtpConfig.configured ? `${smtpConfig.server}:${smtpConfig.port} · ${smtpConfig.recipients}` : 'Not configured'}</Typography></Box>
+                    {deliveries[0] && <Tooltip title={deliveries[0].error || deliveries[0].subject}><Chip size="small" variant="outlined" color={deliveries[0].success ? 'success' : 'error'} label={`Last delivery: ${deliveries[0].success ? 'sent' : 'failed'} · ${new Date(deliveries[0].createdAt).toLocaleString()}`}/></Tooltip>}
+                    <Button startIcon={<EditOutlined/>} onClick={openSMTP}>Configure</Button>
+                </Stack>
+            </Paper>}
+
             <Dialog open={editing !== null} onClose={() => !saving && setEditing(null)} fullWidth maxWidth="sm">
                 <DialogTitle><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><AccountTreeOutlined/><span>Update policy — {editing?.containerName}</span></Stack></DialogTitle>
                 <DialogContent dividers><Stack spacing={2.25} sx={{pt: .5}}>
@@ -346,6 +441,35 @@ export default function UpdatesPage() {
                     <Box sx={{flex: 1}}/>
                     <Button onClick={() => setEditing(null)} disabled={saving}>Cancel</Button>
                     <Button variant="contained" onClick={() => void savePolicy()} disabled={saving}>Save policy</Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={smtpOpen} onClose={() => !smtpSaving && !smtpTesting && setSMTPOpen(false)} fullWidth maxWidth="md">
+                <DialogTitle><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><EmailOutlined/><span>SMTP notifications — {host}</span></Stack></DialogTitle>
+                <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
+                    <Alert severity="info">Dockman sends one grouped summary after a scheduled scan only when the available-update or error set changes. Manual scans never send mail. The SMTP password is encrypted at rest and never returned by the API.</Alert>
+                    <FormControlLabel control={<Switch checked={smtpDraft.enabled} onChange={event => setSMTPDraft(current => ({...current, enabled: event.target.checked}))}/>} label="Enable scheduled scan notifications"/>
+                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1.5}>
+                        <TextField label="SMTP server" value={smtpDraft.server} onChange={event => setSMTPDraft(current => ({...current, server: event.target.value}))} fullWidth placeholder="smtp.example.com"/>
+                        <TextField label="Port" type="number" value={smtpDraft.port} onChange={event => setSMTPDraft(current => ({...current, port: Number(event.target.value)}))} sx={{width: {xs: '100%', sm: 130}}}/>
+                        <FormControl sx={{width: {xs: '100%', sm: 190}}}><InputLabel>Security</InputLabel><Select label="Security" value={smtpDraft.security} onChange={event => setSMTPDraft(current => { const security = event.target.value as SMTPConfig['security']; return {...current, security, ...(security === 'none' ? {username: '', password: ''} : {})}; })}><MenuItem value="starttls">STARTTLS</MenuItem><MenuItem value="tls">TLS / SMTPS</MenuItem><MenuItem value="none">None (no auth)</MenuItem></Select></FormControl>
+                    </Stack>
+                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1.5}>
+                        <TextField label="Username" value={smtpDraft.username} disabled={smtpDraft.security === 'none'} onChange={event => setSMTPDraft(current => ({...current, username: event.target.value}))} fullWidth autoComplete="username"/>
+                        <TextField label={smtpDraft.hasPassword ? 'New password (leave blank to keep current)' : 'Password'} type="password" value={smtpDraft.password} disabled={smtpDraft.security === 'none'} onChange={event => setSMTPDraft(current => ({...current, password: event.target.value}))} fullWidth autoComplete="new-password"/>
+                    </Stack>
+                    <TextField label="From address" value={smtpDraft.fromAddress} onChange={event => setSMTPDraft(current => ({...current, fromAddress: event.target.value}))} fullWidth placeholder="Dockman <dockman@example.com>"/>
+                    <TextField label="Recipients" value={smtpDraft.recipients} onChange={event => setSMTPDraft(current => ({...current, recipients: event.target.value}))} fullWidth helperText="Comma, semicolon or line separated; maximum 25 recipients."/>
+                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={2}>
+                        <FormControlLabel control={<Switch checked={smtpDraft.notifyUpdates} onChange={event => setSMTPDraft(current => ({...current, notifyUpdates: event.target.checked}))}/>} label="Notify available updates"/>
+                        <FormControlLabel control={<Switch checked={smtpDraft.notifyErrors} onChange={event => setSMTPDraft(current => ({...current, notifyErrors: event.target.checked}))}/>} label="Notify scan errors"/>
+                    </Stack>
+                    {deliveries.length > 0 && <Box><Typography variant="subtitle2" sx={{mb: .75}}>Recent deliveries</Typography><TableContainer sx={{maxHeight: 180}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>Date</TableCell><TableCell>Type</TableCell><TableCell>Subject</TableCell><TableCell>Status</TableCell></TableRow></TableHead><TableBody>{deliveries.slice(0, 10).map(delivery => <TableRow key={delivery.id}><TableCell sx={{whiteSpace: 'nowrap'}}>{new Date(delivery.createdAt).toLocaleString()}</TableCell><TableCell>{delivery.kind}</TableCell><TableCell>{delivery.subject}</TableCell><TableCell><Tooltip title={delivery.error || ''}><Chip size="small" color={delivery.success ? 'success' : 'error'} variant="outlined" label={delivery.success ? 'sent' : 'failed'}/></Tooltip></TableCell></TableRow>)}</TableBody></Table></TableContainer></Box>}
+                </Stack></DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setSMTPOpen(false)} disabled={smtpSaving || smtpTesting}>Close</Button><Box sx={{flex: 1}}/>
+                    <Button startIcon={<SendOutlined/>} onClick={() => void testSMTP()} disabled={smtpSaving || smtpTesting || !smtpConfig.configured}>{smtpTesting ? 'Sending…' : 'Send test'}</Button>
+                    <Button variant="contained" onClick={() => void saveSMTP()} disabled={smtpSaving || smtpTesting}>{smtpSaving ? 'Saving…' : 'Save'}</Button>
                 </DialogActions>
             </Dialog>
         </Box>
