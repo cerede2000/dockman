@@ -13,6 +13,7 @@ import (
 
 	contSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/internal/docker/debug"
+	"github.com/RA341/dockman/internal/docker/updater"
 	hostMid "github.com/RA341/dockman/internal/host/middleware"
 	fu "github.com/RA341/dockman/pkg/fileutil"
 	wsu "github.com/RA341/dockman/pkg/ws"
@@ -27,12 +28,17 @@ var upgrader = websocket.Upgrader{
 }
 
 type HandlerHttp struct {
-	srv           ServiceProvider
-	allowSelfExec bool
+	srv            ServiceProvider
+	allowSelfExec  bool
+	updatePolicies *updater.PolicyService
 }
 
-func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool) http.Handler {
-	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec}
+func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies ...*updater.PolicyService) http.Handler {
+	var policyService *updater.PolicyService
+	if len(policies) > 0 {
+		policyService = policies[0]
+	}
+	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policyService}
 	return hand.register()
 }
 
@@ -49,9 +55,103 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /shell", h.hostShell)
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
 	subMux.HandleFunc("POST /updates/check", h.checkContainerUpdates)
+	subMux.HandleFunc("GET /updates/inventory", h.getUpdateInventory)
+	subMux.HandleFunc("GET /updates/policies", h.listUpdatePolicies)
+	subMux.HandleFunc("PUT /updates/policies", h.saveUpdatePolicy)
+	subMux.HandleFunc("DELETE /updates/policies", h.deleteUpdatePolicy)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 
 	return subMux
+}
+
+func (h *HandlerHttp) getUpdateInventory(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updatePolicyHost(w, r)
+	if !ok {
+		return
+	}
+	dkSrv, err := h.srv(host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("error getting docker service: %v", err), http.StatusBadRequest)
+		return
+	}
+	containers, err := dkSrv.Container.ContainersList(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("list containers: %v", err), http.StatusBadGateway)
+		return
+	}
+	rows, err := h.updatePolicies.Inventory(r.Context(), host, containers)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Results any `json:"results"`
+	}{Results: rows})
+}
+
+func (h *HandlerHttp) listUpdatePolicies(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updatePolicyHost(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.updatePolicies.List(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Results any `json:"results"`
+	}{Results: rows})
+}
+
+func (h *HandlerHttp) saveUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updatePolicyHost(w, r)
+	if !ok {
+		return
+	}
+	var policy updater.UpdatePolicy
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&policy); err != nil {
+		http.Error(w, "invalid update policy: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	policy.Host = host
+	if err := h.updatePolicies.Save(&policy); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HandlerHttp) deleteUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updatePolicyHost(w, r)
+	if !ok {
+		return
+	}
+	if err := h.updatePolicies.Delete(host, r.URL.Query().Get("targetType"), r.URL.Query().Get("targetKey")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HandlerHttp) updatePolicyHost(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if h.updatePolicies == nil {
+		http.Error(w, "update policies are unavailable", http.StatusServiceUnavailable)
+		return "", false
+	}
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return "", false
+	}
+	return host, true
+}
+
+func writeJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Debug().Err(err).Msg("could not encode JSON response")
+	}
 }
 
 func (h *HandlerHttp) checkContainerUpdates(w http.ResponseWriter, r *http.Request) {

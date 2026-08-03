@@ -288,10 +288,8 @@ func (u *Service) containersUpdateLoop(
 const DockmanOptInUpdateLabel = "dockman.update"
 
 func hasUpdateLabel(c *container.Summary) bool {
-	if _, ok := c.Labels[DockmanOptInUpdateLabel]; !ok {
-		return false
-	}
-	return true
+	enabled, present := boolLabel(c.Labels, DockmanOptInUpdateLabel)
+	return present && enabled
 }
 
 func (u *Service) containerUpdate(

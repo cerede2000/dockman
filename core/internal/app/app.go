@@ -21,6 +21,7 @@ import (
 	"github.com/RA341/dockman/internal/database"
 	"github.com/RA341/dockman/internal/docker"
 	"github.com/RA341/dockman/internal/docker/compose"
+	"github.com/RA341/dockman/internal/docker/updater"
 	"github.com/RA341/dockman/internal/dockyaml"
 	"github.com/RA341/dockman/internal/files"
 	"github.com/RA341/dockman/internal/gitsync"
@@ -40,16 +41,17 @@ import (
 type App struct {
 	Config *config.AppConfig
 
-	Auth          *auth.Service
-	HostManager   *host.Service
-	File          *files.Service
-	Info          *info.Service
-	SSH           *ssh.Service
-	UserConfigSrv *config.Service
-	CleanerSrv    *cleaner.Service
-	Viewer        *viewer.Service
-	DockYaml      *dockyaml.Service
-	GitSync       *gitsync.Service
+	Auth           *auth.Service
+	HostManager    *host.Service
+	File           *files.Service
+	Info           *info.Service
+	SSH            *ssh.Service
+	UserConfigSrv  *config.Service
+	CleanerSrv     *cleaner.Service
+	Viewer         *viewer.Service
+	DockYaml       *dockyaml.Service
+	GitSync        *gitsync.Service
+	UpdatePolicies *updater.PolicyService
 }
 
 func (a *App) VerifyServices() error {
@@ -152,6 +154,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		hostManager.GetDockerService,
 		cleanerStore,
 	)
+	updatePolicySrv := updater.NewPolicyService(updater.NewPolicyStore(gormDB))
 
 	gitStore := gitsync.NewStore(gormDB)
 	var gitVault *gitsync.Vault
@@ -252,17 +255,18 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	)
 
 	app = &App{
-		Config:        conf,
-		Auth:          authSrv,
-		File:          fileSrv,
-		HostManager:   hostManager,
-		Info:          infoSrv,
-		DockYaml:      dockyamlSrv,
-		SSH:           sshSrv,
-		UserConfigSrv: userConfigSrv,
-		CleanerSrv:    cleanerSrv,
-		Viewer:        viewerSrv,
-		GitSync:       gitSyncSrv,
+		Config:         conf,
+		Auth:           authSrv,
+		File:           fileSrv,
+		HostManager:    hostManager,
+		Info:           infoSrv,
+		DockYaml:       dockyamlSrv,
+		SSH:            sshSrv,
+		UserConfigSrv:  userConfigSrv,
+		CleanerSrv:     cleanerSrv,
+		Viewer:         viewerSrv,
+		GitSync:        gitSyncSrv,
+		UpdatePolicies: updatePolicySrv,
 	}
 	err = app.VerifyServices()
 	if err != nil {
@@ -451,7 +455,7 @@ func (a *App) registerApiHostRoutes(hostMux *http.ServeMux) {
 	withSubRouter(
 		hostMux,
 		"/docker",
-		docker.NewHandlerHttp(a.HostManager.GetDockerService, a.Config.AllowSelfExec),
+		docker.NewHandlerHttp(a.HostManager.GetDockerService, a.Config.AllowSelfExec, a.UpdatePolicies),
 	)
 	// cleaner
 	hostMux.Handle(cleaner.NewHandler(a.CleanerSrv))

@@ -15,7 +15,7 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 
 	require.NoError(t, migrate(db, migrationDir, migrationPath))
 	for _, table := range []string{
-		"git_credentials", "git_repositories", "git_stack_bindings", "git_binding_baselines", "git_operations", "git_deployments", "git_stack_statuses",
+		"git_credentials", "git_repositories", "git_stack_bindings", "git_binding_baselines", "git_operations", "git_deployments", "git_stack_statuses", "update_policies",
 	} {
 		var count int
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count))
@@ -38,4 +38,10 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 	var cleanerCronColumns int
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('prune_configs') WHERE name='cron_expression'").Scan(&cleanerCronColumns))
 	require.Equal(t, 1, cleanerCronColumns)
+
+	for _, column := range []string{"host", "target_type", "target_key", "target_name", "enabled", "schedule", "rollback_enabled"} {
+		var count int
+		require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('update_policies') WHERE name=?", column).Scan(&count))
+		require.Equal(t, 1, count, column)
+	}
 }
