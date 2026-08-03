@@ -498,6 +498,11 @@ function MonitorPage() {
 
     const scanUpdates = async () => {
         const requestID = ++updateScanRequest.current;
+        // A new check is authoritative from scratch. Remove the previous
+        // badges, errors and update-only filter immediately so stale results
+        // are never presented while the registry checks are running.
+        setUpdateScan({});
+        setUpdatesOnly(false);
         try {
             const response = await fetch(hostUrl('/docker/updates/check'), {method: 'POST'});
             if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
