@@ -67,6 +67,10 @@ async function run(client: EventsClient, host: string, signal: AbortSignal) {
             // dropped stream: fall through to the backoff and resubscribe
         }
         if (signal.aborted) return;
+        // A daemon or socket-proxy restart may not emit a final container
+        // lifecycle event. Invalidate projections as soon as the stream drops
+        // so stale running states are not retained until the safety poll.
+        notify();
         await new Promise(resolve => setTimeout(resolve, backoff));
         backoff = Math.min(backoff * 2, 30000);
     }

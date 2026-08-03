@@ -25,8 +25,9 @@ import {useEditorUrl} from "../../../lib/editor.ts";
 import {formatDockyaml} from "./viewer-dockyml.tsx";
 import {useComposeFileState} from "../state/status.ts";
 import {callRPC, useHostClient} from "../../../lib/api.ts";
-import {DockerService} from "../../../gen/docker/v1/docker_pb.ts";
+import {DockerService, StatusSchema} from "../../../gen/docker/v1/docker_pb.ts";
 import {useDockerEvents} from "../../../hooks/docker-events.ts";
+import {create} from "@bufbuild/protobuf";
 import {useGitStatusWatcher} from '../../../components/git-stack-status-store.ts';
 
 export function FileList() {
@@ -265,7 +266,17 @@ const FileListInner = () => {
                 state.pending = false
                 const keys = trackedKeys ? trackedKeys.split('|') : []
                 const {val} = await callRPC(() => dockerSrv.composeFileStatus({files: keys}))
-                if (val) setStatus(val.status, statusContext)
+                // Replace the complete requested snapshot on every read. During
+                // a Docker daemon restart the status call can briefly fail, and
+                // protobuf responses may omit empty values. Keeping the previous
+                // values in either case leaves a stopped/removed stack green.
+                // Unknown is deliberately represented by an empty (stopped)
+                // status until the next event or safety poll confirms live state.
+                const snapshot = {...(val?.status ?? {})}
+                for (const key of keys) {
+                    snapshot[key] ??= create(StatusSchema)
+                }
+                setStatus(snapshot, statusContext)
             } while (state.pending)
         } finally {
             state.running = false

@@ -40,6 +40,7 @@ import ContainerInspectPage from "./pages/containers/inspect.tsx";
 import scrollbarStyles from "./components/scrollbar-style.tsx";
 import StatsPage from "./pages/stats/stats-page.tsx";
 import MonitorPage from "./pages/monitor/monitor-page.tsx";
+import UpdatesPage from './pages/updates/updates-page.tsx';
 import {useHostStore} from "./pages/compose/state/files.ts";
 import {enableMapSet} from "immer";
 import {SettingsOutlined as SettingsIcon} from '@mui/icons-material';
@@ -74,6 +75,10 @@ export function App() {
 
                                         <Route path="monitor">
                                             <Route index element={<MonitorPage/>}/>
+                                        </Route>
+
+                                        <Route path="updates">
+                                            <Route index element={<UpdatesPage/>}/>
                                         </Route>
 
                                         <Route path="stats">

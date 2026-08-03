@@ -4,6 +4,7 @@ import {useSearchParams} from 'react-router';
 import TabDockerHosts from "./tab-host.tsx";
 import TabDockman from "./tab-dockman.tsx";
 import TabGit from "./tab-git.tsx";
+import TabViews from './tab-views.tsx';
 
 interface TabConfig {
     label: string;
@@ -22,6 +23,10 @@ const tabConfigurations: TabConfig[] = [
     {
         label: "Git",
         component: <TabGit/>
+    },
+    {
+        label: "Views",
+        component: <TabViews/>
     },
 ];
 

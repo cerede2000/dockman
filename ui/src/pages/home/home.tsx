@@ -1,5 +1,5 @@
 import {Box, Divider, Drawer, List, ListItemButton, ListItemIcon, Tooltip,} from '@mui/material';
-import {FolderDelete, Logout, Settings, SpaceDashboardOutlined} from '@mui/icons-material';
+import {FolderDelete, Logout, Settings, SpaceDashboardOutlined, SystemUpdateAlt} from '@mui/icons-material';
 import {Link as RouterLink, Outlet, useLocation, useNavigate, useParams} from 'react-router';
 
 import HostSelectDropdown from "./host-selector.tsx";
@@ -17,6 +17,7 @@ import {
 import {useHostStore, useLastOpened} from "../compose/state/files.ts";
 import {useTabsStore} from "../../context/tab-context.tsx";
 import {useTerminalTabs} from "../compose/state/terminal.tsx";
+import {useNavigationPreferences} from './navigation-preferences.ts';
 
 const MAIN_SIDEBAR_WIDTH = 72;
 
@@ -35,6 +36,8 @@ export function RootLayout() {
     const clearTerminalTabs = useTerminalTabs(state => state.clearAll)
     const clearLastOpened = useLastOpened(state => state.clear)
     const previousHost = useRef(host)
+    const showStats = useNavigationPreferences(state => state.showStats)
+    const showContainers = useNavigationPreferences(state => state.showContainers)
     useEffect(() => {
         if (previousHost.current !== host) {
             resetTabs()
@@ -53,13 +56,14 @@ export function RootLayout() {
     const navigationItems = useMemo(() => [
         {title: 'Files', path: `/${host}/files`, icon: DockerFolderIcon},
         {title: 'Monitor', path: `/${host}/monitor`, icon: () => <SpaceDashboardOutlined sx={{color: '#4db6ac'}}/>},
-        {title: 'Stats', path: `/${host}/stats`, icon: StatsIcon},
-        {title: 'Containers', path: `/${host}/containers`, icon: ContainerIcon},
+        ...(showStats ? [{title: 'Stats', path: `/${host}/stats`, icon: StatsIcon}] : []),
+        ...(showContainers ? [{title: 'Containers', path: `/${host}/containers`, icon: ContainerIcon}] : []),
+        {title: 'Updates', path: `/${host}/updates`, icon: () => <SystemUpdateAlt sx={{color: '#ffb74d'}}/>},
         {title: 'Images', path: `/${host}/images`, icon: ImagesIcon},
         {title: 'Volumes', path: `/${host}/volumes`, icon: VolumeIcon},
         {title: 'Networks', path: `/${host}/networks`, icon: NetworkIcon},
         {title: 'Cleaner', path: `/${host}/cleaner`, icon: () => <FolderDelete sx={{color: 'greenyellow'}}/>},
-    ], [host]);
+    ], [host, showContainers, showStats]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
