@@ -148,6 +148,24 @@ function defaultRepositoryFolder(stackPath: string): string {
     return name ? `stacks/${name}` : "stacks";
 }
 
+function scopedGitImport(destination: string, composePaths: string[]) {
+    const normalizedDestination = destination.trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+    const normalizedPaths = composePaths.map((value) => value.trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, ""));
+    const directories = normalizedPaths.map((value) => value.includes("/") ? value.slice(0, value.lastIndexOf("/")) : "");
+    const commonSegments = (directories[0] || "").split("/").filter(Boolean);
+    for (const directory of directories.slice(1)) {
+        const segments = directory.split("/").filter(Boolean);
+        while (commonSegments.length > 0 && commonSegments.some((segment, index) => segments[index] !== segment)) commonSegments.pop();
+    }
+    const repositoryFolder = commonSegments.join("/");
+    const prefix = repositoryFolder ? `${repositoryFolder}/` : "";
+    return {
+        stackPath: [normalizedDestination, repositoryFolder].filter(Boolean).join("/"),
+        subPath: repositoryFolder || ".",
+        composePaths: normalizedPaths.map((value) => prefix && value.startsWith(prefix) ? value.slice(prefix.length) : value),
+    };
+}
+
 const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_permission", "skipped_large_directory", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
@@ -586,13 +604,14 @@ export default function TabGit() {
     const importGitStacks = async () => {
         const paths = gitImportCatalog?.composePaths.filter((path) => gitImportComposePaths.has(path)) || [];
         if (paths.length === 0) return;
+        const scope = scopedGitImport(gitImportForm.stackPath, paths);
         setBusy("git-stack-import");
         await (async () => {
             const binding = await api<Binding>("/bindings", {method: "POST", body: JSON.stringify({
                 repositoryId: gitImportForm.repositoryId,
                 host: gitImportForm.host,
-                stackPath: gitImportForm.stackPath,
-                subPath: ".",
+                stackPath: scope.stackPath,
+                subPath: scope.subPath,
                 syncProfile: gitImportForm.syncProfile,
                 autoReconcile: true,
                 initialSync: "repository_to_stack",
@@ -600,11 +619,11 @@ export default function TabGit() {
                 // every future Git folder. "All stacks" remains an explicit
                 // Folder Link policy that the operator can enable afterwards.
                 composeSelectionMode: "selected",
-                selectedComposePaths: paths,
+                selectedComposePaths: scope.composePaths,
             })});
             if (binding.initialSyncState === "error") throw new Error(binding.initialSyncError || "Git stack import failed");
             setGitImportDialogOpen(false);
-            showSuccess(`${paths.length} Git stack${paths.length === 1 ? "" : "s"} imported into ${gitImportForm.stackPath}. The Folder Link is ready.`);
+            showSuccess(`${paths.length} Git stack${paths.length === 1 ? "" : "s"} imported into ${scope.stackPath}. The Folder Link is limited to this imported folder.`);
             await load();
         })().catch((error) => showError((error as Error).message)).finally(() => setBusy(null));
     };

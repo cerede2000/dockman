@@ -192,6 +192,46 @@ func TestGitFirstImportCreatesMissingLocalFoldersForSelectedStacks(t *testing.T)
 	require.Equal(t, []string{"alpha/compose.yml", "beta/compose.yml"}, binding.SelectedComposePaths)
 }
 
+func TestGitFirstImportCanBeScopedToImportedRootFolder(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := t.TempDir()
+	service.ConfigureStackAccess(func(host, stackPath string) (filesystem.FileSystem, string, error) {
+		if host != "local" || (stackPath != "compose" && !strings.HasPrefix(stackPath, "compose/")) {
+			return nil, "", os.ErrNotExist
+		}
+		relative := strings.Trim(strings.TrimPrefix(stackPath, "compose"), "/")
+		if relative == "" {
+			relative = "."
+		}
+		return filesystem.NewLocal(stackRoot), relative, nil
+	}, func() []string { return []string{"local"} }, filepath.Join(t.TempDir(), "backups"))
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "alpha/compose.yml", "services:\n  alpha:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "beta/compose.yml", "services:\n  beta:\n    image: alpine:3.23\n")
+
+	imported, err := service.CreateBindingContext(context.Background(), BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose/alpha", SubPath: "alpha",
+		InitialSync: "repository_to_stack", SyncProfile: syncProfileComposeOnly,
+		ComposeSelectionMode: composeSelectionSelected, SelectedComposePaths: []string{"compose.yml"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "imported", imported.InitialSyncState)
+	require.Equal(t, "compose/alpha", imported.StackPath)
+	require.Equal(t, "alpha", imported.SubPath)
+	require.Equal(t, []string{"compose.yml"}, imported.SelectedComposePaths)
+	require.FileExists(t, filepath.Join(stackRoot, "alpha", "compose.yml"))
+	require.NoFileExists(t, filepath.Join(stackRoot, "beta", "compose.yml"))
+
+	// The import owns alpha only. A sibling at the Dockman stacks root remains
+	// available for an independent Folder Link instead of being claimed by a
+	// synthetic root-level import binding.
+	_, err = service.CreateBinding(BindingInput{
+		RepositoryID: repository.UUID, Host: "local", StackPath: "compose/beta", SubPath: "beta",
+		ComposeSelectionMode: composeSelectionSelected, SelectedComposePaths: []string{"compose.yml"},
+	})
+	require.NoError(t, err)
+}
+
 func TestPreviewSkipsSensitiveFilesUnlessExplicitlyConfirmed(t *testing.T) {
 	service, _ := testService(t, true)
 	stackRoot := configureTestStack(t, service)
