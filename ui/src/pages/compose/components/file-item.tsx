@@ -635,9 +635,11 @@ const useFileMenuCtx = (entry: FsEntry) => {
     return {closeCtxMenu, contextActions, contextMenu, handleContextMenu}
 }
 
-const StatusIndicator = ({fileStatus}: { fileStatus: ComposeDisplayStatus }) => {
+const StatusIndicator = ({fileStatus}: { fileStatus: ComposeDisplayStatus | undefined }) => {
     const stackStatus = getStatusTheme(fileStatus);
-    const downStacks = fileStatus.stacksWithoutContainers ?? 0;
+    // Status is populated asynchronously. A file/folder is rendered once before
+    // the first Docker response, so keep the indicator inert during that window.
+    const downStacks = fileStatus?.stacksWithoutContainers ?? 0;
     const stackSummary = downStacks > 0
         ? ` · ${downStacks} stack${downStacks === 1 ? '' : 's'} down`
         : '';
