@@ -63,7 +63,7 @@ func TestDockerBuildUsesBuildxAndLoadsTheImage(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build -t demo:local .", io.Discard))
-	require.Equal(t, []string{"docker", "buildx", "build", "--load", "-t", "demo:local", "."}, runner.args)
+	require.Equal(t, []string{"docker", "buildx", "build", "--load", "--builder", "default", "-t", "demo:local", "."}, runner.args)
 	require.Equal(t, ".", runner.wd)
 }
 
@@ -92,5 +92,5 @@ func TestDockerBuildPreservesExplicitPushOutput(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build --push -t registry.example/demo:latest .", io.Discard))
-	require.Equal(t, []string{"docker", "buildx", "build", "--push", "-t", "registry.example/demo:latest", "."}, runner.args)
+	require.Equal(t, []string{"docker", "buildx", "build", "--builder", "default", "--push", "-t", "registry.example/demo:latest", "."}, runner.args)
 }

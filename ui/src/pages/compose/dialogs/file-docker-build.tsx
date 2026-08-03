@@ -50,6 +50,7 @@ export default function FileDockerBuild() {
         if (!filename || !validTag) return;
         const command = [
             'docker buildx build',
+            '--builder', 'default',
             '--load',
             '--progress=plain',
             '--tag', commandArgument(tag),

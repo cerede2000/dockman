@@ -45,15 +45,22 @@ func (c *Service) RunDockerCommand(ctx context.Context, rawCommand string, strea
 }
 
 // prepareDockerBuild upgrades the legacy `docker build` spelling to Buildx and
-// resolves Dockerfiles selected from Dockman's Files tree. The dockman://
-// marker is internal and never reaches the Docker CLI; it lets the server map
-// an alias-relative browser path to the real local or SSH host directory.
+// pins that compatibility path to Docker's built-in builder. This avoids
+// inheriting a previously selected docker-container builder, which would start
+// a standalone buildx_buildkit helper for an ordinary single-host build.
+// Explicit `docker buildx build` commands remain untouched so advanced users
+// can still select another builder. The dockman:// marker is internal and
+// never reaches the Docker CLI; it lets the server map an alias-relative
+// browser path to the real local or SSH host directory.
 func (c *Service) prepareDockerBuild(args []string) ([]string, string, error) {
 	if len(args) < 2 || args[0] != "docker" {
 		return args, ".", nil
 	}
 	if args[1] == "build" {
 		args = append([]string{"docker", "buildx", "build"}, args[2:]...)
+		if !hasBuilderOption(args[3:]) {
+			args = append(args[:3], append([]string{"--builder", "default"}, args[3:]...)...)
+		}
 		if !hasBuildOutputOption(args[3:]) {
 			args = append(args[:3], append([]string{"--load"}, args[3:]...)...)
 		}
@@ -103,6 +110,15 @@ func (c *Service) prepareDockerBuild(args []string) ([]string, string, error) {
 		}
 	}
 	return args, wd, nil
+}
+
+func hasBuilderOption(args []string) bool {
+	for _, arg := range args {
+		if arg == "--builder" || strings.HasPrefix(arg, "--builder=") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasBuildOutputOption(args []string) bool {
