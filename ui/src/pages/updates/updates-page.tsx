@@ -141,8 +141,12 @@ export default function UpdatesPage() {
         setSaving(true);
         try {
             const target = targetFor(editing, draft.targetType);
-            if (editing.policyTarget && editing.policyTargetId &&
-                (editing.policyTarget !== draft.targetType || editing.policyTargetId !== target.key)) {
+            // Turning one member of an enrolled stack into a container rule is
+            // an intentional per-container override: keep the stack policy.
+            // In the opposite direction the old container override must be
+            // removed, otherwise it would continue to shadow the new stack rule.
+            if (editing.policyTarget === 'container' && editing.policyTargetId &&
+                (draft.targetType !== 'container' || editing.policyTargetId !== target.key)) {
                 await removeExistingPolicy(editing);
             }
             const response = await fetch(hostUrl('/docker/updates/policies'), {

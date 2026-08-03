@@ -70,7 +70,7 @@ func TestInventoryPolicyPrecedence(t *testing.T) {
 		{ID: "3", Names: []string{"/disabled-label"}, Labels: map[string]string{
 			DockmanOptInUpdateLabel: "true", DockmanUpdateDisableLabel: "true",
 		}},
-		{ID: "4", Names: []string{"/disabled-by-ui"}},
+		{ID: "4", Names: []string{"/disabled-by-ui"}, Labels: stackLabels},
 	}
 	rows, err := service.Inventory(context.Background(), "local", containers)
 	if err != nil {
