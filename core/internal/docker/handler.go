@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -93,9 +94,29 @@ func (h *Handler) ComposeFileStatus(ctx context.Context, c *connect.Request[v1.C
 
 		for _, file := range c.Msg.Files {
 			// The discovered index below overlays live states. Anything requested
-			// but absent from Docker is a stopped stack; no per-file path lookup is
-			// needed, which keeps the cost independent of the number of stacks.
+			// but absent from Docker is a stopped stack; no per-file filesystem lookup
+			// is needed. Resolving the alias to its absolute path is an in-memory
+			// operation and avoids a Compose subprocess or filesystem stat per stack.
 			finalResults[file] = &v1.Status{}
+			absPath, pathErr := dkSrv.Compose.ComposeAbsPath(file)
+			if pathErr != nil {
+				log.Debug().Err(pathErr).Str("compose_file", file).
+					Msg("unable to resolve requested compose file status path")
+				continue
+			}
+			absPath = normalizeComposeConfigPath(absPath, "")
+			status := byFile[absPath]
+			if status == nil {
+				continue
+			}
+			if stoppedAt, stopped := h.composeStoppedAt(dkSrv.Host, file); stopped {
+				if hasComposeContainerCreatedSince(containers, absPath, stoppedAt) {
+					h.setComposeStopped(dkSrv.Host, file, false)
+				} else {
+					continue
+				}
+			}
+			finalResults[file] = status.toProto()
 		}
 
 		// Explicitly requested files above include stopped stacks that still
@@ -171,7 +192,7 @@ func buildComposeStatusIndex(containers []container.Summary) (map[string]*stackS
 
 		first := ""
 		for _, path := range strings.Split(cfg, ",") {
-			path = strings.TrimSpace(path)
+			path = normalizeComposeConfigPath(path, ct.Labels[api.WorkingDirLabel])
 			if path == "" {
 				continue
 			}
@@ -190,6 +211,23 @@ func buildComposeStatusIndex(containers []container.Summary) (map[string]*stackS
 		}
 	}
 	return byFile, primaryFiles
+}
+
+// normalizeComposeConfigPath mirrors Docker Compose's config-files label
+// semantics. Recent Compose versions may retain a relative -f value and expose
+// its absolute base separately through project.working_dir. Canonicalising both
+// forms prevents a healthy stack from becoming "stopped" solely because
+// "./compose.yml", "compose.yml" and the absolute requested path differ.
+func normalizeComposeConfigPath(configFile, workingDir string) string {
+	configFile = filepath.ToSlash(strings.TrimSpace(configFile))
+	workingDir = filepath.ToSlash(strings.TrimSpace(workingDir))
+	if configFile == "" {
+		return ""
+	}
+	if !filepath.IsAbs(configFile) && workingDir != "" {
+		configFile = filepath.Join(workingDir, configFile)
+	}
+	return filepath.ToSlash(filepath.Clean(configFile))
 }
 
 func (h *Handler) setComposeStopped(host, file string, stopped bool) {
@@ -211,6 +249,7 @@ func (h *Handler) composeStoppedAt(host, file string) (int64, bool) {
 }
 
 func hasComposeContainerCreatedSince(containers []container.Summary, composeFile string, since int64) bool {
+	composeFile = normalizeComposeConfigPath(composeFile, "")
 	for i := range containers {
 		ct := containers[i]
 		// Docker exposes Created with one-second precision. Require a strictly
@@ -220,7 +259,8 @@ func hasComposeContainerCreatedSince(containers []container.Summary, composeFile
 			continue
 		}
 		for _, path := range strings.Split(ct.Labels[api.ConfigFilesLabel], ",") {
-			if strings.TrimSpace(path) == composeFile {
+			path = normalizeComposeConfigPath(path, ct.Labels[api.WorkingDirLabel])
+			if path == composeFile {
 				return true
 			}
 		}

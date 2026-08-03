@@ -68,6 +68,28 @@ func TestBuildComposeStatusIndexIncludesNestedPrimaryPath(t *testing.T) {
 	require.Equal(t, &stackStatus{up: 1, down: 1, healthy: 1}, byFile[override])
 }
 
+func TestBuildComposeStatusIndexResolvesRelativeConfigFileFromWorkingDirectory(t *testing.T) {
+	const composeFile = "/server/stacks/applemusicrip/compose.yml"
+	byFile, primaryFiles := buildComposeStatusIndex([]container.Summary{{
+		Labels: map[string]string{
+			api.ConfigFilesLabel: "./compose.yml",
+			api.WorkingDirLabel:  "/server/stacks/applemusicrip/",
+		},
+		State:  container.StateRunning,
+		Health: &container.HealthSummary{Status: container.Healthy},
+	}})
+
+	require.Equal(t, map[string]struct{}{composeFile: {}}, primaryFiles)
+	require.Equal(t, &stackStatus{up: 1, healthy: 1}, byFile[composeFile])
+}
+
+func TestNormalizeComposeConfigPathCanonicalizesEquivalentLabels(t *testing.T) {
+	const expected = "/server/stacks/applemusicrip/compose.yml"
+	require.Equal(t, expected, normalizeComposeConfigPath("compose.yml", "/server/stacks/applemusicrip"))
+	require.Equal(t, expected, normalizeComposeConfigPath("./compose.yml", "/server/stacks/applemusicrip/"))
+	require.Equal(t, expected, normalizeComposeConfigPath("/server/stacks/applemusicrip/./compose.yml", ""))
+}
+
 func TestBuildComposeStatusIndexIgnoresOneoffContainers(t *testing.T) {
 	const composeFile = "/server/stacks/app/compose.yml"
 	byFile, primaryFiles := buildComposeStatusIndex([]container.Summary{
