@@ -2,38 +2,70 @@ import Button from '@mui/material/Button'
 import Dialog from '@mui/material/Dialog'
 import DialogActions from '@mui/material/DialogActions'
 import DialogTitle from '@mui/material/DialogTitle'
-import {Alert, Box, CircularProgress, Stack, Typography} from "@mui/material"
+import {Alert, Box, CircularProgress, Stack, TextField, Typography} from "@mui/material"
 import {create} from "zustand";
 import {useFiles} from "../../../context/file-context.tsx";
 import {useHostStore} from "../state/files.ts";
 import {reconcileDeletedGitFile, refreshGitStackStatuses, refreshGitTrackedFile, useGitTrackedFileInfo} from "../../../components/git-stack-status-store.ts";
 import {withProtectedAPI} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
-import {useState} from "react";
+import {useEffect, useState} from "react";
+
+interface FolderDeletionState {
+    bindingId: string; host: string; stackPath: string; repositoryName: string; repositoryBranch: string;
+    stackCount: number; state: string; localChanges: number; gitChanges: number; conflicts: number; unreadableLocal: number;
+}
 
 export const useFileDelete = create<{
     fileToDelete: string;
+    isDir: boolean;
     close: () => void;
-    open: (filename: string) => void;
+    open: (filename: string, isDir?: boolean) => void;
 }>(set => ({
     fileToDelete: "",
+    isDir: false,
     close: () => {
-        set({fileToDelete: ""})
+        set({fileToDelete: "", isDir: false})
     },
-    open: (filename: string) => {
-        set({fileToDelete: filename})
+    open: (filename: string, isDir = false) => {
+        set({fileToDelete: filename, isDir})
     }
 }))
 
 const FileDelete = () => {
     const fileToDelete = useFileDelete(state => state.fileToDelete)
+    const isDir = useFileDelete(state => state.isDir)
     const onClose = useFileDelete(state => state.close)
 
-    const {deleteFile} = useFiles()
+    const {deleteFile, listFiles} = useFiles()
     const host = useHostStore(state => state.host)
     const gitFile = useGitTrackedFileInfo(host, fileToDelete)
     const {showError, showSuccess} = useSnackbar()
     const [busy, setBusy] = useState(false)
+    const [folderState, setFolderState] = useState<FolderDeletionState | null>(null)
+    const [folderStateError, setFolderStateError] = useState('')
+    const [gitDeleteConfirmation, setGitDeleteConfirmation] = useState('')
+
+    const linkedFolderRoot = isDir && gitFile?.folderLinkRoot && Boolean(gitFile.bindingId)
+
+    useEffect(() => {
+        setFolderState(null)
+        setFolderStateError('')
+        setGitDeleteConfirmation('')
+        if (!linkedFolderRoot || !gitFile?.bindingId) return
+        let active = true
+        setBusy(true)
+        void fetch(withProtectedAPI(`/git/bindings/${gitFile.bindingId}/folder-deletion`)).then(async (response) => {
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({})) as {error?: string; message?: string}
+                throw new Error(body.error || body.message || `Folder Link verification failed (${response.status})`)
+            }
+            return response.json() as Promise<FolderDeletionState>
+        }).then((state) => { if (active) setFolderState(state) }).catch((reason) => {
+            if (active) setFolderStateError((reason as Error).message)
+        }).finally(() => { if (active) setBusy(false) })
+        return () => { active = false }
+    }, [gitFile?.bindingId, linkedFolderRoot])
 
     const onCancel = () => {
         onClose()
@@ -41,6 +73,7 @@ const FileDelete = () => {
 
     const onDelete = async (deleteFromGit = false) => {
         if (!fileToDelete || busy) return
+        if (linkedFolderRoot) return
         setBusy(true)
         try {
             if (!await deleteFile(fileToDelete)) return
@@ -82,6 +115,33 @@ const FileDelete = () => {
         }
     }
 
+    const deleteLinkedFolder = async (action: 'preserve_git' | 'sync_git' | 'delete_git') => {
+        if (!gitFile?.bindingId || busy) return
+        setBusy(true)
+        try {
+            const response = await fetch(withProtectedAPI(`/git/bindings/${gitFile.bindingId}/folder-deletion`), {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    action,
+                    confirmation: action === 'delete_git' ? gitDeleteConfirmation : 'DELETE LOCAL LINKED FOLDER',
+                }),
+            })
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({})) as {error?: string; message?: string}
+                throw new Error(body.error || body.message || `Folder deletion failed (${response.status})`)
+            }
+            const result = await response.json() as {message: string}
+            showSuccess(result.message)
+            await listFiles('', [])
+            await refreshGitStackStatuses(host, true)
+            onClose()
+        } catch (reason) {
+            showError((reason as Error).message)
+        } finally {
+            setBusy(false)
+        }
+    }
+
     return (
         <Dialog
             open={!!fileToDelete}
@@ -115,11 +175,24 @@ const FileDelete = () => {
                 </Box>
             </DialogTitle>
 
-            {gitFile?.tracked && gitFile.mutable && <Alert severity="warning" sx={{mt: 2, maxWidth: 560}}>
+            {linkedFolderRoot && <Stack spacing={1.5} sx={{mt: 2, maxWidth: 680}}>
+                <Alert severity="error">This directory is the root of a Git Folder Link. It cannot be deleted as an ordinary folder. Dockman will verify Git first and remove the Folder Link with it.</Alert>
+                {busy && !folderState && !folderStateError && <Box sx={{display: 'flex', justifyContent: 'center', py: 2}}><CircularProgress size={24}/></Box>}
+                {folderStateError && <Alert severity="error">Git consistency could not be verified: {folderStateError}. Deletion is blocked.</Alert>}
+                {folderState && <Alert severity={folderState.state === 'up_to_date' ? 'success' : folderState.conflicts || folderState.unreadableLocal ? 'error' : 'warning'}>
+                    <Typography variant="body2"><strong>{folderState.repositoryName}</strong> · {folderState.repositoryBranch} · {folderState.stackCount} stack{folderState.stackCount === 1 ? '' : 's'}</Typography>
+                    <Typography variant="body2">State: {folderState.state.replaceAll('_', ' ')} · local changes: {folderState.localChanges} · Git changes: {folderState.gitChanges} · conflicts: {folderState.conflicts}</Typography>
+                    {folderState.unreadableLocal > 0 && <Typography variant="body2">{folderState.unreadableLocal} synchronized local item(s) cannot be read.</Typography>}
+                </Alert>}
+                {folderState && <Alert severity="info">Choose whether Git must first receive readable local changes, remain untouched, or have the synchronized folder content deleted as well. No container or stack deployment is performed.</Alert>}
+                {folderState && <TextField size="small" label='Type DELETE FOLDER FROM GIT to enable Git deletion' value={gitDeleteConfirmation} onChange={(event) => setGitDeleteConfirmation(event.target.value)} fullWidth/>}
+            </Stack>}
+
+            {!linkedFolderRoot && gitFile?.tracked && gitFile.mutable && <Alert severity="warning" sx={{mt: 2, maxWidth: 560}}>
                 <Typography variant="body2">This file is synchronized with Git. You can preserve the Git copy, or delete it locally and commit the same deletion to Git in one operation.</Typography>
             </Alert>}
 
-            <DialogActions sx={{pt: 3, flexWrap: 'wrap'}}>
+            <DialogActions sx={{pt: 3, flexWrap: 'wrap', gap: 1}}>
                 <Button
                     onClick={onCancel}
                     disabled={busy}
@@ -137,7 +210,11 @@ const FileDelete = () => {
                     Cancel
                 </Button>
 
-                <Stack direction="row" spacing={1} sx={{ml: 'auto'}}>
+                {linkedFolderRoot ? <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{ml: 'auto'}}>
+                    <Button variant="outlined" color="warning" disabled={busy || !folderState} onClick={() => void deleteLinkedFolder('preserve_git')}>Keep Git · delete local & unlink</Button>
+                    <Button variant="contained" color="primary" disabled={busy || !folderState || folderState.conflicts > 0 || folderState.unreadableLocal > 0} onClick={() => void deleteLinkedFolder('sync_git')}>Update Git · delete local & unlink</Button>
+                    <Button variant="contained" color="error" disabled={busy || !folderState || gitDeleteConfirmation !== 'DELETE FOLDER FROM GIT'} onClick={() => void deleteLinkedFolder('delete_git')}>Delete local, Git & link</Button>
+                </Stack> : <Stack direction="row" spacing={1} sx={{ml: 'auto'}}>
                 <Button
                     onClick={() => void onDelete(false)}
                     variant="outlined"
@@ -157,7 +234,7 @@ const FileDelete = () => {
                 {gitFile?.tracked && gitFile.mutable && <Button onClick={() => void onDelete(true)} variant="contained" color="error" disabled={busy}>
                     {busy ? <CircularProgress size={16}/> : 'Delete locally and from Git'}
                 </Button>}
-                </Stack>
+                </Stack>}
             </DialogActions>
         </Dialog>
     )

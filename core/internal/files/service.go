@@ -29,6 +29,7 @@ type Service struct {
 	dockYml        DockyamlProvider
 	templateFolder string
 	changeNotifier func(host, path string)
+	deleteGuard    func(host, path string) error
 	editor         *editorState
 }
 
@@ -47,6 +48,10 @@ func New(
 
 func (s *Service) ConfigureChangeNotifier(notifier func(host, path string)) {
 	s.changeNotifier = notifier
+}
+
+func (s *Service) ConfigureDeleteGuard(guard func(host, path string) error) {
+	s.deleteGuard = guard
 }
 
 func (s *Service) NotifyChange(host, path string) {
@@ -258,6 +263,11 @@ func (s *Service) Exists(filename string, hostname string) error {
 }
 
 func (s *Service) Delete(filename string, hostname string) error {
+	if s.deleteGuard != nil {
+		if err := s.deleteGuard(hostname, filename); err != nil {
+			return err
+		}
+	}
 	sfCli, fullpath, _, err := s.LoadFs(filename, hostname)
 	if err != nil {
 		return err

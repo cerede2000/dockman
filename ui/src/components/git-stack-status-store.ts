@@ -43,6 +43,7 @@ export interface GitTrackedFileInfo {
     linked: boolean;
     tracked: boolean;
     mutable: boolean;
+    folderLinkRoot?: boolean;
     reason?: string;
 }
 

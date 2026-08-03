@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -59,6 +60,20 @@ func TestSaveIfRevisionRejectsAnObsoleteEditor(t *testing.T) {
 	contents, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)
 	require.Equal(t, "version: git\n", string(contents))
+}
+
+func TestDeleteGuardRunsBeforeFilesystemRemoval(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(root, "linked"), 0o755))
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+	srv.ConfigureDeleteGuard(func(host, path string) error {
+		require.Equal(t, "local", host)
+		require.Equal(t, "compose/linked", path)
+		return errors.New("protected Folder Link")
+	})
+	require.ErrorContains(t, srv.Delete("compose/linked", "local"), "protected Folder Link")
+	require.DirExists(t, filepath.Join(root, "linked"))
 }
 
 func TestList(t *testing.T) {

@@ -626,7 +626,7 @@ const useFileMenuCtx = (entry: FsEntry) => {
         (
             <MenuItem onClick={() => {
                 closeCtxMenu()
-                showDelete(filename)
+                showDelete(filename, entry.isDir)
             }}>
                 Delete
             </MenuItem>

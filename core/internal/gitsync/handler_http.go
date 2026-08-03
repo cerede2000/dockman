@@ -48,6 +48,8 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /bindings/{id}/orphan/{composePath...}", h.resolveGitOrphan)
 	mux.HandleFunc("POST /bindings/{id}/local-deletion/{composePath...}", h.resolveLocalStackDeletion)
 	mux.HandleFunc("GET /bindings/{id}/local-deletion/{composePath...}", h.listLocalStackDeletions)
+	mux.HandleFunc("GET /bindings/{id}/folder-deletion", h.inspectFolderLinkDeletion)
+	mux.HandleFunc("POST /bindings/{id}/folder-deletion", h.deleteFolderLinkRoot)
 	mux.HandleFunc("POST /bindings", h.createBinding)
 	mux.HandleFunc("PUT /bindings/{id}/policy", h.updateBindingPolicy)
 	mux.HandleFunc("POST /bindings/{id}/policy-tree", h.bindingPolicyTree)
@@ -555,6 +557,35 @@ func (h *HTTPHandler) deleteBinding(w http.ResponseWriter, r *http.Request) {
 	h.service.recordActivity(ActivityRecord{RepositoryID: binding.RepositoryUUID, BindingID: binding.UUID,
 		Type: "binding_delete", Trigger: "manual", Details: ActivityDetails{Action: map[bool]string{true: "unlink_and_forget", false: "unlink"}[forget]}})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPHandler) inspectFolderLinkDeletion(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.InspectFolderLinkDeletion(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) deleteFolderLinkRoot(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input FolderLinkDeletionInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.DeleteFolderLinkRoot(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) previewBinding(w http.ResponseWriter, r *http.Request) {

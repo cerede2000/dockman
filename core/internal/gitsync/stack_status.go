@@ -77,14 +77,15 @@ type GitTrackedFilesView struct {
 }
 
 type GitTrackedFileView struct {
-	Path         string `json:"path"`
-	BindingID    string `json:"bindingId,omitempty"`
-	ComposePath  string `json:"composePath,omitempty"`
-	RelativePath string `json:"relativePath,omitempty"`
-	Linked       bool   `json:"linked"`
-	Tracked      bool   `json:"tracked"`
-	Mutable      bool   `json:"mutable"`
-	Reason       string `json:"reason,omitempty"`
+	Path           string `json:"path"`
+	BindingID      string `json:"bindingId,omitempty"`
+	ComposePath    string `json:"composePath,omitempty"`
+	RelativePath   string `json:"relativePath,omitempty"`
+	Linked         bool   `json:"linked"`
+	Tracked        bool   `json:"tracked"`
+	Mutable        bool   `json:"mutable"`
+	FolderLinkRoot bool   `json:"folderLinkRoot,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 type GitFileTrackingInput struct {
@@ -325,7 +326,13 @@ func (s *Service) GitTrackedFiles(input GitTrackedFilesInput) (GitTrackedFilesVi
 			relative := fullPath
 			if root != "" && root != "." {
 				if fullPath == root {
-					continue
+					view.Linked = true
+					view.Tracked = true
+					view.BindingID = binding.UUID
+					view.FolderLinkRoot = true
+					view.Reason = "This directory is the root of a Git Folder Link"
+					tracked = append(tracked, fullPath)
+					break
 				}
 				if !strings.HasPrefix(fullPath, root+"/") {
 					continue

@@ -1064,6 +1064,13 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	repositoryLock := s.repositoryLock(row.RepositoryUUID)
 	repositoryLock.Lock()
 	defer repositoryLock.Unlock()
+	return s.deleteBindingLocked(row, forget)
+}
+
+// deleteBindingLocked removes a Folder Link while its automation and
+// repository locks are already held. Destructive folder operations use this
+// helper so the filesystem deletion and unlink cannot race the scheduler.
+func (s *Service) deleteBindingLocked(row StackBinding, forget bool) error {
 	row.AutoSyncEnabled = false
 	row.AutoSyncPaused = false
 	row.AutoSyncState = "disabled"
@@ -1079,7 +1086,7 @@ func (s *Service) DeleteBinding(id string, forget bool) error {
 	if err := s.removeBindingBackups(row.UUID); err != nil {
 		return err
 	}
-	return s.store.DeleteBinding(id, forget)
+	return s.store.DeleteBinding(row.UUID, forget)
 }
 
 func (s *Service) ListStackTargets() ([]StackTarget, error) {

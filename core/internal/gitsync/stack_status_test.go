@@ -171,6 +171,18 @@ func TestGitTrackedFilesUsesEffectivePolicyAndSelectedStacks(t *testing.T) {
 	require.False(t, byPath["another/.env.example"].Linked)
 }
 
+func TestGitTrackedFilesIdentifiesExactFolderLinkRoot(t *testing.T) {
+	service, _, binding := prepareMultiStackBinding(t)
+	result, err := service.GitTrackedFiles(GitTrackedFilesInput{Host: "local", Paths: []string{"compose"}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"compose"}, result.TrackedPaths)
+	require.Len(t, result.Files, 1)
+	require.True(t, result.Files[0].Linked)
+	require.True(t, result.Files[0].FolderLinkRoot)
+	require.Equal(t, binding.ID, result.Files[0].BindingID)
+	require.Contains(t, result.Files[0].Reason, "Folder Link")
+}
+
 func TestFilesContextCanAddAndRemoveAnOrdinaryGitFile(t *testing.T) {
 	service, stackRoot, binding := prepareMultiStackBinding(t)
 	_, err := service.UpdateBindingPolicy(binding.ID, BindingPolicyInput{Profile: syncProfileComposeOnly})
