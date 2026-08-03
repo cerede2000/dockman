@@ -29,6 +29,7 @@ import {
     AccountTreeOutlined,
     CheckCircleOutlined,
     EditOutlined,
+    HistoryOutlined,
     Refresh,
     ShieldOutlined,
     SpaceDashboardOutlined,
@@ -54,6 +55,7 @@ type UpdateEnrollment = {
     source: 'none' | 'interface' | 'label' | 'disabled-label' | 'protected';
     reason?: string;
     schedule?: string;
+	scheduleError?: string;
     rollback: boolean;
     policyTarget?: TargetType;
     policyTargetId?: string;
@@ -65,6 +67,29 @@ type PolicyDraft = {
     schedule: string;
     rollbackEnabled: boolean;
 };
+
+type ScanResult = {
+    containerId: string;
+	image: string;
+    status: 'available' | 'current' | 'skipped' | 'error';
+    reason?: string;
+    checkedAt: string;
+};
+
+type ScanRun = {
+    id: number;
+    startedAt: string;
+    trigger: string;
+    schedule?: string;
+    targets: number;
+    available: number;
+    current: number;
+    skipped: number;
+    errors: number;
+    error?: string;
+};
+
+type ScheduledScan = {schedule: string; nextRun: string; targets: number};
 
 const sourceLabels: Record<UpdateEnrollment['source'], string> = {
     none: 'Not enrolled',
@@ -83,12 +108,16 @@ export default function UpdatesPage() {
     const host = useHostFromUrl();
     const hostUrl = useHostUrl();
     const navigate = useNavigate();
-    const {showError, showSuccess} = useSnackbar();
+	const {showError, showSuccess, showWarning} = useSnackbar();
     const [rows, setRows] = useState<UpdateEnrollment[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState('');
     const [editing, setEditing] = useState<UpdateEnrollment | null>(null);
     const [saving, setSaving] = useState(false);
+	const [scanning, setScanning] = useState(false);
+	const [scanResults, setScanResults] = useState<Record<string, ScanResult>>({});
+	const [scanRuns, setScanRuns] = useState<ScanRun[]>([]);
+	const [schedules, setSchedules] = useState<ScheduledScan[]>([]);
     const [draft, setDraft] = useState<PolicyDraft>({
         targetType: 'container', enabled: true, schedule: '', rollbackEnabled: true,
     });
@@ -100,6 +129,12 @@ export default function UpdatesPage() {
             if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
             const payload = await response.json() as {results: UpdateEnrollment[]};
             setRows(payload.results ?? []);
+			const stateResponse = await fetch(hostUrl('/docker/updates/state'));
+			if (!stateResponse.ok) throw new Error((await stateResponse.text()).trim() || `HTTP ${stateResponse.status}`);
+			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]};
+			setScanResults(Object.fromEntries((state.results ?? []).map(result => [result.containerId, result])));
+			setScanRuns(state.runs ?? []);
+			setSchedules(state.schedules ?? []);
         } catch (error) {
             showError(`Unable to load update policies — ${error instanceof Error ? error.message : String(error)}`);
         } finally {
@@ -117,6 +152,29 @@ export default function UpdatesPage() {
 
     const enrolledCount = rows.filter(row => row.enrolled).length;
     const labelCount = rows.filter(row => row.source === 'label' || row.source === 'disabled-label').length;
+	const availableCount = rows.filter(row => scanResults[row.containerId]?.status === 'available').length;
+
+	const scanNow = async () => {
+		setScanning(true);
+		try {
+			const response = await fetch(hostUrl('/docker/updates/scan'), {method: 'POST'});
+			if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+			const payload = await response.json() as {run: ScanRun};
+			await load();
+			if (payload.run.errors > 0) {
+				showWarning(`${payload.run.available} update${payload.run.available === 1 ? '' : 's'} available; ${payload.run.errors} check${payload.run.errors === 1 ? '' : 's'} failed`);
+			} else {
+				showSuccess(payload.run.available > 0
+					? `${payload.run.available} update${payload.run.available === 1 ? '' : 's'} available`
+					: 'All enrolled images are up to date');
+			}
+		} catch (error) {
+			await load();
+			showError(`Image scan failed — ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			setScanning(false);
+		}
+	};
 
     const openPolicy = (row: UpdateEnrollment) => {
         const targetType = row.policyTarget ?? (row.stackKey ? 'stack' : 'container');
@@ -191,7 +249,8 @@ export default function UpdatesPage() {
         <Box sx={{p: {xs: 1.5, md: 2.5}, maxWidth: 1500, mx: 'auto'}}>
             <PageHeader title="Updates" icon={<SystemUpdateAlt/>} right={<Stack direction="row" spacing={1}>
                 <Button startIcon={<Refresh/>} onClick={() => void load()} disabled={loading}>Refresh</Button>
-                <Button startIcon={<SpaceDashboardOutlined/>} onClick={() => navigate(`/${host}/monitor`)}>Check images</Button>
+				<Button variant="contained" startIcon={<SystemUpdateAlt/>} onClick={() => void scanNow()} disabled={loading || scanning || enrolledCount === 0}>{scanning ? 'Scanning…' : 'Scan enrolled'}</Button>
+				<Button startIcon={<SpaceDashboardOutlined/>} onClick={() => navigate(`/${host}/monitor`)}>Monitor</Button>
             </Stack>}/>
 
             <Stack direction={{xs: 'column', md: 'row'}} spacing={1.5} sx={{mb: 2}}>
@@ -203,9 +262,13 @@ export default function UpdatesPage() {
                     <Typography color="text.secondary" variant="body2">Compose-controlled policies</Typography>
                     <Typography variant="h4">{labelCount}</Typography>
                 </Paper>
+				<Paper variant="outlined" sx={{p: 1.75, flex: 1}}>
+					<Typography color="text.secondary" variant="body2">Updates available</Typography>
+					<Typography variant="h4" color={availableCount > 0 ? 'warning.main' : 'inherit'}>{availableCount}</Typography>
+				</Paper>
                 <Paper variant="outlined" sx={{p: 1.75, flex: 2}}>
                     <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="success"/><Typography sx={{fontWeight: 600}}>Opt-in foundation</Typography></Stack>
-                    <Typography variant="body2" color="text.secondary">Nothing is updated automatically in Lot 1. Execution, scheduling and rollback are added in later lots.</Typography>
+					<Typography variant="body2" color="text.secondary">Image checks are scheduled automatically. Updates remain read-only: no container is recreated in this lot.</Typography>
                 </Paper>
             </Stack>
 
@@ -222,7 +285,7 @@ export default function UpdatesPage() {
                     <Table stickyHeader size="small">
                         <TableHead><TableRow>
                             <TableCell>Container</TableCell><TableCell>Stack</TableCell><TableCell>Image</TableCell>
-                            <TableCell>Policy</TableCell><TableCell>Schedule</TableCell><TableCell align="right">Action</TableCell>
+							<TableCell>Policy</TableCell><TableCell>Schedule</TableCell><TableCell>Latest scan</TableCell><TableCell align="right">Action</TableCell>
                         </TableRow></TableHead>
                         <TableBody>
                             {visibleRows.map(row => <TableRow key={row.containerId} hover>
@@ -232,15 +295,37 @@ export default function UpdatesPage() {
                                 </Stack></TableCell>
                                 <TableCell>{row.stackName || <Typography color="text.secondary">Standalone</Typography>}</TableCell>
                                 <TableCell sx={{fontFamily: 'monospace', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{row.image}</TableCell>
-                                <TableCell><Tooltip title={row.reason ?? ''}><Chip size="small" label={sourceLabels[row.source]} color={row.enrolled ? 'success' : row.source === 'disabled-label' ? 'warning' : 'default'} variant="outlined"/></Tooltip></TableCell>
-                                <TableCell sx={{fontFamily: 'monospace'}}>{row.schedule || '—'}</TableCell>
+                                <TableCell><Tooltip title={row.scheduleError || row.reason || ''}><Chip size="small" label={row.scheduleError ? 'Invalid schedule' : sourceLabels[row.source]} color={row.scheduleError ? 'error' : row.enrolled ? 'success' : row.source === 'disabled-label' ? 'warning' : 'default'} variant="outlined"/></Tooltip></TableCell>
+								<TableCell sx={{fontFamily: 'monospace'}}>{row.schedule || (row.enrolled ? '0 4 * * *' : '—')}</TableCell>
+								<TableCell>{row.enrolled && scanResults[row.containerId]?.image === row.image ? <Tooltip title={scanResults[row.containerId].reason ?? new Date(scanResults[row.containerId].checkedAt).toLocaleString()}>
+									<Chip size="small" label={scanResults[row.containerId].status} color={scanResults[row.containerId].status === 'available' ? 'warning' : scanResults[row.containerId].status === 'error' ? 'error' : scanResults[row.containerId].status === 'current' ? 'success' : 'default'} variant="outlined"/>
+								</Tooltip> : '—'}</TableCell>
                                 <TableCell align="right"><Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></TableCell>
                             </TableRow>)}
-                            {!loading && visibleRows.length === 0 && <TableRow><TableCell colSpan={6} align="center" sx={{py: 6, color: 'text.secondary'}}>No container matches this view.</TableCell></TableRow>}
+							{!loading && visibleRows.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{py: 6, color: 'text.secondary'}}>No container matches this view.</TableCell></TableRow>}
                         </TableBody>
                     </Table>
                 </TableContainer>
             </Paper>
+
+			<Stack direction={{xs: 'column', lg: 'row'}} spacing={2} sx={{mt: 2}}>
+				<Paper variant="outlined" sx={{p: 2, flex: 1}}>
+					<Typography variant="h6" sx={{mb: 1}}>Scheduled checks</Typography>
+					{schedules.length === 0 ? <Typography color="text.secondary">No enrolled target is currently scheduled.</Typography> : schedules.map(schedule =>
+						<Stack key={schedule.schedule} direction="row" sx={{justifyContent: 'space-between', py: .75, borderBottom: 1, borderColor: 'divider'}}>
+							<Box><Typography sx={{fontFamily: 'monospace'}}>{schedule.schedule}</Typography><Typography variant="caption" color="text.secondary">{schedule.targets} target{schedule.targets === 1 ? '' : 's'}</Typography></Box>
+							<Typography variant="body2">{new Date(schedule.nextRun).toLocaleString()}</Typography>
+						</Stack>)}
+				</Paper>
+				<Paper variant="outlined" sx={{p: 2, flex: 1.3}}>
+					<Stack direction="row" spacing={1} sx={{alignItems: 'center', mb: 1}}><HistoryOutlined/><Typography variant="h6">Recent scans</Typography></Stack>
+					{scanRuns.length === 0 ? <Typography color="text.secondary">No scan has run yet.</Typography> : scanRuns.slice(0, 8).map(run =>
+						<Stack key={run.id} direction="row" spacing={1} sx={{alignItems: 'center', py: .65, borderBottom: 1, borderColor: 'divider'}}>
+							<Chip size="small" label={run.trigger}/><Typography variant="body2" sx={{minWidth: 150}}>{new Date(run.startedAt).toLocaleString()}</Typography>
+							<Typography variant="body2">{run.targets} checked · {run.available} available · {run.errors} errors</Typography>
+						</Stack>)}
+				</Paper>
+			</Stack>
 
             <Dialog open={editing !== null} onClose={() => !saving && setEditing(null)} fullWidth maxWidth="sm">
                 <DialogTitle><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><AccountTreeOutlined/><span>Update policy — {editing?.containerName}</span></Stack></DialogTitle>
@@ -253,7 +338,7 @@ export default function UpdatesPage() {
                         </Select>
                     </FormControl>
                     <FormControlLabel control={<Switch checked={draft.enabled} onChange={event => setDraft(current => ({...current, enabled: event.target.checked}))}/>} label="Enroll this target in automatic updates"/>
-                    <TextField label="Schedule (optional)" placeholder="0 4 * * *" value={draft.schedule} onChange={event => setDraft(current => ({...current, schedule: event.target.value}))} helperText="Standard five-field cron expression. Stored now; execution starts in a later lot."/>
+					<TextField label="Image check schedule (optional)" placeholder="0 4 * * *" value={draft.schedule} onChange={event => setDraft(current => ({...current, schedule: event.target.value}))} helperText="Standard five-field cron, minimum 15 minutes. Empty uses the daily 04:00 default."/>
                     <FormControlLabel control={<Switch checked={draft.rollbackEnabled} onChange={event => setDraft(current => ({...current, rollbackEnabled: event.target.checked}))}/>} label="Protect with automatic rollback"/>
                 </Stack></DialogContent>
                 <DialogActions>

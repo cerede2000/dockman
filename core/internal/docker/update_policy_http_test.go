@@ -63,7 +63,37 @@ func TestUpdatePolicyHTTPRejectsInvalidSchedule(t *testing.T) {
 		"targetType":"container","targetKey":"web","targetName":"web",
 		"enabled":true,"schedule":"invalid","rollbackEnabled":true
 	}`))
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid five-field cron") {
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid image check schedule") {
 		t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestEnrolledUpdateScanHTTP(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&updater.UpdateScanResult{}, &updater.UpdateScanRun{}); err != nil {
+		t.Fatal(err)
+	}
+	automation, err := updater.NewAutomationService(
+		updater.NewScanStore(db),
+		func(context.Context, string) ([]updater.UpdateEnrollment, error) {
+			return []updater.UpdateEnrollment{{ContainerID: "web-id", ContainerName: "web", Enrolled: true}}, nil
+		},
+		func(context.Context, string, []string) ([]updater.ContainerUpdateCheck, error) {
+			return []updater.ContainerUpdateCheck{{ContainerID: "web-id", ContainerName: "web", Status: updater.ContainerUpdateCurrent}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = automation.Shutdown() })
+	handler := NewHandlerHttpWithUpdates(nil, false, nil, automation)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, policyRequest(http.MethodPost, "/updates/scan", ""))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"current":1`) {
+		t.Fatalf("unexpected scan response %d: %s", response.Code, response.Body.String())
 	}
 }

@@ -50,9 +50,36 @@ type inspectedImage struct {
 // is de-duplicated by image reference and bounded so a host with many
 // containers cannot create an unbounded burst against the daemon/proxy.
 func (u *Service) CheckContainerUpdates(ctx context.Context) ([]ContainerUpdateCheck, error) {
+	return u.checkContainerUpdates(ctx, nil)
+}
+
+// CheckContainerUpdatesByID limits registry work to the explicitly selected
+// containers. An empty selection performs no registry request.
+func (u *Service) CheckContainerUpdatesByID(ctx context.Context, containerIDs []string) ([]ContainerUpdateCheck, error) {
+	if len(containerIDs) == 0 {
+		return []ContainerUpdateCheck{}, nil
+	}
+	selected := make(map[string]struct{}, len(containerIDs))
+	for _, id := range containerIDs {
+		selected[id] = struct{}{}
+	}
+	return u.checkContainerUpdates(ctx, selected)
+}
+
+func (u *Service) checkContainerUpdates(ctx context.Context, selected map[string]struct{}) ([]ContainerUpdateCheck, error) {
 	containers, err := u.cli().ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("list containers: %w", err)
+	}
+
+	if selected != nil {
+		filtered := containers.Items[:0]
+		for _, item := range containers.Items {
+			if _, ok := selected[item.ID]; ok {
+				filtered = append(filtered, item)
+			}
+		}
+		containers.Items = filtered
 	}
 
 	// Inspect each distinct image before contacting a registry. Locally built

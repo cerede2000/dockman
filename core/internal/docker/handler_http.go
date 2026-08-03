@@ -28,9 +28,10 @@ var upgrader = websocket.Upgrader{
 }
 
 type HandlerHttp struct {
-	srv            ServiceProvider
-	allowSelfExec  bool
-	updatePolicies *updater.PolicyService
+	srv              ServiceProvider
+	allowSelfExec    bool
+	updatePolicies   *updater.PolicyService
+	updateAutomation *updater.AutomationService
 }
 
 func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies ...*updater.PolicyService) http.Handler {
@@ -38,7 +39,16 @@ func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies ...*update
 	if len(policies) > 0 {
 		policyService = policies[0]
 	}
-	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policyService}
+	return newHandlerHttp(srv, allowSelfExec, policyService, nil)
+
+}
+
+func NewHandlerHttpWithUpdates(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService) http.Handler {
+	return newHandlerHttp(srv, allowSelfExec, policies, automation)
+}
+
+func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService) http.Handler {
+	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation}
 	return hand.register()
 }
 
@@ -59,6 +69,8 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /updates/policies", h.listUpdatePolicies)
 	subMux.HandleFunc("PUT /updates/policies", h.saveUpdatePolicy)
 	subMux.HandleFunc("DELETE /updates/policies", h.deleteUpdatePolicy)
+	subMux.HandleFunc("POST /updates/scan", h.runEnrolledUpdateScan)
+	subMux.HandleFunc("GET /updates/state", h.getUpdateState)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 
 	return subMux
@@ -83,6 +95,11 @@ func (h *HandlerHttp) getUpdateInventory(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if h.updateAutomation != nil {
+		if err := h.updateAutomation.ReconcileInventory(host, rows); err != nil {
+			log.Warn().Err(err).Str("host", host).Msg("could not reconcile automatic image scan schedules")
+		}
 	}
 	writeJSON(w, struct {
 		Results any `json:"results"`
@@ -119,6 +136,9 @@ func (h *HandlerHttp) saveUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if h.updateAutomation != nil {
+		h.updateAutomation.RefreshHost(host)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -131,7 +151,56 @@ func (h *HandlerHttp) deleteUpdatePolicy(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if h.updateAutomation != nil {
+		h.updateAutomation.RefreshHost(host)
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HandlerHttp) runEnrolledUpdateScan(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updateAutomationHost(w, r)
+	if !ok {
+		return
+	}
+	run, checks, err := h.updateAutomation.RunNow(r.Context(), host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, struct {
+		Run     updater.UpdateScanRun          `json:"run"`
+		Results []updater.ContainerUpdateCheck `json:"results"`
+	}{Run: run, Results: checks})
+}
+
+func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updateAutomationHost(w, r)
+	if !ok {
+		return
+	}
+	results, runs, schedules, err := h.updateAutomation.State(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Results   []updater.UpdateScanResult `json:"results"`
+		Runs      []updater.UpdateScanRun    `json:"runs"`
+		Schedules []updater.ScheduledScan    `json:"schedules"`
+	}{Results: results, Runs: runs, Schedules: schedules})
+}
+
+func (h *HandlerHttp) updateAutomationHost(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if h.updateAutomation == nil {
+		http.Error(w, "automatic image scans are unavailable", http.StatusServiceUnavailable)
+		return "", false
+	}
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return "", false
+	}
+	return host, true
 }
 
 func (h *HandlerHttp) updatePolicyHost(w http.ResponseWriter, r *http.Request) (string, bool) {

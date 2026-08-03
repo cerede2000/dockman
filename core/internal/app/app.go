@@ -21,6 +21,7 @@ import (
 	"github.com/RA341/dockman/internal/database"
 	"github.com/RA341/dockman/internal/docker"
 	"github.com/RA341/dockman/internal/docker/compose"
+	"github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/internal/docker/updater"
 	"github.com/RA341/dockman/internal/dockyaml"
 	"github.com/RA341/dockman/internal/files"
@@ -41,17 +42,18 @@ import (
 type App struct {
 	Config *config.AppConfig
 
-	Auth           *auth.Service
-	HostManager    *host.Service
-	File           *files.Service
-	Info           *info.Service
-	SSH            *ssh.Service
-	UserConfigSrv  *config.Service
-	CleanerSrv     *cleaner.Service
-	Viewer         *viewer.Service
-	DockYaml       *dockyaml.Service
-	GitSync        *gitsync.Service
-	UpdatePolicies *updater.PolicyService
+	Auth             *auth.Service
+	HostManager      *host.Service
+	File             *files.Service
+	Info             *info.Service
+	SSH              *ssh.Service
+	UserConfigSrv    *config.Service
+	CleanerSrv       *cleaner.Service
+	Viewer           *viewer.Service
+	DockYaml         *dockyaml.Service
+	GitSync          *gitsync.Service
+	UpdatePolicies   *updater.PolicyService
+	UpdateAutomation *updater.AutomationService
 }
 
 func (a *App) VerifyServices() error {
@@ -155,6 +157,36 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		cleanerStore,
 	)
 	updatePolicySrv := updater.NewPolicyService(updater.NewPolicyStore(gormDB))
+	updateAutomationSrv, err := updater.NewAutomationService(
+		updater.NewScanStore(gormDB),
+		func(ctx context.Context, hostname string) ([]updater.UpdateEnrollment, error) {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return nil, getErr
+			}
+			containers, listErr := dkSrv.Container.ContainersList(ctx)
+			if listErr != nil {
+				return nil, listErr
+			}
+			return updatePolicySrv.Inventory(ctx, hostname, containers)
+		},
+		func(ctx context.Context, hostname string, containerIDs []string) ([]updater.ContainerUpdateCheck, error) {
+			dkSrv, getErr := hostManager.GetDockerService(hostname)
+			if getErr != nil {
+				return nil, getErr
+			}
+			return dkSrv.Updater.CheckContainerUpdatesByID(ctx, containerIDs)
+		},
+	)
+	if err != nil {
+		log.Fatal().Err(err).Msg("unable to initialize automatic image scan scheduler")
+	}
+	go func() {
+		<-conf.ServerContext.Done()
+		if shutdownErr := updateAutomationSrv.Shutdown(); shutdownErr != nil {
+			log.Warn().Err(shutdownErr).Msg("unable to stop automatic image scan scheduler cleanly")
+		}
+	}()
 
 	gitStore := gitsync.NewStore(gormDB)
 	var gitVault *gitsync.Vault
@@ -255,26 +287,76 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	)
 
 	app = &App{
-		Config:         conf,
-		Auth:           authSrv,
-		File:           fileSrv,
-		HostManager:    hostManager,
-		Info:           infoSrv,
-		DockYaml:       dockyamlSrv,
-		SSH:            sshSrv,
-		UserConfigSrv:  userConfigSrv,
-		CleanerSrv:     cleanerSrv,
-		Viewer:         viewerSrv,
-		GitSync:        gitSyncSrv,
-		UpdatePolicies: updatePolicySrv,
+		Config:           conf,
+		Auth:             authSrv,
+		File:             fileSrv,
+		HostManager:      hostManager,
+		Info:             infoSrv,
+		DockYaml:         dockyamlSrv,
+		SSH:              sshSrv,
+		UserConfigSrv:    userConfigSrv,
+		CleanerSrv:       cleanerSrv,
+		Viewer:           viewerSrv,
+		GitSync:          gitSyncSrv,
+		UpdatePolicies:   updatePolicySrv,
+		UpdateAutomation: updateAutomationSrv,
 	}
 	err = app.VerifyServices()
 	if err != nil {
 		log.Fatal().Err(err).Msg("error occurred while verifying services")
 	}
+	for _, hostname := range hostManager.ListConnected() {
+		updateAutomationSrv.RefreshHost(hostname)
+		dkSrv, getErr := hostManager.GetDockerService(hostname)
+		if getErr != nil {
+			log.Warn().Err(getErr).Str("host", hostname).Msg("unable to watch container policy changes")
+			continue
+		}
+		events, unsubscribe := dkSrv.Container.SubscribeEvents()
+		go watchUpdatePolicyEvents(conf.ServerContext, hostname, events, unsubscribe, updateAutomationSrv)
+	}
 
 	log.Info().Msg("Dockman initialized successfully")
 	return app
+}
+
+func watchUpdatePolicyEvents(ctx context.Context, hostname string, events <-chan container.Event, unsubscribe func(), automation *updater.AutomationService) {
+	defer unsubscribe()
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			switch event.Action {
+			case "create", "destroy", "rename", "update":
+				if timer == nil {
+					timer = time.NewTimer(2 * time.Second)
+				} else {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(2 * time.Second)
+				}
+				timerC = timer.C
+			}
+		case <-timerC:
+			timerC = nil
+			automation.RefreshHost(hostname)
+		}
+	}
 }
 
 func setupComposeRoot(composeRoot string) (cr string) {
@@ -455,7 +537,7 @@ func (a *App) registerApiHostRoutes(hostMux *http.ServeMux) {
 	withSubRouter(
 		hostMux,
 		"/docker",
-		docker.NewHandlerHttp(a.HostManager.GetDockerService, a.Config.AllowSelfExec, a.UpdatePolicies),
+		docker.NewHandlerHttpWithUpdates(a.HostManager.GetDockerService, a.Config.AllowSelfExec, a.UpdatePolicies, a.UpdateAutomation),
 	)
 	// cleaner
 	hostMux.Handle(cleaner.NewHandler(a.CleanerSrv))

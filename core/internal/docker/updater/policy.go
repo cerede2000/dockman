@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/moby/moby/api/types/container"
-	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -86,9 +85,11 @@ func (s *PolicyService) Save(policy *UpdatePolicy) error {
 		return fmt.Errorf("unsupported update target type %q", policy.TargetType)
 	}
 	if policy.Schedule != "" {
-		if _, err := cron.ParseStandard(policy.Schedule); err != nil {
-			return fmt.Errorf("invalid five-field cron schedule: %w", err)
+		normalized, err := NormalizeUpdateSchedule(policy.Schedule)
+		if err != nil {
+			return fmt.Errorf("invalid image check schedule: %w", err)
 		}
+		policy.Schedule = normalized
 	}
 	return s.store.Upsert(policy)
 }
@@ -114,6 +115,7 @@ type UpdateEnrollment struct {
 	Source         string `json:"source"`
 	Reason         string `json:"reason,omitempty"`
 	Schedule       string `json:"schedule,omitempty"`
+	ScheduleError  string `json:"scheduleError,omitempty"`
 	Rollback       bool   `json:"rollback"`
 	PolicyTarget   string `json:"policyTarget,omitempty"`
 	PolicyTargetID string `json:"policyTargetId,omitempty"`
@@ -161,6 +163,9 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 			}
 			row.Enrolled, row.Source = true, "label"
 			row.Schedule = strings.TrimSpace(item.Labels[UpdateScheduleLabel])
+			if _, err := NormalizeUpdateSchedule(row.Schedule); err != nil {
+				row.ScheduleError = err.Error()
+			}
 			if rollback, ok := boolLabel(item.Labels, UpdateRollbackLabel); ok {
 				row.Rollback = rollback
 			}
@@ -187,6 +192,9 @@ func applyPolicy(row *UpdateEnrollment, policy UpdatePolicy) {
 	row.Enrolled = policy.Enabled
 	row.Source = "interface"
 	row.Schedule = policy.Schedule
+	if _, err := NormalizeUpdateSchedule(row.Schedule); err != nil {
+		row.ScheduleError = err.Error()
+	}
 	row.Rollback = policy.RollbackEnabled
 	row.PolicyTarget = policy.TargetType
 	row.PolicyTargetID = policy.TargetKey
