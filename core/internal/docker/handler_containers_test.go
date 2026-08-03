@@ -68,6 +68,68 @@ func TestBuildComposeStatusIndexIncludesNestedPrimaryPath(t *testing.T) {
 	require.Equal(t, &stackStatus{up: 1, down: 1, healthy: 1}, byFile[override])
 }
 
+func TestBuildComposeStatusIndexIgnoresOneoffContainers(t *testing.T) {
+	const composeFile = "/server/stacks/app/compose.yml"
+	byFile, primaryFiles := buildComposeStatusIndex([]container.Summary{
+		{
+			ID: "service",
+			Labels: map[string]string{
+				api.ConfigFilesLabel: composeFile,
+				api.OneoffLabel:      "False",
+			},
+			State: container.StateExited,
+		},
+		{
+			ID: "oneoff",
+			Labels: map[string]string{
+				api.ConfigFilesLabel: composeFile,
+				api.OneoffLabel:      "True",
+			},
+			State: container.StateRunning,
+		},
+	})
+
+	require.Equal(t, map[string]struct{}{composeFile: {}}, primaryFiles)
+	require.Equal(t, &stackStatus{down: 1}, byFile[composeFile])
+}
+
+func TestComposeStoppedOverrideIsScopedAndCleared(t *testing.T) {
+	h := &Handler{composeStopped: make(map[composeStackKey]int64)}
+	h.setComposeStopped("local", "compose/app/compose.yml", true)
+
+	_, stopped := h.composeStoppedAt("local", "compose/app/compose.yml")
+	require.True(t, stopped)
+	_, stopped = h.composeStoppedAt("remote", "compose/app/compose.yml")
+	require.False(t, stopped)
+	_, stopped = h.composeStoppedAt("local", "compose/other/compose.yml")
+	require.False(t, stopped)
+
+	h.setComposeStopped("local", "compose/app/compose.yml", false)
+	_, stopped = h.composeStoppedAt("local", "compose/app/compose.yml")
+	require.False(t, stopped)
+}
+
+func TestComposeStoppedOverrideDetectsNewProjectContainers(t *testing.T) {
+	const composeFile = "/server/stacks/app/compose.yml"
+	containers := []container.Summary{
+		{Created: 99, Labels: map[string]string{api.ConfigFilesLabel: composeFile}},
+		{Created: 101, Labels: map[string]string{api.ConfigFilesLabel: "/server/stacks/other/compose.yml"}},
+		{Created: 101, Labels: map[string]string{api.ConfigFilesLabel: composeFile, api.OneoffLabel: "True"}},
+	}
+	require.False(t, hasComposeContainerCreatedSince(containers, composeFile, 100))
+
+	containers = append(containers, container.Summary{
+		Created: 100,
+		Labels:  map[string]string{api.ConfigFilesLabel: composeFile},
+	})
+	require.False(t, hasComposeContainerCreatedSince(containers, composeFile, 100), "same-second containers predate the completed down action")
+	containers = append(containers, container.Summary{
+		Created: 101,
+		Labels:  map[string]string{api.ConfigFilesLabel: composeFile},
+	})
+	require.True(t, hasComposeContainerCreatedSince(containers, composeFile, 100))
+}
+
 func TestStackStatusAcceptsRunningContainerWithoutHealthcheck(t *testing.T) {
 	status := &stackStatus{}
 	require.NotPanics(t, func() {

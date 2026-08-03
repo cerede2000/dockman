@@ -31,11 +31,25 @@ type ServiceProvider func(host string) (*Service, error)
 
 type Handler struct {
 	srv ServiceProvider
+
+	// composeStateOverrides records successful state-changing actions whose
+	// result is more authoritative than residual Docker labels. In particular,
+	// a daemon restart can leave a one-off/orphan carrying config_files after
+	// `docker compose down` has removed the actual project. The next up/start/
+	// restart for that stack clears the override.
+	composeStateMu sync.RWMutex
+	composeStopped map[composeStackKey]int64
+}
+
+type composeStackKey struct {
+	host string
+	file string
 }
 
 func NewConnectHandler(srv ServiceProvider) (string, http.Handler) {
 	h := &Handler{
-		srv: srv,
+		srv:            srv,
+		composeStopped: make(map[composeStackKey]int64),
 	}
 	return dockerpc.NewDockerServiceHandler(h)
 }
@@ -91,6 +105,14 @@ func (h *Handler) ComposeFileStatus(ctx context.Context, c *connect.Request[v1.C
 		// parent folder aggregate.
 		for absPath := range primaryFiles {
 			if file := dkSrv.Compose.DockmanPath(absPath); file != "" {
+				if stoppedAt, stopped := h.composeStoppedAt(dkSrv.Host, file); stopped {
+					if hasComposeContainerCreatedSince(containers, absPath, stoppedAt) {
+						h.setComposeStopped(dkSrv.Host, file, false)
+					} else {
+						finalResults[file] = &v1.Status{}
+						continue
+					}
+				}
 				exists, statErr := dkSrv.Compose.ComposeFileExists(file)
 				if statErr != nil {
 					// A transient filesystem error must not make a live stack vanish.
@@ -136,6 +158,12 @@ func buildComposeStatusIndex(containers []container.Summary) (map[string]*stackS
 	primaryFiles := make(map[string]struct{})
 	for i := range containers {
 		ct := containers[i]
+		// `docker compose run` containers do not represent a declared service
+		// state and can survive a daemon/project lifecycle. Counting one keeps a
+		// stack green after its actual services have been taken down.
+		if strings.EqualFold(ct.Labels[api.OneoffLabel], "true") {
+			continue
+		}
 		cfg := ct.Labels[api.ConfigFilesLabel]
 		if cfg == "" {
 			continue
@@ -162,6 +190,42 @@ func buildComposeStatusIndex(containers []container.Summary) (map[string]*stackS
 		}
 	}
 	return byFile, primaryFiles
+}
+
+func (h *Handler) setComposeStopped(host, file string, stopped bool) {
+	key := composeStackKey{host: host, file: file}
+	h.composeStateMu.Lock()
+	defer h.composeStateMu.Unlock()
+	if stopped {
+		h.composeStopped[key] = time.Now().Unix()
+		return
+	}
+	delete(h.composeStopped, key)
+}
+
+func (h *Handler) composeStoppedAt(host, file string) (int64, bool) {
+	h.composeStateMu.RLock()
+	defer h.composeStateMu.RUnlock()
+	stoppedAt, stopped := h.composeStopped[composeStackKey{host: host, file: file}]
+	return stoppedAt, stopped
+}
+
+func hasComposeContainerCreatedSince(containers []container.Summary, composeFile string, since int64) bool {
+	for i := range containers {
+		ct := containers[i]
+		// Docker exposes Created with one-second precision. Require a strictly
+		// newer timestamp so a fast Up -> Down in the same second cannot make the
+		// just-stopped container clear its own authoritative stopped marker.
+		if ct.Created <= since || strings.EqualFold(ct.Labels[api.OneoffLabel], "true") {
+			continue
+		}
+		for _, path := range strings.Split(ct.Labels[api.ConfigFilesLabel], ",") {
+			if strings.TrimSpace(path) == composeFile {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *stackStatus) add(ct container.Summary) {
@@ -196,6 +260,9 @@ func (s *stackStatus) toProto() *v1.Status {
 func (h *Handler) ComposeUp(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
 		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			// From this point the real daemon state becomes authoritative again,
+			// including partial state when Compose itself returns an error.
+			h.setComposeStopped(dkSrv.Host, req.Msg.Filename, false)
 			return dkSrv.Compose.Up(
 				ctx,
 				req.Msg.Filename,
@@ -209,6 +276,7 @@ func (h *Handler) ComposeUp(ctx context.Context, req *connect.Request[v1.Compose
 func (h *Handler) ComposeStart(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
 		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			h.setComposeStopped(dkSrv.Host, req.Msg.Filename, false)
 			return dkSrv.Compose.Start(
 				ctx,
 				req.Msg.Filename,
@@ -235,12 +303,16 @@ func (h *Handler) ComposeStop(ctx context.Context, req *connect.Request[v1.Compo
 func (h *Handler) ComposeDown(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
 		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
-			return dkSrv.Compose.Down(
+			err := dkSrv.Compose.Down(
 				ctx,
 				req.Msg.Filename,
 				writer,
 				req.Msg.SelectedServices...,
 			)
+			if err == nil && len(req.Msg.SelectedServices) == 0 {
+				h.setComposeStopped(dkSrv.Host, req.Msg.Filename, true)
+			}
+			return err
 		})
 	})
 }
@@ -248,6 +320,7 @@ func (h *Handler) ComposeDown(ctx context.Context, req *connect.Request[v1.Compo
 func (h *Handler) ComposeRestart(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
 		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			h.setComposeStopped(dkSrv.Host, req.Msg.Filename, false)
 			return dkSrv.Compose.Restart(
 				ctx,
 				req.Msg.Filename,
