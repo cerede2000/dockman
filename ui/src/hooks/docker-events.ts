@@ -24,16 +24,33 @@ let notifyTimer: ReturnType<typeof setTimeout> | null = null;
 // coalesce bursts (a compose up emits one event per container) into a single
 // refresh tick
 function notify() {
-    // A restart/start burst can contain die, stop, start and health events.
-    // Debounce from the LAST event so the single resulting refresh observes
-    // the settled container state instead of keeping an intermediate failure
-    // in an aggregated parent folder until the 30-second safety poll.
-    if (notifyTimer !== null) clearTimeout(notifyTimer);
+    // Throttle from the FIRST event. Debouncing from the last event made every
+    // container in a Compose operation postpone the refresh again; stacks with
+    // several services or health checks could therefore keep stale bullets for
+    // many seconds. A completed Dockman action also calls refreshDockerStateNow
+    // below, which supplies the authoritative final refresh without polling.
+    if (notifyTimer !== null) return;
     notifyTimer = setTimeout(() => {
         notifyTimer = null;
-        seq++;
-        listeners.forEach(listener => listener());
+        emitRefresh();
     }, 300);
+}
+
+function emitRefresh() {
+    seq++;
+    listeners.forEach(listener => listener());
+}
+
+// Compose actions know exactly when their RPC has settled. Bypass
+// the event burst delay at that point and cancel its now-redundant timer. This
+// is an in-memory signal only: it creates no background interval or daemon
+// subscription and therefore adds no idle CPU overhead.
+export function refreshDockerStateNow() {
+    if (notifyTimer !== null) {
+        clearTimeout(notifyTimer);
+        notifyTimer = null;
+    }
+    emitRefresh();
 }
 
 async function run(client: EventsClient, host: string, signal: AbortSignal) {

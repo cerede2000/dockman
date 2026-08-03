@@ -3,6 +3,7 @@ import {create} from 'zustand'
 import type {ComposeFile, LogsMessage} from "../../../gen/docker/v1/docker_pb.ts";
 import type {CallOptions} from "@connectrpc/connect";
 import {makeID, type TabTerminal, useTerminalAction, useTerminalTabs} from "./terminal.tsx";
+import {refreshDockerStateNow} from "../../../hooks/docker-events.ts";
 
 type ComposeFileClean = Omit<ComposeFile, "$typeName" | "$unknown">;
 // 'redeploy' is triggered from the monitor view (compose up with force
@@ -99,6 +100,10 @@ export const useComposeAction = create<{
                     : state.runs;
                 return {activeAction: null, runs};
             })
+            // The Compose stream has completed, so the daemon state is now
+            // authoritative. Refresh stack/container projections immediately
+            // instead of waiting for the tail of the Docker event burst.
+            refreshDockerStateNow();
         }
 
         const stream = streamFn({
