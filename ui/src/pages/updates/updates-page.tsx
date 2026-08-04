@@ -167,6 +167,8 @@ export default function UpdatesPage() {
     const [search, setSearch] = useState('');
     const [editing, setEditing] = useState<UpdateEnrollment | null>(null);
     const [saving, setSaving] = useState(false);
+	const [protectedTarget, setProtectedTarget] = useState<UpdateEnrollment | null>(null);
+	const [protectedStarting, setProtectedStarting] = useState(false);
 	const [scanning, setScanning] = useState(false);
 	const [scanResults, setScanResults] = useState<Record<string, ScanResult>>({});
 	const [scanRuns, setScanRuns] = useState<ScanRun[]>([]);
@@ -260,6 +262,21 @@ export default function UpdatesPage() {
 			showError(`Image scan failed — ${error instanceof Error ? error.message : String(error)}`);
 		} finally {
 			setScanning(false);
+		}
+	};
+
+	const startProtectedUpdate = async () => {
+		if (!protectedTarget) return;
+		setProtectedStarting(true);
+		try {
+			const response = await fetch(hostUrl(`/docker/updates/protected/${encodeURIComponent(protectedTarget.containerId)}`), {method: 'POST'});
+			if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+			setProtectedTarget(null);
+			showSuccess(`Protected update started for ${protectedTarget.containerName}. Docker access may reconnect briefly.`);
+		} catch (error) {
+			showError(`Unable to start protected update — ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			setProtectedStarting(false);
 		}
 	};
 
@@ -427,7 +444,7 @@ export default function UpdatesPage() {
 								<TableCell>{blocksByContainer[row.containerId] ? <Tooltip title={blocksByContainer[row.containerId].reason}><Chip size="small" icon={<ErrorOutlined/>} label="retry blocked" color="error" variant="outlined"/></Tooltip> : row.enrolled && scanResults[row.containerId]?.image === row.image ? <Tooltip title={scanResults[row.containerId].reason ?? new Date(scanResults[row.containerId].checkedAt).toLocaleString()}>
 									<Chip size="small" label={scanResults[row.containerId].status} color={scanResults[row.containerId].status === 'available' ? 'warning' : scanResults[row.containerId].status === 'error' ? 'error' : scanResults[row.containerId].status === 'current' ? 'success' : 'default'} variant="outlined"/>
 								</Tooltip> : '—'}</TableCell>
-								<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title={blocksByContainer[row.containerId].targetType === 'stack' ? 'Allow one retry of this digest for the whole stack transaction' : 'Allow one retry of this same image digest'}><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
+				<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title={blocksByContainer[row.containerId].targetType === 'stack' ? 'Allow one retry of this digest for the whole stack transaction' : 'Allow one retry of this same image digest'}><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}{host === 'local' && row.stackKey && row.source !== 'protected' && <Tooltip title="Update this sensitive Compose service through a detached helper with health verification and rollback"><Button size="small" color="warning" startIcon={<ShieldOutlined/>} onClick={() => setProtectedTarget(row)}>Protected update</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
                             </TableRow>)}
 							{!loading && visibleRows.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{py: 6, color: 'text.secondary'}}>No container matches this view.</TableCell></TableRow>}
                         </TableBody>
@@ -495,6 +512,18 @@ export default function UpdatesPage() {
                     <Button variant="contained" onClick={() => void savePolicy()} disabled={saving}>Save policy</Button>
                 </DialogActions>
             </Dialog>
+
+			<Dialog open={protectedTarget !== null} onClose={() => !protectedStarting && setProtectedTarget(null)} fullWidth maxWidth="sm">
+				<DialogTitle><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="warning"/><span>Protected infrastructure update</span></Stack></DialogTitle>
+				<DialogContent dividers><Stack spacing={2}>
+					<Typography>Update <strong>{protectedTarget?.containerName}</strong> independently through a detached Docker helper?</Typography>
+					<Alert severity="warning">Use this mode for sensitive local infrastructure such as the Docker socket proxy. Dockman's Docker access may disconnect briefly, but the helper continues through the raw local socket.</Alert>
+					<Alert severity="info">Only this Compose service is recreated. Its previous image is retained, the replacement is verified for up to 90 seconds, and an unhealthy or stopped replacement is rolled back automatically.</Alert>
+					<Box><Typography variant="caption" color="text.secondary">Image</Typography><Typography sx={{fontFamily: 'monospace', overflowWrap: 'anywhere'}}>{protectedTarget?.image}</Typography></Box>
+					<Typography variant="body2" color="text.secondary">If the helper cannot complete successfully, it remains available as <code>dockman-protected-update</code> so its logs can be inspected.</Typography>
+				</Stack></DialogContent>
+				<DialogActions><Button onClick={() => setProtectedTarget(null)} disabled={protectedStarting}>Cancel</Button><Button variant="contained" color="warning" startIcon={<ShieldOutlined/>} onClick={() => void startProtectedUpdate()} disabled={protectedStarting}>{protectedStarting ? 'Starting…' : 'Start protected update'}</Button></DialogActions>
+			</Dialog>
 
 			<Dialog open={executionDetails !== null} onClose={() => setExecutionDetails(null)} fullWidth maxWidth="md">
 				<DialogTitle>Automatic update — {executionDetails?.containerName}</DialogTitle>
