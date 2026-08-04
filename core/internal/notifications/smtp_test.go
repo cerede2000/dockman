@@ -160,14 +160,18 @@ func TestFormatSMTPMessageHasStableDeliveryHeaders(t *testing.T) {
 		"Date: Tue, 04 Aug 2026 12:30:00 +0000\r\n",
 		"Message-ID: <fixed-id@example.com>\r\n",
 		"From: \"Dockman\" <dockman@example.com>\r\n",
-		"Auto-Submitted: auto-generated\r\n",
-		"X-Auto-Response-Suppress: All\r\n",
-		"X-Mailer: Dockman\r\n",
+		"Content-Transfer-Encoding: quoted-printable\r\n",
 		"Updated:\r\n- web\r\n- worker\r\n",
 	} {
 		if !strings.Contains(payload, expected) {
 			t.Fatalf("SMTP payload missing %q:\n%s", expected, payload)
 		}
+	}
+	if strings.Contains(payload, "Auto-Submitted:") {
+		t.Fatal("transactional update mail must not be marked as an auto-response")
+	}
+	if got := smtpClientHostname("dockman@cerede.eu"); got != "cerede.eu" {
+		t.Fatalf("SMTP greeting hostname = %q", got)
 	}
 }
 

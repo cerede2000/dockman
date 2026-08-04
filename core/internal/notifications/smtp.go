@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -386,6 +388,10 @@ func (s *Service) recordDelivery(delivery *Delivery) error {
 type NetworkSender struct{ Timeout time.Duration }
 
 func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
+	from, err := mail.ParseAddress(message.Config.FromAddress)
+	if err != nil {
+		return fmt.Errorf("format SMTP sender: %w", err)
+	}
 	address := net.JoinHostPort(message.Config.Server, strconv.Itoa(message.Config.Port))
 	timeout := s.Timeout
 	if timeout <= 0 {
@@ -393,7 +399,7 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 	}
 	dialer := &net.Dialer{Timeout: timeout}
 	var conn net.Conn
-	var err error
+	err = nil
 	tlsConfig := &tls.Config{ServerName: message.Config.Server, MinVersion: tls.VersionTLS12}
 	if message.Config.Security == SecurityTLS {
 		conn, err = (&tls.Dialer{NetDialer: dialer, Config: tlsConfig}).DialContext(ctx, "tcp", address)
@@ -410,6 +416,9 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 		return fmt.Errorf("initialize SMTP session: %w", err)
 	}
 	defer client.Close()
+	if err := client.Hello(smtpClientHostname(from.Address)); err != nil {
+		return fmt.Errorf("initialize SMTP greeting: %w", err)
+	}
 	if message.Config.Security == SecuritySTARTTLS {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
 			return errors.New("SMTP server does not advertise STARTTLS")
@@ -423,7 +432,6 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 			return fmt.Errorf("authenticate to SMTP server: %w", err)
 		}
 	}
-	from, _ := mail.ParseAddress(message.Config.FromAddress)
 	if err := client.Mail(from.Address); err != nil {
 		return fmt.Errorf("set SMTP sender: %w", err)
 	}
@@ -467,14 +475,37 @@ func formatSMTPMessage(message SMTPMessage, sentAt time.Time, messageID string) 
 	if err != nil {
 		return "", fmt.Errorf("format SMTP sender: %w", err)
 	}
+	if strings.TrimSpace(from.Name) == "" {
+		from.Name = "Dockman"
+	}
 	body := strings.ReplaceAll(message.Body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
-	body = strings.ReplaceAll(body, "\n", "\r\n")
+	var encodedBody bytes.Buffer
+	quoted := quotedprintable.NewWriter(&encodedBody)
+	if _, err := quoted.Write([]byte(body)); err != nil {
+		return "", fmt.Errorf("encode SMTP body: %w", err)
+	}
+	if err := quoted.Close(); err != nil {
+		return "", fmt.Errorf("finish SMTP body encoding: %w", err)
+	}
 	return fmt.Sprintf(
-		"Date: %s\r\nMessage-ID: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\nAuto-Submitted: auto-generated\r\nX-Auto-Response-Suppress: All\r\nX-Mailer: Dockman\r\n\r\n%s\r\n",
+		"Date: %s\r\nMessage-ID: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n%s\r\n",
 		sentAt.Format(time.RFC1123Z), messageID, from.String(), strings.Join(message.Recipients, ", "),
-		mime.QEncoding.Encode("UTF-8", safeHeaderValue(message.Subject)), body,
+		mime.QEncoding.Encode("UTF-8", safeHeaderValue(message.Subject)), encodedBody.String(),
 	), nil
+}
+
+// smtpClientHostname avoids the default "EHLO localhost" emitted by net/smtp.
+// Authenticated submission relays expose that value in Received headers, and
+// public mailbox providers can penalize a generic localhost identity. The
+// verified sender domain is stable and aligned with the message identity.
+func smtpClientHostname(fromAddress string) string {
+	if at := strings.LastIndexByte(fromAddress, '@'); at >= 0 && at+1 < len(fromAddress) {
+		if domain := strings.Trim(strings.TrimSpace(fromAddress[at+1:]), ">."); domain != "" {
+			return domain
+		}
+	}
+	return "dockman.local"
 }
 
 func newMessageID(fromAddress string) string {
