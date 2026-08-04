@@ -5,14 +5,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,10 +27,12 @@ import (
 )
 
 const (
-	SecuritySTARTTLS = "starttls"
-	SecurityTLS      = "tls"
-	SecurityNone     = "none"
-	maxDeliveries    = 50
+	SecuritySTARTTLS  = "starttls"
+	SecurityTLS       = "tls"
+	SecurityNone      = "none"
+	maxDeliveries     = 50
+	defaultSMTPCAFile = "/etc/ssl/certs/smtp-ca.crt"
+	maxSMTPCAFileSize = 1 << 20
 )
 
 type SMTPConfig struct {
@@ -111,7 +116,10 @@ type Service struct {
 }
 
 func NewService(db *gorm.DB, vault *Vault) *Service {
-	return &Service{db: db, vault: vault, sender: NetworkSender{Timeout: 20 * time.Second}}
+	caFile, caFileRequired := smtpCAFileFromEnvironment()
+	return &Service{db: db, vault: vault, sender: NetworkSender{
+		Timeout: 20 * time.Second, CAFile: caFile, RequireCAFile: caFileRequired,
+	}}
 }
 
 func NewServiceWithSender(db *gorm.DB, vault *Vault, sender Sender) *Service {
@@ -382,7 +390,11 @@ func (s *Service) recordDelivery(delivery *Delivery) error {
 	})
 }
 
-type NetworkSender struct{ Timeout time.Duration }
+type NetworkSender struct {
+	Timeout       time.Duration
+	CAFile        string
+	RequireCAFile bool
+}
 
 func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 	from, err := mail.ParseAddress(message.Config.FromAddress)
@@ -398,6 +410,12 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 	var conn net.Conn
 	err = nil
 	tlsConfig := &tls.Config{ServerName: message.Config.Server, MinVersion: tls.VersionTLS12}
+	if message.Config.Security == SecurityTLS || message.Config.Security == SecuritySTARTTLS {
+		tlsConfig, err = smtpTLSConfig(message.Config.Server, s.CAFile, s.RequireCAFile)
+		if err != nil {
+			return err
+		}
+	}
 	if message.Config.Security == SecurityTLS {
 		conn, err = (&tls.Dialer{NetDialer: dialer, Config: tlsConfig}).DialContext(ctx, "tcp", address)
 	} else {
@@ -465,6 +483,52 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 		return fmt.Errorf("finish SMTP session: %w", err)
 	}
 	return nil
+}
+
+// smtpCAFileFromEnvironment keeps public PKI as the default while supporting
+// a private SMTP relay without weakening TLS verification. Mounting a CA at
+// /etc/ssl/certs/smtp-ca.crt is intentionally zero-configuration. An explicit
+// DOCKMAN_SMTP_CA_FILE overrides that path and is treated as required so a
+// typo cannot silently fall back to another trust chain.
+func smtpCAFileFromEnvironment() (string, bool) {
+	if value, present := os.LookupEnv("DOCKMAN_SMTP_CA_FILE"); present {
+		value = strings.TrimSpace(value)
+		return value, value != ""
+	}
+	return defaultSMTPCAFile, false
+}
+
+func smtpTLSConfig(server, caFile string, requireCAFile bool) (*tls.Config, error) {
+	config := &tls.Config{ServerName: server, MinVersion: tls.VersionTLS12}
+	caFile = strings.TrimSpace(caFile)
+	if caFile == "" {
+		return config, nil
+	}
+
+	file, err := os.Open(caFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && !requireCAFile {
+			return config, nil
+		}
+		return nil, fmt.Errorf("open custom SMTP CA %s: %w", caFile, err)
+	}
+	defer file.Close()
+	pemData, err := io.ReadAll(io.LimitReader(file, maxSMTPCAFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read custom SMTP CA %s: %w", caFile, err)
+	}
+	if len(pemData) > maxSMTPCAFileSize {
+		return nil, fmt.Errorf("custom SMTP CA %s exceeds the 1 MiB limit", caFile)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM(pemData) {
+		return nil, fmt.Errorf("custom SMTP CA %s contains no valid PEM certificate", caFile)
+	}
+	config.RootCAs = roots
+	return config, nil
 }
 
 // formatSMTPMessage deliberately stays close to the small, proven SMTP payload

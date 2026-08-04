@@ -1,8 +1,18 @@
 package notifications
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -243,5 +253,72 @@ func TestValidationRejectsCredentialsWithoutEncryption(t *testing.T) {
 	input.Security = SecurityNone
 	if _, err := service.Save("local", input); err == nil || !strings.Contains(err.Error(), "refused") {
 		t.Fatalf("unexpected validation result: %v", err)
+	}
+}
+
+func TestSMTPTLSConfigAppendsMountedPrivateCA(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Dockman SMTP test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(t.TempDir(), "smtp-ca.crt")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := smtpTLSConfig("smtp.internal.example", caFile, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, subject := range config.RootCAs.Subjects() {
+		if bytes.Equal(subject, certificate.RawSubject) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("mounted SMTP CA was not appended to the system trust pool")
+	}
+	if config.MinVersion != tls.VersionTLS12 || config.ServerName != "smtp.internal.example" {
+		t.Fatalf("TLS verification settings were weakened: %#v", config)
+	}
+}
+
+func TestSMTPTLSConfigRejectsInvalidOrRequiredMissingCA(t *testing.T) {
+	invalid := filepath.Join(t.TempDir(), "invalid.crt")
+	if err := os.WriteFile(invalid, []byte("not a PEM certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := smtpTLSConfig("smtp.internal.example", invalid, true); err == nil || !strings.Contains(err.Error(), "no valid PEM") {
+		t.Fatalf("invalid CA was not rejected: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.crt")
+	if _, err := smtpTLSConfig("smtp.internal.example", missing, true); err == nil || !strings.Contains(err.Error(), "open custom SMTP CA") {
+		t.Fatalf("required missing CA was not rejected: %v", err)
+	}
+	if _, err := smtpTLSConfig("smtp.public.example", missing, false); err != nil {
+		t.Fatalf("optional default CA must preserve public PKI behavior: %v", err)
+	}
+}
+
+func TestSMTPCAFileEnvironmentOverride(t *testing.T) {
+	t.Setenv("DOCKMAN_SMTP_CA_FILE", "/run/secrets/smtp-root.pem")
+	path, required := smtpCAFileFromEnvironment()
+	if path != "/run/secrets/smtp-root.pem" || !required {
+		t.Fatalf("unexpected SMTP CA override: %q required=%v", path, required)
 	}
 }
