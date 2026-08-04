@@ -106,7 +106,7 @@ func TestScheduledRunExecutesAvailableTargetsButManualRunDoesNot(t *testing.T) {
 	service, err := NewAutomationService(
 		testScanStore(t),
 		func(context.Context, string) ([]UpdateEnrollment, error) {
-			return []UpdateEnrollment{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", State: "running", Enrolled: true, Schedule: DefaultUpdateSchedule, Rollback: true}}, nil
+			return []UpdateEnrollment{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", State: "running", Enrolled: true, Schedule: DefaultUpdateSchedule, Rollback: true, PolicyTarget: UpdateTargetStack, StackName: "demo", StackKey: "demo|compose.yml", ServiceName: "web", DependsOn: "db:service_started:false"}}, nil
 		},
 		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
 			return []ContainerUpdateCheck{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", Status: ContainerUpdateAvailable, RemoteDigest: "new"}}, nil
@@ -120,6 +120,9 @@ func TestScheduledRunExecutesAvailableTargetsButManualRunDoesNot(t *testing.T) {
 	notifications := 0
 	service.SetExecutor(func(_ context.Context, _ string, targets []UpdateExecutionTarget) []UpdateExecutionOutcome {
 		executions++
+		if targets[0].TargetType != UpdateTargetStack || targets[0].StackName != "demo" || targets[0].ServiceName != "web" || targets[0].DependsOn == "" {
+			t.Fatalf("stack execution metadata was lost: %#v", targets[0])
+		}
 		return []UpdateExecutionOutcome{{UpdateExecutionTarget: targets[0], State: ExecutionUpdated, Message: "ok"}}
 	})
 	service.SetExecutionNotifier(func(_ context.Context, run UpdateExecutionRun, outcomes []UpdateExecutionOutcome) error {
@@ -151,7 +154,7 @@ func TestScheduledRunExecutesAvailableTargetsButManualRunDoesNot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runs) != 1 || runs[0].Updated != 1 || len(results) != 1 || len(blocks) != 0 {
+	if len(runs) != 1 || runs[0].Updated != 1 || len(results) != 1 || results[0].TargetType != UpdateTargetStack || results[0].StackName != "demo" || len(blocks) != 0 {
 		t.Fatalf("unexpected execution state: runs=%#v results=%#v blocks=%#v", runs, results, blocks)
 	}
 }
@@ -192,6 +195,56 @@ func TestFailedDigestIsBlockedUntilAcknowledgedOrChanged(t *testing.T) {
 	}
 	if executions != 2 {
 		t.Fatalf("acknowledged digest was not retried: %d", executions)
+	}
+}
+
+func TestBlockedStackMemberPreventsPartialStackRetry(t *testing.T) {
+	store := testScanStore(t)
+	stackKey := "demo|/stacks/demo/compose.yml"
+	service, err := NewAutomationService(
+		store,
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			return []UpdateEnrollment{
+				{ContainerID: "db", ContainerName: "db", Image: "example/db:latest", State: "running", Enrolled: true, Schedule: DefaultUpdateSchedule, Rollback: true, PolicyTarget: UpdateTargetStack, StackName: "demo", StackKey: stackKey},
+				{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", State: "running", Enrolled: true, Schedule: DefaultUpdateSchedule, Rollback: true, PolicyTarget: UpdateTargetStack, StackName: "demo", StackKey: stackKey},
+			}, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
+			return []ContainerUpdateCheck{
+				{ContainerID: "db", ContainerName: "db", Image: "example/db:latest", Status: ContainerUpdateAvailable, RemoteDigest: "db-new"},
+				{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", Status: ContainerUpdateAvailable, RemoteDigest: "web-broken"},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	executions := 0
+	service.SetExecutor(func(_ context.Context, _ string, targets []UpdateExecutionTarget) []UpdateExecutionOutcome {
+		executions++
+		outcomes := make([]UpdateExecutionOutcome, 0, len(targets))
+		for _, target := range targets {
+			outcomes = append(outcomes, UpdateExecutionOutcome{UpdateExecutionTarget: target, State: ExecutionRolledBack, Message: "stack rolled back"})
+		}
+		return outcomes
+	})
+	for range 2 {
+		if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if executions != 1 {
+		t.Fatalf("blocked stack was retried partially: executions=%d", executions)
+	}
+	if err := service.ClearExecutionBlock("local", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 2 {
+		t.Fatalf("stack retry did not clear the whole transaction: executions=%d", executions)
 	}
 }
 

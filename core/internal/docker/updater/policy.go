@@ -19,6 +19,8 @@ const (
 	UpdateRollbackLabel = "dockman.update.rollback"
 	composeProjectLabel = "com.docker.compose.project"
 	composeFilesLabel   = "com.docker.compose.project.config_files"
+	composeServiceLabel = "com.docker.compose.service"
+	composeDependsLabel = "com.docker.compose.depends_on"
 
 	UpdateTargetContainer = "container"
 	UpdateTargetStack     = "stack"
@@ -111,6 +113,8 @@ type UpdateEnrollment struct {
 	State          string `json:"state"`
 	StackName      string `json:"stackName,omitempty"`
 	StackKey       string `json:"stackKey,omitempty"`
+	ServiceName    string `json:"-"`
+	DependsOn      string `json:"-"`
 	Enrolled       bool   `json:"enrolled"`
 	Source         string `json:"source"`
 	Reason         string `json:"reason,omitempty"`
@@ -142,7 +146,8 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 		stackName, stackKey := stackIdentity(item.Labels)
 		row := UpdateEnrollment{
 			ContainerID: item.ID, ContainerName: name, Image: item.Image, State: string(item.State),
-			StackName: stackName, StackKey: stackKey, Source: "none", Rollback: true,
+			StackName: stackName, StackKey: stackKey, ServiceName: strings.TrimSpace(item.Labels[composeServiceLabel]),
+			DependsOn: strings.TrimSpace(item.Labels[composeDependsLabel]), Source: "none", Rollback: true,
 		}
 
 		if hasDockmanLabel(&item) {
