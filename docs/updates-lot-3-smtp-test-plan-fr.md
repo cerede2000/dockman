@@ -53,6 +53,30 @@ Attendu : la configuration est conservée, l’interface indique qu’un mot de 
 
 Attendu : un seul message de test est envoyé et l’historique affiche `sent`. Une erreur SMTP doit être lisible dans cet historique sans affecter Dockman.
 
+### Relais STARTTLS avec une autorité privée
+
+Pour un relais utilisant une CA interne, monter la CA au format PEM à l’emplacement reconnu automatiquement :
+
+```yaml
+services:
+  dockman:
+    volumes:
+      - /server/certs/smtp-ca.crt:/etc/ssl/certs/smtp-ca.crt:ro
+```
+
+Puis recréer Dockman et relancer **Send test** en mode `STARTTLS`. La CA privée est ajoutée au magasin système : les autorités publiques continuent donc de fonctionner et la vérification du nom du serveur reste obligatoire.
+
+Un autre chemin peut être déclaré explicitement :
+
+```yaml
+environment:
+  DOCKMAN_SMTP_CA_FILE: /run/secrets/internal-smtp-ca.crt
+volumes:
+  - /server/certs/smtp-ca.crt:/run/secrets/internal-smtp-ca.crt:ro
+```
+
+Si `DOCKMAN_SMTP_CA_FILE` est défini mais absent, illisible, supérieur à 1 Mio ou sans certificat PEM valide, l'envoi est refusé avec un message explicite. Dockman ne bascule jamais vers `InsecureSkipVerify`.
+
 ## 4. Notification de mise à jour disponible
 
 1. Activer **Notify available updates**.
