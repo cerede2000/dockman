@@ -1,4 +1,4 @@
-h1:TviNrU2r1qxsQjDoxAhGCPcTMgVV5i2CtO6Rxj8BvDs=
+h1:SDA0V6J1wxYIqJ41aALA1oaVeYeCYwrRI3LcDNIgmGY=
 20260208203619_mig.sql h1:xBogJIlN+Qqa/9+EkfhypXCAZ8Hlqawf9Vh4ZvllQkc=
 20260208221102_mig.sql h1:Qx+BFt3Ilnk8My/pLg74kR0Mpgz0DqcXeB4RsuM5qqI=
 20260722090000_git_sync_foundation.sql h1:zeelfWn1yknX4cx8az8Z3r/Ie8pr+2EJx4jwcYpAeyU=
@@ -21,3 +21,4 @@ h1:TviNrU2r1qxsQjDoxAhGCPcTMgVV5i2CtO6Rxj8BvDs=
 20260803160000_update_scan_state.sql h1:zujNt1XcmJqqokxwI1HEevfOaXOuopg4yW5Sx3ZIj6M=
 20260803190000_update_smtp_notifications.sql h1:eNiRvXZtkf+mY5vr5gCIYQ4DJHaPi7TUfcOtH+VkMeg=
 20260804120000_update_execution_history.sql h1:zQVdKVZm3s/A69VPxmbL1q2Wro4zsKokdDmONYSIXwA=
+20260804170000_update_stack_execution.sql h1:grMBeYxzQsHgIa+Wz3GOVCWpyFyXAMrbXgjbfwyq1+Y=

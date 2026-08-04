@@ -26,6 +26,11 @@ type UpdateExecutionTarget struct {
 	State           string
 	RemoteDigest    string
 	RollbackEnabled bool
+	TargetType      string
+	StackName       string
+	StackKey        string
+	ServiceName     string
+	DependsOn       string
 }
 
 type UpdateExecutionOutcome struct {
@@ -63,6 +68,9 @@ type UpdateExecutionResult struct {
 	Image           string    `gorm:"not null" json:"image"`
 	RemoteDigest    string    `gorm:"not null" json:"remoteDigest"`
 	RollbackEnabled bool      `gorm:"not null" json:"rollbackEnabled"`
+	TargetType      string    `gorm:"not null;default:'container'" json:"targetType"`
+	StackName       string    `gorm:"not null;default:''" json:"stackName,omitempty"`
+	StackKey        string    `gorm:"not null;default:''" json:"stackKey,omitempty"`
 	State           string    `gorm:"not null" json:"state"`
 	Message         string    `gorm:"not null;default:''" json:"message,omitempty"`
 	Logs            string    `gorm:"not null;default:''" json:"logs,omitempty"`
@@ -79,6 +87,9 @@ type UpdateExecutionBlock struct {
 	ContainerName string    `gorm:"not null" json:"containerName"`
 	Image         string    `gorm:"not null" json:"image"`
 	RemoteDigest  string    `gorm:"not null" json:"remoteDigest"`
+	TargetType    string    `gorm:"not null;default:'container'" json:"targetType"`
+	StackName     string    `gorm:"not null;default:''" json:"stackName,omitempty"`
+	StackKey      string    `gorm:"not null;default:'';index" json:"stackKey,omitempty"`
 	Reason        string    `gorm:"not null" json:"reason"`
 }
 
@@ -97,6 +108,7 @@ func (s *ScanStore) SaveExecution(run *UpdateExecutionRun, outcomes []UpdateExec
 				RunID: run.ID, Host: run.Host, ContainerID: outcome.ContainerID,
 				ContainerName: outcome.ContainerName, Image: outcome.Image,
 				RemoteDigest: outcome.RemoteDigest, RollbackEnabled: outcome.RollbackEnabled,
+				TargetType: outcome.TargetType, StackName: outcome.StackName, StackKey: outcome.StackKey,
 				State: outcome.State, Message: boundedExecutionText(outcome.Message), Logs: boundedExecutionText(outcome.Logs),
 			}
 			if err := tx.Create(&row).Error; err != nil {
@@ -104,7 +116,7 @@ func (s *ScanStore) SaveExecution(run *UpdateExecutionRun, outcomes []UpdateExec
 			}
 			switch outcome.State {
 			case ExecutionFailed, ExecutionRolledBack:
-				block := UpdateExecutionBlock{Host: run.Host, ContainerID: outcome.ContainerID, ContainerName: outcome.ContainerName, Image: outcome.Image, RemoteDigest: outcome.RemoteDigest, Reason: boundedExecutionText(outcome.Message)}
+				block := UpdateExecutionBlock{Host: run.Host, ContainerID: outcome.ContainerID, ContainerName: outcome.ContainerName, Image: outcome.Image, RemoteDigest: outcome.RemoteDigest, TargetType: outcome.TargetType, StackName: outcome.StackName, StackKey: outcome.StackKey, Reason: boundedExecutionText(outcome.Message)}
 				if err := tx.Where("host = ? AND container_id = ?", run.Host, outcome.ContainerID).Assign(block).FirstOrCreate(&block).Error; err != nil {
 					return err
 				}
@@ -179,6 +191,17 @@ func (s *ScanStore) ExecutionBlock(host, containerID, digest string) (UpdateExec
 func (s *ScanStore) ClearExecutionBlock(host, containerID string) error {
 	if strings.TrimSpace(host) == "" || strings.TrimSpace(containerID) == "" {
 		return errors.New("host and container id are required")
+	}
+	var block UpdateExecutionBlock
+	err := s.db.Where("host = ? AND container_id = ?", host, containerID).First(&block).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if block.TargetType == UpdateTargetStack && block.StackKey != "" {
+		return s.db.Where("host = ? AND stack_key = ?", host, block.StackKey).Delete(&UpdateExecutionBlock{}).Error
 	}
 	return s.db.Where("host = ? AND container_id = ?", host, containerID).Delete(&UpdateExecutionBlock{}).Error
 }

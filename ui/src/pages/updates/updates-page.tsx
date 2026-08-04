@@ -103,12 +103,14 @@ type ExecutionRun = {
 type ExecutionResult = {
 	id: number; runId: number; createdAt: string; containerId: string; containerName: string;
 	image: string; remoteDigest: string; rollbackEnabled: boolean;
+	targetType: TargetType; stackName?: string; stackKey?: string;
 	state: 'updated' | 'current' | 'rolled_back' | 'failed' | 'skipped'; message?: string; logs?: string;
 };
 
 type ExecutionBlock = {
 	id: number; containerId: string; containerName: string; image: string;
-	remoteDigest: string; reason: string; updatedAt: string;
+	remoteDigest: string; targetType: TargetType; stackName?: string; stackKey?: string;
+	reason: string; updatedAt: string;
 };
 
 type SMTPConfig = {
@@ -393,7 +395,7 @@ export default function UpdatesPage() {
 				</Paper>
                 <Paper variant="outlined" sx={{p: 1.75, flex: 2}}>
                     <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="success"/><Typography sx={{fontWeight: 600}}>Protected automatic updates</Typography></Stack>
-					<Typography variant="body2" color="text.secondary">Scheduled checks apply available images only to enrolled targets. Each update is locked, verified and recorded; failures are blocked from looping.</Typography>
+					<Typography variant="body2" color="text.secondary">Scheduled checks apply available images only to enrolled targets. Container rules stay isolated; stack rules preload every image, follow dependencies and roll the whole changed group back on failure.</Typography>
                 </Paper>
             </Stack>
 
@@ -425,7 +427,7 @@ export default function UpdatesPage() {
 								<TableCell>{blocksByContainer[row.containerId] ? <Tooltip title={blocksByContainer[row.containerId].reason}><Chip size="small" icon={<ErrorOutlined/>} label="retry blocked" color="error" variant="outlined"/></Tooltip> : row.enrolled && scanResults[row.containerId]?.image === row.image ? <Tooltip title={scanResults[row.containerId].reason ?? new Date(scanResults[row.containerId].checkedAt).toLocaleString()}>
 									<Chip size="small" label={scanResults[row.containerId].status} color={scanResults[row.containerId].status === 'available' ? 'warning' : scanResults[row.containerId].status === 'error' ? 'error' : scanResults[row.containerId].status === 'current' ? 'success' : 'default'} variant="outlined"/>
 								</Tooltip> : '—'}</TableCell>
-								<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title="Allow one retry of this same image digest"><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
+								<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title={blocksByContainer[row.containerId].targetType === 'stack' ? 'Allow one retry of this digest for the whole stack transaction' : 'Allow one retry of this same image digest'}><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
                             </TableRow>)}
 							{!loading && visibleRows.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{py: 6, color: 'text.secondary'}}>No container matches this view.</TableCell></TableRow>}
                         </TableBody>
@@ -460,7 +462,7 @@ export default function UpdatesPage() {
 						<Chip size="small" variant="outlined" label={run.schedule}/>
 						<Typography variant="body2">{run.updated} updated · {run.current} current · {run.rolledBack} rolled back · {run.failed} failed</Typography>
 					</Stack>
-					<Stack direction="row" spacing={.75} sx={{mt: .6, flexWrap: 'wrap'}}>{executionResults.filter(result => result.runId === run.id).map(result => <Chip key={result.id} clickable onClick={() => setExecutionDetails(result)} size="small" variant="outlined" label={`${result.containerName}: ${result.state}`} color={result.state === 'updated' || result.state === 'current' ? 'success' : result.state === 'failed' || result.state === 'rolled_back' ? 'error' : 'default'}/>)}</Stack>
+					<Stack direction="row" spacing={.75} sx={{mt: .6, flexWrap: 'wrap'}}>{executionResults.filter(result => result.runId === run.id).map(result => <Chip key={result.id} clickable onClick={() => setExecutionDetails(result)} size="small" variant="outlined" icon={result.targetType === 'stack' ? <AccountTreeOutlined/> : undefined} label={`${result.stackName ? `${result.stackName} / ` : ''}${result.containerName}: ${result.state}`} color={result.state === 'updated' || result.state === 'current' ? 'success' : result.state === 'failed' || result.state === 'rolled_back' ? 'error' : 'default'}/>)}</Stack>
 				</Box>)}
 			</Paper>
 
@@ -497,7 +499,7 @@ export default function UpdatesPage() {
 			<Dialog open={executionDetails !== null} onClose={() => setExecutionDetails(null)} fullWidth maxWidth="md">
 				<DialogTitle>Automatic update — {executionDetails?.containerName}</DialogTitle>
 				<DialogContent dividers><Stack spacing={1.5}>
-					<Stack direction="row" spacing={1}><Chip size="small" color={executionDetails?.state === 'updated' || executionDetails?.state === 'current' ? 'success' : 'error'} label={executionDetails?.state ?? ''}/><Typography variant="body2" color="text.secondary">{executionDetails?.rollbackEnabled ? 'Health verification enabled' : 'Transactional replacement only'}</Typography></Stack>
+					<Stack direction="row" spacing={1}><Chip size="small" color={executionDetails?.state === 'updated' || executionDetails?.state === 'current' ? 'success' : 'error'} label={executionDetails?.state ?? ''}/>{executionDetails?.targetType === 'stack' && <Chip size="small" variant="outlined" icon={<AccountTreeOutlined/>} label={`Stack transaction · ${executionDetails.stackName || 'Compose'}`}/>}<Typography variant="body2" color="text.secondary">{executionDetails?.rollbackEnabled ? 'Health verification and rollback enabled' : 'Transactional replacement only'}</Typography></Stack>
 					<Typography sx={{fontFamily: 'monospace', overflowWrap: 'anywhere'}}>{executionDetails?.image}</Typography>
 					{executionDetails?.message && <Alert severity={executionDetails.state === 'updated' || executionDetails.state === 'current' ? 'success' : 'error'}>{executionDetails.message}</Alert>}
 					<Box component="pre" sx={{m: 0, p: 1.5, bgcolor: '#050607', color: '#d7ffd0', borderRadius: 1, maxHeight: 360, overflow: 'auto', whiteSpace: 'pre-wrap', userSelect: 'text'}}>{executionDetails?.logs || 'No command output was recorded.'}</Box>

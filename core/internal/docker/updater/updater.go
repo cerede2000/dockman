@@ -92,7 +92,8 @@ func (u *Service) ContainersUpdateByContainerID(ctx context.Context, containerID
 type ImagePuller func(ctx context.Context, imageTag string) error
 
 type ForceUpdateOptions struct {
-	VerifyHealth bool
+	VerifyHealth  bool
+	ImagePrepared bool
 }
 
 type ForceUpdateResult struct {
@@ -102,6 +103,38 @@ type ForceUpdateResult struct {
 	PreviousImage string
 	NewImage      string
 	Updated       bool
+}
+
+// RestoreContainerImage transactionally recreates the current container with
+// a previously recorded local image ID. It intentionally performs no registry
+// access: stack rollback must remain possible even when the registry or the new
+// tag is broken. The returned ID is the restored replacement container ID.
+func (u *Service) RestoreContainerImage(ctx context.Context, containerName, previousImageID string, verifyHealth bool) (string, error) {
+	containerName = strings.TrimSpace(strings.TrimPrefix(containerName, "/"))
+	previousImageID = strings.TrimSpace(previousImageID)
+	if containerName == "" || previousImageID == "" {
+		return "", errors.New("container name and previous image id are required for rollback")
+	}
+	filters := client.Filters{}
+	filters.Add("name", "^/"+containerName+"$")
+	list, err := u.cli().ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
+	if err != nil {
+		return "", fmt.Errorf("locate container %s for rollback: %w", containerName, err)
+	}
+	if len(list.Items) != 1 {
+		return "", fmt.Errorf("locate container %s for rollback: expected one container, found %d", containerName, len(list.Items))
+	}
+	if err := u.ContainerRecreateWithOptions(ctx, previousImageID, list.Items[0], verifyHealth); err != nil {
+		return "", fmt.Errorf("restore container %s to %s: %w", containerName, previousImageID, err)
+	}
+	list, err = u.cli().ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
+	if err != nil || len(list.Items) != 1 {
+		if err == nil {
+			err = fmt.Errorf("expected one restored container, found %d", len(list.Items))
+		}
+		return "", fmt.Errorf("verify restored container %s: %w", containerName, err)
+	}
+	return list.Items[0].ID, nil
 }
 
 // RolledBackError marks a failed replacement for which Dockman successfully
@@ -164,10 +197,14 @@ func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, ou
 		report("%s: image %q has no pullable tag (locally built?), skipping", name, imgTag)
 		return result, err
 	}
-	report("Pulling %s for %s...", imgTag, name)
-	if err := pull(ctx, imgTag); err != nil {
-		report("%s: pull failed: %v", name, err)
-		return result, fmt.Errorf("%s: pull %s: %w", name, imgTag, err)
+	if options.ImagePrepared {
+		report("Using preloaded image %s for %s...", imgTag, name)
+	} else {
+		report("Pulling %s for %s...", imgTag, name)
+		if err := pull(ctx, imgTag); err != nil {
+			report("%s: pull failed: %v", name, err)
+			return result, fmt.Errorf("%s: pull %s: %w", name, imgTag, err)
+		}
 	}
 	localImages, err := u.cli().ImageList(ctx, client.ImageListOptions{Filters: client.Filters{}.Add("reference", imgTag)})
 	if err != nil {

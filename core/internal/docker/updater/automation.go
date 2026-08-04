@@ -348,6 +348,27 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 	for _, row := range rows {
 		byID[row.ContainerID] = row
 	}
+	// A stack policy is one transaction. If one member/digest is circuit-broken,
+	// do not silently update the remaining members as smaller partial groups.
+	blockedStacks := make(map[string]struct{})
+	for _, check := range checks {
+		if check.Status != ContainerUpdateAvailable {
+			continue
+		}
+		row, ok := byID[check.ContainerID]
+		if !ok || row.PolicyTarget != UpdateTargetStack || row.StackKey == "" {
+			continue
+		}
+		_, blocked, err := s.store.ExecutionBlock(scanRun.Host, check.ContainerID, check.RemoteDigest)
+		if err != nil {
+			log.Warn().Err(err).Str("host", scanRun.Host).Str("container", check.ContainerName).Msg("unable to inspect stack update circuit breaker")
+			blockedStacks[row.StackKey] = struct{}{}
+			continue
+		}
+		if blocked {
+			blockedStacks[row.StackKey] = struct{}{}
+		}
+	}
 	targets := make([]UpdateExecutionTarget, 0, scanRun.Available)
 	for _, check := range checks {
 		if check.Status != ContainerUpdateAvailable {
@@ -355,6 +376,9 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 		}
 		row, ok := byID[check.ContainerID]
 		if !ok || !row.Enrolled || row.Source == "protected" || row.Source == "disabled-label" {
+			continue
+		}
+		if _, blocked := blockedStacks[row.StackKey]; row.PolicyTarget == UpdateTargetStack && blocked {
 			continue
 		}
 		_, blocked, err := s.store.ExecutionBlock(scanRun.Host, check.ContainerID, check.RemoteDigest)
@@ -365,9 +389,15 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 		if blocked {
 			continue
 		}
+		targetType := row.PolicyTarget
+		if targetType != UpdateTargetStack {
+			targetType = UpdateTargetContainer
+		}
 		targets = append(targets, UpdateExecutionTarget{
 			ContainerID: check.ContainerID, ContainerName: check.ContainerName, Image: check.Image,
 			State: row.State, RemoteDigest: check.RemoteDigest, RollbackEnabled: row.Rollback,
+			TargetType: targetType, StackName: row.StackName, StackKey: row.StackKey,
+			ServiceName: row.ServiceName, DependsOn: row.DependsOn,
 		})
 	}
 	if len(targets) == 0 {

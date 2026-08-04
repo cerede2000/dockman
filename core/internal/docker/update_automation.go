@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,65 +36,277 @@ func (w *boundedUpdateWriter) String() string {
 	return value
 }
 
-// ExecuteAutomaticContainerUpdates reuses the exact pull/recreate path and
-// stack locks used by the manual Monitor action. Targets are deliberately
-// processed independently so one broken image cannot prevent unrelated
-// updates in the same schedule.
+type automaticUpdateUnit struct {
+	key           string
+	stackName     string
+	transactional bool
+	targets       []updater.UpdateExecutionTarget
+}
+
+// ExecuteAutomaticContainerUpdates keeps standalone/container policies
+// isolated while executing every stack policy as one protected unit. A stack
+// preloads all images before the first mutation, follows Compose dependency
+// order and rolls already updated members back in reverse order when enabled.
 func ExecuteAutomaticContainerUpdates(ctx context.Context, dkSrv *Service, targets []updater.UpdateExecutionTarget) []updater.UpdateExecutionOutcome {
 	outcomes := make([]updater.UpdateExecutionOutcome, 0, len(targets))
-	for _, target := range targets {
-		outcome := updater.UpdateExecutionOutcome{UpdateExecutionTarget: target, State: updater.ExecutionFailed}
-		logs := &boundedUpdateWriter{}
-		targetCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
-		err := withContainerUpdateLocks(targetCtx, dkSrv, []string{target.ContainerID}, func() error {
-			containers, listErr := dkSrv.Container.ContainerListByIDs(targetCtx, target.ContainerID)
-			if listErr != nil {
-				return listErr
-			}
-			if len(containers) != 1 {
-				return fmt.Errorf("container %q no longer exists", target.ContainerName)
-			}
-			labels := containers[0].Labels
-			if labels[updater.DockmanContainerLabel] == "true" {
-				outcome.State, outcome.Message = updater.ExecutionSkipped, "Dockman self-update is protected and requires its dedicated action"
-				return nil
-			}
-			if labels[updater.DockmanUpdateDisableLabel] == "true" {
-				outcome.State, outcome.Message = updater.ExecutionSkipped, "automatic update was disabled after the scan"
-				return nil
-			}
-			state := strings.ToLower(string(containers[0].State))
-			if state == "paused" || state == "restarting" || state == "removing" || state == "dead" {
-				outcome.State, outcome.Message = updater.ExecutionSkipped, "container state changed after the scan: "+state
-				return nil
-			}
-			result, updateErr := dkSrv.Updater.ForceUpdateContainer(
-				targetCtx,
-				func(pullCtx context.Context, imageTag string) error {
-					return dkSrv.Compose.PullImage(pullCtx, imageTag, logs)
-				},
-				logs,
-				target.ContainerID,
-				updater.ForceUpdateOptions{VerifyHealth: target.RollbackEnabled},
-			)
-			if updateErr == nil {
-				if result.Updated {
-					outcome.State, outcome.Message = updater.ExecutionUpdated, "container updated successfully"
-				} else {
-					outcome.State, outcome.Message = updater.ExecutionCurrent, "image became current before execution"
-				}
-			}
-			return updateErr
-		})
-		cancel()
-		if err != nil {
-			outcome.Message = err.Error()
-			if updater.IsRolledBack(err) {
-				outcome.State = updater.ExecutionRolledBack
-			}
+	for _, unit := range groupAutomaticUpdateTargets(targets) {
+		unitCtx, cancel := context.WithTimeout(ctx, time.Duration(max(20, len(unit.targets)*10))*time.Minute)
+		if unit.transactional {
+			outcomes = append(outcomes, executeAutomaticStackUnit(unitCtx, dkSrv, unit)...)
+		} else {
+			outcomes = append(outcomes, executeAutomaticContainerUnit(unitCtx, dkSrv, unit.targets[0]))
 		}
-		outcome.Logs = logs.String()
-		outcomes = append(outcomes, outcome)
+		cancel()
 	}
 	return outcomes
+}
+
+func executeAutomaticContainerUnit(ctx context.Context, dkSrv *Service, target updater.UpdateExecutionTarget) updater.UpdateExecutionOutcome {
+	outcome := updater.UpdateExecutionOutcome{UpdateExecutionTarget: target, State: updater.ExecutionFailed}
+	logs := &boundedUpdateWriter{}
+	err := withContainerUpdateLocks(ctx, dkSrv, []string{target.ContainerID}, func() error {
+		if reason, err := validateAutomaticTarget(ctx, dkSrv, target); err != nil {
+			return err
+		} else if reason != "" {
+			outcome.State, outcome.Message = updater.ExecutionSkipped, reason
+			return nil
+		}
+		result, updateErr := dkSrv.Updater.ForceUpdateContainer(ctx, func(pullCtx context.Context, imageTag string) error {
+			return dkSrv.Compose.PullImage(pullCtx, imageTag, logs)
+		}, logs, target.ContainerID, updater.ForceUpdateOptions{VerifyHealth: target.RollbackEnabled})
+		if updateErr == nil {
+			if result.Updated {
+				outcome.State, outcome.Message = updater.ExecutionUpdated, "container updated successfully"
+			} else {
+				outcome.State, outcome.Message = updater.ExecutionCurrent, "image became current before execution"
+			}
+		}
+		return updateErr
+	})
+	if err != nil {
+		outcome.Message = err.Error()
+		if updater.IsRolledBack(err) {
+			outcome.State = updater.ExecutionRolledBack
+		}
+	}
+	outcome.Logs = logs.String()
+	return outcome
+}
+
+type appliedStackUpdate struct {
+	index  int
+	result updater.ForceUpdateResult
+}
+
+func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automaticUpdateUnit) []updater.UpdateExecutionOutcome {
+	targets := orderStackUpdateTargets(unit.targets)
+	outcomes := make([]updater.UpdateExecutionOutcome, len(targets))
+	ids := make([]string, 0, len(targets))
+	for index, target := range targets {
+		outcomes[index] = updater.UpdateExecutionOutcome{UpdateExecutionTarget: target, State: updater.ExecutionSkipped}
+		ids = append(ids, target.ContainerID)
+	}
+	logs := &boundedUpdateWriter{}
+	_, _ = fmt.Fprintf(logs, "Stack transaction %s: %d update target(s)\n", unit.stackName, len(targets))
+	err := withContainerUpdateLocks(ctx, dkSrv, ids, func() error {
+		for index, target := range targets {
+			reason, validateErr := validateAutomaticTarget(ctx, dkSrv, target)
+			if validateErr != nil {
+				outcomes[index].State, outcomes[index].Message = updater.ExecutionFailed, validateErr.Error()
+				markUnprocessedStackTargets(outcomes, 0, "stack transaction cancelled during preflight validation")
+				return nil
+			}
+			if reason != "" {
+				outcomes[index].State, outcomes[index].Message = updater.ExecutionSkipped, reason
+				markUnprocessedStackTargets(outcomes, 0, "stack transaction cancelled because one member is no longer eligible")
+				return nil
+			}
+		}
+
+		pulled := make(map[string]struct{}, len(targets))
+		for index, target := range targets {
+			if _, ok := pulled[target.Image]; ok {
+				continue
+			}
+			_, _ = fmt.Fprintf(logs, "Preloading %s...\n", target.Image)
+			if pullErr := dkSrv.Compose.PullImage(ctx, target.Image, logs); pullErr != nil {
+				outcomes[index].State = updater.ExecutionFailed
+				outcomes[index].Message = fmt.Sprintf("stack image preflight failed for %s: %v", target.Image, pullErr)
+				markUnprocessedStackTargets(outcomes, 0, "stack transaction cancelled before changing any container")
+				outcomes[index].State = updater.ExecutionFailed
+				return nil
+			}
+			pulled[target.Image] = struct{}{}
+		}
+
+		rollbackEnabled := true
+		for _, target := range targets {
+			rollbackEnabled = rollbackEnabled && target.RollbackEnabled
+		}
+		applied := make([]appliedStackUpdate, 0, len(targets))
+		for index, target := range targets {
+			result, updateErr := dkSrv.Updater.ForceUpdateContainer(ctx, func(context.Context, string) error { return nil }, logs, target.ContainerID, updater.ForceUpdateOptions{
+				VerifyHealth: target.RollbackEnabled, ImagePrepared: true,
+			})
+			if updateErr == nil {
+				if result.Updated {
+					outcomes[index].State = updater.ExecutionUpdated
+					outcomes[index].Message = fmt.Sprintf("stack %s updated coherently", unit.stackName)
+					applied = append(applied, appliedStackUpdate{index: index, result: result})
+				} else {
+					outcomes[index].State, outcomes[index].Message = updater.ExecutionCurrent, "image became current during stack execution"
+				}
+				continue
+			}
+
+			outcomes[index].State, outcomes[index].Message = updater.ExecutionFailed, updateErr.Error()
+			if updater.IsRolledBack(updateErr) {
+				outcomes[index].State = updater.ExecutionRolledBack
+			}
+			markUnprocessedStackTargets(outcomes, index+1, "stack transaction stopped after a member failed")
+			if rollbackEnabled {
+				rollbackAppliedStackTargets(ctx, dkSrv, unit, outcomes, applied, index, logs)
+			} else if len(applied) > 0 {
+				outcomes[index].Message += "; stack rollback is disabled, previously updated members were kept"
+			}
+			return nil
+		}
+		return nil
+	})
+	if err != nil {
+		markUnprocessedStackTargets(outcomes, 0, "stack transaction could not acquire its action lock: "+err.Error())
+		if len(outcomes) > 0 {
+			outcomes[0].State, outcomes[0].Message = updater.ExecutionFailed, err.Error()
+		}
+	}
+	sharedLogs := logs.String()
+	for index := range outcomes {
+		outcomes[index].Logs = sharedLogs
+	}
+	return outcomes
+}
+
+func rollbackAppliedStackTargets(ctx context.Context, dkSrv *Service, unit automaticUpdateUnit, outcomes []updater.UpdateExecutionOutcome, applied []appliedStackUpdate, failedIndex int, logs *boundedUpdateWriter) {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(max(5, len(applied)*5))*time.Minute)
+	defer cancel()
+	_, _ = fmt.Fprintf(logs, "Rolling back %d previously updated stack member(s)...\n", len(applied))
+	for index := len(applied) - 1; index >= 0; index-- {
+		item := applied[index]
+		restoredID, err := dkSrv.Updater.RestoreContainerImage(rollbackCtx, item.result.ContainerName, item.result.PreviousImage, true)
+		if err != nil {
+			outcomes[item.index].State = updater.ExecutionFailed
+			outcomes[item.index].Message = fmt.Sprintf("stack rollback failed after %s failed: %v", outcomes[failedIndex].ContainerName, err)
+			continue
+		}
+		outcomes[item.index].ContainerID = restoredID
+		outcomes[item.index].State = updater.ExecutionRolledBack
+		outcomes[item.index].Message = fmt.Sprintf("stack transaction rolled back after %s failed", outcomes[failedIndex].ContainerName)
+	}
+	_, _ = fmt.Fprintf(logs, "Stack %s rollback completed\n", unit.stackName)
+}
+
+func validateAutomaticTarget(ctx context.Context, dkSrv *Service, target updater.UpdateExecutionTarget) (string, error) {
+	containers, err := dkSrv.Container.ContainerListByIDs(ctx, target.ContainerID)
+	if err != nil {
+		return "", err
+	}
+	if len(containers) != 1 {
+		return "", fmt.Errorf("container %q no longer exists", target.ContainerName)
+	}
+	labels := containers[0].Labels
+	if labels[updater.DockmanContainerLabel] == "true" {
+		return "Dockman self-update is protected and requires its dedicated action", nil
+	}
+	if labels[updater.DockmanUpdateDisableLabel] == "true" {
+		return "automatic update was disabled after the scan", nil
+	}
+	state := strings.ToLower(string(containers[0].State))
+	if state == "paused" || state == "restarting" || state == "removing" || state == "dead" {
+		return "container state changed after the scan: " + state, nil
+	}
+	return "", nil
+}
+
+func markUnprocessedStackTargets(outcomes []updater.UpdateExecutionOutcome, start int, message string) {
+	for index := max(0, start); index < len(outcomes); index++ {
+		if outcomes[index].State == updater.ExecutionSkipped && outcomes[index].Message == "" {
+			outcomes[index].Message = message
+		}
+	}
+}
+
+func groupAutomaticUpdateTargets(targets []updater.UpdateExecutionTarget) []automaticUpdateUnit {
+	units := make([]automaticUpdateUnit, 0, len(targets))
+	stackIndexes := make(map[string]int)
+	for _, target := range targets {
+		if target.TargetType == updater.UpdateTargetStack && strings.TrimSpace(target.StackKey) != "" {
+			if index, ok := stackIndexes[target.StackKey]; ok {
+				units[index].targets = append(units[index].targets, target)
+				continue
+			}
+			stackIndexes[target.StackKey] = len(units)
+			units = append(units, automaticUpdateUnit{key: "stack:" + target.StackKey, stackName: target.StackName, transactional: true, targets: []updater.UpdateExecutionTarget{target}})
+			continue
+		}
+		units = append(units, automaticUpdateUnit{key: "container:" + target.ContainerID, targets: []updater.UpdateExecutionTarget{target}})
+	}
+	slices.SortFunc(units, func(a, b automaticUpdateUnit) int { return strings.Compare(a.key, b.key) })
+	return units
+}
+
+func orderStackUpdateTargets(targets []updater.UpdateExecutionTarget) []updater.UpdateExecutionTarget {
+	remaining := append([]updater.UpdateExecutionTarget(nil), targets...)
+	slices.SortFunc(remaining, func(a, b updater.UpdateExecutionTarget) int {
+		return strings.Compare(strings.ToLower(a.ContainerName), strings.ToLower(b.ContainerName))
+	})
+	services := make(map[string]struct{}, len(remaining))
+	for _, target := range remaining {
+		if target.ServiceName != "" {
+			services[target.ServiceName] = struct{}{}
+		}
+	}
+	ordered := make([]updater.UpdateExecutionTarget, 0, len(remaining))
+	done := make(map[string]struct{}, len(remaining))
+	for len(remaining) > 0 {
+		progress := false
+		for index := 0; index < len(remaining); {
+			dependencies := composeTargetDependencies(remaining[index].DependsOn, services)
+			ready := true
+			for _, dependency := range dependencies {
+				if _, ok := done[dependency]; !ok {
+					ready = false
+					break
+				}
+			}
+			if !ready {
+				index++
+				continue
+			}
+			target := remaining[index]
+			ordered = append(ordered, target)
+			if target.ServiceName != "" {
+				done[target.ServiceName] = struct{}{}
+			}
+			remaining = append(remaining[:index], remaining[index+1:]...)
+			progress = true
+		}
+		if !progress {
+			// Cyclic or malformed metadata: deterministic order is safer than
+			// dropping targets, and Compose would face the same invalid graph.
+			ordered = append(ordered, remaining...)
+			break
+		}
+	}
+	return ordered
+}
+
+func composeTargetDependencies(value string, available map[string]struct{}) []string {
+	var dependencies []string
+	for _, item := range strings.Split(value, ",") {
+		service := strings.TrimSpace(strings.SplitN(item, ":", 2)[0])
+		if _, ok := available[service]; ok && !slices.Contains(dependencies, service) {
+			dependencies = append(dependencies, service)
+		}
+	}
+	return dependencies
 }
