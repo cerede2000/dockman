@@ -146,32 +146,30 @@ func TestNotifyExecutionGroupsSuccessAndRollback(t *testing.T) {
 	}
 }
 
-func TestFormatSMTPMessageHasStableDeliveryHeaders(t *testing.T) {
+func TestFormatSMTPMessageMatchesMinimalOperationalFormat(t *testing.T) {
 	sentAt := time.Date(2026, time.August, 4, 12, 30, 0, 0, time.UTC)
 	payload, err := formatSMTPMessage(SMTPMessage{
 		Config:     SMTPConfig{FromAddress: "Dockman <dockman@example.com>"},
 		Recipients: []string{"ops@example.com"}, Subject: "[Dockman] 2 updates · local",
 		Body: "Updated:\n- web\n- worker",
-	}, sentAt, "<fixed-id@example.com>")
+	}, sentAt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
 		"Date: Tue, 04 Aug 2026 12:30:00 +0000\r\n",
-		"Message-ID: <fixed-id@example.com>\r\n",
 		"From: \"Dockman\" <dockman@example.com>\r\n",
-		"Content-Transfer-Encoding: quoted-printable\r\n",
+		"Content-Type: text/plain; charset=\"UTF-8\"\r\n",
 		"Updated:\r\n- web\r\n- worker\r\n",
 	} {
 		if !strings.Contains(payload, expected) {
 			t.Fatalf("SMTP payload missing %q:\n%s", expected, payload)
 		}
 	}
-	if strings.Contains(payload, "Auto-Submitted:") {
-		t.Fatal("transactional update mail must not be marked as an auto-response")
-	}
-	if got := smtpClientHostname("dockman@cerede.eu"); got != "cerede.eu" {
-		t.Fatalf("SMTP greeting hostname = %q", got)
+	for _, unwanted := range []string{"Message-ID:", "Content-Transfer-Encoding:", "Auto-Submitted:", "X-Mailer:"} {
+		if strings.Contains(payload, unwanted) {
+			t.Fatalf("minimal SMTP payload must not contain %q", unwanted)
+		}
 	}
 }
 

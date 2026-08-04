@@ -2,9 +2,7 @@ package notifications
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -12,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"mime"
-	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -271,7 +268,7 @@ func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecuti
 	}
 	slices.Sort(successes)
 	slices.Sort(failures)
-	subject := fmt.Sprintf("[Dockman] automatic updates on %s · %d updated · %d failed", safeHeaderValue(run.Host), run.Updated, run.Failed+run.RolledBack)
+	subject := fmt.Sprintf("Dockman updates on %s - %d updated - %d failed", safeHeaderValue(run.Host), run.Updated, run.Failed+run.RolledBack)
 	completed := time.Now()
 	if run.CompletedAt != nil {
 		completed = *run.CompletedAt
@@ -416,7 +413,10 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 		return fmt.Errorf("initialize SMTP session: %w", err)
 	}
 	defer client.Close()
-	if err := client.Hello(smtpClientHostname(from.Address)); err != nil {
+	// Keep the conventional localhost client identity used by mature SMTP
+	// notification clients such as Watchtower. The authenticated relay remains
+	// responsible for the public identity recorded in the outer Received hop.
+	if err := client.Hello("localhost"); err != nil {
 		return fmt.Errorf("initialize SMTP greeting: %w", err)
 	}
 	if message.Config.Security == SecuritySTARTTLS {
@@ -445,7 +445,7 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 		return fmt.Errorf("start SMTP message: %w", err)
 	}
 	buffer := bufio.NewWriter(writer)
-	payload, payloadErr := formatSMTPMessage(message, time.Now(), newMessageID(from.Address))
+	payload, payloadErr := formatSMTPMessage(message, time.Now())
 	if payloadErr != nil {
 		_ = writer.Close()
 		return payloadErr
@@ -467,10 +467,10 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 	return nil
 }
 
-// formatSMTPMessage emits a standards-compliant transactional message. In
-// particular, Message-ID and MIME-safe address/subject headers keep Dockman
-// notifications from looking like malformed bulk mail to receiving filters.
-func formatSMTPMessage(message SMTPMessage, sentAt time.Time, messageID string) (string, error) {
+// formatSMTPMessage deliberately stays close to the small, proven SMTP payload
+// emitted by Watchtower: plain UTF-8 text, no synthetic bulk-mail headers and
+// no transfer encoding for an otherwise ordinary operational notification.
+func formatSMTPMessage(message SMTPMessage, sentAt time.Time) (string, error) {
 	from, err := mail.ParseAddress(message.Config.FromAddress)
 	if err != nil {
 		return "", fmt.Errorf("format SMTP sender: %w", err)
@@ -480,45 +480,12 @@ func formatSMTPMessage(message SMTPMessage, sentAt time.Time, messageID string) 
 	}
 	body := strings.ReplaceAll(message.Body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
-	var encodedBody bytes.Buffer
-	quoted := quotedprintable.NewWriter(&encodedBody)
-	if _, err := quoted.Write([]byte(body)); err != nil {
-		return "", fmt.Errorf("encode SMTP body: %w", err)
-	}
-	if err := quoted.Close(); err != nil {
-		return "", fmt.Errorf("finish SMTP body encoding: %w", err)
-	}
+	body = strings.ReplaceAll(body, "\n", "\r\n")
 	return fmt.Sprintf(
-		"Date: %s\r\nMessage-ID: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n%s\r\n",
-		sentAt.Format(time.RFC1123Z), messageID, from.String(), strings.Join(message.Recipients, ", "),
-		mime.QEncoding.Encode("UTF-8", safeHeaderValue(message.Subject)), encodedBody.String(),
+		"Date: %s\r\nTo: %s\r\nFrom: %s\r\nContent-Type: text/plain; charset=\"UTF-8\"\r\nMIME-Version: 1.0\r\nSubject: %s\r\n\r\n%s\r\n",
+		sentAt.Format(time.RFC1123Z), strings.Join(message.Recipients, ", "), from.String(),
+		mime.QEncoding.Encode("UTF-8", safeHeaderValue(message.Subject)), body,
 	), nil
-}
-
-// smtpClientHostname avoids the default "EHLO localhost" emitted by net/smtp.
-// Authenticated submission relays expose that value in Received headers, and
-// public mailbox providers can penalize a generic localhost identity. The
-// verified sender domain is stable and aligned with the message identity.
-func smtpClientHostname(fromAddress string) string {
-	if at := strings.LastIndexByte(fromAddress, '@'); at >= 0 && at+1 < len(fromAddress) {
-		if domain := strings.Trim(strings.TrimSpace(fromAddress[at+1:]), ">."); domain != "" {
-			return domain
-		}
-	}
-	return "dockman.local"
-}
-
-func newMessageID(fromAddress string) string {
-	domain := "dockman.local"
-	if at := strings.LastIndexByte(fromAddress, '@'); at >= 0 && at+1 < len(fromAddress) {
-		domain = strings.Trim(strings.TrimSpace(fromAddress[at+1:]), ">")
-	}
-	random := make([]byte, 12)
-	if _, err := rand.Read(random); err != nil {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", fromAddress, time.Now().UnixNano())))
-		random = sum[:12]
-	}
-	return fmt.Sprintf("<%s@%s>", hex.EncodeToString(random), domain)
 }
 
 func normalizeInput(input ConfigInput) ConfigInput {
@@ -610,7 +577,7 @@ func notificationSubject(host string, updates, failures int) string {
 	if failures > 0 {
 		parts = append(parts, fmt.Sprintf("%d scan error(s)", failures))
 	}
-	return fmt.Sprintf("[Dockman] %s on %s", strings.Join(parts, " · "), safeHeaderValue(host))
+	return fmt.Sprintf("Dockman %s on %s", strings.Join(parts, " - "), safeHeaderValue(host))
 }
 
 func notificationBody(run updater.UpdateScanRun, available, failures []string) string {
