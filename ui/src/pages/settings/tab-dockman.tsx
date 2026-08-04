@@ -1,5 +1,5 @@
-import {Box, Button, CircularProgress, Stack, Typography} from "@mui/material";
-import {RestartAlt, SystemUpdateAlt} from "@mui/icons-material";
+import {Alert, Box, Button, Chip, CircularProgress, Stack, Typography} from "@mui/material";
+import {Refresh, RestartAlt, SystemUpdateAlt} from "@mui/icons-material";
 import {useState} from "react";
 import {getBaseUrl} from "../../lib/api.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
@@ -8,7 +8,31 @@ export default function TabDockman() {
     const {showError, showSuccess} = useSnackbar();
     const [updating, setUpdating] = useState(false);
     const [restarting, setRestarting] = useState(false);
-    const busy = updating || restarting;
+    const [checking, setChecking] = useState(false);
+    const [updateCheck, setUpdateCheck] = useState<{
+        status: "available" | "current" | "skipped" | "error";
+        image: string;
+        currentDigest?: string;
+        remoteDigest?: string;
+        reason?: string;
+    } | null>(null);
+    const busy = updating || restarting || checking;
+
+    const handleCheck = async () => {
+        setChecking(true);
+        try {
+            const res = await fetch(`${getBaseUrl("host", "local")}/docker/update/dockman/check`);
+            if (!res.ok) {
+                showError(`Update check failed: ${res.status} ${await res.text()}`);
+                return;
+            }
+            setUpdateCheck(await res.json());
+        } catch (e) {
+            showError(`Update check failed: ${(e as Error).message}`);
+        } finally {
+            setChecking(false);
+        }
+    };
 
     const handleUpdate = async () => {
         const ok = window.confirm(
@@ -79,7 +103,31 @@ export default function TabDockman() {
                     recreate it through a short-lived helper. In both cases Dockman is
                     briefly unavailable and your compose configuration is reused as-is.
                 </Typography>
+                {updateCheck && <Alert
+                    severity={updateCheck.status === "available" ? "warning" : updateCheck.status === "current" ? "success" : updateCheck.status === "error" ? "error" : "info"}
+                    sx={{mb: 2}}
+                    action={<Chip
+                        size="small"
+                        color={updateCheck.status === "available" ? "warning" : updateCheck.status === "current" ? "success" : updateCheck.status === "error" ? "error" : "default"}
+                        label={updateCheck.status === "available" ? "Update available" : updateCheck.status === "current" ? "Up to date" : updateCheck.status}
+                    />}
+                >
+                    <Typography variant="body2" sx={{fontWeight: 600}}>{updateCheck.image}</Typography>
+                    {updateCheck.reason && <Typography variant="caption" component="div">{updateCheck.reason}</Typography>}
+                    {updateCheck.currentDigest && <Typography variant="caption" component="div" sx={{fontFamily: "monospace"}}>Current: sha256:{updateCheck.currentDigest.slice(0, 12)}</Typography>}
+                    {updateCheck.remoteDigest && <Typography variant="caption" component="div" sx={{fontFamily: "monospace"}}>Remote: sha256:{updateCheck.remoteDigest.slice(0, 12)}</Typography>}
+                </Alert>}
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1.25}>
+                    <Button
+                        variant="outlined"
+                        onClick={() => void handleCheck()}
+                        disabled={busy}
+                        startIcon={checking
+                            ? <CircularProgress size={16} color="inherit"/>
+                            : <Refresh/>}
+                    >
+                        {checking ? "Checking…" : "Check for update"}
+                    </Button>
                     <Button
                         variant="outlined"
                         onClick={handleRestart}

@@ -66,6 +66,42 @@ func (u *Service) CheckContainerUpdatesByID(ctx context.Context, containerIDs []
 	return u.checkContainerUpdates(ctx, selected)
 }
 
+// CheckContainerImageUpdate compares one already-resolved container image with
+// its remote registry digest without applying container-level exclusion rules.
+// It exists for dedicated, read-only flows such as Dockman's self-update check;
+// the regular inventory continues to skip Dockman itself by design.
+func (u *Service) CheckContainerImageUpdate(ctx context.Context, row container.Summary) ContainerUpdateCheck {
+	result := ContainerUpdateCheck{
+		ContainerID: row.ID, ContainerName: summaryName(row), Image: row.Image,
+	}
+	if row.ImageID == "" {
+		result.Status = ContainerUpdateSkipped
+		result.Reason = "container has no resolved local image"
+		return result
+	}
+
+	inspect, err := u.cli().ImageInspect(ctx, row.ImageID)
+	if err != nil {
+		result.Status = ContainerUpdateError
+		result.Reason = "inspect running image: " + err.Error()
+		return result
+	}
+	localDigests := repositoryDigestsForImage(inspect.RepoDigests, row.Image)
+	if len(localDigests) == 0 {
+		result.Status = ContainerUpdateSkipped
+		result.Reason = "locally built image; no matching repository digest"
+		return result
+	}
+	result.CurrentDigest = localDigests[0]
+
+	remote := u.checkRemoteImage(ctx, row.Image)
+	result.Status, result.RemoteDigest, result.Reason = remote.status, remote.remoteDigest, remote.reason
+	if result.Status == ContainerUpdateCurrent && !slices.Contains(localDigests, result.RemoteDigest) {
+		result.Status = ContainerUpdateAvailable
+	}
+	return result
+}
+
 func (u *Service) checkContainerUpdates(ctx context.Context, selected map[string]struct{}) ([]ContainerUpdateCheck, error) {
 	containers, err := u.cli().ContainerList(ctx, client.ContainerListOptions{All: true})
 	if err != nil {

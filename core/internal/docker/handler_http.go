@@ -70,6 +70,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /shell/options", h.hostShellOptions)
 	subMux.HandleFunc("GET /shell", h.hostShell)
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
+	subMux.HandleFunc("GET /update/dockman/check", h.checkDockmanUpdate)
 	subMux.HandleFunc("POST /updates/check", h.checkContainerUpdates)
 	subMux.HandleFunc("GET /updates/inventory", h.getUpdateInventory)
 	subMux.HandleFunc("GET /updates/policies", h.listUpdatePolicies)
@@ -449,6 +450,37 @@ func (h *HandlerHttp) updateDockman(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte("Dockman update started; it will restart shortly."))
+}
+
+// checkDockmanUpdate performs the same registry digest comparison used by the
+// container update scanner, but explicitly for Dockman's own container. The
+// regular scanner deliberately excludes Dockman because self-update has a
+// dedicated recreation path; this endpoint is read-only and only reports the
+// result to Settings > Dockman.
+func (h *HandlerHttp) checkDockmanUpdate(w http.ResponseWriter, r *http.Request) {
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if host != contSrv.LocalClient {
+		http.Error(w, "self-update checks are only supported on the local host", http.StatusBadRequest)
+		return
+	}
+
+	dkSrv, err := h.srv(host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("error getting docker service: %v", err), http.StatusBadRequest)
+		return
+	}
+	self, err := findSelfContainer(r.Context(), dkSrv.Container.Cli())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	result := dkSrv.Updater.CheckContainerImageUpdate(r.Context(), self)
+	writeJSON(w, result)
 }
 
 func (h *HandlerHttp) containerExec(w http.ResponseWriter, r *http.Request) {
