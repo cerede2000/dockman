@@ -32,8 +32,11 @@ import {
     EditOutlined,
     EmailOutlined,
     HistoryOutlined,
+	PauseCircleOutlined,
+	PlayCircleOutlined,
     Refresh,
 	ReplayOutlined,
+	RocketLaunchOutlined,
     SendOutlined,
     ShieldOutlined,
     SpaceDashboardOutlined,
@@ -97,8 +100,10 @@ type ScheduledScan = {schedule: string; nextRun: string; targets: number};
 
 type ExecutionRun = {
 	id: number; startedAt: string; schedule: string; targets: number; updated: number;
-	current: number; rolledBack: number; failed: number; skipped: number;
+	current: number; rolledBack: number; failed: number; skipped: number; error?: string;
 };
+
+type AutomationControl = {paused: boolean; maxGroupsPerRun: number; running: boolean; updatedAt?: string};
 
 type ExecutionResult = {
 	id: number; runId: number; createdAt: string; containerId: string; containerName: string;
@@ -177,6 +182,12 @@ export default function UpdatesPage() {
 	const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
 	const [executionBlocks, setExecutionBlocks] = useState<ExecutionBlock[]>([]);
 	const [executionDetails, setExecutionDetails] = useState<ExecutionResult | null>(null);
+	const [control, setControl] = useState<AutomationControl>({paused: false, maxGroupsPerRun: 0, running: false});
+	const [controlOpen, setControlOpen] = useState(false);
+	const [controlSaving, setControlSaving] = useState(false);
+	const [controlDraft, setControlDraft] = useState(0);
+	const [executeConfirmOpen, setExecuteConfirmOpen] = useState(false);
+	const [executing, setExecuting] = useState(false);
     const [smtpOpen, setSMTPOpen] = useState(false);
     const [smtpSaving, setSMTPSaving] = useState(false);
     const [smtpTesting, setSMTPTesting] = useState(false);
@@ -199,13 +210,14 @@ export default function UpdatesPage() {
             const payload = await response.json() as {results: UpdateEnrollment[]};
             setRows(payload.results ?? []);
 			if (!stateResponse.ok) throw new Error((await stateResponse.text()).trim() || `HTTP ${stateResponse.status}`);
-			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]; executionRuns: ExecutionRun[]; executionResults: ExecutionResult[]; blocks: ExecutionBlock[]};
+			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]; executionRuns: ExecutionRun[]; executionResults: ExecutionResult[]; blocks: ExecutionBlock[]; control?: AutomationControl};
 			setScanResults(Object.fromEntries((state.results ?? []).map(result => [result.containerId, result])));
 			setScanRuns(state.runs ?? []);
 			setSchedules(state.schedules ?? []);
 			setExecutionRuns(state.executionRuns ?? []);
 			setExecutionResults(state.executionResults ?? []);
 			setExecutionBlocks(state.blocks ?? []);
+			setControl(state.control ?? {paused: false, maxGroupsPerRun: 0, running: false});
             if (!smtpResponse.ok) throw new Error((await smtpResponse.text()).trim() || `HTTP ${smtpResponse.status}`);
             const smtp = await smtpResponse.json() as {config: SMTPConfig; deliveries: NotificationDelivery[]};
             const nextSMTP = {...defaultSMTPConfig, ...(smtp.config ?? {}), password: ''};
@@ -262,6 +274,42 @@ export default function UpdatesPage() {
 			showError(`Image scan failed — ${error instanceof Error ? error.message : String(error)}`);
 		} finally {
 			setScanning(false);
+		}
+	};
+
+	const saveControl = async (paused: boolean, maxGroupsPerRun = control.maxGroupsPerRun) => {
+		setControlSaving(true);
+		try {
+			const response = await fetch(hostUrl('/docker/updates/control'), {
+				method: 'PUT', headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify({paused, maxGroupsPerRun}),
+			});
+			if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+			const saved = await response.json() as AutomationControl;
+			setControl(saved);
+			setControlOpen(false);
+			showSuccess(paused ? 'Automatic update execution paused' : 'Automatic update execution enabled');
+		} catch (error) {
+			showError(`Unable to save automatic update controls — ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			setControlSaving(false);
+		}
+	};
+
+	const runAutomaticNow = async () => {
+		setExecuteConfirmOpen(false);
+		setExecuting(true);
+		try {
+			const response = await fetch(hostUrl('/docker/updates/run'), {method: 'POST'});
+			if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+			const payload = await response.json() as {run: ScanRun};
+			await load();
+			showSuccess(payload.run.available > 0 ? 'Automatic update cycle completed' : 'No enrolled image needed an update');
+		} catch (error) {
+			await load();
+			showError(`Automatic update cycle failed — ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			setExecuting(false);
 		}
 	};
 
@@ -393,9 +441,13 @@ export default function UpdatesPage() {
             <PageHeader title="Updates" icon={<SystemUpdateAlt/>} right={<Stack direction="row" spacing={1}>
                 <Button startIcon={<Refresh/>} onClick={() => void load()} disabled={loading}>Refresh</Button>
 				<Button variant="contained" startIcon={<SystemUpdateAlt/>} onClick={() => void scanNow()} disabled={loading || scanning || enrolledCount === 0}>{scanning ? 'Scanning…' : 'Scan enrolled'}</Button>
+				<Button color={control.paused ? 'warning' : 'success'} startIcon={control.paused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} onClick={() => void saveControl(!control.paused)} disabled={loading || controlSaving || executing || control.running}>{control.paused ? 'Resume auto' : 'Pause auto'}</Button>
+				<Button color="warning" startIcon={<RocketLaunchOutlined/>} onClick={() => setExecuteConfirmOpen(true)} disabled={loading || executing || control.running || control.paused || enrolledCount === 0}>{executing || control.running ? 'Running…' : 'Run updates now'}</Button>
 				<Button startIcon={<EmailOutlined/>} color={smtpConfig.enabled ? 'success' : 'inherit'} onClick={openSMTP}>SMTP</Button>
 				<Button startIcon={<SpaceDashboardOutlined/>} onClick={() => navigate(`/${host}/monitor`)}>Monitor</Button>
             </Stack>}/>
+
+			{control.paused && <Alert severity="warning" sx={{mb: 2}}>Automatic image checks remain active, but installation is paused for this host. Manual protected infrastructure updates remain independent.</Alert>}
 
             <Stack direction={{xs: 'column', md: 'row'}} spacing={1.5} sx={{mb: 2}}>
                 <Paper variant="outlined" sx={{p: 1.75, flex: 1}}>
@@ -454,7 +506,8 @@ export default function UpdatesPage() {
 
 			<Stack direction={{xs: 'column', lg: 'row'}} spacing={2} sx={{mt: 2}}>
 				<Paper variant="outlined" sx={{p: 2, flex: 1}}>
-					<Typography variant="h6" sx={{mb: 1}}>Scheduled checks</Typography>
+					<Stack direction="row" sx={{alignItems: 'center', justifyContent: 'space-between', mb: 1}}><Typography variant="h6">Scheduled checks</Typography><Button size="small" onClick={() => {setControlDraft(control.maxGroupsPerRun); setControlOpen(true);}}>Limits</Button></Stack>
+					<Typography variant="caption" color="text.secondary">{control.maxGroupsPerRun > 0 ? `At most ${control.maxGroupsPerRun} independent update group(s) per cycle. A Compose stack is never split.` : 'No group limit. Compose stacks are still executed atomically.'}</Typography>
 					{schedules.length === 0 ? <Typography color="text.secondary">No enrolled target is currently scheduled.</Typography> : schedules.map(schedule =>
 						<Stack key={schedule.schedule} direction="row" sx={{justifyContent: 'space-between', py: .75, borderBottom: 1, borderColor: 'divider'}}>
 							<Box><Typography sx={{fontFamily: 'monospace'}}>{schedule.schedule}</Typography><Typography variant="caption" color="text.secondary">{schedule.targets} target{schedule.targets === 1 ? '' : 's'}</Typography></Box>
@@ -473,15 +526,35 @@ export default function UpdatesPage() {
 
 			<Paper variant="outlined" sx={{mt: 2, p: 2}}>
 				<Stack direction="row" spacing={1} sx={{alignItems: 'center', mb: 1}}><ShieldOutlined/><Typography variant="h6">Automatic update history</Typography>{executionBlocks.length > 0 && <Chip size="small" color="error" variant="outlined" label={`${executionBlocks.length} retry blocked`}/>}</Stack>
-				{executionRuns.length === 0 ? <Typography color="text.secondary">No scheduled update has been applied yet. Manual scans never create an execution.</Typography> : executionRuns.slice(0, 10).map(run => <Box key={run.id} sx={{py: .8, borderBottom: 1, borderColor: 'divider'}}>
+				{executionRuns.length === 0 ? <Typography color="text.secondary">No automatic update has been applied yet. Read-only scans never create an execution.</Typography> : executionRuns.slice(0, 10).map(run => <Box key={run.id} sx={{py: .8, borderBottom: 1, borderColor: 'divider'}}>
 					<Stack direction={{xs: 'column', md: 'row'}} spacing={1} sx={{alignItems: {md: 'center'}}}>
 						<Typography variant="body2" sx={{minWidth: 165}}>{new Date(run.startedAt).toLocaleString()}</Typography>
 						<Chip size="small" variant="outlined" label={run.schedule}/>
 						<Typography variant="body2">{run.updated} updated · {run.current} current · {run.rolledBack} rolled back · {run.failed} failed</Typography>
 					</Stack>
+					{run.error && <Alert severity="warning" sx={{mt: .75}}>{run.error}</Alert>}
 					<Stack direction="row" spacing={.75} sx={{mt: .6, flexWrap: 'wrap'}}>{executionResults.filter(result => result.runId === run.id).map(result => <Chip key={result.id} clickable onClick={() => setExecutionDetails(result)} size="small" variant="outlined" icon={result.targetType === 'stack' ? <AccountTreeOutlined/> : undefined} label={`${result.stackName ? `${result.stackName} / ` : ''}${result.containerName}: ${result.state}`} color={result.state === 'updated' || result.state === 'current' ? 'success' : result.state === 'failed' || result.state === 'rolled_back' ? 'error' : 'default'}/>)}</Stack>
 				</Box>)}
 			</Paper>
+
+			<Dialog open={executeConfirmOpen} onClose={() => !executing && setExecuteConfirmOpen(false)} fullWidth maxWidth="sm">
+				<DialogTitle>Run the protected automatic update cycle now?</DialogTitle>
+				<DialogContent dividers><Stack spacing={1.5}>
+					<Typography>Dockman will check every enrolled target, then install available images using the same health verification, stack transaction and rollback rules as the scheduler.</Typography>
+					<Alert severity="warning">This is an execution, not the read-only “Scan enrolled” action.</Alert>
+					<Typography variant="body2" color="text.secondary">{control.maxGroupsPerRun > 0 ? `This cycle is limited to ${control.maxGroupsPerRun} independent update group(s). Remaining updates stay available for a later cycle.` : 'No update-group limit is configured.'}</Typography>
+				</Stack></DialogContent>
+				<DialogActions><Button onClick={() => setExecuteConfirmOpen(false)}>Cancel</Button><Button variant="contained" color="warning" startIcon={<RocketLaunchOutlined/>} onClick={() => void runAutomaticNow()}>Run protected cycle</Button></DialogActions>
+			</Dialog>
+
+			<Dialog open={controlOpen} onClose={() => !controlSaving && setControlOpen(false)} fullWidth maxWidth="sm">
+				<DialogTitle>Automatic update execution limits</DialogTitle>
+				<DialogContent dividers><Stack spacing={2}>
+					<TextField type="number" label="Maximum independent groups per cycle" value={controlDraft} onChange={event => setControlDraft(Math.max(0, Math.min(1000, Number(event.target.value) || 0)))} slotProps={{htmlInput: {min: 0, max: 1000}}} helperText="0 means unlimited. One standalone container is one group; one complete Compose stack is one group, regardless of its container count."/>
+					<Alert severity="info">The limit only reduces the blast radius of each cycle. It never splits a stack transaction, and pending images remain eligible for the next cycle.</Alert>
+				</Stack></DialogContent>
+				<DialogActions><Button onClick={() => setControlOpen(false)} disabled={controlSaving}>Cancel</Button><Button variant="contained" onClick={() => void saveControl(control.paused, controlDraft)} disabled={controlSaving}>Save limit</Button></DialogActions>
+			</Dialog>
 
             {(smtpConfig.configured || deliveries.length > 0) && <Paper variant="outlined" sx={{mt: 2, p: 2}}>
                 <Stack direction={{xs: 'column', md: 'row'}} spacing={2} sx={{alignItems: {md: 'center'}}}>

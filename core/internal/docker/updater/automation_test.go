@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -16,10 +18,82 @@ func testScanStore(t *testing.T) *ScanStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&UpdateScanResult{}, &UpdateScanRun{}, &UpdateExecutionRun{}, &UpdateExecutionResult{}, &UpdateExecutionBlock{}); err != nil {
+	if err := db.AutoMigrate(&UpdateScanResult{}, &UpdateScanRun{}, &UpdateExecutionRun{}, &UpdateExecutionResult{}, &UpdateExecutionBlock{}, &UpdateAutomationControl{}); err != nil {
 		t.Fatal(err)
 	}
 	return NewScanStore(db)
+}
+
+func TestInterruptedExecutionIsRecoveredAtServiceStartup(t *testing.T) {
+	store := testScanStore(t)
+	run := UpdateExecutionRun{Host: "local", Schedule: DefaultUpdateSchedule, StartedAt: time.Now(), Targets: 2}
+	if err := store.db.Create(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewAutomationService(store, func(context.Context, string) ([]UpdateEnrollment, error) { return nil, nil }, func(context.Context, string, []string) ([]ContainerUpdateCheck, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	runs, _, _, err := service.ExecutionState("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].CompletedAt == nil || !strings.Contains(runs[0].Error, "restarted") {
+		t.Fatalf("interrupted execution was not made explicit: %#v", runs)
+	}
+	control, err := service.Control("local")
+	if err != nil || !control.Paused {
+		t.Fatalf("interrupted execution did not fail closed: control=%#v err=%v", control, err)
+	}
+}
+
+func TestAutomationPauseAndManualExecution(t *testing.T) {
+	service, err := NewAutomationService(
+		testScanStore(t),
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			return []UpdateEnrollment{{ContainerID: "web", ContainerName: "web", Image: "example/web", Enrolled: true}}, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
+			return []ContainerUpdateCheck{{ContainerID: "web", ContainerName: "web", Image: "example/web", Status: ContainerUpdateAvailable, RemoteDigest: "new"}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	executions := 0
+	service.SetExecutor(func(_ context.Context, _ string, targets []UpdateExecutionTarget) []UpdateExecutionOutcome {
+		executions++
+		return []UpdateExecutionOutcome{{UpdateExecutionTarget: targets[0], State: ExecutionUpdated}}
+	})
+	if _, err := service.SaveControl("local", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.RunAutomaticNow(context.Background(), "local"); err == nil {
+		t.Fatal("paused host accepted a manual automatic execution")
+	}
+	if _, err := service.SaveControl("local", false, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.RunAutomaticNow(context.Background(), "local"); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 {
+		t.Fatalf("manual automatic executions = %d", executions)
+	}
+}
+
+func TestExecutionGroupLimitNeverSplitsAStack(t *testing.T) {
+	targets := []UpdateExecutionTarget{
+		{ContainerID: "one", TargetType: UpdateTargetStack, StackKey: "stack-a"},
+		{ContainerID: "two", TargetType: UpdateTargetStack, StackKey: "stack-a"},
+		{ContainerID: "three"},
+	}
+	limited := limitExecutionGroups(targets, 1)
+	if len(limited) != 2 || limited[0].ContainerID != "one" || limited[1].ContainerID != "two" {
+		t.Fatalf("stack transaction was split by the execution limit: %#v", limited)
+	}
 }
 
 func TestNormalizeUpdateSchedule(t *testing.T) {

@@ -22,6 +22,21 @@ const (
 	minimumUpdateScanGap  = 15 * time.Minute
 )
 
+type UpdateAutomationControl struct {
+	ID              uint      `gorm:"primaryKey" json:"-"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+	Host            string    `gorm:"not null;uniqueIndex" json:"host"`
+	Paused          bool      `gorm:"not null;default:false" json:"paused"`
+	MaxGroupsPerRun int       `gorm:"not null;default:0" json:"maxGroupsPerRun"`
+}
+
+type AutomationControlView struct {
+	Paused          bool      `json:"paused"`
+	MaxGroupsPerRun int       `json:"maxGroupsPerRun"`
+	Running         bool      `json:"running"`
+	UpdatedAt       time.Time `json:"updatedAt,omitempty"`
+}
+
 type UpdateScanResult struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
 	CreatedAt     time.Time `json:"createdAt"`
@@ -148,6 +163,11 @@ type AutomationService struct {
 }
 
 func NewAutomationService(store *ScanStore, inventory InventoryProvider, scan ScanProvider) (*AutomationService, error) {
+	if interrupted, err := store.RecoverInterruptedExecutions(); err != nil {
+		return nil, fmt.Errorf("recover interrupted automatic update executions: %w", err)
+	} else if interrupted > 0 {
+		log.Warn().Int64("executions", interrupted).Msg("marked interrupted automatic update executions for review")
+	}
 	scheduler, err := gocron.NewScheduler()
 	if err != nil {
 		return nil, err
@@ -264,6 +284,17 @@ func (s *AutomationService) RunNow(ctx context.Context, host string) (UpdateScan
 	return s.run(ctx, host, "", "manual")
 }
 
+func (s *AutomationService) RunAutomaticNow(ctx context.Context, host string) (UpdateScanRun, []ContainerUpdateCheck, error) {
+	control, err := s.Control(host)
+	if err != nil {
+		return UpdateScanRun{}, nil, err
+	}
+	if control.Paused {
+		return UpdateScanRun{}, nil, errors.New("automatic updates are paused for this host")
+	}
+	return s.run(ctx, host, "", "manual-execution")
+}
+
 func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, trigger string) (UpdateScanRun, []ContainerUpdateCheck, error) {
 	run := UpdateScanRun{Host: host, Trigger: trigger, Schedule: requestedSchedule, StartedAt: time.Now()}
 	s.runMu.Lock()
@@ -318,7 +349,15 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 			if saveErr := s.store.Save(&run, checks); saveErr != nil {
 				return run, checks, saveErr
 			}
-			if trigger == "scheduled" && s.execute != nil {
+			if (trigger == "scheduled" || trigger == "manual-execution") && s.execute != nil {
+				control, controlErr := s.Control(host)
+				if controlErr != nil {
+					return run, checks, controlErr
+				}
+				if control.Paused {
+					s.notifyScan(ctx, run, checks)
+					return run, checks, nil
+				}
 				s.executeAvailable(ctx, run, rows, checks)
 				// Availability mail would be misleading after the same run has
 				// already applied the update. Keep registry failures in the scan
@@ -403,7 +442,24 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 	if len(targets) == 0 {
 		return
 	}
-	executionRun := UpdateExecutionRun{Host: scanRun.Host, Schedule: scanRun.Schedule, ScanRunID: scanRun.ID, StartedAt: time.Now(), Targets: len(targets)}
+	control, err := s.Control(scanRun.Host)
+	if err != nil {
+		log.Error().Err(err).Str("host", scanRun.Host).Msg("unable to load automatic update execution controls")
+		return
+	}
+	targets = limitExecutionGroups(targets, control.MaxGroupsPerRun)
+	if len(targets) == 0 {
+		return
+	}
+	executionSchedule := scanRun.Schedule
+	if executionSchedule == "" {
+		executionSchedule = "manual"
+	}
+	executionRun := UpdateExecutionRun{Host: scanRun.Host, Schedule: executionSchedule, ScanRunID: scanRun.ID, StartedAt: time.Now(), Targets: len(targets)}
+	if err := s.store.BeginExecution(&executionRun); err != nil {
+		log.Error().Err(err).Str("host", scanRun.Host).Msg("unable to persist automatic update execution start")
+		return
+	}
 	outcomes := s.execute(ctx, scanRun.Host, targets)
 	seen := make(map[string]struct{}, len(outcomes))
 	for _, outcome := range outcomes {
@@ -439,6 +495,28 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 			log.Warn().Err(err).Str("host", scanRun.Host).Msg("automatic update execution notification failed")
 		}
 	}
+}
+
+func limitExecutionGroups(targets []UpdateExecutionTarget, maximum int) []UpdateExecutionTarget {
+	if maximum <= 0 {
+		return targets
+	}
+	selected := make([]UpdateExecutionTarget, 0, len(targets))
+	groups := make(map[string]struct{}, maximum)
+	for _, target := range targets {
+		key := "container:" + target.ContainerID
+		if target.TargetType == UpdateTargetStack && target.StackKey != "" {
+			key = "stack:" + target.StackKey
+		}
+		if _, exists := groups[key]; !exists {
+			if len(groups) >= maximum {
+				continue
+			}
+			groups[key] = struct{}{}
+		}
+		selected = append(selected, target)
+	}
+	return selected
 }
 
 func checksWithoutAvailable(checks []ContainerUpdateCheck) []ContainerUpdateCheck {
@@ -489,4 +567,29 @@ func (s *AutomationService) ExecutionState(host string) ([]UpdateExecutionRun, [
 
 func (s *AutomationService) ClearExecutionBlock(host, containerID string) error {
 	return s.store.ClearExecutionBlock(host, containerID)
+}
+
+func (s *AutomationService) Control(host string) (AutomationControlView, error) {
+	var row UpdateAutomationControl
+	if err := s.store.db.Where("host = ?", host).Limit(1).Find(&row).Error; err != nil {
+		return AutomationControlView{}, err
+	}
+	s.runMu.Lock()
+	running := s.running[host]
+	s.runMu.Unlock()
+	return AutomationControlView{Paused: row.Paused, MaxGroupsPerRun: row.MaxGroupsPerRun, Running: running, UpdatedAt: row.UpdatedAt}, nil
+}
+
+func (s *AutomationService) SaveControl(host string, paused bool, maxGroups int) (AutomationControlView, error) {
+	if strings.TrimSpace(host) == "" {
+		return AutomationControlView{}, errors.New("host is required")
+	}
+	if maxGroups < 0 || maxGroups > 1000 {
+		return AutomationControlView{}, errors.New("maximum update groups per run must be between 0 and 1000")
+	}
+	row := UpdateAutomationControl{Host: host}
+	if err := s.store.db.Where("host = ?", host).Assign(map[string]any{"paused": paused, "max_groups_per_run": maxGroups}).FirstOrCreate(&row).Error; err != nil {
+		return AutomationControlView{}, err
+	}
+	return s.Control(host)
 }
