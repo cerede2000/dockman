@@ -153,6 +153,7 @@ type AutomationService struct {
 	notify          ScanNotifier
 	execute         UpdateExecutor
 	notifyExecution ExecutionNotifier
+	cleanupImage    ImageCleanupProvider
 	scheduler       gocron.Scheduler
 
 	jobsMu  sync.Mutex
@@ -189,6 +190,8 @@ func (s *AutomationService) SetExecutor(executor UpdateExecutor) { s.execute = e
 func (s *AutomationService) SetExecutionNotifier(notifier ExecutionNotifier) {
 	s.notifyExecution = notifier
 }
+
+func (s *AutomationService) SetImageCleaner(cleaner ImageCleanupProvider) { s.cleanupImage = cleaner }
 
 func NormalizeUpdateSchedule(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -437,6 +440,7 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 			State: row.State, RemoteDigest: check.RemoteDigest, RollbackEnabled: row.Rollback,
 			TargetType: targetType, StackName: row.StackName, StackKey: row.StackKey,
 			ServiceName: row.ServiceName, DependsOn: row.DependsOn,
+			CleanupEnabled: row.CleanupEnabled, CleanupKeep: row.CleanupKeep,
 		})
 	}
 	if len(targets) == 0 {
@@ -489,6 +493,9 @@ func (s *AutomationService) executeAvailable(ctx context.Context, scanRun Update
 	if err := s.store.SaveExecution(&executionRun, outcomes); err != nil {
 		log.Error().Err(err).Str("host", scanRun.Host).Msg("unable to persist automatic update execution")
 		return
+	}
+	if cleanupErr := s.queueAndProcessImageCleanup(ctx, scanRun.Host, outcomes); cleanupErr != nil {
+		log.Warn().Err(cleanupErr).Str("host", scanRun.Host).Msg("one or more previous images were retained after safe cleanup checks")
 	}
 	if s.notifyExecution != nil {
 		if err := s.notifyExecution(ctx, executionRun, outcomes); err != nil {
@@ -567,6 +574,14 @@ func (s *AutomationService) ExecutionState(host string) ([]UpdateExecutionRun, [
 
 func (s *AutomationService) ClearExecutionBlock(host, containerID string) error {
 	return s.store.ClearExecutionBlock(host, containerID)
+}
+
+func (s *AutomationService) ImageCleanupState(host string) ([]UpdateImageCleanup, error) {
+	return s.store.ImageCleanupState(host)
+}
+
+func (s *AutomationService) RetryImageCleanup(ctx context.Context, host string) error {
+	return s.processImageCleanup(ctx, host)
 }
 
 func (s *AutomationService) Control(host string) (AutomationControlView, error) {

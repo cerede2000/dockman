@@ -81,6 +81,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("POST /updates/run", h.runAutomaticUpdatesNow)
 	subMux.HandleFunc("GET /updates/state", h.getUpdateState)
 	subMux.HandleFunc("PUT /updates/control", h.saveUpdateAutomationControl)
+	subMux.HandleFunc("POST /updates/cleanup/retry", h.retryUpdateImageCleanup)
 	subMux.HandleFunc("DELETE /updates/execution-block", h.clearUpdateExecutionBlock)
 	subMux.HandleFunc("GET /updates/notifications/smtp", h.getSMTPNotificationConfig)
 	subMux.HandleFunc("PUT /updates/notifications/smtp", h.saveSMTPNotificationConfig)
@@ -310,6 +311,11 @@ func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	cleanups, err := h.updateAutomation.ImageCleanupState(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, struct {
 		Results          []updater.UpdateScanResult      `json:"results"`
 		Runs             []updater.UpdateScanRun         `json:"runs"`
@@ -318,7 +324,22 @@ func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
 		ExecutionResults []updater.UpdateExecutionResult `json:"executionResults"`
 		Blocks           []updater.UpdateExecutionBlock  `json:"blocks"`
 		Control          updater.AutomationControlView   `json:"control"`
-	}{Results: results, Runs: runs, Schedules: schedules, ExecutionRuns: executionRuns, ExecutionResults: executionResults, Blocks: blocks, Control: control})
+		Cleanups         []updater.UpdateImageCleanup    `json:"cleanups"`
+	}{Results: results, Runs: runs, Schedules: schedules, ExecutionRuns: executionRuns, ExecutionResults: executionResults, Blocks: blocks, Control: control, Cleanups: cleanups})
+}
+
+func (h *HandlerHttp) retryUpdateImageCleanup(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updateAutomationHost(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
+	if err := h.updateAutomation.RetryImageCleanup(ctx, host); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HandlerHttp) clearUpdateExecutionBlock(w http.ResponseWriter, r *http.Request) {

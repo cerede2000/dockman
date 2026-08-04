@@ -31,13 +31,16 @@ type UpdateExecutionTarget struct {
 	StackKey        string
 	ServiceName     string
 	DependsOn       string
+	CleanupEnabled  bool
+	CleanupKeep     int
 }
 
 type UpdateExecutionOutcome struct {
 	UpdateExecutionTarget
-	State   string
-	Message string
-	Logs    string
+	State         string
+	Message       string
+	Logs          string
+	PreviousImage string
 }
 
 type UpdateExecutionRun struct {
