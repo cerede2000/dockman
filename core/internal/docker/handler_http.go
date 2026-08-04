@@ -72,6 +72,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("POST /update/dockman", h.updateDockman)
 	subMux.HandleFunc("GET /update/dockman/check", h.checkDockmanUpdate)
 	subMux.HandleFunc("POST /updates/check", h.checkContainerUpdates)
+	subMux.HandleFunc("POST /updates/protected/{containerId}", h.protectedContainerUpdate)
 	subMux.HandleFunc("GET /updates/inventory", h.getUpdateInventory)
 	subMux.HandleFunc("GET /updates/policies", h.listUpdatePolicies)
 	subMux.HandleFunc("PUT /updates/policies", h.saveUpdatePolicy)
@@ -450,6 +451,33 @@ func (h *HandlerHttp) updateDockman(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte("Dockman update started; it will restart shortly."))
+}
+
+// protectedContainerUpdate starts a detached, rollback-capable update for a
+// local Compose service on which Dockman's Docker connection may depend.
+func (h *HandlerHttp) protectedContainerUpdate(w http.ResponseWriter, r *http.Request) {
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if host != contSrv.LocalClient {
+		http.Error(w, "protected infrastructure update is only supported on the local host", http.StatusBadRequest)
+		return
+	}
+	dkSrv, err := h.srv(host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("error getting docker service: %v", err), http.StatusBadRequest)
+		return
+	}
+	containerID := r.PathValue("containerId")
+	if err = ProtectedContainerUpdate(context.Background(), dkSrv, containerID); err != nil {
+		log.Error().Err(err).Str("container", containerID).Msg("protected infrastructure update failed to start")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("Protected update started. Docker access may reconnect briefly; rollback is automatic if verification fails."))
 }
 
 // checkDockmanUpdate performs the same registry digest comparison used by the
