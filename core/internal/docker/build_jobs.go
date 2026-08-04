@@ -20,19 +20,24 @@ const (
 	buildJobFailed    = "failed"
 	buildJobCanceled  = "canceled"
 
-	maxBuildJobLog       = 4 << 20
-	maxRetainedBuildJobs = 50
-	buildJobRetention    = 24 * time.Hour
+	// Build output can be extremely verbose (notably apt and compiler jobs).
+	// Keep a useful one-megabyte tail without letting completed jobs retain
+	// hundreds of megabytes in Dockman's heap until the next day.
+	maxBuildJobLog       = 1 << 20
+	maxRetainedBuildJobs = 20
+	maxPendingBuildJobs  = 10
+	buildJobRetention    = 6 * time.Hour
 	buildJobTimeout      = 6 * time.Hour
 )
 
-type buildJobExecutor func(context.Context, string, string, string, io.Writer) error
+type buildJobExecutor func(context.Context, string, string, string, string, io.Writer) error
 
 type DockerBuildJobView struct {
 	ID           string     `json:"id"`
 	Host         string     `json:"-"`
 	Filename     string     `json:"filename"`
 	ImageTag     string     `json:"imageTag"`
+	NetworkMode  string     `json:"networkMode"`
 	Status       string     `json:"status"`
 	Error        string     `json:"error,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
@@ -57,15 +62,24 @@ type dockerBuildJob struct {
 func (j *dockerBuildJob) Write(payload []byte) (int, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.log = append(j.log, payload...)
-	j.logTotal += int64(len(payload))
+	original := len(payload)
+	j.logTotal += int64(original)
 	now := time.Now()
 	j.view.LastOutputAt = &now
-	if overflow := len(j.log) - maxBuildJobLog; overflow > 0 {
-		j.log = append([]byte(nil), j.log[overflow:]...)
+	if original >= maxBuildJobLog {
+		// Avoid first allocating the complete payload when a command flushes a
+		// very large chunk in one write; only its bounded tail is useful.
+		j.log = append(j.log[:0], payload[original-maxBuildJobLog:]...)
+		j.logBase = j.logTotal - int64(len(j.log))
+		return original, nil
+	}
+	if overflow := len(j.log) + original - maxBuildJobLog; overflow > 0 {
+		copy(j.log, j.log[overflow:])
+		j.log = j.log[:len(j.log)-overflow]
 		j.logBase += int64(overflow)
 	}
-	return len(payload), nil
+	j.log = append(j.log, payload...)
+	return original, nil
 }
 
 func (j *dockerBuildJob) snapshot(after int64, includeLog bool) DockerBuildJobView {
@@ -101,7 +115,7 @@ func NewDockerBuildJobManager(execute buildJobExecutor) *DockerBuildJobManager {
 	return &DockerBuildJobManager{jobs: make(map[string]*dockerBuildJob), execute: execute, sem: make(chan struct{}, 2)}
 }
 
-func (m *DockerBuildJobManager) Start(host, filename, imageTag string) (DockerBuildJobView, error) {
+func (m *DockerBuildJobManager) Start(host, filename, imageTag, networkMode string) (DockerBuildJobView, error) {
 	if m == nil || m.execute == nil {
 		return DockerBuildJobView{}, errors.New("background Docker build service is unavailable")
 	}
@@ -111,10 +125,22 @@ func (m *DockerBuildJobManager) Start(host, filename, imageTag string) (DockerBu
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), buildJobTimeout)
 	job := &dockerBuildJob{view: DockerBuildJobView{
-		ID: id, Host: host, Filename: filename, ImageTag: imageTag, Status: buildJobQueued, CreatedAt: time.Now(),
+		ID: id, Host: host, Filename: filename, ImageTag: imageTag, NetworkMode: networkMode, Status: buildJobQueued, CreatedAt: time.Now(),
 	}, cancel: cancel}
 	m.mu.Lock()
 	m.pruneLocked(time.Now())
+	pending := 0
+	for _, existing := range m.jobs {
+		view := existing.snapshot(0, false)
+		if view.Host == host && (view.Status == buildJobQueued || view.Status == buildJobRunning) {
+			pending++
+		}
+	}
+	if pending >= maxPendingBuildJobs {
+		m.mu.Unlock()
+		cancel()
+		return DockerBuildJobView{}, fmt.Errorf("too many Docker builds are already queued for host %q", host)
+	}
 	m.jobs[id] = job
 	m.mu.Unlock()
 	go m.run(ctx, job)
@@ -136,7 +162,7 @@ func (m *DockerBuildJobManager) run(ctx context.Context, job *dockerBuildJob) {
 	job.view.StartedAt = &now
 	job.mu.Unlock()
 	_, _ = fmt.Fprintf(job, "*** background image build started: %s ***\n", job.view.ImageTag)
-	err := m.execute(ctx, job.view.Host, job.view.Filename, job.view.ImageTag, job)
+	err := m.execute(ctx, job.view.Host, job.view.Filename, job.view.ImageTag, job.view.NetworkMode, job)
 	status := buildJobSucceeded
 	if err != nil {
 		status = buildJobFailed

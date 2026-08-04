@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {Badge, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Fab, Stack, TextField, Tooltip, Typography} from '@mui/material';
+import {Alert, Badge, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Fab, FormControl, InputLabel, MenuItem, Select, Stack, TextField, Tooltip, Typography} from '@mui/material';
 import {CancelOutlined, ConstructionOutlined, VisibilityOutlined} from '@mui/icons-material';
 import {create} from 'zustand';
 import {getBaseUrl} from '../../../lib/api.ts';
@@ -10,6 +10,7 @@ export type BuildJob = {
     id: string;
     filename: string;
     imageTag: string;
+    networkMode?: 'default' | 'host';
     status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
     error?: string;
     createdAt: string;
@@ -22,6 +23,7 @@ export type BuildJob = {
 };
 
 const terminalBuildStatuses = new Set<BuildJob['status']>(['succeeded', 'failed', 'canceled']);
+const maxClientBuildLog = 1 << 20;
 
 // The dialog store deliberately lives beside the dialog, matching the other
 // Files actions so a context-menu row can open the single mounted instance.
@@ -79,6 +81,7 @@ export default function FileDockerBuild() {
     const hostUrl = useCallback((url: string) => `${getBaseUrl('host', activeHost)}${url}`, [activeHost]);
     const {showError, showSuccess} = useSnackbar();
     const [imageTag, setImageTag] = useState('');
+    const [networkMode, setNetworkMode] = useState<'default' | 'host'>('default');
     const [starting, setStarting] = useState(false);
     const jobs = useDockerBuildJobs((state) => state.jobs);
     const setJobs = useDockerBuildJobs((state) => state.setJobs);
@@ -88,7 +91,10 @@ export default function FileDockerBuild() {
     const activeBuildCount = jobs.filter(job => job.status === 'queued' || job.status === 'running').length;
 
     useEffect(() => {
-        if (filename) setImageTag(defaultImageTag(filename));
+        if (filename) {
+            setImageTag(defaultImageTag(filename));
+            setNetworkMode('default');
+        }
     }, [filename]);
 
     const context = useMemo(() => {
@@ -116,8 +122,18 @@ export default function FileDockerBuild() {
     }, [refreshJobs, setJobs]);
 
     useEffect(() => {
-        const timer = window.setInterval(() => void refreshJobs(), activeBuildCount > 0 ? 2000 : 10000);
-        return () => window.clearInterval(timer);
+        const refreshWhenVisible = () => {
+            if (document.visibilityState === 'visible') void refreshJobs();
+        };
+        // Active builds remain responsive. At idle, the server-side job list
+        // changes only when a user starts a build, which updates this store
+        // immediately, so a one-minute cross-tab safety refresh is sufficient.
+        const timer = window.setInterval(refreshWhenVisible, activeBuildCount > 0 ? 2000 : 60000);
+        document.addEventListener('visibilitychange', refreshWhenVisible);
+        return () => {
+            window.clearInterval(timer);
+            document.removeEventListener('visibilitychange', refreshWhenVisible);
+        };
     }, [activeBuildCount, refreshJobs]);
 
     const openJob = useCallback((job: BuildJob) => {
@@ -138,7 +154,11 @@ export default function FileDockerBuild() {
                 const current = await response.json() as BuildJob;
                 if (!active) return;
                 setSelectedJob(current);
-                if (current.log) setSelectedLog(previous => previous + current.log);
+                if (current.log) setSelectedLog(previous => {
+                    const next = previous + current.log;
+                    if (next.length <= maxClientBuildLog) return next;
+                    return `*** Older browser output omitted; the latest ${maxClientBuildLog} characters are retained. ***\n${next.slice(-maxClientBuildLog)}`;
+                });
                 offset = current.nextOffset ?? offset;
                 if (terminalBuildStatuses.has(current.status)) {
                     void refreshJobs();
@@ -162,7 +182,7 @@ export default function FileDockerBuild() {
             const response = await fetch(hostUrl('/docker/builds'), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({filename, imageTag: tag}),
+                body: JSON.stringify({filename, imageTag: tag, networkMode}),
             });
             if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
             const job = await response.json() as BuildJob;
@@ -224,7 +244,23 @@ export default function FileDockerBuild() {
                         }
                     }}
                     slotProps={{input: {sx: {fontFamily: 'monospace'}}}}
-                /></>}
+                />
+                <FormControl fullWidth>
+                    <InputLabel id="docker-build-network-label">Build network</InputLabel>
+                    <Select
+                        labelId="docker-build-network-label"
+                        label="Build network"
+                        value={networkMode}
+                        onChange={(event) => setNetworkMode(event.target.value as 'default' | 'host')}
+                    >
+                        <MenuItem value="default">Default — isolated Docker network</MenuItem>
+                        <MenuItem value="host">Host — troubleshoot slow package downloads</MenuItem>
+                    </Select>
+                </FormControl>
+                {networkMode === 'host' && <Alert severity="warning">
+                    Host networking reduces build isolation. Use it only when the default network is unusually slow or cannot reach package mirrors.
+                </Alert>}
+                </>}
                 {jobs.length > 0 && <>
                     {filename && <Divider/>}
                     <Box>
@@ -248,6 +284,7 @@ export default function FileDockerBuild() {
                     <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: {sm: 'center'}}}>
                         <Typography variant="subtitle2" sx={{flex: 1}}>Progress · {detail.imageTag}</Typography>
                         <Chip size="small" color={buildStatusColor(detail.status)} label={detail.status}/>
+                        {detail.networkMode && <Chip size="small" variant="outlined" label={`${detail.networkMode} network`}/>}
                         {lastActivitySeconds !== null && <Typography variant="caption" color={quietBuild ? 'warning.main' : 'text.secondary'}>
                             Last output {lastActivitySeconds < 2 ? 'just now' : `${lastActivitySeconds}s ago`}
                         </Typography>}

@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,9 +31,9 @@ func waitForBuildJob(t *testing.T, manager *DockerBuildJobManager, host, id stri
 
 func TestDockerBuildJobRunsIndependentlyAndRetainsProgress(t *testing.T) {
 	release := make(chan struct{})
-	manager := NewDockerBuildJobManager(func(ctx context.Context, host, filename, imageTag string, writer io.Writer) error {
-		if host != "local" || filename != "compose/demo/Dockerfile" || imageTag != "demo:local" {
-			t.Fatalf("unexpected build input: %q %q %q", host, filename, imageTag)
+	manager := NewDockerBuildJobManager(func(ctx context.Context, host, filename, imageTag, networkMode string, writer io.Writer) error {
+		if host != "local" || filename != "compose/demo/Dockerfile" || imageTag != "demo:local" || networkMode != "default" {
+			t.Fatalf("unexpected build input: %q %q %q %q", host, filename, imageTag, networkMode)
 		}
 		_, _ = io.WriteString(writer, "#1 loading context\n")
 		select {
@@ -43,7 +44,7 @@ func TestDockerBuildJobRunsIndependentlyAndRetainsProgress(t *testing.T) {
 			return ctx.Err()
 		}
 	})
-	started, err := manager.Start("local", "compose/demo/Dockerfile", "demo:local")
+	started, err := manager.Start("local", "compose/demo/Dockerfile", "demo:local", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +67,12 @@ func TestDockerBuildJobRunsIndependentlyAndRetainsProgress(t *testing.T) {
 }
 
 func TestDockerBuildJobCanBeCanceledWithoutDeletingProgress(t *testing.T) {
-	manager := NewDockerBuildJobManager(func(ctx context.Context, _, _, _ string, writer io.Writer) error {
+	manager := NewDockerBuildJobManager(func(ctx context.Context, _, _, _, _ string, writer io.Writer) error {
 		_, _ = io.WriteString(writer, "waiting\n")
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	job, err := manager.Start("local", "compose/demo/Dockerfile", "demo:local")
+	job, err := manager.Start("local", "compose/demo/Dockerfile", "demo:local", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,11 +86,11 @@ func TestDockerBuildJobCanBeCanceledWithoutDeletingProgress(t *testing.T) {
 }
 
 func TestDockerBuildJobLogIsBounded(t *testing.T) {
-	manager := NewDockerBuildJobManager(func(_ context.Context, _, _, _ string, writer io.Writer) error {
+	manager := NewDockerBuildJobManager(func(_ context.Context, _, _, _, _ string, writer io.Writer) error {
 		_, _ = io.WriteString(writer, strings.Repeat("x", maxBuildJobLog+1024))
 		return nil
 	})
-	job, err := manager.Start("local", "Dockerfile", "demo:local")
+	job, err := manager.Start("local", "Dockerfile", "demo:local", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,20 +100,49 @@ func TestDockerBuildJobLogIsBounded(t *testing.T) {
 	}
 }
 
+func TestDockerBuildJobQueueIsBoundedPerHost(t *testing.T) {
+	manager := NewDockerBuildJobManager(func(ctx context.Context, _, _, _, _ string, _ io.Writer) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	var jobs []DockerBuildJobView
+	for index := range maxPendingBuildJobs {
+		job, err := manager.Start("local", "Dockerfile", fmt.Sprintf("demo-%d:local", index), "default")
+		if err != nil {
+			t.Fatalf("start queued build %d: %v", index, err)
+		}
+		jobs = append(jobs, job)
+	}
+	if _, err := manager.Start("local", "Dockerfile", "overflow:local", "default"); err == nil || !strings.Contains(err.Error(), "too many") {
+		t.Fatalf("unbounded build queue was accepted: %v", err)
+	}
+	remote, err := manager.Start("remote", "Dockerfile", "remote:local", "default")
+	if err != nil {
+		t.Fatalf("independent host queue was rejected: %v", err)
+	}
+	for _, job := range jobs {
+		manager.Cancel("local", job.ID)
+	}
+	manager.Cancel("remote", remote.ID)
+}
+
 func TestDockerBuildJobHTTPStartsListsAndCancels(t *testing.T) {
-	manager := NewDockerBuildJobManager(func(ctx context.Context, _, _, _ string, _ io.Writer) error {
+	manager := NewDockerBuildJobManager(func(ctx context.Context, _, _, _, _ string, _ io.Writer) error {
 		<-ctx.Done()
 		return ctx.Err()
 	})
 	handler := (&HandlerHttp{buildJobs: manager}).register()
 	start := httptest.NewRecorder()
-	handler.ServeHTTP(start, policyRequest(http.MethodPost, "/builds", `{"filename":"compose/demo/Dockerfile","imageTag":"demo:local"}`))
+	handler.ServeHTTP(start, policyRequest(http.MethodPost, "/builds", `{"filename":"compose/demo/Dockerfile","imageTag":"demo:local","networkMode":"host"}`))
 	if start.Code != http.StatusAccepted {
 		t.Fatalf("start status %d: %s", start.Code, start.Body.String())
 	}
 	var job DockerBuildJobView
 	if err := json.NewDecoder(start.Body).Decode(&job); err != nil || job.ID == "" {
 		t.Fatalf("invalid start response: job=%#v err=%v", job, err)
+	}
+	if job.NetworkMode != "host" {
+		t.Fatalf("network mode was not preserved: %#v", job)
 	}
 	list := httptest.NewRecorder()
 	handler.ServeHTTP(list, policyRequest(http.MethodGet, "/builds", ""))
@@ -127,5 +157,15 @@ func TestDockerBuildJobHTTPStartsListsAndCancels(t *testing.T) {
 	completed := waitForBuildJob(t, manager, "local", job.ID, true)
 	if completed.Status != buildJobCanceled {
 		t.Fatalf("HTTP cancellation left status %q", completed.Status)
+	}
+}
+
+func TestDockerBuildJobHTTPRejectsUnknownNetworkMode(t *testing.T) {
+	manager := NewDockerBuildJobManager(func(context.Context, string, string, string, string, io.Writer) error { return nil })
+	handler := (&HandlerHttp{buildJobs: manager}).register()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, policyRequest(http.MethodPost, "/builds", `{"filename":"Dockerfile","imageTag":"demo:local","networkMode":"container:other"}`))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid network status %d: %s", recorder.Code, recorder.Body.String())
 	}
 }

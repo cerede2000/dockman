@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -434,5 +435,54 @@ func TestReconcileInventoryGroupsJobsWithoutPolling(t *testing.T) {
 	}
 	if counts[DefaultUpdateSchedule] != 2 || counts["*/15 * * * *"] != 1 {
 		t.Fatalf("targets were not grouped by schedule: %#v", counts)
+	}
+}
+
+func TestRefreshHostCoalescesConcurrentRequests(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	service, err := NewAutomationService(
+		testScanStore(t),
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			calls.Add(1)
+			started <- struct{}{}
+			<-release
+			return nil, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+
+	service.RefreshHost("local")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("initial refresh did not start")
+	}
+	for range 25 {
+		service.RefreshHost("local")
+	}
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("coalesced final refresh did not run")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		service.refreshMu.Lock()
+		running := service.refreshing["local"]
+		service.refreshMu.Unlock()
+		if !running {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("refresh burst ran inventory %d times, want exactly 2", got)
 	}
 }

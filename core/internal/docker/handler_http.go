@@ -57,7 +57,7 @@ func NewHandlerHttpWithUpdates(srv ServiceProvider, allowSelfExec bool, policies
 }
 
 func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService, notificationService *notifications.Service) http.Handler {
-	buildJobs := NewDockerBuildJobManager(func(ctx context.Context, host, filename, imageTag string, writer io.Writer) error {
+	buildJobs := NewDockerBuildJobManager(func(ctx context.Context, host, filename, imageTag, networkMode string, writer io.Writer) error {
 		if srv == nil {
 			return errors.New("Docker service is unavailable")
 		}
@@ -68,7 +68,7 @@ func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.P
 		if dkSrv == nil || dkSrv.Compose == nil {
 			return errors.New("Docker Compose service is unavailable")
 		}
-		return dkSrv.Compose.RunDockerfileBuild(ctx, filename, imageTag, writer)
+		return dkSrv.Compose.RunDockerfileBuild(ctx, filename, imageTag, networkMode, writer)
 	})
 	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation, notifications: notificationService, buildJobs: buildJobs}
 	return hand.register()
@@ -118,8 +118,9 @@ func (h *HandlerHttp) startDockerBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Filename string `json:"filename"`
-		ImageTag string `json:"imageTag"`
+		Filename    string `json:"filename"`
+		ImageTag    string `json:"imageTag"`
+		NetworkMode string `json:"networkMode"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); err != nil {
 		http.Error(w, "invalid Docker build request: "+err.Error(), http.StatusBadRequest)
@@ -127,6 +128,10 @@ func (h *HandlerHttp) startDockerBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Filename = strings.TrimSpace(input.Filename)
 	input.ImageTag = strings.TrimSpace(input.ImageTag)
+	input.NetworkMode = strings.ToLower(strings.TrimSpace(input.NetworkMode))
+	if input.NetworkMode == "" {
+		input.NetworkMode = "default"
+	}
 	if input.Filename == "" || len(input.Filename) > 4096 || strings.ContainsRune(input.Filename, '\x00') {
 		http.Error(w, "a valid Dockerfile path is required", http.StatusBadRequest)
 		return
@@ -135,7 +140,11 @@ func (h *HandlerHttp) startDockerBuild(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a valid image name and tag is required", http.StatusBadRequest)
 		return
 	}
-	job, err := h.buildJobs.Start(host, input.Filename, input.ImageTag)
+	if input.NetworkMode != "default" && input.NetworkMode != "host" {
+		http.Error(w, "Docker build network mode must be default or host", http.StatusBadRequest)
+		return
+	}
+	job, err := h.buildJobs.Start(host, input.Filename, input.ImageTag, input.NetworkMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return

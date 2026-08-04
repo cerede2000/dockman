@@ -95,7 +95,7 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	err := service.RunDockerfileBuild(context.Background(), "compose/apple music/Dockerfile", "apple-music-rip:local", &output)
+	err := service.RunDockerfileBuild(context.Background(), "compose/apple music/Dockerfile", "apple-music-rip:local", "default", &output)
 	require.NoError(t, err)
 	require.Equal(t, directory, runner.wd)
 	require.Equal(t, [][]string{
@@ -105,6 +105,24 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 	}, runner.calls)
 	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
 	require.Contains(t, output.String(), "Buildx driver: docker")
+}
+
+func TestDockmanDockerfileBuildCanUseHostNetworkExplicitly(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch\n"), 0o600))
+	runner := &commandCaptureRunner{driver: "docker"}
+	service := &Service{
+		hostname: "local",
+		runner:   runner,
+		parser: func(filename, _ string) (Host, error) {
+			return Host{Fs: filesystem.NewLocal(root), Relpath: filename}, nil
+		},
+	}
+
+	require.NoError(t, service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:host", "host", io.Discard))
+	require.Equal(t, []string{
+		"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--load", "--progress=plain", "--network=host", "--tag", "demo:host", "--file", "Dockerfile", ".",
+	}, runner.calls[1])
 }
 
 func TestDockerContainerDriverIsRemovedAfterBuild(t *testing.T) {
@@ -129,7 +147,7 @@ func TestDockerfileBuildCleansHelperAfterFailure(t *testing.T) {
 		},
 	}
 
-	err := service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:broken", io.Discard)
+	err := service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:broken", "default", io.Discard)
 	require.ErrorContains(t, err, "build failed")
 	require.Equal(t, [][]string{
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"},

@@ -43,11 +43,16 @@ func (c *Service) RunDockerCommand(ctx context.Context, rawCommand string, strea
 // Files browser. The daemon-backed default Buildx builder does not create a
 // standalone BuildKit container. The context is resolved from the selected
 // Dockerfile, and the result is loaded into the selected Docker host.
-func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag string, stream io.Writer) error {
+func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag, networkMode string, stream io.Writer) error {
 	args := []string{
 		"docker", "buildx", "build", "--load", "--progress=plain",
-		"--tag", imageTag, "--file", dockmanDockerfilePrefix + filename, ".",
 	}
+	if networkMode == "host" {
+		args = append(args, "--network=host")
+	} else {
+		networkMode = "default"
+	}
+	args = append(args, "--tag", imageTag, "--file", dockmanDockerfilePrefix+filename, ".")
 	args, wd, err := c.prepareDockerBuild(args)
 	if err != nil {
 		return err
@@ -55,6 +60,7 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag str
 	driver := c.dockmanBuildxDriver(ctx, wd)
 	if stream != nil {
 		_, _ = fmt.Fprintf(stream, "*** Buildx driver: %s ***\n", driver)
+		_, _ = fmt.Fprintf(stream, "*** Build network: %s ***\n", networkMode)
 	}
 	args = dockmanNativeBuildxArgs(args)
 	buildErr := c.runDockerCLI(ctx, args, wd, stream)

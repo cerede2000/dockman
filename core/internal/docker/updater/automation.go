@@ -166,11 +166,14 @@ type AutomationService struct {
 	cleanupImage     ImageCleanupProvider
 	scheduler        gocron.Scheduler
 
-	jobsMu  sync.Mutex
-	runMu   sync.Mutex
-	jobs    map[string]gocron.Job
-	targets map[string]int
-	running map[string]bool
+	jobsMu         sync.Mutex
+	runMu          sync.Mutex
+	refreshMu      sync.Mutex
+	jobs           map[string]gocron.Job
+	targets        map[string]int
+	running        map[string]bool
+	refreshing     map[string]bool
+	refreshPending map[string]bool
 }
 
 func NewAutomationService(store *ScanStore, inventory InventoryProvider, scan ScanProvider) (*AutomationService, error) {
@@ -186,6 +189,7 @@ func NewAutomationService(store *ScanStore, inventory InventoryProvider, scan Sc
 	service := &AutomationService{
 		store: store, inventory: inventory, scan: scan, scheduler: scheduler,
 		jobs: make(map[string]gocron.Job), targets: make(map[string]int), running: make(map[string]bool),
+		refreshing: make(map[string]bool), refreshPending: make(map[string]bool),
 	}
 	scheduler.Start()
 	return service, nil
@@ -236,11 +240,38 @@ func (s *AutomationService) ReconcileHost(ctx context.Context, host string) erro
 }
 
 func (s *AutomationService) RefreshHost(host string) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	s.refreshMu.Lock()
+	if s.refreshing[host] {
+		// Docker event bursts and rapid bulk policy changes only need one final
+		// authoritative inventory. Coalesce them instead of creating an
+		// unbounded set of concurrent Docker listings and scheduler mutations.
+		s.refreshPending[host] = true
+		s.refreshMu.Unlock()
+		return
+	}
+	s.refreshing[host] = true
+	s.refreshMu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := s.ReconcileHost(ctx, host); err != nil {
-			log.Warn().Err(err).Str("host", host).Msg("unable to refresh automatic image scan schedules")
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err := s.ReconcileHost(ctx, host)
+			cancel()
+			if err != nil {
+				log.Warn().Err(err).Str("host", host).Msg("unable to refresh automatic image scan schedules")
+			}
+			s.refreshMu.Lock()
+			if s.refreshPending[host] {
+				delete(s.refreshPending, host)
+				s.refreshMu.Unlock()
+				continue
+			}
+			delete(s.refreshing, host)
+			s.refreshMu.Unlock()
+			return
 		}
 	}()
 }
