@@ -78,7 +78,9 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("PUT /updates/policies", h.saveUpdatePolicy)
 	subMux.HandleFunc("DELETE /updates/policies", h.deleteUpdatePolicy)
 	subMux.HandleFunc("POST /updates/scan", h.runEnrolledUpdateScan)
+	subMux.HandleFunc("POST /updates/run", h.runAutomaticUpdatesNow)
 	subMux.HandleFunc("GET /updates/state", h.getUpdateState)
+	subMux.HandleFunc("PUT /updates/control", h.saveUpdateAutomationControl)
 	subMux.HandleFunc("DELETE /updates/execution-block", h.clearUpdateExecutionBlock)
 	subMux.HandleFunc("GET /updates/notifications/smtp", h.getSMTPNotificationConfig)
 	subMux.HandleFunc("PUT /updates/notifications/smtp", h.saveSMTPNotificationConfig)
@@ -246,6 +248,48 @@ func (h *HandlerHttp) runEnrolledUpdateScan(w http.ResponseWriter, r *http.Reque
 	}{Run: run, Results: checks})
 }
 
+func (h *HandlerHttp) runAutomaticUpdatesNow(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updateAutomationHost(w, r)
+	if !ok {
+		return
+	}
+	// A browser navigation must not cancel a transaction after images or
+	// containers have started changing. The host-level singleton and the
+	// bounded timeout still constrain the detached request lifecycle.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Hour)
+	defer cancel()
+	run, checks, err := h.updateAutomation.RunAutomaticNow(ctx, host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, struct {
+		Run     updater.UpdateScanRun          `json:"run"`
+		Results []updater.ContainerUpdateCheck `json:"results"`
+	}{Run: run, Results: checks})
+}
+
+func (h *HandlerHttp) saveUpdateAutomationControl(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updateAutomationHost(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Paused          bool `json:"paused"`
+		MaxGroupsPerRun int  `json:"maxGroupsPerRun"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&input); err != nil {
+		http.Error(w, "invalid automatic update controls: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	control, err := h.updateAutomation.SaveControl(host, input.Paused, input.MaxGroupsPerRun)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, control)
+}
+
 func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
 	host, ok := h.updateAutomationHost(w, r)
 	if !ok {
@@ -261,6 +305,11 @@ func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	control, err := h.updateAutomation.Control(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, struct {
 		Results          []updater.UpdateScanResult      `json:"results"`
 		Runs             []updater.UpdateScanRun         `json:"runs"`
@@ -268,7 +317,8 @@ func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
 		ExecutionRuns    []updater.UpdateExecutionRun    `json:"executionRuns"`
 		ExecutionResults []updater.UpdateExecutionResult `json:"executionResults"`
 		Blocks           []updater.UpdateExecutionBlock  `json:"blocks"`
-	}{Results: results, Runs: runs, Schedules: schedules, ExecutionRuns: executionRuns, ExecutionResults: executionResults, Blocks: blocks})
+		Control          updater.AutomationControlView   `json:"control"`
+	}{Results: results, Runs: runs, Schedules: schedules, ExecutionRuns: executionRuns, ExecutionResults: executionResults, Blocks: blocks, Control: control})
 }
 
 func (h *HandlerHttp) clearUpdateExecutionBlock(w http.ResponseWriter, r *http.Request) {

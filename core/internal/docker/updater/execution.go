@@ -54,6 +54,7 @@ type UpdateExecutionRun struct {
 	RolledBack  int        `gorm:"not null" json:"rolledBack"`
 	Failed      int        `gorm:"not null" json:"failed"`
 	Skipped     int        `gorm:"not null" json:"skipped"`
+	Error       string     `gorm:"not null;default:''" json:"error,omitempty"`
 }
 
 func (UpdateExecutionRun) TableName() string { return "update_execution_runs" }
@@ -98,9 +99,20 @@ func (UpdateExecutionBlock) TableName() string { return "update_execution_blocks
 type UpdateExecutor func(context.Context, string, []UpdateExecutionTarget) []UpdateExecutionOutcome
 type ExecutionNotifier func(context.Context, UpdateExecutionRun, []UpdateExecutionOutcome) error
 
+func (s *ScanStore) BeginExecution(run *UpdateExecutionRun) error {
+	if run == nil {
+		return errors.New("execution run is required")
+	}
+	return s.db.Create(run).Error
+}
+
 func (s *ScanStore) SaveExecution(run *UpdateExecutionRun, outcomes []UpdateExecutionOutcome) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(run).Error; err != nil {
+		if run.ID == 0 {
+			if err := tx.Create(run).Error; err != nil {
+				return err
+			}
+		} else if err := tx.Save(run).Error; err != nil {
 			return err
 		}
 		for _, outcome := range outcomes {
@@ -158,6 +170,47 @@ func (s *ScanStore) SaveExecution(run *UpdateExecutionRun, outcomes []UpdateExec
 		}
 		return tx.Delete(&UpdateExecutionRun{}, ids).Error
 	})
+}
+
+func (s *ScanStore) RecoverInterruptedExecutions() (int64, error) {
+	var recovered int64
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var interrupted []UpdateExecutionRun
+		if err := tx.Where("completed_at IS NULL").Find(&interrupted).Error; err != nil {
+			return err
+		}
+		if len(interrupted) == 0 {
+			return nil
+		}
+		now := time.Now()
+		ids := make([]uint, 0, len(interrupted))
+		hosts := make(map[string]struct{}, len(interrupted))
+		for _, run := range interrupted {
+			ids = append(ids, run.ID)
+			hosts[run.Host] = struct{}{}
+		}
+		result := tx.Model(&UpdateExecutionRun{}).Where("id IN ?", ids).Updates(map[string]any{
+			"completed_at": now,
+			"error":        "Dockman restarted before the automatic update outcome was recorded; automatic execution was paused for review",
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		recovered = result.RowsAffected
+		for host := range hosts {
+			updated := tx.Model(&UpdateAutomationControl{}).Where("host = ?", host).Update("paused", true)
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected == 0 {
+				if err := tx.Create(&UpdateAutomationControl{Host: host, Paused: true}).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	return recovered, err
 }
 
 func (s *ScanStore) ExecutionState(host string) ([]UpdateExecutionRun, []UpdateExecutionResult, []UpdateExecutionBlock, error) {
