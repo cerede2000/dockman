@@ -3,10 +3,12 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +36,7 @@ type HandlerHttp struct {
 	updatePolicies   *updater.PolicyService
 	updateAutomation *updater.AutomationService
 	notifications    *notifications.Service
+	buildJobs        *DockerBuildJobManager
 }
 
 func NewHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies ...*updater.PolicyService) http.Handler {
@@ -54,7 +57,20 @@ func NewHandlerHttpWithUpdates(srv ServiceProvider, allowSelfExec bool, policies
 }
 
 func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.PolicyService, automation *updater.AutomationService, notificationService *notifications.Service) http.Handler {
-	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation, notifications: notificationService}
+	buildJobs := NewDockerBuildJobManager(func(ctx context.Context, host, filename, imageTag string, writer io.Writer) error {
+		if srv == nil {
+			return errors.New("Docker service is unavailable")
+		}
+		dkSrv, err := srv(host)
+		if err != nil {
+			return fmt.Errorf("get Docker service: %w", err)
+		}
+		if dkSrv == nil || dkSrv.Compose == nil {
+			return errors.New("Docker Compose service is unavailable")
+		}
+		return dkSrv.Compose.RunDockerfileBuild(ctx, filename, imageTag, writer)
+	})
+	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation, notifications: notificationService, buildJobs: buildJobs}
 	return hand.register()
 }
 
@@ -88,8 +104,103 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("PUT /updates/notifications/smtp", h.saveSMTPNotificationConfig)
 	subMux.HandleFunc("POST /updates/notifications/smtp/test", h.testSMTPNotificationConfig)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
+	subMux.HandleFunc("POST /builds", h.startDockerBuild)
+	subMux.HandleFunc("GET /builds", h.listDockerBuilds)
+	subMux.HandleFunc("GET /builds/{buildId}", h.getDockerBuild)
+	subMux.HandleFunc("DELETE /builds/{buildId}", h.cancelDockerBuild)
 
 	return subMux
+}
+
+func (h *HandlerHttp) startDockerBuild(w http.ResponseWriter, r *http.Request) {
+	host, ok := dockerBuildHost(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		Filename string `json:"filename"`
+		ImageTag string `json:"imageTag"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); err != nil {
+		http.Error(w, "invalid Docker build request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	input.Filename = strings.TrimSpace(input.Filename)
+	input.ImageTag = strings.TrimSpace(input.ImageTag)
+	if input.Filename == "" || len(input.Filename) > 4096 || strings.ContainsRune(input.Filename, '\x00') {
+		http.Error(w, "a valid Dockerfile path is required", http.StatusBadRequest)
+		return
+	}
+	if !validDockerBuildTag(input.ImageTag) {
+		http.Error(w, "a valid image name and tag is required", http.StatusBadRequest)
+		return
+	}
+	job, err := h.buildJobs.Start(host, input.Filename, input.ImageTag)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, job)
+}
+
+func (h *HandlerHttp) listDockerBuilds(w http.ResponseWriter, r *http.Request) {
+	host, ok := dockerBuildHost(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, struct {
+		Jobs []DockerBuildJobView `json:"jobs"`
+	}{Jobs: h.buildJobs.List(host)})
+}
+
+func (h *HandlerHttp) getDockerBuild(w http.ResponseWriter, r *http.Request) {
+	host, ok := dockerBuildHost(w, r)
+	if !ok {
+		return
+	}
+	after := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("after")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid build log offset", http.StatusBadRequest)
+			return
+		}
+		after = parsed
+	}
+	job, found := h.buildJobs.Get(host, r.PathValue("buildId"), after)
+	if !found {
+		http.Error(w, "Docker build job not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, job)
+}
+
+func (h *HandlerHttp) cancelDockerBuild(w http.ResponseWriter, r *http.Request) {
+	host, ok := dockerBuildHost(w, r)
+	if !ok {
+		return
+	}
+	if !h.buildJobs.Cancel(host, r.PathValue("buildId")) {
+		http.Error(w, "Docker build job not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func dockerBuildHost(w http.ResponseWriter, r *http.Request) (string, bool) {
+	host, err := hostMid.GetHost(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return "", false
+	}
+	return host, true
+}
+
+func validDockerBuildTag(value string) bool {
+	return value != "" && len(value) <= 255 && !strings.HasPrefix(value, "-") &&
+		!strings.ContainsAny(value, " \t\r\n\x00")
 }
 
 func (h *HandlerHttp) getSMTPNotificationConfig(w http.ResponseWriter, r *http.Request) {

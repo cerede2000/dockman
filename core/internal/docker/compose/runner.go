@@ -77,7 +77,7 @@ func (r *RemoteRunner) Run(
 	fullCmd := fmt.Sprintf(
 		"cd %s && %s",
 		shellQuote(wd),
-		strings.Join(cmd, " "),
+		quoteRemoteCommand(cmd),
 	)
 
 	session.Stdout = out
@@ -96,6 +96,14 @@ func (r *RemoteRunner) Run(
 	defer close(done)
 
 	return session.Run(fullCmd)
+}
+
+func quoteRemoteCommand(cmd []string) string {
+	quoted := make([]string, len(cmd))
+	for index, arg := range cmd {
+		quoted[index] = shellQuote(arg)
+	}
+	return strings.Join(quoted, " ")
 }
 
 func combineWriters(writers ...io.Writer) io.Writer {

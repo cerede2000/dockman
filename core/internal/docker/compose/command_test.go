@@ -15,9 +15,9 @@ import (
 )
 
 type commandCaptureRunner struct {
-	args  []string
-	wd    string
-	calls [][]string
+	args      []string
+	wd        string
+	calls     [][]string
 	failBuild bool
 }
 
@@ -70,11 +70,7 @@ func TestDockerBuildUsesBuildxAndLoadsTheImage(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build -t demo:local .", io.Discard))
-	require.Len(t, runner.calls, 3)
-	require.Equal(t, []string{"docker", "buildx", "create", "--name"}, runner.calls[0][:4])
-	builder := runner.calls[0][4]
-	require.Equal(t, []string{"docker", "buildx", "build", "--builder", builder, "--load", "-t", "demo:local", "."}, runner.calls[1])
-	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
+	require.Equal(t, [][]string{{"docker", "buildx", "build", "--load", "--builder", "default", "-t", "demo:local", "."}}, runner.calls)
 	require.Equal(t, ".", runner.wd)
 }
 
@@ -92,13 +88,10 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	err := service.RunDockerCommand(context.Background(), "docker buildx build --load --progress=plain --tag apple-music-rip:local --file 'dockman://compose/apple music/Dockerfile' .", &output)
+	err := service.RunDockerfileBuild(context.Background(), "compose/apple music/Dockerfile", "apple-music-rip:local", &output)
 	require.NoError(t, err)
 	require.Equal(t, directory, runner.wd)
-	require.Len(t, runner.calls, 3)
-	builder := runner.calls[0][4]
-	require.Equal(t, []string{"docker", "buildx", "build", "--builder", builder, "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}, runner.calls[1])
-	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
+	require.Equal(t, [][]string{{"docker", "buildx", "build", "--builder", "default", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}}, runner.calls)
 	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
 }
 
@@ -106,10 +99,7 @@ func TestDockerBuildPreservesExplicitPushOutput(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build --push -t registry.example/demo:latest .", io.Discard))
-	require.Len(t, runner.calls, 3)
-	builder := runner.calls[0][4]
-	require.Equal(t, []string{"docker", "buildx", "build", "--builder", builder, "--push", "-t", "registry.example/demo:latest", "."}, runner.calls[1])
-	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
+	require.Equal(t, [][]string{{"docker", "buildx", "build", "--builder", "default", "--push", "-t", "registry.example/demo:latest", "."}}, runner.calls)
 }
 
 func TestExplicitBuildxCommandKeepsUserBuilderUntouched(t *testing.T) {
@@ -119,11 +109,9 @@ func TestExplicitBuildxCommandKeepsUserBuilderUntouched(t *testing.T) {
 	require.Equal(t, [][]string{{"docker", "buildx", "build", "--builder", "team-builder", "--push", "-t", "registry.example/demo:latest", "."}}, runner.calls)
 }
 
-func TestManagedBuildRemovesBuilderAfterFailure(t *testing.T) {
+func TestDefaultBuilderBuildFailureDoesNotCreateHelperContainer(t *testing.T) {
 	runner := &commandCaptureRunner{failBuild: true}
 	service := &Service{runner: runner}
 	require.Error(t, service.RunDockerCommand(context.Background(), "docker build -t demo:broken .", io.Discard))
-	require.Len(t, runner.calls, 3)
-	builder := runner.calls[0][4]
-	require.Equal(t, []string{"docker", "buildx", "rm", "--force", builder}, runner.calls[2])
+	require.Equal(t, [][]string{{"docker", "buildx", "build", "--load", "--builder", "default", "-t", "demo:broken", "."}}, runner.calls)
 }

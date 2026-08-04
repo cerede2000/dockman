@@ -13,3 +13,10 @@ func TestShellQuote(t *testing.T) {
 	// injection attempts stay inert inside single quotes
 	require.Equal(t, "'/srv;rm -rf /'", shellQuote("/srv;rm -rf /"))
 }
+
+func TestQuoteRemoteCommandPreservesDockerfileArguments(t *testing.T) {
+	require.Equal(t,
+		"'docker' 'buildx' 'build' '--file' 'Docker file' '--tag' 'demo:local' '.'",
+		quoteRemoteCommand([]string{"docker", "buildx", "build", "--file", "Docker file", "--tag", "demo:local", "."}),
+	)
+}
