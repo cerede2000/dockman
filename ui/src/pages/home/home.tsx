@@ -24,7 +24,8 @@ const MAIN_SIDEBAR_WIDTH = 72;
 
 export const useHostFromUrl = () => {
     const {host} = useParams()
-    return host || "local";
+    const rememberedHost = useHostStore(state => state.host)
+    return host || rememberedHost || "local";
 }
 
 export function RootLayout() {

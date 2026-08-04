@@ -19,13 +19,20 @@ type commandCaptureRunner struct {
 	wd        string
 	calls     [][]string
 	failBuild bool
+	driver    string
 }
 
-func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, _, _ io.Writer) error {
+func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, out, _ io.Writer) error {
 	r.args = append([]string(nil), args...)
 	r.wd = wd
 	r.calls = append(r.calls, append([]string(nil), args...))
-	if r.failBuild && len(args) >= 3 && args[0] == "docker" && args[1] == "buildx" && args[2] == "build" {
+	joined := strings.Join(args, " ")
+	if r.driver != "" && strings.Contains(joined, "docker buildx ls --format") {
+		if out != nil {
+			_, _ = io.WriteString(out, "default|"+r.driver+"\ndefault|default\n")
+		}
+	}
+	if r.failBuild && strings.Contains(joined, "docker buildx build") {
 		return errors.New("build failed")
 	}
 	return nil
@@ -67,7 +74,7 @@ func TestSplitCommandLine(t *testing.T) {
 }
 
 func TestDockerBuildUsesBuildxAndLoadsTheImage(t *testing.T) {
-	runner := &commandCaptureRunner{}
+	runner := &commandCaptureRunner{driver: "docker"}
 	service := &Service{runner: runner}
 	require.NoError(t, service.RunDockerCommand(context.Background(), "docker build -t demo:local .", io.Discard))
 	require.Equal(t, [][]string{{"docker", "buildx", "build", "--load", "--builder", "default", "-t", "demo:local", "."}}, runner.calls)
@@ -79,7 +86,7 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 	directory := filepath.Join(root, "apple music")
 	require.NoError(t, os.MkdirAll(directory, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte("FROM scratch\n"), 0o600))
-	runner := &commandCaptureRunner{}
+	runner := &commandCaptureRunner{driver: "docker"}
 	service := &Service{
 		hostname: "local",
 		runner:   runner,
@@ -91,8 +98,45 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 	err := service.RunDockerfileBuild(context.Background(), "compose/apple music/Dockerfile", "apple-music-rip:local", &output)
 	require.NoError(t, err)
 	require.Equal(t, directory, runner.wd)
-	require.Equal(t, [][]string{{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "docker", "buildx", "build", "--builder", "default", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}}, runner.calls)
+	require.Equal(t, [][]string{
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."},
+		{"docker", "rm", "--force", "buildx_buildkit_default"},
+	}, runner.calls)
 	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
+	require.Contains(t, output.String(), "Buildx driver: docker")
+}
+
+func TestDockerContainerDriverIsRemovedAfterBuild(t *testing.T) {
+	runner := &commandCaptureRunner{}
+	service := &Service{runner: runner}
+	require.NoError(t, service.cleanupDockmanBuildxHelper(context.Background(), ".", "docker-container"))
+	require.Equal(t, [][]string{
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", "default"},
+		{"docker", "rm", "--force", "buildx_buildkit_default"},
+	}, runner.calls)
+}
+
+func TestDockerfileBuildCleansHelperAfterFailure(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch\n"), 0o600))
+	runner := &commandCaptureRunner{driver: "docker-container", failBuild: true}
+	service := &Service{
+		hostname: "local",
+		runner:   runner,
+		parser: func(filename, _ string) (Host, error) {
+			return Host{Fs: filesystem.NewLocal(root), Relpath: filename}, nil
+		},
+	}
+
+	err := service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:broken", io.Discard)
+	require.ErrorContains(t, err, "build failed")
+	require.Equal(t, [][]string{
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--load", "--progress=plain", "--tag", "demo:broken", "--file", "Dockerfile", "."},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", "default"},
+		{"docker", "rm", "--force", "buildx_buildkit_default"},
+	}, runner.calls)
 }
 
 func TestDockerBuildPreservesExplicitPushOutput(t *testing.T) {

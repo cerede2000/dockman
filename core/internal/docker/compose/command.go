@@ -3,10 +3,12 @@ package compose
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
 	"strings"
+	"time"
 )
 
 const dockmanDockerfilePrefix = "dockman://"
@@ -43,15 +45,79 @@ func (c *Service) RunDockerCommand(ctx context.Context, rawCommand string, strea
 // Dockerfile, and the result is loaded into the selected Docker host.
 func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag string, stream io.Writer) error {
 	args := []string{
-		"docker", "buildx", "build", "--builder", "default", "--load", "--progress=plain",
+		"docker", "buildx", "build", "--load", "--progress=plain",
 		"--tag", imageTag, "--file", dockmanDockerfilePrefix + filename, ".",
 	}
 	args, wd, err := c.prepareDockerBuild(args)
 	if err != nil {
 		return err
 	}
-	args = append([]string{"env", "BUILDX_CONFIG=" + dockmanNativeBuildxConfig}, args...)
-	return c.runDockerCLI(ctx, args, wd, stream)
+	driver := c.dockmanBuildxDriver(ctx, wd)
+	if stream != nil {
+		_, _ = fmt.Fprintf(stream, "*** Buildx driver: %s ***\n", driver)
+	}
+	args = dockmanNativeBuildxArgs(args)
+	buildErr := c.runDockerCLI(ctx, args, wd, stream)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cleanupErr := c.cleanupDockmanBuildxHelper(cleanupCtx, wd, driver)
+	if cleanupErr != nil && stream != nil {
+		_, _ = fmt.Fprintf(stream, "\n*** Buildx helper cleanup failed: %v ***\n", cleanupErr)
+	}
+	// Helper cleanup is best-effort housekeeping. It must remain visible in
+	// the build log, but it must not turn a successfully built image into a
+	// failed job when a restrictive socket proxy refuses container deletion.
+	return buildErr
+}
+
+func dockmanNativeBuildxArgs(args []string) []string {
+	return append([]string{"env", "BUILDX_CONFIG=" + dockmanNativeBuildxConfig, "BUILDX_BUILDER="}, args...)
+}
+
+// dockmanBuildxDriver reports the builder selected from Dockman's isolated
+// Buildx state. The first builder row is the current Docker context builder;
+// node rows use the context endpoint rather than a driver name.
+func (c *Service) dockmanBuildxDriver(ctx context.Context, wd string) string {
+	var output bytes.Buffer
+	args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"})
+	if err := c.runner.Run(ctx, args, wd, &output, io.Discard); err != nil {
+		return "unknown"
+	}
+	for _, line := range strings.Split(output.String(), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		driver := strings.TrimSpace(parts[1])
+		if driver == "docker" || driver == "docker-container" || driver == "kubernetes" || driver == "remote" {
+			return driver
+		}
+	}
+	return "unknown"
+}
+
+// cleanupDockmanBuildxHelper removes both a helper created by the isolated
+// builder and the exact legacy `default` helper left by older Dockman builds.
+// The latter is removed only after the current build has ended, so an image
+// build is never interrupted merely for cleanup.
+func (c *Service) cleanupDockmanBuildxHelper(ctx context.Context, wd, driver string) error {
+	var cleanupErrors []error
+	if driver == "docker-container" {
+		var output bytes.Buffer
+		args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "rm", "--force", "default"})
+		if err := c.runner.Run(ctx, args, wd, nil, &output); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove isolated default builder: %s", strings.TrimSpace(output.String())))
+		}
+	}
+
+	var output bytes.Buffer
+	if err := c.runner.Run(ctx, []string{"docker", "rm", "--force", "buildx_buildkit_default"}, wd, nil, &output); err != nil {
+		message := strings.TrimSpace(output.String())
+		if !strings.Contains(strings.ToLower(message), "no such container") {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove legacy helper container: %s", message))
+		}
+	}
+	return errors.Join(cleanupErrors...)
 }
 
 func (c *Service) runDockerCLI(ctx context.Context, args []string, wd string, stream io.Writer) error {

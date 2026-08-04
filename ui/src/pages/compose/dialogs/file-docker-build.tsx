@@ -2,8 +2,9 @@ import {useCallback, useEffect, useMemo, useState} from 'react';
 import {Badge, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Fab, Stack, TextField, Tooltip, Typography} from '@mui/material';
 import {CancelOutlined, ConstructionOutlined, VisibilityOutlined} from '@mui/icons-material';
 import {create} from 'zustand';
-import {useHostUrl} from '../../../lib/api.ts';
+import {getBaseUrl} from '../../../lib/api.ts';
 import {useSnackbar} from '../../../hooks/snackbar.ts';
+import {useHostStore} from '../state/files.ts';
 
 export type BuildJob = {
     id: string;
@@ -74,7 +75,8 @@ export default function FileDockerBuild() {
     const historyOpen = useFileDockerBuild((state) => state.historyOpen);
     const close = useFileDockerBuild((state) => state.close);
     const openHistory = useFileDockerBuild((state) => state.openHistory);
-    const hostUrl = useHostUrl();
+    const activeHost = useHostStore(state => state.host) || 'local';
+    const hostUrl = useCallback((url: string) => `${getBaseUrl('host', activeHost)}${url}`, [activeHost]);
     const {showError, showSuccess} = useSnackbar();
     const [imageTag, setImageTag] = useState('');
     const [starting, setStarting] = useState(false);
