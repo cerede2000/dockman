@@ -117,9 +117,17 @@ func TestScheduledRunExecutesAvailableTargetsButManualRunDoesNot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = service.Shutdown() })
 	executions := 0
+	notifications := 0
 	service.SetExecutor(func(_ context.Context, _ string, targets []UpdateExecutionTarget) []UpdateExecutionOutcome {
 		executions++
 		return []UpdateExecutionOutcome{{UpdateExecutionTarget: targets[0], State: ExecutionUpdated, Message: "ok"}}
+	})
+	service.SetExecutionNotifier(func(_ context.Context, run UpdateExecutionRun, outcomes []UpdateExecutionOutcome) error {
+		notifications++
+		if run.Updated != 1 || len(outcomes) != 1 || outcomes[0].State != ExecutionUpdated {
+			t.Fatalf("unexpected execution notification: %#v %#v", run, outcomes)
+		}
+		return nil
 	})
 	if _, _, err := service.RunNow(context.Background(), "local"); err != nil {
 		t.Fatal(err)
@@ -127,11 +135,17 @@ func TestScheduledRunExecutesAvailableTargetsButManualRunDoesNot(t *testing.T) {
 	if executions != 0 {
 		t.Fatal("manual read-only scan executed an update")
 	}
+	if notifications != 0 {
+		t.Fatal("manual read-only scan sent an execution notification")
+	}
 	if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
 		t.Fatal(err)
 	}
 	if executions != 1 {
 		t.Fatalf("scheduled update executions = %d", executions)
+	}
+	if notifications != 1 {
+		t.Fatalf("scheduled update notifications = %d", notifications)
 	}
 	runs, results, blocks, err := service.ExecutionState("local")
 	if err != nil {

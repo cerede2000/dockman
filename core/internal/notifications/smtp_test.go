@@ -146,6 +146,31 @@ func TestNotifyExecutionGroupsSuccessAndRollback(t *testing.T) {
 	}
 }
 
+func TestFormatSMTPMessageHasStableDeliveryHeaders(t *testing.T) {
+	sentAt := time.Date(2026, time.August, 4, 12, 30, 0, 0, time.UTC)
+	payload, err := formatSMTPMessage(SMTPMessage{
+		Config:     SMTPConfig{FromAddress: "Dockman <dockman@example.com>"},
+		Recipients: []string{"ops@example.com"}, Subject: "[Dockman] 2 updates · local",
+		Body: "Updated:\n- web\n- worker",
+	}, sentAt, "<fixed-id@example.com>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Date: Tue, 04 Aug 2026 12:30:00 +0000\r\n",
+		"Message-ID: <fixed-id@example.com>\r\n",
+		"From: \"Dockman\" <dockman@example.com>\r\n",
+		"Auto-Submitted: auto-generated\r\n",
+		"X-Auto-Response-Suppress: All\r\n",
+		"X-Mailer: Dockman\r\n",
+		"Updated:\r\n- web\r\n- worker\r\n",
+	} {
+		if !strings.Contains(payload, expected) {
+			t.Fatalf("SMTP payload missing %q:\n%s", expected, payload)
+		}
+	}
+}
+
 func TestNotifyScanKeepsSchedulesIndependent(t *testing.T) {
 	service, _, sender := testService(t)
 	if _, err := service.Save("local", validInput()); err != nil {

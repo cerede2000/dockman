@@ -3,12 +3,14 @@ package notifications
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -435,7 +437,12 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 		return fmt.Errorf("start SMTP message: %w", err)
 	}
 	buffer := bufio.NewWriter(writer)
-	_, err = fmt.Fprintf(buffer, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\nDate: %s\r\n\r\n%s\r\n", message.Config.FromAddress, strings.Join(message.Recipients, ", "), message.Subject, time.Now().Format(time.RFC1123Z), message.Body)
+	payload, payloadErr := formatSMTPMessage(message, time.Now(), newMessageID(from.Address))
+	if payloadErr != nil {
+		_ = writer.Close()
+		return payloadErr
+	}
+	_, err = buffer.WriteString(payload)
 	if err == nil {
 		err = buffer.Flush()
 	}
@@ -450,6 +457,37 @@ func (s NetworkSender) Send(ctx context.Context, message SMTPMessage) error {
 		return fmt.Errorf("finish SMTP session: %w", err)
 	}
 	return nil
+}
+
+// formatSMTPMessage emits a standards-compliant transactional message. In
+// particular, Message-ID and MIME-safe address/subject headers keep Dockman
+// notifications from looking like malformed bulk mail to receiving filters.
+func formatSMTPMessage(message SMTPMessage, sentAt time.Time, messageID string) (string, error) {
+	from, err := mail.ParseAddress(message.Config.FromAddress)
+	if err != nil {
+		return "", fmt.Errorf("format SMTP sender: %w", err)
+	}
+	body := strings.ReplaceAll(message.Body, "\r\n", "\n")
+	body = strings.ReplaceAll(body, "\r", "\n")
+	body = strings.ReplaceAll(body, "\n", "\r\n")
+	return fmt.Sprintf(
+		"Date: %s\r\nMessage-ID: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\nAuto-Submitted: auto-generated\r\nX-Auto-Response-Suppress: All\r\nX-Mailer: Dockman\r\n\r\n%s\r\n",
+		sentAt.Format(time.RFC1123Z), messageID, from.String(), strings.Join(message.Recipients, ", "),
+		mime.QEncoding.Encode("UTF-8", safeHeaderValue(message.Subject)), body,
+	), nil
+}
+
+func newMessageID(fromAddress string) string {
+	domain := "dockman.local"
+	if at := strings.LastIndexByte(fromAddress, '@'); at >= 0 && at+1 < len(fromAddress) {
+		domain = strings.Trim(strings.TrimSpace(fromAddress[at+1:]), ">")
+	}
+	random := make([]byte, 12)
+	if _, err := rand.Read(random); err != nil {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", fromAddress, time.Now().UnixNano())))
+		random = sum[:12]
+	}
+	return fmt.Sprintf("<%s@%s>", hex.EncodeToString(random), domain)
 }
 
 func normalizeInput(input ConfigInput) ConfigInput {
