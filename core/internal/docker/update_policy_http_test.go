@@ -78,6 +78,32 @@ func TestUpdatePolicyHTTPRejectsInvalidSchedule(t *testing.T) {
 	}
 }
 
+func TestUpdatePolicyHTTPBulkIsValidatedBeforeWrite(t *testing.T) {
+	handler := testUpdatePolicyHandler(t)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, policyRequest(http.MethodPut, "/updates/policies/bulk", `{"policies":[
+		{"targetType":"container","targetKey":"web","targetName":"web","enabled":true,"rollbackEnabled":true,"versionPolicy":"minor"},
+		{"targetType":"container","targetKey":"db","targetName":"db","enabled":true,"rollbackEnabled":true,"versionPolicy":"invalid"}
+	]}`))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bulk status %d: %s", response.Code, response.Body.String())
+	}
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, policyRequest(http.MethodGet, "/updates/policies", ""))
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), `"targetKey":"web"`) {
+		t.Fatalf("bulk write was partial: %s", list.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, policyRequest(http.MethodPut, "/updates/policies/bulk", `{"policies":[
+		{"targetType":"container","targetKey":"web","targetName":"web","enabled":true,"rollbackEnabled":true,"versionPolicy":"minor"},
+		{"targetType":"container","targetKey":"db","targetName":"db","enabled":true,"rollbackEnabled":true,"versionPolicy":"patch"}
+	]}`))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("valid bulk status %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestEnrolledUpdateScanHTTP(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

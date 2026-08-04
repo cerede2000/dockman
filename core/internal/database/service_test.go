@@ -39,9 +39,17 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('prune_configs') WHERE name='cron_expression'").Scan(&cleanerCronColumns))
 	require.Equal(t, 1, cleanerCronColumns)
 
-	for _, column := range []string{"host", "target_type", "target_key", "target_name", "enabled", "schedule", "rollback_enabled", "cleanup_enabled", "cleanup_keep"} {
+	for _, column := range []string{"host", "target_type", "target_key", "target_name", "enabled", "schedule", "rollback_enabled", "cleanup_enabled", "cleanup_keep", "version_policy", "version_prerelease"} {
 		var count int
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('update_policies') WHERE name=?", column).Scan(&count))
 		require.Equal(t, 1, count, column)
 	}
+	for _, column := range []string{"current_tag", "latest_tag", "version_policy", "version_available", "version_reason"} {
+		var count int
+		require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('update_scan_results') WHERE name=?", column).Scan(&count))
+		require.Equal(t, 1, count, column)
+	}
+	var versionCountColumns int
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('update_scan_runs') WHERE name='versions'").Scan(&versionCountColumns))
+	require.Equal(t, 1, versionCountColumns)
 }

@@ -76,6 +76,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /updates/inventory", h.getUpdateInventory)
 	subMux.HandleFunc("GET /updates/policies", h.listUpdatePolicies)
 	subMux.HandleFunc("PUT /updates/policies", h.saveUpdatePolicy)
+	subMux.HandleFunc("PUT /updates/policies/bulk", h.saveUpdatePoliciesBulk)
 	subMux.HandleFunc("DELETE /updates/policies", h.deleteUpdatePolicy)
 	subMux.HandleFunc("POST /updates/scan", h.runEnrolledUpdateScan)
 	subMux.HandleFunc("POST /updates/run", h.runAutomaticUpdatesNow)
@@ -209,6 +210,32 @@ func (h *HandlerHttp) saveUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	policy.Host = host
 	if err := h.updatePolicies.Save(&policy); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if h.updateAutomation != nil {
+		h.updateAutomation.RefreshHost(host)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HandlerHttp) saveUpdatePoliciesBulk(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updatePolicyHost(w, r)
+	if !ok {
+		return
+	}
+	var payload struct {
+		Policies []updater.UpdatePolicy    `json:"policies"`
+		Removals []updater.PolicyTargetRef `json:"removals"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&payload); err != nil {
+		http.Error(w, "invalid bulk update policies: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	for index := range payload.Policies {
+		payload.Policies[index].Host = host
+	}
+	if err := h.updatePolicies.SaveMany(payload.Policies, payload.Removals); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

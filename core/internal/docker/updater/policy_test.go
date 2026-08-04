@@ -45,6 +45,30 @@ func TestPolicySaveUpsertsAndValidatesSchedule(t *testing.T) {
 	}
 }
 
+func TestPolicyVersionDiscoveryDefaultsAndValidation(t *testing.T) {
+	service := testPolicyService(t)
+	policy := UpdatePolicy{Host: "local", TargetType: UpdateTargetContainer, TargetKey: "web", TargetName: "web", Enabled: true}
+	if err := service.Save(&policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy.VersionPolicy != VersionPolicyOff {
+		t.Fatalf("default version policy = %q", policy.VersionPolicy)
+	}
+	policy.VersionPolicy = VersionPolicyMinor
+	policy.VersionPrerelease = true
+	if err := service.Save(&policy); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := service.List("local")
+	if err != nil || len(rows) != 1 || rows[0].VersionPolicy != VersionPolicyMinor || !rows[0].VersionPrerelease {
+		t.Fatalf("version policy was not persisted: rows=%#v err=%v", rows, err)
+	}
+	policy.VersionPolicy = "anything"
+	if err := service.Save(&policy); err == nil {
+		t.Fatal("unsupported version policy was accepted")
+	}
+}
+
 func TestInventoryPolicyPrecedence(t *testing.T) {
 	service := testPolicyService(t)
 	stackLabels := map[string]string{composeProjectLabel: "demo", composeFilesLabel: "/stacks/demo/compose.yml"}

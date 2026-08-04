@@ -619,6 +619,9 @@ func relevantChecks(checks []updater.ContainerUpdateCheck) ([]string, []string) 
 		case updater.ContainerUpdateError:
 			failures = append(failures, fmt.Sprintf("%s | %s | %s", check.ContainerName, check.Image, check.Reason))
 		}
+		if check.VersionAvailable {
+			available = append(available, fmt.Sprintf("%s | %s | newer tag %s -> %s (%s policy)", check.ContainerName, check.Image, check.CurrentTag, check.LatestTag, check.VersionPolicy))
+		}
 	}
 	slices.Sort(available)
 	slices.Sort(failures)
@@ -663,7 +666,7 @@ func notificationBody(run updater.UpdateScanRun, available, failures []string) s
 			fmt.Fprintf(&body, "- %s\n", item)
 		}
 	}
-	body.WriteString("\nNo container was updated. Open Dockman Updates or Monitor to review and act.\n")
+	body.WriteString("\nNo container was updated by this notification scan. Tag discovery is informational and never changes a Compose image reference. Open Dockman Updates or Monitor to review and act.\n")
 	return body.String()
 }
 

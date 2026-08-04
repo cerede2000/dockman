@@ -148,6 +148,56 @@ func TestRunNowScansOnlyEnrolledContainersAndPersistsState(t *testing.T) {
 	}
 }
 
+func TestRunNowDiscoversAndPersistsNewerVersionWithoutChangingDigestStatus(t *testing.T) {
+	store := testScanStore(t)
+	service, err := NewAutomationService(
+		store,
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			return []UpdateEnrollment{{
+				ContainerID: "web", ContainerName: "web", Image: "example/web:v3.1.1",
+				Enrolled: true, VersionPolicy: VersionPolicyMinor,
+			}}, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
+			return []ContainerUpdateCheck{{
+				ContainerID: "web", ContainerName: "web", Image: "example/web:v3.1.1",
+				Status: ContainerUpdateCurrent, CurrentDigest: "sha256:same", RemoteDigest: "sha256:same",
+			}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	service.SetVersionDiscoverer(func(_ context.Context, host string, targets []VersionDiscoveryTarget) []VersionDiscoveryResult {
+		if host != "local" || len(targets) != 1 || targets[0].Policy != VersionPolicyMinor {
+			t.Fatalf("unexpected discovery request: host=%q targets=%#v", host, targets)
+		}
+		return []VersionDiscoveryResult{{
+			ContainerID: "web", CurrentTag: "v3.1.1", LatestTag: "v3.2.0",
+			Policy: VersionPolicyMinor, Available: true, Reason: "newer minor version tag available",
+		}}
+	})
+
+	run, checks, err := service.RunNow(context.Background(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Versions != 1 || run.Available != 0 || run.Current != 1 || len(checks) != 1 {
+		t.Fatalf("version discovery changed digest scan semantics: run=%#v checks=%#v", run, checks)
+	}
+	if checks[0].Status != ContainerUpdateCurrent || !checks[0].VersionAvailable || checks[0].LatestTag != "v3.2.0" {
+		t.Fatalf("unexpected enriched check: %#v", checks[0])
+	}
+	results, runs, _, err := service.State("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].VersionAvailable || results[0].LatestTag != "v3.2.0" || len(runs) != 1 || runs[0].Versions != 1 {
+		t.Fatalf("version discovery was not persisted: results=%#v runs=%#v", results, runs)
+	}
+}
+
 func TestScheduledRunUsesOnlyMatchingSchedule(t *testing.T) {
 	var scanned []string
 	service, err := NewAutomationService(

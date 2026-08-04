@@ -38,18 +38,23 @@ type AutomationControlView struct {
 }
 
 type UpdateScanResult struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
-	Host          string    `gorm:"not null;uniqueIndex:idx_update_scan_result" json:"host"`
-	ContainerID   string    `gorm:"not null;uniqueIndex:idx_update_scan_result" json:"containerId"`
-	ContainerName string    `gorm:"not null" json:"containerName"`
-	Image         string    `gorm:"not null" json:"image"`
-	Status        string    `gorm:"not null" json:"status"`
-	CurrentDigest string    `gorm:"not null;default:''" json:"currentDigest,omitempty"`
-	RemoteDigest  string    `gorm:"not null;default:''" json:"remoteDigest,omitempty"`
-	Reason        string    `gorm:"not null;default:''" json:"reason,omitempty"`
-	CheckedAt     time.Time `gorm:"not null" json:"checkedAt"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+	Host             string    `gorm:"not null;uniqueIndex:idx_update_scan_result" json:"host"`
+	ContainerID      string    `gorm:"not null;uniqueIndex:idx_update_scan_result" json:"containerId"`
+	ContainerName    string    `gorm:"not null" json:"containerName"`
+	Image            string    `gorm:"not null" json:"image"`
+	Status           string    `gorm:"not null" json:"status"`
+	CurrentDigest    string    `gorm:"not null;default:''" json:"currentDigest,omitempty"`
+	RemoteDigest     string    `gorm:"not null;default:''" json:"remoteDigest,omitempty"`
+	Reason           string    `gorm:"not null;default:''" json:"reason,omitempty"`
+	CurrentTag       string    `gorm:"not null;default:''" json:"currentTag,omitempty"`
+	LatestTag        string    `gorm:"not null;default:''" json:"latestTag,omitempty"`
+	VersionPolicy    string    `gorm:"not null;default:''" json:"versionPolicy,omitempty"`
+	VersionAvailable bool      `gorm:"not null;default:false" json:"versionAvailable"`
+	VersionReason    string    `gorm:"not null;default:''" json:"versionReason,omitempty"`
+	CheckedAt        time.Time `gorm:"not null" json:"checkedAt"`
 }
 
 type UpdateScanRun struct {
@@ -65,6 +70,7 @@ type UpdateScanRun struct {
 	Current     int        `gorm:"not null" json:"current"`
 	Skipped     int        `gorm:"not null" json:"skipped"`
 	Errors      int        `gorm:"not null" json:"errors"`
+	Versions    int        `gorm:"not null;default:0" json:"versions"`
 	Error       string     `gorm:"not null;default:''" json:"error,omitempty"`
 }
 
@@ -81,12 +87,14 @@ func (s *ScanStore) Save(run *UpdateScanRun, checks []ContainerUpdateCheck) erro
 			row := UpdateScanResult{
 				Host: run.Host, ContainerID: check.ContainerID, ContainerName: check.ContainerName,
 				Image: check.Image, Status: string(check.Status), CurrentDigest: check.CurrentDigest,
-				RemoteDigest: check.RemoteDigest, Reason: check.Reason, CheckedAt: *run.CompletedAt,
+				RemoteDigest: check.RemoteDigest, Reason: check.Reason,
+				CurrentTag: check.CurrentTag, LatestTag: check.LatestTag, VersionPolicy: check.VersionPolicy,
+				VersionAvailable: check.VersionAvailable, VersionReason: check.VersionReason, CheckedAt: *run.CompletedAt,
 			}
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "host"}, {Name: "container_id"}},
 				DoUpdates: clause.AssignmentColumns([]string{
-					"container_name", "image", "status", "current_digest", "remote_digest", "reason", "checked_at", "updated_at",
+					"container_name", "image", "status", "current_digest", "remote_digest", "reason", "current_tag", "latest_tag", "version_policy", "version_available", "version_reason", "checked_at", "updated_at",
 				}),
 			}).Create(&row).Error; err != nil {
 				return err
@@ -138,6 +146,7 @@ func (s *ScanStore) PruneResults(host string, activeContainerIDs []string) error
 
 type InventoryProvider func(context.Context, string) ([]UpdateEnrollment, error)
 type ScanProvider func(context.Context, string, []string) ([]ContainerUpdateCheck, error)
+type VersionDiscoveryProvider func(context.Context, string, []VersionDiscoveryTarget) []VersionDiscoveryResult
 type ScanNotifier func(context.Context, UpdateScanRun, []ContainerUpdateCheck) error
 
 type ScheduledScan struct {
@@ -147,14 +156,15 @@ type ScheduledScan struct {
 }
 
 type AutomationService struct {
-	store           *ScanStore
-	inventory       InventoryProvider
-	scan            ScanProvider
-	notify          ScanNotifier
-	execute         UpdateExecutor
-	notifyExecution ExecutionNotifier
-	cleanupImage    ImageCleanupProvider
-	scheduler       gocron.Scheduler
+	store            *ScanStore
+	inventory        InventoryProvider
+	scan             ScanProvider
+	discoverVersions VersionDiscoveryProvider
+	notify           ScanNotifier
+	execute          UpdateExecutor
+	notifyExecution  ExecutionNotifier
+	cleanupImage     ImageCleanupProvider
+	scheduler        gocron.Scheduler
 
 	jobsMu  sync.Mutex
 	runMu   sync.Mutex
@@ -192,6 +202,10 @@ func (s *AutomationService) SetExecutionNotifier(notifier ExecutionNotifier) {
 }
 
 func (s *AutomationService) SetImageCleaner(cleaner ImageCleanupProvider) { s.cleanupImage = cleaner }
+
+func (s *AutomationService) SetVersionDiscoverer(discoverer VersionDiscoveryProvider) {
+	s.discoverVersions = discoverer
+}
 
 func NormalizeUpdateSchedule(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -333,11 +347,17 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 		var checks []ContainerUpdateCheck
 		if err == nil && len(ids) > 0 {
 			checks, err = s.scan(ctx, host, ids)
+			if err == nil {
+				checks = s.enrichVersionDiscovery(ctx, host, rows, ids, checks)
+			}
 		}
 		if err == nil {
 			completed := time.Now()
 			run.CompletedAt = &completed
 			for _, check := range checks {
+				if check.VersionAvailable {
+					run.Versions++
+				}
 				switch check.Status {
 				case ContainerUpdateAvailable:
 					run.Available++
@@ -383,6 +403,49 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 	}
 	s.notifyScan(ctx, run, nil)
 	return run, nil, err
+}
+
+func (s *AutomationService) enrichVersionDiscovery(ctx context.Context, host string, rows []UpdateEnrollment, ids []string, checks []ContainerUpdateCheck) []ContainerUpdateCheck {
+	if s.discoverVersions == nil || len(checks) == 0 {
+		return checks
+	}
+	selected := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		selected[id] = struct{}{}
+	}
+	byID := make(map[string]UpdateEnrollment, len(rows))
+	targets := make([]VersionDiscoveryTarget, 0, len(rows))
+	for _, row := range rows {
+		if _, ok := selected[row.ContainerID]; !ok || row.VersionPolicy == VersionPolicyOff || !validVersionPolicy(row.VersionPolicy) {
+			continue
+		}
+		byID[row.ContainerID] = row
+		targets = append(targets, VersionDiscoveryTarget{ContainerID: row.ContainerID, Image: row.Image, Policy: row.VersionPolicy, AllowPrerelease: row.VersionPrerelease})
+	}
+	if len(targets) == 0 {
+		return checks
+	}
+	results := s.discoverVersions(ctx, host, targets)
+	byResult := make(map[string]VersionDiscoveryResult, len(results))
+	for _, result := range results {
+		byResult[result.ContainerID] = result
+	}
+	for index := range checks {
+		row, enabled := byID[checks[index].ContainerID]
+		if !enabled {
+			continue
+		}
+		checks[index].VersionPolicy = row.VersionPolicy
+		if result, ok := byResult[checks[index].ContainerID]; ok {
+			checks[index].CurrentTag = result.CurrentTag
+			checks[index].LatestTag = result.LatestTag
+			checks[index].VersionAvailable = result.Available
+			checks[index].VersionReason = result.Reason
+		} else {
+			checks[index].VersionReason = "version discovery returned no result"
+		}
+	}
+	return checks
 }
 
 func (s *AutomationService) executeAvailable(ctx context.Context, scanRun UpdateScanRun, rows []UpdateEnrollment, checks []ContainerUpdateCheck) {
@@ -530,6 +593,9 @@ func checksWithoutAvailable(checks []ContainerUpdateCheck) []ContainerUpdateChec
 	filtered := make([]ContainerUpdateCheck, 0, len(checks))
 	for _, check := range checks {
 		if check.Status != ContainerUpdateAvailable {
+			filtered = append(filtered, check)
+		} else if check.VersionAvailable {
+			check.Status = ContainerUpdateCurrent
 			filtered = append(filtered, check)
 		}
 	}

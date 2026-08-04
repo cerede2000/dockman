@@ -137,6 +137,16 @@ func TestNotifyScanIsScheduledGroupedAndChangeOnly(t *testing.T) {
 	}
 }
 
+func TestRelevantChecksIncludesInformationalNewerTag(t *testing.T) {
+	available, failures := relevantChecks([]updater.ContainerUpdateCheck{{
+		ContainerName: "web", Image: "example/web:v3.1.1", Status: updater.ContainerUpdateCurrent,
+		CurrentTag: "v3.1.1", LatestTag: "v3.2.0", VersionPolicy: updater.VersionPolicyMinor, VersionAvailable: true,
+	}})
+	if len(failures) != 0 || len(available) != 1 || !strings.Contains(available[0], "newer tag v3.1.1 -> v3.2.0") {
+		t.Fatalf("newer tag notification is missing: available=%#v failures=%#v", available, failures)
+	}
+}
+
 func TestNotifyExecutionGroupsSuccessAndRollback(t *testing.T) {
 	service, _, sender := testService(t)
 	if _, err := service.Save("local", validInput()); err != nil {

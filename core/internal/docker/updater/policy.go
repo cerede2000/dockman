@@ -19,6 +19,8 @@ const (
 	UpdateRollbackLabel    = "dockman.update.rollback"
 	UpdateCleanupLabel     = "dockman.update.cleanup"
 	UpdateCleanupKeepLabel = "dockman.update.cleanup.keep"
+	UpdateVersionLabel     = "dockman.update.version"
+	UpdatePrereleaseLabel  = "dockman.update.version.prerelease"
 	composeProjectLabel    = "com.docker.compose.project"
 	composeFilesLabel      = "com.docker.compose.project.config_files"
 	composeServiceLabel    = "com.docker.compose.service"
@@ -26,23 +28,29 @@ const (
 
 	UpdateTargetContainer = "container"
 	UpdateTargetStack     = "stack"
+	VersionPolicyOff      = "off"
+	VersionPolicyPatch    = "patch"
+	VersionPolicyMinor    = "minor"
+	VersionPolicyMajor    = "major"
 )
 
 // UpdatePolicy is the persistent, host-scoped opt-in configuration consumed by
 // scheduled scans and protected automatic update execution.
 type UpdatePolicy struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
-	Host            string    `gorm:"not null;uniqueIndex:idx_update_policy_target" json:"host"`
-	TargetType      string    `gorm:"not null;uniqueIndex:idx_update_policy_target" json:"targetType"`
-	TargetKey       string    `gorm:"not null;uniqueIndex:idx_update_policy_target" json:"targetKey"`
-	TargetName      string    `gorm:"not null" json:"targetName"`
-	Enabled         bool      `gorm:"not null" json:"enabled"`
-	Schedule        string    `gorm:"not null;default:''" json:"schedule"`
-	RollbackEnabled bool      `gorm:"not null" json:"rollbackEnabled"`
-	CleanupEnabled  bool      `gorm:"not null;default:false" json:"cleanupEnabled"`
-	CleanupKeep     int       `gorm:"not null" json:"cleanupKeep"`
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	Host              string    `gorm:"not null;uniqueIndex:idx_update_policy_target" json:"host"`
+	TargetType        string    `gorm:"not null;uniqueIndex:idx_update_policy_target" json:"targetType"`
+	TargetKey         string    `gorm:"not null;uniqueIndex:idx_update_policy_target" json:"targetKey"`
+	TargetName        string    `gorm:"not null" json:"targetName"`
+	Enabled           bool      `gorm:"not null" json:"enabled"`
+	Schedule          string    `gorm:"not null;default:''" json:"schedule"`
+	RollbackEnabled   bool      `gorm:"not null" json:"rollbackEnabled"`
+	CleanupEnabled    bool      `gorm:"not null;default:false" json:"cleanupEnabled"`
+	CleanupKeep       int       `gorm:"not null" json:"cleanupKeep"`
+	VersionPolicy     string    `gorm:"not null;default:'off'" json:"versionPolicy"`
+	VersionPrerelease bool      `gorm:"not null;default:false" json:"versionPrerelease"`
 }
 
 type PolicyStore struct{ db *gorm.DB }
@@ -59,7 +67,7 @@ func (s *PolicyStore) Upsert(policy *UpdatePolicy) error {
 	return s.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "host"}, {Name: "target_type"}, {Name: "target_key"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"target_name", "enabled", "schedule", "rollback_enabled", "cleanup_enabled", "cleanup_keep", "updated_at",
+			"target_name", "enabled", "schedule", "rollback_enabled", "cleanup_enabled", "cleanup_keep", "version_policy", "version_prerelease", "updated_at",
 		}),
 	}).Create(policy).Error
 }
@@ -69,6 +77,28 @@ func (s *PolicyStore) Delete(host, targetType, targetKey string) error {
 		Delete(&UpdatePolicy{}).Error
 }
 
+type PolicyTargetRef struct {
+	TargetType string `json:"targetType"`
+	TargetKey  string `json:"targetKey"`
+}
+
+func (s *PolicyStore) ApplyMany(host string, policies []UpdatePolicy, removals []PolicyTargetRef) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		store := PolicyStore{db: tx}
+		for _, removal := range removals {
+			if err := store.Delete(host, removal.TargetType, removal.TargetKey); err != nil {
+				return err
+			}
+		}
+		for index := range policies {
+			if err := store.Upsert(&policies[index]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 type PolicyService struct{ store *PolicyStore }
 
 func NewPolicyService(store *PolicyStore) *PolicyService { return &PolicyService{store: store} }
@@ -76,6 +106,50 @@ func NewPolicyService(store *PolicyStore) *PolicyService { return &PolicyService
 func (s *PolicyService) List(host string) ([]UpdatePolicy, error) { return s.store.List(host) }
 
 func (s *PolicyService) Save(policy *UpdatePolicy) error {
+	if err := validatePolicy(policy); err != nil {
+		return err
+	}
+	return s.store.Upsert(policy)
+}
+
+func (s *PolicyService) SaveMany(policies []UpdatePolicy, removals []PolicyTargetRef) error {
+	if len(policies) == 0 || len(policies) > 500 {
+		return errors.New("bulk policy update must contain between 1 and 500 targets")
+	}
+	seen := make(map[string]struct{}, len(policies))
+	host := ""
+	for index := range policies {
+		if err := validatePolicy(&policies[index]); err != nil {
+			return fmt.Errorf("policy %d: %w", index+1, err)
+		}
+		if index == 0 {
+			host = policies[index].Host
+		} else if policies[index].Host != host {
+			return errors.New("all bulk policy targets must belong to the same Docker host")
+		}
+		key := policies[index].Host + "\x00" + policies[index].TargetType + "\x00" + policies[index].TargetKey
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("policy %d duplicates target %q", index+1, policies[index].TargetName)
+		}
+		seen[key] = struct{}{}
+	}
+	if len(removals) > 500 {
+		return errors.New("bulk policy update cannot remove more than 500 previous overrides")
+	}
+	for index := range removals {
+		removals[index].TargetType = strings.TrimSpace(removals[index].TargetType)
+		removals[index].TargetKey = strings.TrimSpace(removals[index].TargetKey)
+		if removals[index].TargetKey == "" || (removals[index].TargetType != UpdateTargetContainer && removals[index].TargetType != UpdateTargetStack) {
+			return fmt.Errorf("removal %d is invalid", index+1)
+		}
+	}
+	return s.store.ApplyMany(host, policies, removals)
+}
+
+func validatePolicy(policy *UpdatePolicy) error {
+	if policy == nil {
+		return errors.New("update policy is required")
+	}
 	policy.Host = strings.TrimSpace(policy.Host)
 	policy.TargetType = strings.TrimSpace(strings.ToLower(policy.TargetType))
 	policy.TargetKey = strings.TrimSpace(policy.TargetKey)
@@ -93,6 +167,13 @@ func (s *PolicyService) Save(policy *UpdatePolicy) error {
 	if policy.CleanupKeep < 0 || policy.CleanupKeep > 10 {
 		return errors.New("cleanup retention must be between 0 and 10 previous images")
 	}
+	policy.VersionPolicy = strings.ToLower(strings.TrimSpace(policy.VersionPolicy))
+	if policy.VersionPolicy == "" {
+		policy.VersionPolicy = VersionPolicyOff
+	}
+	if !validVersionPolicy(policy.VersionPolicy) {
+		return errors.New("version discovery policy must be off, patch, minor or major")
+	}
 	if policy.Schedule != "" {
 		normalized, err := NormalizeUpdateSchedule(policy.Schedule)
 		if err != nil {
@@ -100,7 +181,7 @@ func (s *PolicyService) Save(policy *UpdatePolicy) error {
 		}
 		policy.Schedule = normalized
 	}
-	return s.store.Upsert(policy)
+	return nil
 }
 
 func (s *PolicyService) Delete(host, targetType, targetKey string) error {
@@ -114,24 +195,26 @@ func (s *PolicyService) Delete(host, targetType, targetKey string) error {
 }
 
 type UpdateEnrollment struct {
-	ContainerID    string `json:"containerId"`
-	ContainerName  string `json:"containerName"`
-	Image          string `json:"image"`
-	State          string `json:"state"`
-	StackName      string `json:"stackName,omitempty"`
-	StackKey       string `json:"stackKey,omitempty"`
-	ServiceName    string `json:"-"`
-	DependsOn      string `json:"-"`
-	Enrolled       bool   `json:"enrolled"`
-	Source         string `json:"source"`
-	Reason         string `json:"reason,omitempty"`
-	Schedule       string `json:"schedule,omitempty"`
-	ScheduleError  string `json:"scheduleError,omitempty"`
-	Rollback       bool   `json:"rollback"`
-	CleanupEnabled bool   `json:"cleanupEnabled"`
-	CleanupKeep    int    `json:"cleanupKeep"`
-	PolicyTarget   string `json:"policyTarget,omitempty"`
-	PolicyTargetID string `json:"policyTargetId,omitempty"`
+	ContainerID       string `json:"containerId"`
+	ContainerName     string `json:"containerName"`
+	Image             string `json:"image"`
+	State             string `json:"state"`
+	StackName         string `json:"stackName,omitempty"`
+	StackKey          string `json:"stackKey,omitempty"`
+	ServiceName       string `json:"-"`
+	DependsOn         string `json:"-"`
+	Enrolled          bool   `json:"enrolled"`
+	Source            string `json:"source"`
+	Reason            string `json:"reason,omitempty"`
+	Schedule          string `json:"schedule,omitempty"`
+	ScheduleError     string `json:"scheduleError,omitempty"`
+	Rollback          bool   `json:"rollback"`
+	CleanupEnabled    bool   `json:"cleanupEnabled"`
+	CleanupKeep       int    `json:"cleanupKeep"`
+	VersionPolicy     string `json:"versionPolicy"`
+	VersionPrerelease bool   `json:"versionPrerelease"`
+	PolicyTarget      string `json:"policyTarget,omitempty"`
+	PolicyTargetID    string `json:"policyTargetId,omitempty"`
 }
 
 // Inventory resolves effective policy without contacting a registry. It is
@@ -156,7 +239,7 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 		row := UpdateEnrollment{
 			ContainerID: item.ID, ContainerName: name, Image: item.Image, State: string(item.State),
 			StackName: stackName, StackKey: stackKey, ServiceName: strings.TrimSpace(item.Labels[composeServiceLabel]),
-			DependsOn: strings.TrimSpace(item.Labels[composeDependsLabel]), Source: "none", Rollback: true, CleanupKeep: 1,
+			DependsOn: strings.TrimSpace(item.Labels[composeDependsLabel]), Source: "none", Rollback: true, CleanupKeep: 1, VersionPolicy: VersionPolicyOff,
 		}
 
 		if hasDockmanLabel(&item) {
@@ -195,6 +278,16 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 					row.CleanupKeep = parsed
 				}
 			}
+			if policy := strings.ToLower(strings.TrimSpace(item.Labels[UpdateVersionLabel])); policy != "" {
+				if validVersionPolicy(policy) {
+					row.VersionPolicy = policy
+				} else {
+					row.Reason = "version discovery disabled: invalid " + UpdateVersionLabel
+				}
+			}
+			if prerelease, ok := boolLabel(item.Labels, UpdatePrereleaseLabel); ok {
+				row.VersionPrerelease = prerelease
+			}
 			rows = append(rows, row)
 			continue
 		}
@@ -224,11 +317,17 @@ func applyPolicy(row *UpdateEnrollment, policy UpdatePolicy) {
 	row.Rollback = policy.RollbackEnabled
 	row.CleanupEnabled = policy.CleanupEnabled
 	row.CleanupKeep = policy.CleanupKeep
+	row.VersionPolicy = policy.VersionPolicy
+	row.VersionPrerelease = policy.VersionPrerelease
 	row.PolicyTarget = policy.TargetType
 	row.PolicyTargetID = policy.TargetKey
 	if !policy.Enabled {
 		row.Reason = "disabled by interface policy"
 	}
+}
+
+func validVersionPolicy(value string) bool {
+	return value == VersionPolicyOff || value == VersionPolicyPatch || value == VersionPolicyMinor || value == VersionPolicyMajor
 }
 
 func stackIdentity(labels map[string]string) (string, string) {

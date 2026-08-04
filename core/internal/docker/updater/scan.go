@@ -26,13 +26,18 @@ const (
 )
 
 type ContainerUpdateCheck struct {
-	ContainerID   string                `json:"containerId"`
-	ContainerName string                `json:"containerName"`
-	Image         string                `json:"image"`
-	Status        ContainerUpdateStatus `json:"status"`
-	CurrentDigest string                `json:"currentDigest,omitempty"`
-	RemoteDigest  string                `json:"remoteDigest,omitempty"`
-	Reason        string                `json:"reason,omitempty"`
+	ContainerID      string                `json:"containerId"`
+	ContainerName    string                `json:"containerName"`
+	Image            string                `json:"image"`
+	Status           ContainerUpdateStatus `json:"status"`
+	CurrentDigest    string                `json:"currentDigest,omitempty"`
+	RemoteDigest     string                `json:"remoteDigest,omitempty"`
+	Reason           string                `json:"reason,omitempty"`
+	CurrentTag       string                `json:"currentTag,omitempty"`
+	LatestTag        string                `json:"latestTag,omitempty"`
+	VersionPolicy    string                `json:"versionPolicy,omitempty"`
+	VersionAvailable bool                  `json:"versionAvailable"`
+	VersionReason    string                `json:"versionReason,omitempty"`
 }
 
 type imageUpdateCheck struct {

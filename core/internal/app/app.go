@@ -191,6 +191,8 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("unable to initialize automatic image scan scheduler")
 	}
+	versionDiscovery := updater.NewRegistryVersionDiscovery(6 * time.Hour)
+	updateAutomationSrv.SetVersionDiscoverer(versionDiscovery.Discover)
 	updateAutomationSrv.SetExecutor(func(ctx context.Context, hostname string, targets []updater.UpdateExecutionTarget) []updater.UpdateExecutionOutcome {
 		dkSrv, getErr := hostManager.GetDockerService(hostname)
 		if getErr != nil {
