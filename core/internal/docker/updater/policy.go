@@ -24,8 +24,8 @@ const (
 	UpdateTargetStack     = "stack"
 )
 
-// UpdatePolicy is the persistent, host-scoped opt-in configuration. Lot 1
-// deliberately stores intent only: no background scheduler consumes it yet.
+// UpdatePolicy is the persistent, host-scoped opt-in configuration consumed by
+// scheduled scans and protected automatic update execution.
 type UpdatePolicy struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	CreatedAt       time.Time `json:"createdAt"`

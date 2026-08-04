@@ -107,11 +107,18 @@ func (s *ScanStore) State(host string) ([]UpdateScanResult, []UpdateScanRun, err
 }
 
 func (s *ScanStore) PruneResults(host string, activeContainerIDs []string) error {
-	query := s.db.Where("host = ?", host)
-	if len(activeContainerIDs) > 0 {
-		query = query.Where("container_id NOT IN ?", activeContainerIDs)
-	}
-	return query.Delete(&UpdateScanResult{}).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		results := tx.Where("host = ?", host)
+		blocks := tx.Where("host = ?", host)
+		if len(activeContainerIDs) > 0 {
+			results = results.Where("container_id NOT IN ?", activeContainerIDs)
+			blocks = blocks.Where("container_id NOT IN ?", activeContainerIDs)
+		}
+		if err := results.Delete(&UpdateScanResult{}).Error; err != nil {
+			return err
+		}
+		return blocks.Delete(&UpdateExecutionBlock{}).Error
+	})
 }
 
 type InventoryProvider func(context.Context, string) ([]UpdateEnrollment, error)
@@ -125,11 +132,13 @@ type ScheduledScan struct {
 }
 
 type AutomationService struct {
-	store     *ScanStore
-	inventory InventoryProvider
-	scan      ScanProvider
-	notify    ScanNotifier
-	scheduler gocron.Scheduler
+	store           *ScanStore
+	inventory       InventoryProvider
+	scan            ScanProvider
+	notify          ScanNotifier
+	execute         UpdateExecutor
+	notifyExecution ExecutionNotifier
+	scheduler       gocron.Scheduler
 
 	jobsMu  sync.Mutex
 	runMu   sync.Mutex
@@ -154,6 +163,12 @@ func NewAutomationService(store *ScanStore, inventory InventoryProvider, scan Sc
 func (s *AutomationService) Shutdown() error { return s.scheduler.Shutdown() }
 
 func (s *AutomationService) SetNotifier(notifier ScanNotifier) { s.notify = notifier }
+
+func (s *AutomationService) SetExecutor(executor UpdateExecutor) { s.execute = executor }
+
+func (s *AutomationService) SetExecutionNotifier(notifier ExecutionNotifier) {
+	s.notifyExecution = notifier
+}
 
 func NormalizeUpdateSchedule(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -229,7 +244,7 @@ func (s *AutomationService) ReconcileInventory(host string, rows []UpdateEnrollm
 		job, err := s.scheduler.NewJob(
 			gocron.CronJob(schedule, false),
 			gocron.NewTask(func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 				defer cancel()
 				if _, _, runErr := s.run(ctx, host, schedule, "scheduled"); runErr != nil {
 					log.Warn().Err(runErr).Str("host", host).Str("schedule", schedule).Msg("scheduled image update scan failed")
@@ -303,7 +318,15 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 			if saveErr := s.store.Save(&run, checks); saveErr != nil {
 				return run, checks, saveErr
 			}
-			s.notifyScan(ctx, run, checks)
+			if trigger == "scheduled" && s.execute != nil {
+				s.executeAvailable(ctx, run, rows, checks)
+				// Availability mail would be misleading after the same run has
+				// already applied the update. Keep registry failures in the scan
+				// notification; execution has its own outcome notification.
+				s.notifyScan(ctx, run, checksWithoutAvailable(checks))
+			} else {
+				s.notifyScan(ctx, run, checks)
+			}
 			return run, checks, nil
 		}
 	}
@@ -318,6 +341,84 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 	}
 	s.notifyScan(ctx, run, nil)
 	return run, nil, err
+}
+
+func (s *AutomationService) executeAvailable(ctx context.Context, scanRun UpdateScanRun, rows []UpdateEnrollment, checks []ContainerUpdateCheck) {
+	byID := make(map[string]UpdateEnrollment, len(rows))
+	for _, row := range rows {
+		byID[row.ContainerID] = row
+	}
+	targets := make([]UpdateExecutionTarget, 0, scanRun.Available)
+	for _, check := range checks {
+		if check.Status != ContainerUpdateAvailable {
+			continue
+		}
+		row, ok := byID[check.ContainerID]
+		if !ok || !row.Enrolled || row.Source == "protected" || row.Source == "disabled-label" {
+			continue
+		}
+		_, blocked, err := s.store.ExecutionBlock(scanRun.Host, check.ContainerID, check.RemoteDigest)
+		if err != nil {
+			log.Warn().Err(err).Str("host", scanRun.Host).Str("container", check.ContainerName).Msg("unable to inspect automatic update circuit breaker")
+			continue
+		}
+		if blocked {
+			continue
+		}
+		targets = append(targets, UpdateExecutionTarget{
+			ContainerID: check.ContainerID, ContainerName: check.ContainerName, Image: check.Image,
+			State: row.State, RemoteDigest: check.RemoteDigest, RollbackEnabled: row.Rollback,
+		})
+	}
+	if len(targets) == 0 {
+		return
+	}
+	executionRun := UpdateExecutionRun{Host: scanRun.Host, Schedule: scanRun.Schedule, ScanRunID: scanRun.ID, StartedAt: time.Now(), Targets: len(targets)}
+	outcomes := s.execute(ctx, scanRun.Host, targets)
+	seen := make(map[string]struct{}, len(outcomes))
+	for _, outcome := range outcomes {
+		seen[outcome.ContainerID] = struct{}{}
+		switch outcome.State {
+		case ExecutionUpdated:
+			executionRun.Updated++
+		case ExecutionCurrent:
+			executionRun.Current++
+		case ExecutionRolledBack:
+			executionRun.RolledBack++
+		case ExecutionSkipped:
+			executionRun.Skipped++
+		default:
+			executionRun.Failed++
+		}
+	}
+	for _, target := range targets {
+		if _, ok := seen[target.ContainerID]; ok {
+			continue
+		}
+		outcomes = append(outcomes, UpdateExecutionOutcome{UpdateExecutionTarget: target, State: ExecutionFailed, Message: "automatic update executor returned no outcome"})
+		executionRun.Failed++
+	}
+	completed := time.Now()
+	executionRun.CompletedAt = &completed
+	if err := s.store.SaveExecution(&executionRun, outcomes); err != nil {
+		log.Error().Err(err).Str("host", scanRun.Host).Msg("unable to persist automatic update execution")
+		return
+	}
+	if s.notifyExecution != nil {
+		if err := s.notifyExecution(ctx, executionRun, outcomes); err != nil {
+			log.Warn().Err(err).Str("host", scanRun.Host).Msg("automatic update execution notification failed")
+		}
+	}
+}
+
+func checksWithoutAvailable(checks []ContainerUpdateCheck) []ContainerUpdateCheck {
+	filtered := make([]ContainerUpdateCheck, 0, len(checks))
+	for _, check := range checks {
+		if check.Status != ContainerUpdateAvailable {
+			filtered = append(filtered, check)
+		}
+	}
+	return filtered
 }
 
 func (s *AutomationService) notifyScan(ctx context.Context, run UpdateScanRun, checks []ContainerUpdateCheck) {
@@ -350,4 +451,12 @@ func (s *AutomationService) State(host string) ([]UpdateScanResult, []UpdateScan
 	}
 	slices.SortFunc(schedules, func(a, b ScheduledScan) int { return a.NextRun.Compare(b.NextRun) })
 	return results, runs, schedules, nil
+}
+
+func (s *AutomationService) ExecutionState(host string) ([]UpdateExecutionRun, []UpdateExecutionResult, []UpdateExecutionBlock, error) {
+	return s.store.ExecutionState(host)
+}
+
+func (s *AutomationService) ClearExecutionBlock(host, containerID string) error {
+	return s.store.ClearExecutionBlock(host, containerID)
 }

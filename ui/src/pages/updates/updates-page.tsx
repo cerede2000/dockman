@@ -28,10 +28,12 @@ import {
 import {
     AccountTreeOutlined,
     CheckCircleOutlined,
+	ErrorOutlined,
     EditOutlined,
     EmailOutlined,
     HistoryOutlined,
     Refresh,
+	ReplayOutlined,
     SendOutlined,
     ShieldOutlined,
     SpaceDashboardOutlined,
@@ -93,6 +95,22 @@ type ScanRun = {
 
 type ScheduledScan = {schedule: string; nextRun: string; targets: number};
 
+type ExecutionRun = {
+	id: number; startedAt: string; schedule: string; targets: number; updated: number;
+	current: number; rolledBack: number; failed: number; skipped: number;
+};
+
+type ExecutionResult = {
+	id: number; runId: number; createdAt: string; containerId: string; containerName: string;
+	image: string; remoteDigest: string; rollbackEnabled: boolean;
+	state: 'updated' | 'current' | 'rolled_back' | 'failed' | 'skipped'; message?: string; logs?: string;
+};
+
+type ExecutionBlock = {
+	id: number; containerId: string; containerName: string; image: string;
+	remoteDigest: string; reason: string; updatedAt: string;
+};
+
 type SMTPConfig = {
     enabled: boolean;
     server: string;
@@ -151,6 +169,10 @@ export default function UpdatesPage() {
 	const [scanResults, setScanResults] = useState<Record<string, ScanResult>>({});
 	const [scanRuns, setScanRuns] = useState<ScanRun[]>([]);
 	const [schedules, setSchedules] = useState<ScheduledScan[]>([]);
+	const [executionRuns, setExecutionRuns] = useState<ExecutionRun[]>([]);
+	const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
+	const [executionBlocks, setExecutionBlocks] = useState<ExecutionBlock[]>([]);
+	const [executionDetails, setExecutionDetails] = useState<ExecutionResult | null>(null);
     const [smtpOpen, setSMTPOpen] = useState(false);
     const [smtpSaving, setSMTPSaving] = useState(false);
     const [smtpTesting, setSMTPTesting] = useState(false);
@@ -173,10 +195,13 @@ export default function UpdatesPage() {
             const payload = await response.json() as {results: UpdateEnrollment[]};
             setRows(payload.results ?? []);
 			if (!stateResponse.ok) throw new Error((await stateResponse.text()).trim() || `HTTP ${stateResponse.status}`);
-			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]};
+			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]; executionRuns: ExecutionRun[]; executionResults: ExecutionResult[]; blocks: ExecutionBlock[]};
 			setScanResults(Object.fromEntries((state.results ?? []).map(result => [result.containerId, result])));
 			setScanRuns(state.runs ?? []);
 			setSchedules(state.schedules ?? []);
+			setExecutionRuns(state.executionRuns ?? []);
+			setExecutionResults(state.executionResults ?? []);
+			setExecutionBlocks(state.blocks ?? []);
             if (!smtpResponse.ok) throw new Error((await smtpResponse.text()).trim() || `HTTP ${smtpResponse.status}`);
             const smtp = await smtpResponse.json() as {config: SMTPConfig; deliveries: NotificationDelivery[]};
             const nextSMTP = {...defaultSMTPConfig, ...(smtp.config ?? {}), password: ''};
@@ -200,6 +225,19 @@ export default function UpdatesPage() {
     const enrolledCount = rows.filter(row => row.enrolled).length;
     const labelCount = rows.filter(row => row.source === 'label' || row.source === 'disabled-label').length;
 	const availableCount = rows.filter(row => scanResults[row.containerId]?.status === 'available').length;
+	const blocksByContainer = useMemo(() => Object.fromEntries(executionBlocks.map(block => [block.containerId, block])), [executionBlocks]);
+
+	const allowRetry = async (containerId: string) => {
+		try {
+			const query = new URLSearchParams({containerId});
+			const response = await fetch(hostUrl(`/docker/updates/execution-block?${query}`), {method: 'DELETE'});
+			if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+			await load();
+			showSuccess('The next scheduled scan may retry this digest');
+		} catch (error) {
+			showError(`Unable to allow retry — ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
 
 	const scanNow = async () => {
 		setScanning(true);
@@ -354,13 +392,13 @@ export default function UpdatesPage() {
 					<Typography variant="h4" color={availableCount > 0 ? 'warning.main' : 'inherit'}>{availableCount}</Typography>
 				</Paper>
                 <Paper variant="outlined" sx={{p: 1.75, flex: 2}}>
-                    <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="success"/><Typography sx={{fontWeight: 600}}>Read-only automation</Typography></Stack>
-					<Typography variant="body2" color="text.secondary">Checks run automatically and SMTP can send change-only summaries. No container is recreated in this lot.</Typography>
+                    <Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><ShieldOutlined color="success"/><Typography sx={{fontWeight: 600}}>Protected automatic updates</Typography></Stack>
+					<Typography variant="body2" color="text.secondary">Scheduled checks apply available images only to enrolled targets. Each update is locked, verified and recorded; failures are blocked from looping.</Typography>
                 </Paper>
             </Stack>
 
             <Alert severity="info" sx={{mb: 2}}>
-                Labels have priority over graphical rules. Use <code>dockman.update=true</code>, optionally <code>dockman.update.schedule</code> and <code>dockman.update.rollback</code>. <code>dockman.update.disable=true</code> always blocks enrollment.
+                Labels have priority over graphical rules. Use <code>dockman.update=true</code>, optionally <code>dockman.update.schedule</code> and <code>dockman.update.rollback</code>. <code>dockman.update.disable=true</code> always blocks enrollment. “Scan enrolled” is manual and read-only.
             </Alert>
 
             <Paper variant="outlined">
@@ -384,10 +422,10 @@ export default function UpdatesPage() {
                                 <TableCell sx={{fontFamily: 'monospace', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{row.image}</TableCell>
                                 <TableCell><Tooltip title={row.scheduleError || row.reason || ''}><Chip size="small" label={row.scheduleError ? 'Invalid schedule' : sourceLabels[row.source]} color={row.scheduleError ? 'error' : row.enrolled ? 'success' : row.source === 'disabled-label' ? 'warning' : 'default'} variant="outlined"/></Tooltip></TableCell>
 								<TableCell sx={{fontFamily: 'monospace'}}>{row.schedule || (row.enrolled ? '0 4 * * *' : '—')}</TableCell>
-								<TableCell>{row.enrolled && scanResults[row.containerId]?.image === row.image ? <Tooltip title={scanResults[row.containerId].reason ?? new Date(scanResults[row.containerId].checkedAt).toLocaleString()}>
+								<TableCell>{blocksByContainer[row.containerId] ? <Tooltip title={blocksByContainer[row.containerId].reason}><Chip size="small" icon={<ErrorOutlined/>} label="retry blocked" color="error" variant="outlined"/></Tooltip> : row.enrolled && scanResults[row.containerId]?.image === row.image ? <Tooltip title={scanResults[row.containerId].reason ?? new Date(scanResults[row.containerId].checkedAt).toLocaleString()}>
 									<Chip size="small" label={scanResults[row.containerId].status} color={scanResults[row.containerId].status === 'available' ? 'warning' : scanResults[row.containerId].status === 'error' ? 'error' : scanResults[row.containerId].status === 'current' ? 'success' : 'default'} variant="outlined"/>
 								</Tooltip> : '—'}</TableCell>
-                                <TableCell align="right"><Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></TableCell>
+								<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title="Allow one retry of this same image digest"><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
                             </TableRow>)}
 							{!loading && visibleRows.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{py: 6, color: 'text.secondary'}}>No container matches this view.</TableCell></TableRow>}
                         </TableBody>
@@ -414,6 +452,18 @@ export default function UpdatesPage() {
 				</Paper>
 			</Stack>
 
+			<Paper variant="outlined" sx={{mt: 2, p: 2}}>
+				<Stack direction="row" spacing={1} sx={{alignItems: 'center', mb: 1}}><ShieldOutlined/><Typography variant="h6">Automatic update history</Typography>{executionBlocks.length > 0 && <Chip size="small" color="error" variant="outlined" label={`${executionBlocks.length} retry blocked`}/>}</Stack>
+				{executionRuns.length === 0 ? <Typography color="text.secondary">No scheduled update has been applied yet. Manual scans never create an execution.</Typography> : executionRuns.slice(0, 10).map(run => <Box key={run.id} sx={{py: .8, borderBottom: 1, borderColor: 'divider'}}>
+					<Stack direction={{xs: 'column', md: 'row'}} spacing={1} sx={{alignItems: {md: 'center'}}}>
+						<Typography variant="body2" sx={{minWidth: 165}}>{new Date(run.startedAt).toLocaleString()}</Typography>
+						<Chip size="small" variant="outlined" label={run.schedule}/>
+						<Typography variant="body2">{run.updated} updated · {run.current} current · {run.rolledBack} rolled back · {run.failed} failed</Typography>
+					</Stack>
+					<Stack direction="row" spacing={.75} sx={{mt: .6, flexWrap: 'wrap'}}>{executionResults.filter(result => result.runId === run.id).map(result => <Chip key={result.id} clickable onClick={() => setExecutionDetails(result)} size="small" variant="outlined" label={`${result.containerName}: ${result.state}`} color={result.state === 'updated' || result.state === 'current' ? 'success' : result.state === 'failed' || result.state === 'rolled_back' ? 'error' : 'default'}/>)}</Stack>
+				</Box>)}
+			</Paper>
+
             {(smtpConfig.configured || deliveries.length > 0) && <Paper variant="outlined" sx={{mt: 2, p: 2}}>
                 <Stack direction={{xs: 'column', md: 'row'}} spacing={2} sx={{alignItems: {md: 'center'}}}>
                     <Box sx={{flex: 1}}><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><EmailOutlined color={smtpConfig.enabled ? 'success' : 'disabled'}/><Typography variant="h6">SMTP notifications</Typography><Chip size="small" variant="outlined" color={smtpConfig.enabled ? 'success' : 'default'} label={smtpConfig.enabled ? 'Enabled' : 'Disabled'}/></Stack><Typography variant="body2" color="text.secondary">{smtpConfig.configured ? `${smtpConfig.server}:${smtpConfig.port} · ${smtpConfig.recipients}` : 'Not configured'}</Typography></Box>
@@ -432,9 +482,9 @@ export default function UpdatesPage() {
                             <MenuItem value="stack" disabled={!editing?.stackKey}>Entire stack{editing?.stackName ? ` — ${editing.stackName}` : ''}</MenuItem>
                         </Select>
                     </FormControl>
-                    <FormControlLabel control={<Switch checked={draft.enabled} onChange={event => setDraft(current => ({...current, enabled: event.target.checked}))}/>} label="Enroll this target in automatic updates"/>
+					<FormControlLabel control={<Switch checked={draft.enabled} onChange={event => setDraft(current => ({...current, enabled: event.target.checked}))}/>} label="Automatically install available image updates"/>
 					<TextField label="Image check schedule (optional)" placeholder="0 4 * * *" value={draft.schedule} onChange={event => setDraft(current => ({...current, schedule: event.target.value}))} helperText="Standard five-field cron, minimum 15 minutes. Empty uses the daily 04:00 default."/>
-                    <FormControlLabel control={<Switch checked={draft.rollbackEnabled} onChange={event => setDraft(current => ({...current, rollbackEnabled: event.target.checked}))}/>} label="Protect with automatic rollback"/>
+					<FormControlLabel control={<Switch checked={draft.rollbackEnabled} onChange={event => setDraft(current => ({...current, rollbackEnabled: event.target.checked}))}/>} label="Verify health and roll back automatically"/>
                 </Stack></DialogContent>
                 <DialogActions>
                     {editing?.source === 'interface' && <Button color="error" onClick={() => void deletePolicy()} disabled={saving}>Remove policy</Button>}
@@ -444,10 +494,21 @@ export default function UpdatesPage() {
                 </DialogActions>
             </Dialog>
 
+			<Dialog open={executionDetails !== null} onClose={() => setExecutionDetails(null)} fullWidth maxWidth="md">
+				<DialogTitle>Automatic update — {executionDetails?.containerName}</DialogTitle>
+				<DialogContent dividers><Stack spacing={1.5}>
+					<Stack direction="row" spacing={1}><Chip size="small" color={executionDetails?.state === 'updated' || executionDetails?.state === 'current' ? 'success' : 'error'} label={executionDetails?.state ?? ''}/><Typography variant="body2" color="text.secondary">{executionDetails?.rollbackEnabled ? 'Health verification enabled' : 'Transactional replacement only'}</Typography></Stack>
+					<Typography sx={{fontFamily: 'monospace', overflowWrap: 'anywhere'}}>{executionDetails?.image}</Typography>
+					{executionDetails?.message && <Alert severity={executionDetails.state === 'updated' || executionDetails.state === 'current' ? 'success' : 'error'}>{executionDetails.message}</Alert>}
+					<Box component="pre" sx={{m: 0, p: 1.5, bgcolor: '#050607', color: '#d7ffd0', borderRadius: 1, maxHeight: 360, overflow: 'auto', whiteSpace: 'pre-wrap', userSelect: 'text'}}>{executionDetails?.logs || 'No command output was recorded.'}</Box>
+				</Stack></DialogContent>
+				<DialogActions><Button onClick={() => setExecutionDetails(null)}>Close</Button></DialogActions>
+			</Dialog>
+
             <Dialog open={smtpOpen} onClose={() => !smtpSaving && !smtpTesting && setSMTPOpen(false)} fullWidth maxWidth="md">
                 <DialogTitle><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><EmailOutlined/><span>SMTP notifications — {host}</span></Stack></DialogTitle>
                 <DialogContent dividers><Stack spacing={2} sx={{pt: .5}}>
-                    <Alert severity="info">Dockman sends one grouped summary after a scheduled scan only when the available-update or error set changes. Manual scans never send mail. The SMTP password is encrypted at rest and never returned by the API.</Alert>
+					<Alert severity="info">Dockman sends grouped scheduled scan errors and automatic update outcomes. Manual scans never send mail. The SMTP password is encrypted at rest and never returned by the API.</Alert>
                     <FormControlLabel control={<Switch checked={smtpDraft.enabled} onChange={event => setSMTPDraft(current => ({...current, enabled: event.target.checked}))}/>} label="Enable scheduled scan notifications"/>
                     <Stack direction={{xs: 'column', sm: 'row'}} spacing={1.5}>
                         <TextField label="SMTP server" value={smtpDraft.server} onChange={event => setSMTPDraft(current => ({...current, server: event.target.value}))} fullWidth placeholder="smtp.example.com"/>
@@ -461,7 +522,7 @@ export default function UpdatesPage() {
                     <TextField label="From address" value={smtpDraft.fromAddress} onChange={event => setSMTPDraft(current => ({...current, fromAddress: event.target.value}))} fullWidth placeholder="Dockman <dockman@example.com>"/>
                     <TextField label="Recipients" value={smtpDraft.recipients} onChange={event => setSMTPDraft(current => ({...current, recipients: event.target.value}))} fullWidth helperText="Comma, semicolon or line separated; maximum 25 recipients."/>
                     <Stack direction={{xs: 'column', sm: 'row'}} spacing={2}>
-                        <FormControlLabel control={<Switch checked={smtpDraft.notifyUpdates} onChange={event => setSMTPDraft(current => ({...current, notifyUpdates: event.target.checked}))}/>} label="Notify available updates"/>
+						<FormControlLabel control={<Switch checked={smtpDraft.notifyUpdates} onChange={event => setSMTPDraft(current => ({...current, notifyUpdates: event.target.checked}))}/>} label="Notify successful updates"/>
                         <FormControlLabel control={<Switch checked={smtpDraft.notifyErrors} onChange={event => setSMTPDraft(current => ({...current, notifyErrors: event.target.checked}))}/>} label="Notify scan errors"/>
                     </Stack>
                     {deliveries.length > 0 && <Box><Typography variant="subtitle2" sx={{mb: .75}}>Recent deliveries</Typography><TableContainer sx={{maxHeight: 180}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>Date</TableCell><TableCell>Type</TableCell><TableCell>Subject</TableCell><TableCell>Status</TableCell></TableRow></TableHead><TableBody>{deliveries.slice(0, 10).map(delivery => <TableRow key={delivery.id}><TableCell sx={{whiteSpace: 'nowrap'}}>{new Date(delivery.createdAt).toLocaleString()}</TableCell><TableCell>{delivery.kind}</TableCell><TableCell>{delivery.subject}</TableCell><TableCell><Tooltip title={delivery.error || ''}><Chip size="small" color={delivery.success ? 'success' : 'error'} variant="outlined" label={delivery.success ? 'sent' : 'failed'}/></Tooltip></TableCell></TableRow>)}</TableBody></Table></TableContainer></Box>}

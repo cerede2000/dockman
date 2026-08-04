@@ -14,8 +14,8 @@ import (
 	contSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/internal/docker/debug"
 	"github.com/RA341/dockman/internal/docker/updater"
-	"github.com/RA341/dockman/internal/notifications"
 	hostMid "github.com/RA341/dockman/internal/host/middleware"
+	"github.com/RA341/dockman/internal/notifications"
 	fu "github.com/RA341/dockman/pkg/fileutil"
 	wsu "github.com/RA341/dockman/pkg/ws"
 	"github.com/gorilla/websocket"
@@ -77,6 +77,7 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("DELETE /updates/policies", h.deleteUpdatePolicy)
 	subMux.HandleFunc("POST /updates/scan", h.runEnrolledUpdateScan)
 	subMux.HandleFunc("GET /updates/state", h.getUpdateState)
+	subMux.HandleFunc("DELETE /updates/execution-block", h.clearUpdateExecutionBlock)
 	subMux.HandleFunc("GET /updates/notifications/smtp", h.getSMTPNotificationConfig)
 	subMux.HandleFunc("PUT /updates/notifications/smtp", h.saveSMTPNotificationConfig)
 	subMux.HandleFunc("POST /updates/notifications/smtp/test", h.testSMTPNotificationConfig)
@@ -253,11 +254,32 @@ func (h *HandlerHttp) getUpdateState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	executionRuns, executionResults, blocks, err := h.updateAutomation.ExecutionState(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, struct {
-		Results   []updater.UpdateScanResult `json:"results"`
-		Runs      []updater.UpdateScanRun    `json:"runs"`
-		Schedules []updater.ScheduledScan    `json:"schedules"`
-	}{Results: results, Runs: runs, Schedules: schedules})
+		Results          []updater.UpdateScanResult      `json:"results"`
+		Runs             []updater.UpdateScanRun         `json:"runs"`
+		Schedules        []updater.ScheduledScan         `json:"schedules"`
+		ExecutionRuns    []updater.UpdateExecutionRun    `json:"executionRuns"`
+		ExecutionResults []updater.UpdateExecutionResult `json:"executionResults"`
+		Blocks           []updater.UpdateExecutionBlock  `json:"blocks"`
+	}{Results: results, Runs: runs, Schedules: schedules, ExecutionRuns: executionRuns, ExecutionResults: executionResults, Blocks: blocks})
+}
+
+func (h *HandlerHttp) clearUpdateExecutionBlock(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.updateAutomationHost(w, r)
+	if !ok {
+		return
+	}
+	containerID := strings.TrimSpace(r.URL.Query().Get("containerId"))
+	if err := h.updateAutomation.ClearExecutionBlock(host, containerID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HandlerHttp) updateAutomationHost(w http.ResponseWriter, r *http.Request) (string, bool) {

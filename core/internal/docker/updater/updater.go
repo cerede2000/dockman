@@ -91,6 +91,34 @@ func (u *Service) ContainersUpdateByContainerID(ctx context.Context, containerID
 // unlike the bare daemon API).
 type ImagePuller func(ctx context.Context, imageTag string) error
 
+type ForceUpdateOptions struct {
+	VerifyHealth bool
+}
+
+type ForceUpdateResult struct {
+	ContainerID   string
+	ContainerName string
+	Image         string
+	PreviousImage string
+	NewImage      string
+	Updated       bool
+}
+
+// RolledBackError marks a failed replacement for which Dockman successfully
+// restored the previous running container. Callers can distinguish this safe
+// outcome from a failure that requires manual recovery.
+type RolledBackError struct{ Err error }
+
+func (e *RolledBackError) Error() string {
+	return "update failed, rolled back to previous version: " + e.Err.Error()
+}
+func (e *RolledBackError) Unwrap() error { return e.Err }
+
+func IsRolledBack(err error) bool {
+	var rolledBack *RolledBackError
+	return errors.As(err, &rolledBack)
+}
+
 // ContainersForceUpdate pulls each container's image tag and recreates the
 // container when the pull brought down a different image. Unlike the
 // metadata-driven update loop it needs no registry digest lookup, and it
@@ -105,58 +133,61 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 		return fmt.Errorf("no containers found for the given ids")
 	}
 
-	report := func(format string, args ...any) {
-		_, _ = fmt.Fprintf(out, format+"\r\n", args...)
-	}
-
 	var errs []error
 	for _, cur := range list {
-		name := summaryName(cur)
-		imgTag := cur.Image
-
-		// a reference without a repository tag (image removed/retagged, or
-		// only ever built locally) cannot be pulled
-		if imgTag == "" || strings.HasPrefix(imgTag, "sha256:") {
-			report("%s: image %q has no pullable tag (locally built?), skipping", name, imgTag)
-			errs = append(errs, fmt.Errorf("%s: image %q has no pullable tag", name, imgTag))
-			continue
+		if _, err := u.forceUpdateContainer(ctx, pull, out, cur, ForceUpdateOptions{VerifyHealth: true}); err != nil {
+			errs = append(errs, err)
 		}
-
-		report("Pulling %s for %s...", imgTag, name)
-		if err := pull(ctx, imgTag); err != nil {
-			report("%s: pull failed: %v", name, err)
-			errs = append(errs, fmt.Errorf("%s: pull %s: %w", name, imgTag, err))
-			continue
-		}
-
-		localImages, err := u.cli().ImageList(ctx, client.ImageListOptions{
-			Filters: client.Filters{}.Add("reference", imgTag),
-		})
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: inspect %s: %w", name, imgTag, err))
-			continue
-		}
-
-		newID := ""
-		if len(localImages.Items) > 0 {
-			newID = localImages.Items[0].ID
-		}
-		if newID == "" || newID == cur.ImageID {
-			report("%s: image already up to date, container kept as is", name)
-			log.Info().Str("container", name).Str("img", imgTag).
-				Msg("image unchanged after pull, container kept as is")
-			continue
-		}
-
-		report("Recreating %s on the new image...", name)
-		if err := u.ContainerRecreate(ctx, imgTag, cur); err != nil {
-			report("%s: recreate failed: %v", name, err)
-			errs = append(errs, fmt.Errorf("%s: recreate: %w", name, err))
-			continue
-		}
-		report("%s updated successfully", name)
 	}
 	return errors.Join(errs...)
+}
+
+// ForceUpdateContainer updates one explicit container and returns a structured
+// result suitable for persistent automatic-update history.
+func (u *Service) ForceUpdateContainer(ctx context.Context, pull ImagePuller, out io.Writer, containerID string, options ForceUpdateOptions) (ForceUpdateResult, error) {
+	list, err := u.srv.ContainerListByIDs(ctx, containerID)
+	if err != nil {
+		return ForceUpdateResult{}, err
+	}
+	if len(list) != 1 {
+		return ForceUpdateResult{}, fmt.Errorf("container %q was not found", containerID)
+	}
+	return u.forceUpdateContainer(ctx, pull, out, list[0], options)
+}
+
+func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, out io.Writer, cur container.Summary, options ForceUpdateOptions) (ForceUpdateResult, error) {
+	name, imgTag := summaryName(cur), cur.Image
+	result := ForceUpdateResult{ContainerID: cur.ID, ContainerName: name, Image: imgTag, PreviousImage: cur.ImageID}
+	report := func(format string, args ...any) { _, _ = fmt.Fprintf(out, format+"\r\n", args...) }
+	if imgTag == "" || strings.HasPrefix(imgTag, "sha256:") {
+		err := fmt.Errorf("%s: image %q has no pullable tag", name, imgTag)
+		report("%s: image %q has no pullable tag (locally built?), skipping", name, imgTag)
+		return result, err
+	}
+	report("Pulling %s for %s...", imgTag, name)
+	if err := pull(ctx, imgTag); err != nil {
+		report("%s: pull failed: %v", name, err)
+		return result, fmt.Errorf("%s: pull %s: %w", name, imgTag, err)
+	}
+	localImages, err := u.cli().ImageList(ctx, client.ImageListOptions{Filters: client.Filters{}.Add("reference", imgTag)})
+	if err != nil {
+		return result, fmt.Errorf("%s: inspect %s: %w", name, imgTag, err)
+	}
+	if len(localImages.Items) > 0 {
+		result.NewImage = localImages.Items[0].ID
+	}
+	if result.NewImage == "" || result.NewImage == cur.ImageID {
+		report("%s: image already up to date, container kept as is", name)
+		return result, nil
+	}
+	report("Recreating %s on the new image...", name)
+	if err := u.ContainerRecreateWithOptions(ctx, imgTag, cur, options.VerifyHealth); err != nil {
+		report("%s: recreate failed: %v", name, err)
+		return result, fmt.Errorf("%s: recreate: %w", name, err)
+	}
+	result.Updated = true
+	report("%s updated successfully", name)
+	return result, nil
 }
 
 // ContainersUpdateByImage finds all containers using the specified image,
@@ -400,6 +431,10 @@ func UpdateDockman(containerID, updaterUrl string) error {
 // create-start-healthcheck-swap sequence with rollback to the old container
 // on any failure; a stopped one is swapped in place and left stopped.
 func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldContainer container.Summary) error {
+	return u.ContainerRecreateWithOptions(ctx, imageTag, oldContainer, true)
+}
+
+func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag string, oldContainer container.Summary, verifyHealth bool) error {
 	containerName := "untagged"
 	if len(oldContainer.Names) > 0 {
 		containerName = strings.TrimPrefix(oldContainer.Names[0], "/")
@@ -454,7 +489,10 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
 	}
 
-	if err = u.ContainerHealthCheck(ctx, newContainer.ID, &inspectedData); err != nil {
+	if verifyHealth {
+		err = u.ContainerHealthCheck(ctx, newContainer.ID, &inspectedData)
+	}
+	if err != nil {
 		if _, rmErr := u.cli().ContainerRemove(ctx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
 			log.Warn().Err(rmErr).Msg("failed to clean up the replacement container")
 		}
@@ -493,7 +531,7 @@ func (u *Service) containerRollbackToOldContainer(ctx context.Context, oldContai
 	}
 
 	log.Info().Msgf("Successfully rolled back to old container %s", containerName)
-	return fmt.Errorf("update failed, rolled back to previous version: %w", originalErr)
+	return &RolledBackError{Err: originalErr}
 }
 
 func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {

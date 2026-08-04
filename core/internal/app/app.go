@@ -191,7 +191,19 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("unable to initialize automatic image scan scheduler")
 	}
+	updateAutomationSrv.SetExecutor(func(ctx context.Context, hostname string, targets []updater.UpdateExecutionTarget) []updater.UpdateExecutionOutcome {
+		dkSrv, getErr := hostManager.GetDockerService(hostname)
+		if getErr != nil {
+			outcomes := make([]updater.UpdateExecutionOutcome, 0, len(targets))
+			for _, target := range targets {
+				outcomes = append(outcomes, updater.UpdateExecutionOutcome{UpdateExecutionTarget: target, State: updater.ExecutionFailed, Message: getErr.Error()})
+			}
+			return outcomes
+		}
+		return docker.ExecuteAutomaticContainerUpdates(ctx, dkSrv, targets)
+	})
 	updateAutomationSrv.SetNotifier(notificationSrv.NotifyScan)
+	updateAutomationSrv.SetExecutionNotifier(notificationSrv.NotifyExecution)
 	go func() {
 		<-conf.ServerContext.Done()
 		if shutdownErr := updateAutomationSrv.Shutdown(); shutdownErr != nil {

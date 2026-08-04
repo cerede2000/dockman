@@ -83,7 +83,7 @@ func TestEnrolledUpdateScanHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&updater.UpdateScanResult{}, &updater.UpdateScanRun{}); err != nil {
+	if err := db.AutoMigrate(&updater.UpdateScanResult{}, &updater.UpdateScanRun{}, &updater.UpdateExecutionRun{}, &updater.UpdateExecutionResult{}, &updater.UpdateExecutionBlock{}); err != nil {
 		t.Fatal(err)
 	}
 	automation, err := updater.NewAutomationService(

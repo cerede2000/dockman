@@ -16,7 +16,7 @@ func testScanStore(t *testing.T) *ScanStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&UpdateScanResult{}, &UpdateScanRun{}); err != nil {
+	if err := db.AutoMigrate(&UpdateScanResult{}, &UpdateScanRun{}, &UpdateExecutionRun{}, &UpdateExecutionResult{}, &UpdateExecutionBlock{}); err != nil {
 		t.Fatal(err)
 	}
 	return NewScanStore(db)
@@ -99,6 +99,85 @@ func TestScheduledRunUsesOnlyMatchingSchedule(t *testing.T) {
 	}
 	if !slices.Equal(scanned, []string{"daily"}) {
 		t.Fatalf("scheduled scan crossed policy windows: %v", scanned)
+	}
+}
+
+func TestScheduledRunExecutesAvailableTargetsButManualRunDoesNot(t *testing.T) {
+	service, err := NewAutomationService(
+		testScanStore(t),
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			return []UpdateEnrollment{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", State: "running", Enrolled: true, Schedule: DefaultUpdateSchedule, Rollback: true}}, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
+			return []ContainerUpdateCheck{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", Status: ContainerUpdateAvailable, RemoteDigest: "new"}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	executions := 0
+	service.SetExecutor(func(_ context.Context, _ string, targets []UpdateExecutionTarget) []UpdateExecutionOutcome {
+		executions++
+		return []UpdateExecutionOutcome{{UpdateExecutionTarget: targets[0], State: ExecutionUpdated, Message: "ok"}}
+	})
+	if _, _, err := service.RunNow(context.Background(), "local"); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 0 {
+		t.Fatal("manual read-only scan executed an update")
+	}
+	if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 {
+		t.Fatalf("scheduled update executions = %d", executions)
+	}
+	runs, results, blocks, err := service.ExecutionState("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Updated != 1 || len(results) != 1 || len(blocks) != 0 {
+		t.Fatalf("unexpected execution state: runs=%#v results=%#v blocks=%#v", runs, results, blocks)
+	}
+}
+
+func TestFailedDigestIsBlockedUntilAcknowledgedOrChanged(t *testing.T) {
+	store := testScanStore(t)
+	service, err := NewAutomationService(
+		store,
+		func(context.Context, string) ([]UpdateEnrollment, error) {
+			return []UpdateEnrollment{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", State: "running", Enrolled: true, Schedule: DefaultUpdateSchedule, Rollback: true}}, nil
+		},
+		func(context.Context, string, []string) ([]ContainerUpdateCheck, error) {
+			return []ContainerUpdateCheck{{ContainerID: "web", ContainerName: "web", Image: "example/web:latest", Status: ContainerUpdateAvailable, RemoteDigest: "broken"}}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Shutdown() })
+	executions := 0
+	service.SetExecutor(func(_ context.Context, _ string, targets []UpdateExecutionTarget) []UpdateExecutionOutcome {
+		executions++
+		return []UpdateExecutionOutcome{{UpdateExecutionTarget: targets[0], State: ExecutionRolledBack, Message: "health check failed"}}
+	})
+	for range 2 {
+		if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if executions != 1 {
+		t.Fatalf("blocked digest retried %d times", executions)
+	}
+	if err := service.ClearExecutionBlock("local", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.run(context.Background(), "local", DefaultUpdateSchedule, "scheduled"); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 2 {
+		t.Fatalf("acknowledged digest was not retried: %d", executions)
 	}
 }
 

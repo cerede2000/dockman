@@ -30,26 +30,26 @@ const (
 )
 
 type SMTPConfig struct {
-	ID                       uint      `gorm:"primaryKey" json:"-"`
-	CreatedAt                time.Time `json:"createdAt"`
-	UpdatedAt                time.Time `json:"updatedAt"`
-	Host                     string    `gorm:"not null;uniqueIndex" json:"host"`
-	Enabled                  bool      `gorm:"not null" json:"enabled"`
-	Server                   string    `gorm:"not null" json:"server"`
-	Port                     int       `gorm:"not null" json:"port"`
-	Security                 string    `gorm:"not null" json:"security"`
-	Username                 string    `gorm:"not null;default:''" json:"username"`
-	EncryptedPassword        []byte    `json:"-"`
-	FromAddress              string    `gorm:"not null" json:"fromAddress"`
-	Recipients               string    `gorm:"not null" json:"recipients"`
-	NotifyUpdates            bool      `gorm:"not null" json:"notifyUpdates"`
-	NotifyErrors             bool      `gorm:"not null" json:"notifyErrors"`
+	ID                uint      `gorm:"primaryKey" json:"-"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	Host              string    `gorm:"not null;uniqueIndex" json:"host"`
+	Enabled           bool      `gorm:"not null" json:"enabled"`
+	Server            string    `gorm:"not null" json:"server"`
+	Port              int       `gorm:"not null" json:"port"`
+	Security          string    `gorm:"not null" json:"security"`
+	Username          string    `gorm:"not null;default:''" json:"username"`
+	EncryptedPassword []byte    `json:"-"`
+	FromAddress       string    `gorm:"not null" json:"fromAddress"`
+	Recipients        string    `gorm:"not null" json:"recipients"`
+	NotifyUpdates     bool      `gorm:"not null" json:"notifyUpdates"`
+	NotifyErrors      bool      `gorm:"not null" json:"notifyErrors"`
 }
 
 func (SMTPConfig) TableName() string { return "update_smtp_configs" }
 
 type NotificationState struct {
-	ID                       uint      `gorm:"primaryKey"`
+	ID                       uint `gorm:"primaryKey"`
 	UpdatedAt                time.Time
 	Host                     string `gorm:"not null;uniqueIndex:idx_update_notification_state"`
 	Schedule                 string `gorm:"not null;uniqueIndex:idx_update_notification_state"`
@@ -237,6 +237,59 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 	return s.saveState(&state)
 }
 
+// NotifyExecution sends one bounded summary for a scheduled automatic update
+// batch. Failed digests are circuit-broken, so this does not repeat on every
+// cron tick unless the operator explicitly retries or a new digest appears.
+func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecutionRun, outcomes []updater.UpdateExecutionOutcome) error {
+	row, err := s.loadEnabled(run.Host, true)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var successes, failures []string
+	for _, outcome := range outcomes {
+		item := fmt.Sprintf("%s | %s | %s", outcome.ContainerName, outcome.Image, outcome.State)
+		switch outcome.State {
+		case updater.ExecutionUpdated, updater.ExecutionCurrent:
+			if row.NotifyUpdates {
+				successes = append(successes, item)
+			}
+		case updater.ExecutionFailed, updater.ExecutionRolledBack:
+			if row.NotifyErrors {
+				failures = append(failures, item+" | "+outcome.Message)
+			}
+		}
+	}
+	if len(successes) == 0 && len(failures) == 0 {
+		return nil
+	}
+	slices.Sort(successes)
+	slices.Sort(failures)
+	subject := fmt.Sprintf("[Dockman] automatic updates on %s · %d updated · %d failed", safeHeaderValue(run.Host), run.Updated, run.Failed+run.RolledBack)
+	completed := time.Now()
+	if run.CompletedAt != nil {
+		completed = *run.CompletedAt
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "Dockman automatic image update summary\n\nHost: %s\nSchedule: %s\nCompleted: %s\n", run.Host, run.Schedule, completed.Format(time.RFC3339))
+	if len(successes) > 0 {
+		fmt.Fprintf(&body, "\nSuccessful (%d):\n", len(successes))
+		for _, item := range successes {
+			fmt.Fprintf(&body, "- %s\n", item)
+		}
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(&body, "\nFailed or rolled back (%d):\n", len(failures))
+		for _, item := range failures {
+			fmt.Fprintf(&body, "- %s\n", item)
+		}
+		body.WriteString("\nThe same failed digest is blocked until acknowledged in Dockman or replaced upstream.\n")
+	}
+	return s.deliver(ctx, row, "update", subject, body.String())
+}
+
 func (s *Service) loadState(host, schedule string) (NotificationState, error) {
 	var state NotificationState
 	err := s.db.Where("host = ? AND schedule = ?", host, schedule).First(&state).Error
@@ -248,7 +301,7 @@ func (s *Service) loadState(host, schedule string) (NotificationState, error) {
 
 func (s *Service) saveState(state *NotificationState) error {
 	return s.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "host"}, {Name: "schedule"}},
+		Columns:   []clause.Column{{Name: "host"}, {Name: "schedule"}},
 		DoUpdates: clause.AssignmentColumns([]string{"last_available_fingerprint", "last_error_fingerprint", "updated_at"}),
 	}).Create(state).Error
 }
@@ -445,7 +498,9 @@ func parseRecipients(value string) ([]string, error) {
 	recipients := make([]string, 0, len(parts))
 	for _, part := range parts {
 		parsed, err := mail.ParseAddress(strings.TrimSpace(part))
-		if err != nil || strings.ContainsAny(part, "\r\n") { return nil, errors.New("notification recipient is invalid") }
+		if err != nil || strings.ContainsAny(part, "\r\n") {
+			return nil, errors.New("notification recipient is invalid")
+		}
 		recipients = append(recipients, parsed.Address)
 	}
 	return recipients, nil
@@ -465,7 +520,8 @@ func relevantChecks(checks []updater.ContainerUpdateCheck) ([]string, []string) 
 			failures = append(failures, fmt.Sprintf("%s | %s | %s", check.ContainerName, check.Image, check.Reason))
 		}
 	}
-	slices.Sort(available); slices.Sort(failures)
+	slices.Sort(available)
+	slices.Sort(failures)
 	return available, failures
 }
 

@@ -127,6 +127,25 @@ func TestNotifyScanIsScheduledGroupedAndChangeOnly(t *testing.T) {
 	}
 }
 
+func TestNotifyExecutionGroupsSuccessAndRollback(t *testing.T) {
+	service, _, sender := testService(t)
+	if _, err := service.Save("local", validInput()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	run := updater.UpdateExecutionRun{Host: "local", Schedule: "0 4 * * *", Targets: 2, Updated: 1, RolledBack: 1, CompletedAt: &now}
+	outcomes := []updater.UpdateExecutionOutcome{
+		{UpdateExecutionTarget: updater.UpdateExecutionTarget{ContainerName: "web", Image: "example/web:latest"}, State: updater.ExecutionUpdated},
+		{UpdateExecutionTarget: updater.UpdateExecutionTarget{ContainerName: "worker", Image: "example/worker:latest"}, State: updater.ExecutionRolledBack, Message: "health check failed"},
+	}
+	if err := service.NotifyExecution(context.Background(), run, outcomes); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0].Body, "web") || !strings.Contains(sender.messages[0].Body, "health check failed") {
+		t.Fatalf("unexpected execution notification: %#v", sender.messages)
+	}
+}
+
 func TestNotifyScanKeepsSchedulesIndependent(t *testing.T) {
 	service, _, sender := testService(t)
 	if _, err := service.Save("local", validInput()); err != nil {
