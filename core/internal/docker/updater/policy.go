@@ -15,12 +15,14 @@ import (
 )
 
 const (
-	UpdateScheduleLabel = "dockman.update.schedule"
-	UpdateRollbackLabel = "dockman.update.rollback"
-	composeProjectLabel = "com.docker.compose.project"
-	composeFilesLabel   = "com.docker.compose.project.config_files"
-	composeServiceLabel = "com.docker.compose.service"
-	composeDependsLabel = "com.docker.compose.depends_on"
+	UpdateScheduleLabel    = "dockman.update.schedule"
+	UpdateRollbackLabel    = "dockman.update.rollback"
+	UpdateCleanupLabel     = "dockman.update.cleanup"
+	UpdateCleanupKeepLabel = "dockman.update.cleanup.keep"
+	composeProjectLabel    = "com.docker.compose.project"
+	composeFilesLabel      = "com.docker.compose.project.config_files"
+	composeServiceLabel    = "com.docker.compose.service"
+	composeDependsLabel    = "com.docker.compose.depends_on"
 
 	UpdateTargetContainer = "container"
 	UpdateTargetStack     = "stack"
@@ -39,6 +41,8 @@ type UpdatePolicy struct {
 	Enabled         bool      `gorm:"not null" json:"enabled"`
 	Schedule        string    `gorm:"not null;default:''" json:"schedule"`
 	RollbackEnabled bool      `gorm:"not null" json:"rollbackEnabled"`
+	CleanupEnabled  bool      `gorm:"not null;default:false" json:"cleanupEnabled"`
+	CleanupKeep     int       `gorm:"not null" json:"cleanupKeep"`
 }
 
 type PolicyStore struct{ db *gorm.DB }
@@ -55,7 +59,7 @@ func (s *PolicyStore) Upsert(policy *UpdatePolicy) error {
 	return s.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "host"}, {Name: "target_type"}, {Name: "target_key"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"target_name", "enabled", "schedule", "rollback_enabled", "updated_at",
+			"target_name", "enabled", "schedule", "rollback_enabled", "cleanup_enabled", "cleanup_keep", "updated_at",
 		}),
 	}).Create(policy).Error
 }
@@ -85,6 +89,9 @@ func (s *PolicyService) Save(policy *UpdatePolicy) error {
 	}
 	if policy.TargetType != UpdateTargetContainer && policy.TargetType != UpdateTargetStack {
 		return fmt.Errorf("unsupported update target type %q", policy.TargetType)
+	}
+	if policy.CleanupKeep < 0 || policy.CleanupKeep > 10 {
+		return errors.New("cleanup retention must be between 0 and 10 previous images")
 	}
 	if policy.Schedule != "" {
 		normalized, err := NormalizeUpdateSchedule(policy.Schedule)
@@ -121,6 +128,8 @@ type UpdateEnrollment struct {
 	Schedule       string `json:"schedule,omitempty"`
 	ScheduleError  string `json:"scheduleError,omitempty"`
 	Rollback       bool   `json:"rollback"`
+	CleanupEnabled bool   `json:"cleanupEnabled"`
+	CleanupKeep    int    `json:"cleanupKeep"`
 	PolicyTarget   string `json:"policyTarget,omitempty"`
 	PolicyTargetID string `json:"policyTargetId,omitempty"`
 }
@@ -147,7 +156,7 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 		row := UpdateEnrollment{
 			ContainerID: item.ID, ContainerName: name, Image: item.Image, State: string(item.State),
 			StackName: stackName, StackKey: stackKey, ServiceName: strings.TrimSpace(item.Labels[composeServiceLabel]),
-			DependsOn: strings.TrimSpace(item.Labels[composeDependsLabel]), Source: "none", Rollback: true,
+			DependsOn: strings.TrimSpace(item.Labels[composeDependsLabel]), Source: "none", Rollback: true, CleanupKeep: 1,
 		}
 
 		if hasDockmanLabel(&item) {
@@ -173,6 +182,18 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 			}
 			if rollback, ok := boolLabel(item.Labels, UpdateRollbackLabel); ok {
 				row.Rollback = rollback
+			}
+			if cleanup, ok := boolLabel(item.Labels, UpdateCleanupLabel); ok {
+				row.CleanupEnabled = cleanup
+			}
+			if keep := strings.TrimSpace(item.Labels[UpdateCleanupKeepLabel]); row.CleanupEnabled && keep != "" {
+				parsed, parseErr := strconv.Atoi(keep)
+				if parseErr != nil || parsed < 0 || parsed > 10 {
+					row.CleanupEnabled = false
+					row.Reason = "safe cleanup disabled: invalid " + UpdateCleanupKeepLabel + ", use an integer between 0 and 10"
+				} else {
+					row.CleanupKeep = parsed
+				}
 			}
 			rows = append(rows, row)
 			continue
@@ -201,6 +222,8 @@ func applyPolicy(row *UpdateEnrollment, policy UpdatePolicy) {
 		row.ScheduleError = err.Error()
 	}
 	row.Rollback = policy.RollbackEnabled
+	row.CleanupEnabled = policy.CleanupEnabled
+	row.CleanupKeep = policy.CleanupKeep
 	row.PolicyTarget = policy.TargetType
 	row.PolicyTargetID = policy.TargetKey
 	if !policy.Enabled {

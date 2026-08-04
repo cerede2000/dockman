@@ -18,7 +18,7 @@ func testScanStore(t *testing.T) *ScanStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&UpdateScanResult{}, &UpdateScanRun{}, &UpdateExecutionRun{}, &UpdateExecutionResult{}, &UpdateExecutionBlock{}, &UpdateAutomationControl{}); err != nil {
+	if err := db.AutoMigrate(&UpdateScanResult{}, &UpdateScanRun{}, &UpdateExecutionRun{}, &UpdateExecutionResult{}, &UpdateExecutionBlock{}, &UpdateAutomationControl{}, &UpdateImageCleanup{}); err != nil {
 		t.Fatal(err)
 	}
 	return NewScanStore(db)

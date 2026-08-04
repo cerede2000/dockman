@@ -51,7 +51,7 @@ func TestInventoryPolicyPrecedence(t *testing.T) {
 	_, stackKey := stackIdentity(stackLabels)
 	if err := service.Save(&UpdatePolicy{
 		Host: "local", TargetType: UpdateTargetStack, TargetKey: stackKey, TargetName: "demo",
-		Enabled: true, Schedule: "0 4 * * *", RollbackEnabled: true,
+		Enabled: true, Schedule: "0 4 * * *", RollbackEnabled: true, CleanupEnabled: true, CleanupKeep: 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestInventoryPolicyPrecedence(t *testing.T) {
 	containers := []container.Summary{
 		{ID: "1", Names: []string{"/stack-web"}, Image: "example/web:latest", Labels: stackLabels},
 		{ID: "2", Names: []string{"/labelled"}, Image: "example/labelled:latest", Labels: map[string]string{
-			DockmanOptInUpdateLabel: "true", UpdateScheduleLabel: "30 2 * * *", UpdateRollbackLabel: "false",
+			DockmanOptInUpdateLabel: "true", UpdateScheduleLabel: "30 2 * * *", UpdateRollbackLabel: "false", UpdateCleanupLabel: "true", UpdateCleanupKeepLabel: "0",
 		}},
 		{ID: "3", Names: []string{"/disabled-label"}, Labels: map[string]string{
 			DockmanOptInUpdateLabel: "true", DockmanUpdateDisableLabel: "true",
@@ -80,10 +80,10 @@ func TestInventoryPolicyPrecedence(t *testing.T) {
 	for _, row := range rows {
 		byName[row.ContainerName] = row
 	}
-	if row := byName["stack-web"]; !row.Enrolled || row.PolicyTarget != UpdateTargetStack || row.Schedule != "0 4 * * *" {
+	if row := byName["stack-web"]; !row.Enrolled || row.PolicyTarget != UpdateTargetStack || row.Schedule != "0 4 * * *" || !row.CleanupEnabled || row.CleanupKeep != 2 {
 		t.Fatalf("stack policy not applied: %#v", row)
 	}
-	if row := byName["labelled"]; !row.Enrolled || row.Source != "label" || row.Rollback || row.Schedule != "30 2 * * *" {
+	if row := byName["labelled"]; !row.Enrolled || row.Source != "label" || row.Rollback || row.Schedule != "30 2 * * *" || !row.CleanupEnabled || row.CleanupKeep != 0 {
 		t.Fatalf("label policy not applied: %#v", row)
 	}
 	if row := byName["disabled-label"]; row.Enrolled || row.Source != "disabled-label" {

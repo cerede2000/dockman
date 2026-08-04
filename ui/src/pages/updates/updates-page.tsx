@@ -28,6 +28,7 @@ import {
 import {
     AccountTreeOutlined,
     CheckCircleOutlined,
+	DeleteSweepOutlined,
 	ErrorOutlined,
     EditOutlined,
     EmailOutlined,
@@ -64,6 +65,8 @@ type UpdateEnrollment = {
     schedule?: string;
 	scheduleError?: string;
     rollback: boolean;
+	cleanupEnabled: boolean;
+	cleanupKeep: number;
     policyTarget?: TargetType;
     policyTargetId?: string;
 };
@@ -73,6 +76,8 @@ type PolicyDraft = {
     enabled: boolean;
     schedule: string;
     rollbackEnabled: boolean;
+	cleanupEnabled: boolean;
+	cleanupKeep: number;
 };
 
 type ScanResult = {
@@ -104,6 +109,11 @@ type ExecutionRun = {
 };
 
 type AutomationControl = {paused: boolean; maxGroupsPerRun: number; running: boolean; updatedAt?: string};
+
+type ImageCleanup = {
+	id: number; createdAt: string; updatedAt: string; targetKey: string; containerName: string;
+	imageId: string; retention: number; status: 'pending' | 'removed'; reason?: string;
+};
 
 type ExecutionResult = {
 	id: number; runId: number; createdAt: string; containerId: string; containerName: string;
@@ -188,6 +198,8 @@ export default function UpdatesPage() {
 	const [controlDraft, setControlDraft] = useState(0);
 	const [executeConfirmOpen, setExecuteConfirmOpen] = useState(false);
 	const [executing, setExecuting] = useState(false);
+	const [cleanups, setCleanups] = useState<ImageCleanup[]>([]);
+	const [cleanupRetrying, setCleanupRetrying] = useState(false);
     const [smtpOpen, setSMTPOpen] = useState(false);
     const [smtpSaving, setSMTPSaving] = useState(false);
     const [smtpTesting, setSMTPTesting] = useState(false);
@@ -195,7 +207,7 @@ export default function UpdatesPage() {
     const [smtpDraft, setSMTPDraft] = useState<SMTPConfig>(defaultSMTPConfig);
     const [deliveries, setDeliveries] = useState<NotificationDelivery[]>([]);
     const [draft, setDraft] = useState<PolicyDraft>({
-        targetType: 'container', enabled: true, schedule: '', rollbackEnabled: true,
+        targetType: 'container', enabled: true, schedule: '', rollbackEnabled: true, cleanupEnabled: false, cleanupKeep: 1,
     });
 
     const load = useCallback(async () => {
@@ -210,7 +222,7 @@ export default function UpdatesPage() {
             const payload = await response.json() as {results: UpdateEnrollment[]};
             setRows(payload.results ?? []);
 			if (!stateResponse.ok) throw new Error((await stateResponse.text()).trim() || `HTTP ${stateResponse.status}`);
-			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]; executionRuns: ExecutionRun[]; executionResults: ExecutionResult[]; blocks: ExecutionBlock[]; control?: AutomationControl};
+			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]; executionRuns: ExecutionRun[]; executionResults: ExecutionResult[]; blocks: ExecutionBlock[]; control?: AutomationControl; cleanups?: ImageCleanup[]};
 			setScanResults(Object.fromEntries((state.results ?? []).map(result => [result.containerId, result])));
 			setScanRuns(state.runs ?? []);
 			setSchedules(state.schedules ?? []);
@@ -218,6 +230,7 @@ export default function UpdatesPage() {
 			setExecutionResults(state.executionResults ?? []);
 			setExecutionBlocks(state.blocks ?? []);
 			setControl(state.control ?? {paused: false, maxGroupsPerRun: 0, running: false});
+			setCleanups(state.cleanups ?? []);
             if (!smtpResponse.ok) throw new Error((await smtpResponse.text()).trim() || `HTTP ${smtpResponse.status}`);
             const smtp = await smtpResponse.json() as {config: SMTPConfig; deliveries: NotificationDelivery[]};
             const nextSMTP = {...defaultSMTPConfig, ...(smtp.config ?? {}), password: ''};
@@ -313,6 +326,21 @@ export default function UpdatesPage() {
 		}
 	};
 
+	const retryImageCleanup = async () => {
+		setCleanupRetrying(true);
+		try {
+			const response = await fetch(hostUrl('/docker/updates/cleanup/retry'), {method: 'POST'});
+			if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+			await load();
+			showSuccess('Safe previous-image cleanup checked again');
+		} catch (error) {
+			await load();
+			showError(`Unable to retry image cleanup — ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			setCleanupRetrying(false);
+		}
+	};
+
 	const startProtectedUpdate = async () => {
 		if (!protectedTarget) return;
 		setProtectedStarting(true);
@@ -336,6 +364,8 @@ export default function UpdatesPage() {
             enabled: row.source === 'interface' ? row.enrolled : true,
             schedule: row.source === 'interface' ? row.schedule ?? '' : '',
             rollbackEnabled: row.source === 'interface' ? row.rollback : true,
+			cleanupEnabled: row.source === 'interface' ? row.cleanupEnabled : false,
+			cleanupKeep: row.source === 'interface' && row.cleanupEnabled ? row.cleanupKeep : 1,
         });
     };
 
@@ -369,6 +399,8 @@ export default function UpdatesPage() {
                     enabled: draft.enabled,
                     schedule: draft.schedule.trim(),
                     rollbackEnabled: draft.rollbackEnabled,
+					cleanupEnabled: draft.cleanupEnabled,
+					cleanupKeep: draft.cleanupKeep,
                 }),
             });
             if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
@@ -469,7 +501,7 @@ export default function UpdatesPage() {
             </Stack>
 
             <Alert severity="info" sx={{mb: 2}}>
-                Labels have priority over graphical rules. Use <code>dockman.update=true</code>, optionally <code>dockman.update.schedule</code> and <code>dockman.update.rollback</code>. <code>dockman.update.disable=true</code> always blocks enrollment. “Scan enrolled” is manual and read-only.
+                Labels have priority over graphical rules. Use <code>dockman.update=true</code>, optionally <code>dockman.update.schedule</code>, <code>dockman.update.rollback</code>, <code>dockman.update.cleanup</code> and <code>dockman.update.cleanup.keep</code>. <code>dockman.update.disable=true</code> always blocks enrollment. “Scan enrolled” is manual and read-only.
             </Alert>
 
             <Paper variant="outlined">
@@ -537,6 +569,13 @@ export default function UpdatesPage() {
 				</Box>)}
 			</Paper>
 
+			<Paper variant="outlined" sx={{mt: 2, p: 2}}>
+				<Stack direction={{xs: 'column', md: 'row'}} spacing={1} sx={{alignItems: {md: 'center'}, mb: 1}}><DeleteSweepOutlined/><Typography variant="h6">Previous image cleanup</Typography><Chip size="small" variant="outlined" color={cleanups.some(item => item.status === 'pending') ? 'warning' : 'default'} label={`${cleanups.filter(item => item.status === 'pending').length} retained`}/><Box sx={{flex: 1}}/><Button size="small" startIcon={<ReplayOutlined/>} onClick={() => void retryImageCleanup()} disabled={cleanupRetrying || !cleanups.some(item => item.status === 'pending')}>{cleanupRetrying ? 'Checking…' : 'Retry retained'}</Button></Stack>
+				{cleanups.length === 0 ? <Typography color="text.secondary">Cleanup is opt-in. No previous image has been registered for safe removal.</Typography> : cleanups.slice(0, 12).map(item => <Stack key={item.id} direction={{xs: 'column', md: 'row'}} spacing={1} sx={{alignItems: {md: 'center'}, py: .65, borderBottom: 1, borderColor: 'divider'}}>
+					<Chip size="small" color={item.status === 'removed' ? 'success' : 'warning'} variant="outlined" label={item.status}/><Typography variant="body2" sx={{minWidth: 170}}>{item.containerName}</Typography><Typography variant="caption" sx={{fontFamily: 'monospace', flex: 1, overflowWrap: 'anywhere'}}>{item.imageId}</Typography><Tooltip title={item.reason ?? ''}><Typography variant="caption" color="text.secondary" sx={{maxWidth: 420}}>{item.reason || '—'}</Typography></Tooltip>
+				</Stack>)}
+			</Paper>
+
 			<Dialog open={executeConfirmOpen} onClose={() => !executing && setExecuteConfirmOpen(false)} fullWidth maxWidth="sm">
 				<DialogTitle>Run the protected automatic update cycle now?</DialogTitle>
 				<DialogContent dividers><Stack spacing={1.5}>
@@ -577,6 +616,9 @@ export default function UpdatesPage() {
 					<FormControlLabel control={<Switch checked={draft.enabled} onChange={event => setDraft(current => ({...current, enabled: event.target.checked}))}/>} label="Automatically install available image updates"/>
 					<TextField label="Image check schedule (optional)" placeholder="0 4 * * *" value={draft.schedule} onChange={event => setDraft(current => ({...current, schedule: event.target.value}))} helperText="Standard five-field cron, minimum 15 minutes. Empty uses the daily 04:00 default."/>
 					<FormControlLabel control={<Switch checked={draft.rollbackEnabled} onChange={event => setDraft(current => ({...current, rollbackEnabled: event.target.checked}))}/>} label="Verify health and roll back automatically"/>
+					<FormControlLabel control={<Switch checked={draft.cleanupEnabled} onChange={event => setDraft(current => ({...current, cleanupEnabled: event.target.checked}))}/>} label="Clean previous images safely after successful updates"/>
+					<TextField type="number" disabled={!draft.cleanupEnabled} label="Previous rollback images to retain" value={draft.cleanupKeep} onChange={event => setDraft(current => ({...current, cleanupKeep: Math.max(0, Math.min(10, Number(event.target.value) || 0))}))} slotProps={{htmlInput: {min: 0, max: 10}}} helperText="0 removes the previous image immediately when Docker confirms it is unused and untagged. Keeping 1 is recommended."/>
+					{draft.cleanupEnabled && <Alert severity="warning">Cleanup is performed only after the complete protected operation succeeds. Dockman never uses force and retains tagged or referenced images.</Alert>}
                 </Stack></DialogContent>
                 <DialogActions>
                     {editing?.source === 'interface' && <Button color="error" onClick={() => void deletePolicy()} disabled={saving}>Remove policy</Button>}

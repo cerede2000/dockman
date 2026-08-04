@@ -202,6 +202,13 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		}
 		return docker.ExecuteAutomaticContainerUpdates(ctx, dkSrv, targets)
 	})
+	updateAutomationSrv.SetImageCleaner(func(ctx context.Context, hostname, imageID string) (bool, string, error) {
+		dkSrv, getErr := hostManager.GetDockerService(hostname)
+		if getErr != nil {
+			return false, "", getErr
+		}
+		return docker.RemovePreviousImageIfUnused(ctx, dkSrv, imageID)
+	})
 	updateAutomationSrv.SetNotifier(notificationSrv.NotifyScan)
 	updateAutomationSrv.SetExecutionNotifier(notificationSrv.NotifyExecution)
 	go func() {

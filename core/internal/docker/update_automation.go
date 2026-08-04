@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/RA341/dockman/internal/docker/updater"
+	"github.com/docker/docker/errdefs"
+	"github.com/moby/moby/client"
 )
 
 const automaticUpdateLogLimit = 32 << 10
@@ -61,6 +63,48 @@ func ExecuteAutomaticContainerUpdates(ctx context.Context, dkSrv *Service, targe
 	return outcomes
 }
 
+// RemovePreviousImageIfUnused removes one exact rollback image without ever
+// forcing Docker. Tagged images, images referenced by running or stopped
+// containers, and parents needed by descendants are retained conservatively.
+func RemovePreviousImageIfUnused(ctx context.Context, dkSrv *Service, imageID string) (bool, string, error) {
+	imageID = strings.TrimSpace(imageID)
+	if imageID == "" {
+		return false, "empty previous image id", nil
+	}
+	filters := client.Filters{}
+	filters.Add("ancestor", imageID)
+	containers, err := dkSrv.Container.Cli().ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
+	if err != nil {
+		return false, "", fmt.Errorf("inspect previous image usage: %w", err)
+	}
+	if len(containers.Items) > 0 {
+		return false, fmt.Sprintf("retained: still referenced by %d running or stopped container(s)", len(containers.Items)), nil
+	}
+	inspect, err := dkSrv.Container.Cli().ImageInspect(ctx, imageID)
+	if errdefs.IsNotFound(err) {
+		return true, "previous image was already absent", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("inspect previous image: %w", err)
+	}
+	for _, tag := range inspect.RepoTags {
+		tag = strings.TrimSpace(tag)
+		if tag != "" && tag != "<none>:<none>" {
+			return false, "retained: image still has repository tag " + tag, nil
+		}
+	}
+	if _, err := dkSrv.Container.Cli().ImageRemove(ctx, imageID, client.ImageRemoveOptions{}); err != nil {
+		if errdefs.IsConflict(err) {
+			return false, "retained by Docker because the image or one of its descendants is still referenced", nil
+		}
+		if errdefs.IsNotFound(err) {
+			return true, "previous image was already absent", nil
+		}
+		return false, "", fmt.Errorf("remove previous image without force: %w", err)
+	}
+	return true, "previous image removed safely without force", nil
+}
+
 func executeAutomaticContainerUnit(ctx context.Context, dkSrv *Service, target updater.UpdateExecutionTarget) updater.UpdateExecutionOutcome {
 	outcome := updater.UpdateExecutionOutcome{UpdateExecutionTarget: target, State: updater.ExecutionFailed}
 	logs := &boundedUpdateWriter{}
@@ -74,6 +118,7 @@ func executeAutomaticContainerUnit(ctx context.Context, dkSrv *Service, target u
 		result, updateErr := dkSrv.Updater.ForceUpdateContainer(ctx, func(pullCtx context.Context, imageTag string) error {
 			return dkSrv.Compose.PullImage(pullCtx, imageTag, logs)
 		}, logs, target.ContainerID, updater.ForceUpdateOptions{VerifyHealth: target.RollbackEnabled})
+		outcome.PreviousImage = result.PreviousImage
 		if updateErr == nil {
 			if result.Updated {
 				outcome.State, outcome.Message = updater.ExecutionUpdated, "container updated successfully"
@@ -148,6 +193,7 @@ func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automat
 			result, updateErr := dkSrv.Updater.ForceUpdateContainer(ctx, func(context.Context, string) error { return nil }, logs, target.ContainerID, updater.ForceUpdateOptions{
 				VerifyHealth: target.RollbackEnabled, ImagePrepared: true,
 			})
+			outcomes[index].PreviousImage = result.PreviousImage
 			if updateErr == nil {
 				if result.Updated {
 					outcomes[index].State = updater.ExecutionUpdated
