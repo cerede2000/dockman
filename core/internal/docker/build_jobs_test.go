@@ -56,7 +56,7 @@ func TestDockerBuildJobRunsIndependentlyAndRetainsProgress(t *testing.T) {
 	}
 	close(release)
 	completed := waitForBuildJob(t, manager, "local", started.ID, true)
-	if completed.Status != buildJobSucceeded || !strings.Contains(completed.Log, "loading context") || !strings.Contains(completed.Log, "image build completed") {
+	if completed.Status != buildJobSucceeded || completed.LastOutputAt == nil || !strings.Contains(completed.Log, "loading context") || !strings.Contains(completed.Log, "image build completed") {
 		t.Fatalf("unexpected completed build: %#v", completed)
 	}
 	delta, found := manager.Get("local", started.ID, completed.NextOffset)

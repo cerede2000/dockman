@@ -29,19 +29,20 @@ const (
 type buildJobExecutor func(context.Context, string, string, string, io.Writer) error
 
 type DockerBuildJobView struct {
-	ID          string     `json:"id"`
-	Host        string     `json:"-"`
-	Filename    string     `json:"filename"`
-	ImageTag    string     `json:"imageTag"`
-	Status      string     `json:"status"`
-	Error       string     `json:"error,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	StartedAt   *time.Time `json:"startedAt,omitempty"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
-	Log         string     `json:"log,omitempty"`
-	LogOffset   int64      `json:"logOffset,omitempty"`
-	NextOffset  int64      `json:"nextOffset,omitempty"`
-	Truncated   bool       `json:"truncated,omitempty"`
+	ID           string     `json:"id"`
+	Host         string     `json:"-"`
+	Filename     string     `json:"filename"`
+	ImageTag     string     `json:"imageTag"`
+	Status       string     `json:"status"`
+	Error        string     `json:"error,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	StartedAt    *time.Time `json:"startedAt,omitempty"`
+	CompletedAt  *time.Time `json:"completedAt,omitempty"`
+	LastOutputAt *time.Time `json:"lastOutputAt,omitempty"`
+	Log          string     `json:"log,omitempty"`
+	LogOffset    int64      `json:"logOffset,omitempty"`
+	NextOffset   int64      `json:"nextOffset,omitempty"`
+	Truncated    bool       `json:"truncated,omitempty"`
 }
 
 type dockerBuildJob struct {
@@ -58,6 +59,8 @@ func (j *dockerBuildJob) Write(payload []byte) (int, error) {
 	defer j.mu.Unlock()
 	j.log = append(j.log, payload...)
 	j.logTotal += int64(len(payload))
+	now := time.Now()
+	j.view.LastOutputAt = &now
 	if overflow := len(j.log) - maxBuildJobLog; overflow > 0 {
 		j.log = append([]byte(nil), j.log[overflow:]...)
 		j.logBase += int64(overflow)

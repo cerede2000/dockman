@@ -11,6 +11,13 @@ import (
 
 const dockmanDockerfilePrefix = "dockman://"
 
+// Keep Buildx's builder selection isolated from Dockman's persistent Docker
+// CLI configuration. A user-selected docker-container builder may otherwise
+// be named "default" and start a permanent buildx_buildkit_default helper.
+// With an empty Buildx state directory, Buildx automatically exposes the
+// current Docker context through the daemon-integrated `docker` driver.
+const dockmanNativeBuildxConfig = "/tmp/dockman-buildx-native"
+
 // RunDockerCommand executes a user-provided docker CLI command line on this
 // host through the same runner compose uses (local exec or ssh), streaming
 // its combined output. Only the docker binary is allowed.
@@ -43,6 +50,7 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag str
 	if err != nil {
 		return err
 	}
+	args = append([]string{"env", "BUILDX_CONFIG=" + dockmanNativeBuildxConfig}, args...)
 	return c.runDockerCLI(ctx, args, wd, stream)
 }
 

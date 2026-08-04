@@ -18,6 +18,7 @@ import {useHostStore, useLastOpened} from "../compose/state/files.ts";
 import {useTabsStore} from "../../context/tab-context.tsx";
 import {useTerminalTabs} from "../compose/state/terminal.tsx";
 import {useNavigationPreferences} from './navigation-preferences.ts';
+import FileDockerBuild, {DockerBuildActivityIndicator} from '../compose/dialogs/file-docker-build.tsx';
 
 const MAIN_SIDEBAR_WIDTH = 72;
 
@@ -207,6 +208,8 @@ export function RootLayout() {
             >
                 <Outlet/>
             </Box>
+            <DockerBuildActivityIndicator/>
+            <FileDockerBuild/>
         </Box>
     );
 }

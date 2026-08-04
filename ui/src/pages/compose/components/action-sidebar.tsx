@@ -1,8 +1,9 @@
 import {useContainerExec, useFileComponents, useTerminalAction} from "../state/terminal.tsx";
-import {Box, Divider, IconButton, Tooltip, Typography} from "@mui/material";
+import {Badge, Box, Divider, IconButton, Tooltip, Typography} from "@mui/material";
 import {
     Add as AddIcon,
     Cached as RefreshIcon,
+    ConstructionOutlined,
     DensityMedium as StandardIcon,
     DensitySmall as CompactIcon,
     EditRounded,
@@ -23,6 +24,7 @@ import {useAliasAddDialogState} from "./add-alias-dialog.tsx";
 import {useSidebarActions} from "../hooks/sidebar-actions.ts";
 import {YamlIcon} from "./file-icon.tsx";
 import {useHostShellWsUrl, useHostUrl} from "../../../lib/api.ts";
+import {useDockerBuildJobs, useFileDockerBuild} from '../dialogs/file-docker-build.tsx';
 
 // Shared style for the compact 40x40 rail buttons.
 const railBtnSx = {
@@ -51,6 +53,9 @@ const ActionSidebar = () => {
     const compact = useCompactMode(state => state.enabled)
     const toggleCompact = useCompactMode(state => state.toggle)
     const {reload, showSearch, showFileAdd, showDockyaml} = useSidebarActions()
+    const buildJobs = useDockerBuildJobs(state => state.jobs)
+    const openBuildHistory = useFileDockerBuild(state => state.openHistory)
+    const activeBuilds = buildJobs.filter(job => job.status === 'queued' || job.status === 'running').length
     const onSide = placement === 'side'
 
     const createShellUrl = useHostShellWsUrl()
@@ -259,6 +264,14 @@ const ActionSidebar = () => {
                     )}
 
                     <Divider sx={{width: '60%', borderColor: 'rgba(255,255,255,0.1)', my: 0.25}}/>
+
+                    {activeBuilds > 0 && <Tooltip title="Docker image builds in progress" placement="right">
+                        <IconButton onClick={openBuildHistory} sx={{...railBtnSx, color: 'primary.main'}}>
+                            <Badge badgeContent={activeBuilds} color="warning">
+                                <ConstructionOutlined sx={{fontSize: 19}}/>
+                            </Badge>
+                        </IconButton>
+                    </Tooltip>}
 
                 </Box>
 

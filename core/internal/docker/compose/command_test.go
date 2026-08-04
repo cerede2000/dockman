@@ -91,7 +91,7 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 	err := service.RunDockerfileBuild(context.Background(), "compose/apple music/Dockerfile", "apple-music-rip:local", &output)
 	require.NoError(t, err)
 	require.Equal(t, directory, runner.wd)
-	require.Equal(t, [][]string{{"docker", "buildx", "build", "--builder", "default", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}}, runner.calls)
+	require.Equal(t, [][]string{{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "docker", "buildx", "build", "--builder", "default", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."}}, runner.calls)
 	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
 }
 
