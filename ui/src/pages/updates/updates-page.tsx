@@ -50,6 +50,7 @@ import PageHeader from '../../components/page-header.tsx';
 import {useHostUrl} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useHostFromUrl} from '../home/home.tsx';
+import NotificationChannels from './notification-channels.tsx';
 
 type TargetType = 'container' | 'stack';
 
@@ -158,6 +159,8 @@ type SMTPConfig = {
 type NotificationDelivery = {
     id: number;
     createdAt: string;
+    channelType: string;
+    channelName: string;
     kind: string;
     subject: string;
     success: boolean;
@@ -547,6 +550,7 @@ export default function UpdatesPage() {
 				<Button color={control.paused ? 'warning' : 'success'} startIcon={control.paused ? <PlayCircleOutlined/> : <PauseCircleOutlined/>} onClick={() => void saveControl(!control.paused)} disabled={loading || controlSaving || executing || control.running}>{control.paused ? 'Resume auto' : 'Pause auto'}</Button>
 				<Button color="warning" startIcon={<RocketLaunchOutlined/>} onClick={() => setExecuteConfirmOpen(true)} disabled={loading || executing || control.running || control.paused || enrolledCount === 0}>{executing || control.running ? 'Running…' : 'Run updates now'}</Button>
 				<Button startIcon={<EmailOutlined/>} color={smtpConfig.enabled ? 'success' : 'inherit'} onClick={openSMTP}>SMTP</Button>
+				<NotificationChannels/>
 				<Button startIcon={<SpaceDashboardOutlined/>} onClick={() => navigate(`/${host}/monitor`)}>Monitor</Button>
             </Stack>}/>
 
@@ -770,7 +774,7 @@ export default function UpdatesPage() {
 						<FormControlLabel control={<Switch checked={smtpDraft.notifyUpdates} onChange={event => setSMTPDraft(current => ({...current, notifyUpdates: event.target.checked}))}/>} label="Notify successful updates"/>
 						<FormControlLabel control={<Switch checked={smtpDraft.notifyErrors} onChange={event => setSMTPDraft(current => ({...current, notifyErrors: event.target.checked}))}/>} label="Notify errors and rollbacks"/>
                     </Stack>
-					<Box><Typography variant="subtitle2" sx={{mb: .75}}>Recent deliveries</Typography>{deliveries.length === 0 ? <Typography variant="body2" color="text.secondary">No delivery attempt recorded. Automatic events are only attempted when notifications and the matching success/error category are enabled.</Typography> : <TableContainer sx={{maxHeight: 180}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>Date</TableCell><TableCell>Type</TableCell><TableCell>Subject</TableCell><TableCell>Status</TableCell></TableRow></TableHead><TableBody>{deliveries.slice(0, 10).map(delivery => <TableRow key={delivery.id}><TableCell sx={{whiteSpace: 'nowrap'}}>{new Date(delivery.createdAt).toLocaleString()}</TableCell><TableCell>{delivery.kind}</TableCell><TableCell>{delivery.subject}</TableCell><TableCell><Tooltip title={delivery.error || ''}><Chip size="small" color={delivery.success ? 'success' : 'error'} variant="outlined" label={delivery.success ? 'sent' : 'failed'}/></Tooltip></TableCell></TableRow>)}</TableBody></Table></TableContainer>}</Box>
+					<Box><Typography variant="subtitle2" sx={{mb: .75}}>Recent deliveries</Typography>{deliveries.length === 0 ? <Typography variant="body2" color="text.secondary">No delivery attempt recorded. Automatic events are only attempted when notifications and the matching success/error category are enabled.</Typography> : <TableContainer sx={{maxHeight: 180}}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>Date</TableCell><TableCell>Channel</TableCell><TableCell>Type</TableCell><TableCell>Subject</TableCell><TableCell>Status</TableCell></TableRow></TableHead><TableBody>{deliveries.slice(0, 10).map(delivery => <TableRow key={delivery.id}><TableCell sx={{whiteSpace: 'nowrap'}}>{new Date(delivery.createdAt).toLocaleString()}</TableCell><TableCell>{delivery.channelName || 'SMTP'}</TableCell><TableCell>{delivery.kind}</TableCell><TableCell>{delivery.subject}</TableCell><TableCell><Tooltip title={delivery.error || ''}><Chip size="small" color={delivery.success ? 'success' : 'error'} variant="outlined" label={delivery.success ? 'sent' : 'failed'}/></Tooltip></TableCell></TableRow>)}</TableBody></Table></TableContainer>}</Box>
                 </Stack></DialogContent>
                 <DialogActions>
                     <Button onClick={() => setSMTPOpen(false)} disabled={smtpSaving || smtpTesting}>Close</Button><Box sx={{flex: 1}}/>

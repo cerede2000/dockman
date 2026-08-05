@@ -65,14 +65,31 @@ type NotificationState struct {
 
 func (NotificationState) TableName() string { return "update_notification_states" }
 
+// ChannelNotificationState makes scan deduplication independent per
+// destination. A failing channel can retry without duplicating deliveries on
+// channels that already succeeded.
+type ChannelNotificationState struct {
+	ID                       uint `gorm:"primaryKey"`
+	UpdatedAt                time.Time
+	Host                     string `gorm:"not null;uniqueIndex:idx_update_notification_channel_state"`
+	Schedule                 string `gorm:"not null;uniqueIndex:idx_update_notification_channel_state"`
+	ChannelKey               string `gorm:"not null;uniqueIndex:idx_update_notification_channel_state"`
+	LastAvailableFingerprint string `gorm:"not null;default:''"`
+	LastErrorFingerprint     string `gorm:"not null;default:''"`
+}
+
+func (ChannelNotificationState) TableName() string { return "update_notification_channel_states" }
+
 type Delivery struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	CreatedAt time.Time `json:"createdAt"`
-	Host      string    `gorm:"not null;index" json:"host"`
-	Kind      string    `gorm:"not null" json:"kind"`
-	Subject   string    `gorm:"not null" json:"subject"`
-	Success   bool      `gorm:"not null" json:"success"`
-	Error     string    `gorm:"not null;default:''" json:"error,omitempty"`
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt   time.Time `json:"createdAt"`
+	Host        string    `gorm:"not null;index" json:"host"`
+	ChannelType string    `gorm:"not null;default:'smtp'" json:"channelType"`
+	ChannelName string    `gorm:"not null;default:'SMTP'" json:"channelName"`
+	Kind        string    `gorm:"not null" json:"kind"`
+	Subject     string    `gorm:"not null" json:"subject"`
+	Success     bool      `gorm:"not null" json:"success"`
+	Error       string    `gorm:"not null;default:''" json:"error,omitempty"`
 }
 
 func (Delivery) TableName() string { return "update_notification_deliveries" }
@@ -110,36 +127,45 @@ type SMTPMessage struct {
 }
 
 type Service struct {
-	db     *gorm.DB
-	vault  *Vault
-	sender Sender
+	db            *gorm.DB
+	vault         *Vault
+	sender        Sender
+	channelSender ChannelSender
 }
 
 func NewService(db *gorm.DB, vault *Vault) *Service {
 	caFile, caFileRequired := smtpCAFileFromEnvironment()
 	return &Service{db: db, vault: vault, sender: NetworkSender{
 		Timeout: 20 * time.Second, CAFile: caFile, RequireCAFile: caFileRequired,
-	}}
+	}, channelSender: HTTPChannelSender{Timeout: 10 * time.Second}}
 }
 
 func NewServiceWithSender(db *gorm.DB, vault *Vault, sender Sender) *Service {
-	return &Service{db: db, vault: vault, sender: sender}
+	return &Service{db: db, vault: vault, sender: sender, channelSender: HTTPChannelSender{Timeout: 10 * time.Second}}
 }
 
 func (s *Service) Get(host string) (ConfigView, []Delivery, error) {
+	deliveries, err := s.ListDeliveries(host)
+	if err != nil {
+		return ConfigView{}, nil, err
+	}
 	var row SMTPConfig
-	err := s.db.Where("host = ?", host).First(&row).Error
+	err = s.db.Where("host = ?", host).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return ConfigView{ConfigInput: ConfigInput{Port: 587, Security: SecuritySTARTTLS, NotifyUpdates: true, NotifyErrors: true}}, nil, nil
+		return ConfigView{ConfigInput: ConfigInput{Port: 587, Security: SecuritySTARTTLS, NotifyUpdates: true, NotifyErrors: true}}, deliveries, nil
 	}
 	if err != nil {
 		return ConfigView{}, nil, err
 	}
+	return view(row), deliveries, nil
+}
+
+func (s *Service) ListDeliveries(host string) ([]Delivery, error) {
 	var deliveries []Delivery
 	if err := s.db.Where("host = ?", host).Order("created_at DESC").Limit(maxDeliveries).Find(&deliveries).Error; err != nil {
-		return ConfigView{}, nil, err
+		return nil, err
 	}
-	return view(row), deliveries, nil
+	return deliveries, nil
 }
 
 func (s *Service) Save(host string, input ConfigInput) (ConfigView, error) {
@@ -180,7 +206,10 @@ func (s *Service) Save(host string, input ConfigInput) (ConfigView, error) {
 		}).Create(&row).Error; err != nil {
 			return err
 		}
-		return tx.Where("host = ?", host).Delete(&NotificationState{}).Error
+		if err := tx.Where("host = ?", host).Delete(&NotificationState{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("host = ? AND channel_key = ?", host, "smtp").Delete(&ChannelNotificationState{}).Error
 	}); err != nil {
 		return ConfigView{}, err
 	}
@@ -202,80 +231,150 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 	if run.Trigger != "scheduled" {
 		return nil
 	}
-	row, err := s.loadEnabled(run.Host, true)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	}
+	destinations, err := s.enabledDestinations(run.Host)
 	if err != nil {
 		return err
+	}
+	if len(destinations) == 0 {
+		return nil
 	}
 	available, failures := relevantChecks(checks)
 	if run.Error != "" {
 		failures = append(failures, "scan: "+run.Error)
 	}
-	state, err := s.loadState(run.Host, run.Schedule)
-	if err != nil {
-		return err
-	}
 	availableFingerprint := fingerprint(available)
 	errorFingerprint := fingerprint(failures)
-	notifyAvailable := row.NotifyUpdates && availableFingerprint != "" && availableFingerprint != state.LastAvailableFingerprint
-	notifyErrors := row.NotifyErrors && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint
-	if !notifyAvailable && !notifyErrors {
-		return s.resetResolvedFingerprints(&state, availableFingerprint, errorFingerprint)
+	var deliveryErrors []error
+	for _, destination := range destinations {
+		state, stateErr := s.loadChannelState(run.Host, run.Schedule, destination.key)
+		if stateErr != nil {
+			deliveryErrors = append(deliveryErrors, fmt.Errorf("load %s notification state: %w", destination.name, stateErr))
+			continue
+		}
+		notifyAvailable := destination.notifyUpdates && availableFingerprint != "" && availableFingerprint != state.LastAvailableFingerprint
+		notifyErrors := destination.notifyErrors && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint
+		if !notifyAvailable && !notifyErrors {
+			if resetErr := s.resetResolvedChannelFingerprints(&state, availableFingerprint, errorFingerprint); resetErr != nil {
+				deliveryErrors = append(deliveryErrors, resetErr)
+			}
+			continue
+		}
+		messageAvailable, messageFailures := available, failures
+		if !notifyAvailable {
+			messageAvailable = nil
+		}
+		if !notifyErrors {
+			messageFailures = nil
+		}
+		subject := notificationSubject(run.Host, len(messageAvailable), len(messageFailures))
+		body := notificationBody(run, messageAvailable, messageFailures)
+		severity := "info"
+		if len(messageFailures) > 0 {
+			severity = "error"
+		}
+		if sendErr := destination.send(ctx, ChannelEvent{Kind: "scan", Host: run.Host, Title: subject, Message: body, Severity: severity, Time: time.Now()}); sendErr != nil {
+			deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			continue
+		}
+		if destination.notifyUpdates {
+			state.LastAvailableFingerprint = availableFingerprint
+		}
+		if destination.notifyErrors {
+			state.LastErrorFingerprint = errorFingerprint
+		}
+		if saveErr := s.saveChannelState(&state); saveErr != nil {
+			deliveryErrors = append(deliveryErrors, saveErr)
+		}
 	}
-	messageAvailable := available
-	if !notifyAvailable {
-		messageAvailable = nil
-	}
-	messageFailures := failures
-	if !notifyErrors {
-		messageFailures = nil
-	}
-	subject := notificationSubject(run.Host, len(messageAvailable), len(messageFailures))
-	body := notificationBody(run, messageAvailable, messageFailures)
-	if err := s.deliver(ctx, row, "scan", subject, body); err != nil {
-		return err
-	}
-	if row.NotifyUpdates {
-		state.LastAvailableFingerprint = availableFingerprint
-	}
-	if row.NotifyErrors {
-		state.LastErrorFingerprint = errorFingerprint
-	}
-	return s.saveState(&state)
+	return errors.Join(deliveryErrors...)
 }
 
 // NotifyExecution sends one bounded summary for a scheduled automatic update
 // batch. Failed digests are circuit-broken, so this does not repeat on every
 // cron tick unless the operator explicitly retries or a new digest appears.
 func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecutionRun, outcomes []updater.UpdateExecutionOutcome) error {
-	row, err := s.loadEnabled(run.Host, true)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	}
+	destinations, err := s.enabledDestinations(run.Host)
 	if err != nil {
 		return err
 	}
-	var successes, failures []string
+	if len(destinations) == 0 {
+		return nil
+	}
+	var allSuccesses, allFailures []string
 	for _, outcome := range outcomes {
 		item := fmt.Sprintf("%s | %s | %s", outcome.ContainerName, outcome.Image, outcome.State)
 		switch outcome.State {
 		case updater.ExecutionUpdated, updater.ExecutionCurrent:
-			if row.NotifyUpdates {
-				successes = append(successes, item)
-			}
+			allSuccesses = append(allSuccesses, item)
 		case updater.ExecutionFailed, updater.ExecutionRolledBack:
-			if row.NotifyErrors {
-				failures = append(failures, item+" | "+outcome.Message)
-			}
+			allFailures = append(allFailures, item+" | "+outcome.Message)
 		}
 	}
-	if len(successes) == 0 && len(failures) == 0 {
-		return nil
+	slices.Sort(allSuccesses)
+	slices.Sort(allFailures)
+	var deliveryErrors []error
+	for _, destination := range destinations {
+		successes, failures := allSuccesses, allFailures
+		if !destination.notifyUpdates {
+			successes = nil
+		}
+		if !destination.notifyErrors {
+			failures = nil
+		}
+		if len(successes) == 0 && len(failures) == 0 {
+			continue
+		}
+		subject, body := executionNotification(run, successes, failures)
+		severity := "success"
+		if len(failures) > 0 {
+			severity = "error"
+		}
+		if sendErr := destination.send(ctx, ChannelEvent{Kind: "update", Host: run.Host, Title: subject, Message: body, Severity: severity, Time: time.Now()}); sendErr != nil {
+			deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+		}
 	}
-	slices.Sort(successes)
-	slices.Sort(failures)
+	return errors.Join(deliveryErrors...)
+}
+
+type notificationDestination struct {
+	key           string
+	name          string
+	notifyUpdates bool
+	notifyErrors  bool
+	send          func(context.Context, ChannelEvent) error
+}
+
+func (s *Service) enabledDestinations(host string) ([]notificationDestination, error) {
+	var destinations []notificationDestination
+	var smtp SMTPConfig
+	if err := s.db.Where("host = ? AND enabled = ?", host, true).First(&smtp).Error; err == nil {
+		destinations = append(destinations, notificationDestination{key: "smtp", name: "SMTP", notifyUpdates: smtp.NotifyUpdates, notifyErrors: smtp.NotifyErrors, send: func(ctx context.Context, event ChannelEvent) error {
+			return s.deliver(ctx, smtp, event.Kind, event.Title, event.Message)
+		}})
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	var channels []ChannelConfig
+	if err := s.db.Where("host = ? AND enabled = ?", host, true).Order("id ASC").Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	for _, channel := range channels {
+		channel := channel
+		destinations = append(destinations, notificationDestination{key: channelStateKey(channel.ID), name: channel.Name, notifyUpdates: channel.NotifyUpdates, notifyErrors: channel.NotifyErrors, send: func(ctx context.Context, event ChannelEvent) error {
+			secrets, err := s.decryptChannel(channel)
+			if err != nil {
+				configurationError := fmt.Errorf("decrypt notification channel %s: %w", channel.Name, err)
+				delivery := Delivery{Host: channel.Host, ChannelType: channel.Type, ChannelName: channel.Name, Kind: event.Kind, Subject: event.Title, Success: false, Error: safeDeliveryError(configurationError)}
+				_ = s.recordDelivery(&delivery)
+				return configurationError
+			}
+			return s.deliverChannel(ctx, channel, secrets, event)
+		}})
+	}
+	return destinations, nil
+}
+
+func executionNotification(run updater.UpdateExecutionRun, successes, failures []string) (string, string) {
 	subject := fmt.Sprintf("Dockman updates on %s - %d updated - %d failed", safeHeaderValue(run.Host), run.Updated, run.Failed+run.RolledBack)
 	completed := time.Now()
 	if run.CompletedAt != nil {
@@ -296,7 +395,34 @@ func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecuti
 		}
 		body.WriteString("\nThe same failed digest is blocked until acknowledged in Dockman or replaced upstream.\n")
 	}
-	return s.deliver(ctx, row, "update", subject, body.String())
+	return subject, body.String()
+}
+
+func (s *Service) loadChannelState(host, schedule, channelKey string) (ChannelNotificationState, error) {
+	var state ChannelNotificationState
+	err := s.db.Where("host = ? AND schedule = ? AND channel_key = ?", host, schedule, channelKey).First(&state).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ChannelNotificationState{Host: host, Schedule: schedule, ChannelKey: channelKey}, nil
+	}
+	return state, err
+}
+
+func (s *Service) saveChannelState(state *ChannelNotificationState) error {
+	return s.db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "host"}, {Name: "schedule"}, {Name: "channel_key"}}, DoUpdates: clause.AssignmentColumns([]string{"last_available_fingerprint", "last_error_fingerprint", "updated_at"})}).Create(state).Error
+}
+
+func (s *Service) resetResolvedChannelFingerprints(state *ChannelNotificationState, available, failures string) error {
+	updates := map[string]any{}
+	if available == "" && state.LastAvailableFingerprint != "" {
+		updates["last_available_fingerprint"] = ""
+	}
+	if failures == "" && state.LastErrorFingerprint != "" {
+		updates["last_error_fingerprint"] = ""
+	}
+	if len(updates) == 0 || state.ID == 0 {
+		return nil
+	}
+	return s.db.Model(&ChannelNotificationState{}).Where("id = ?", state.ID).Updates(updates).Error
 }
 
 func (s *Service) loadState(host, schedule string) (NotificationState, error) {
@@ -362,12 +488,15 @@ func (s *Service) deliver(ctx context.Context, row SMTPConfig, kind, subject, bo
 	if err == nil {
 		err = s.sender.Send(ctx, SMTPMessage{Config: row, Password: password, Recipients: recipients, Subject: subject, Body: body})
 	}
-	delivery := Delivery{Host: row.Host, Kind: kind, Subject: subject, Success: err == nil}
+	delivery := Delivery{Host: row.Host, ChannelType: "smtp", ChannelName: "SMTP", Kind: kind, Subject: subject, Success: err == nil}
 	if err != nil {
 		delivery.Error = safeDeliveryError(err, password)
 	}
 	_ = s.recordDelivery(&delivery)
-	return err
+	if err != nil {
+		return errors.New(delivery.Error)
+	}
+	return nil
 }
 
 func (s *Service) recordDelivery(delivery *Delivery) error {

@@ -86,23 +86,31 @@ func decodeVaultKey(raw []byte) ([]byte, error) {
 }
 
 func (v *Vault) Encrypt(plaintext []byte, host string) ([]byte, error) {
+	return v.EncryptFor(plaintext, "smtp/"+host)
+}
+
+func (v *Vault) EncryptFor(plaintext []byte, scope string) ([]byte, error) {
 	nonce := make([]byte, v.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
 	out := append([]byte{vaultVersion}, nonce...)
-	return v.aead.Seal(out, nonce, plaintext, []byte("dockman/smtp/"+host)), nil
+	return v.aead.Seal(out, nonce, plaintext, []byte("dockman/"+scope)), nil
 }
 
 func (v *Vault) Decrypt(ciphertext []byte, host string) ([]byte, error) {
+	return v.DecryptFor(ciphertext, "smtp/"+host)
+}
+
+func (v *Vault) DecryptFor(ciphertext []byte, scope string) ([]byte, error) {
 	nonceSize := v.aead.NonceSize()
 	if len(ciphertext) < 1+nonceSize || ciphertext[0] != vaultVersion {
 		return nil, errors.New("unsupported or invalid encrypted SMTP credential")
 	}
 	nonce := ciphertext[1 : 1+nonceSize]
-	plain, err := v.aead.Open(nil, nonce, ciphertext[1+nonceSize:], []byte("dockman/smtp/"+host))
+	plain, err := v.aead.Open(nil, nonce, ciphertext[1+nonceSize:], []byte("dockman/"+scope))
 	if err != nil {
-		return nil, errors.New("unable to decrypt SMTP credential")
+		return nil, errors.New("unable to decrypt notification credential")
 	}
 	return plain, nil
 }

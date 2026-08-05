@@ -15,7 +15,7 @@
 - Container and volume file browsers with upload, download, permissions and read-only detection.
 - Multi-host support through local Docker or SSH.
 - GitHub repository synchronization for complete stack folders, with policies, previews, conflicts, backups, provisioning and protected automatic deployment.
-- Image update discovery, scheduled opt-in policies, stack transactions, health validation, rollback, safe image cleanup and SMTP notifications.
+- Image update discovery, scheduled opt-in policies, stack transactions, health validation, rollback, safe image cleanup and SMTP/Gotify/ntfy/Discord/Apprise/webhook notifications.
 - Background Dockerfile builds using Buildx, persistent progress and automatic helper cleanup.
 - Hardened container image, origin checks, bounded HTTP requests, encrypted credentials and Docker socket-proxy support.
 

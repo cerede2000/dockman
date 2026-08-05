@@ -24,6 +24,7 @@ import (
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 	"github.com/rs/zerolog/log"
+	"gorm.io/gorm"
 )
 
 var upgrader = websocket.Upgrader{
@@ -103,6 +104,10 @@ func (h *HandlerHttp) register() http.Handler {
 	subMux.HandleFunc("GET /updates/notifications/smtp", h.getSMTPNotificationConfig)
 	subMux.HandleFunc("PUT /updates/notifications/smtp", h.saveSMTPNotificationConfig)
 	subMux.HandleFunc("POST /updates/notifications/smtp/test", h.testSMTPNotificationConfig)
+	subMux.HandleFunc("GET /updates/notifications/channels", h.listNotificationChannels)
+	subMux.HandleFunc("PUT /updates/notifications/channels", h.saveNotificationChannel)
+	subMux.HandleFunc("DELETE /updates/notifications/channels/{channelId}", h.deleteNotificationChannel)
+	subMux.HandleFunc("POST /updates/notifications/channels/{channelId}/test", h.testNotificationChannel)
 	subMux.HandleFunc("POST /restart/dockman", h.restartDockman)
 	subMux.HandleFunc("POST /builds", h.startDockerBuild)
 	subMux.HandleFunc("GET /builds", h.listDockerBuilds)
@@ -262,7 +267,7 @@ func (h *HandlerHttp) testSMTPNotificationConfig(w http.ResponseWriter, r *http.
 
 func (h *HandlerHttp) notificationHost(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if h.notifications == nil {
-		http.Error(w, "SMTP notifications are unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "notifications are unavailable", http.StatusServiceUnavailable)
 		return "", false
 	}
 	host, err := hostMid.GetHost(r.Context())
@@ -271,6 +276,96 @@ func (h *HandlerHttp) notificationHost(w http.ResponseWriter, r *http.Request) (
 		return "", false
 	}
 	return host, true
+}
+
+func (h *HandlerHttp) listNotificationChannels(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	channels, err := h.notifications.ListChannels(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	deliveries, err := h.notifications.ListDeliveries(host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Channels   []notifications.ChannelView `json:"channels"`
+		Deliveries []notifications.Delivery    `json:"deliveries"`
+	}{Channels: channels, Deliveries: deliveries})
+}
+
+func (h *HandlerHttp) saveNotificationChannel(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	var input notifications.ChannelInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&input); err != nil {
+		http.Error(w, "invalid notification channel configuration: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	view, err := h.notifications.SaveChannel(host, input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, view)
+}
+
+func (h *HandlerHttp) notificationChannelID(w http.ResponseWriter, r *http.Request) (uint, bool) {
+	value, err := strconv.ParseUint(r.PathValue("channelId"), 10, 32)
+	if err != nil || value == 0 {
+		http.Error(w, "invalid notification channel", http.StatusBadRequest)
+		return 0, false
+	}
+	return uint(value), true
+}
+
+func (h *HandlerHttp) deleteNotificationChannel(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	id, ok := h.notificationChannelID(w, r)
+	if !ok {
+		return
+	}
+	if err := h.notifications.DeleteChannel(host, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "notification channel not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HandlerHttp) testNotificationChannel(w http.ResponseWriter, r *http.Request) {
+	host, ok := h.notificationHost(w, r)
+	if !ok {
+		return
+	}
+	id, ok := h.notificationChannelID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := h.notifications.TestChannel(ctx, host, id); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "notification channel not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HandlerHttp) getUpdateInventory(w http.ResponseWriter, r *http.Request) {

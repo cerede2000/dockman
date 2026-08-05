@@ -139,7 +139,7 @@ func TestSMTPNotificationHTTPNeverReturnsPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&notifications.SMTPConfig{}, &notifications.NotificationState{}, &notifications.Delivery{}); err != nil {
+	if err := db.AutoMigrate(&notifications.SMTPConfig{}, &notifications.NotificationState{}, &notifications.ChannelConfig{}, &notifications.ChannelNotificationState{}, &notifications.Delivery{}); err != nil {
 		t.Fatal(err)
 	}
 	vault, err := notifications.NewVault([]byte("0123456789abcdef0123456789abcdef"))
@@ -170,5 +170,43 @@ func TestSMTPNotificationHTTPNeverReturnsPassword(t *testing.T) {
 	handler.ServeHTTP(test, policyRequest(http.MethodPost, "/updates/notifications/smtp/test", ""))
 	if test.Code != http.StatusNoContent || len(sender.messages) != 1 || sender.messages[0].Password != "top-secret" {
 		t.Fatalf("unexpected SMTP test result (%d): messages=%#v body=%s", test.Code, sender.messages, test.Body.String())
+	}
+}
+
+func TestNotificationChannelHTTPNeverReturnsSecrets(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&notifications.SMTPConfig{}, &notifications.NotificationState{}, &notifications.ChannelConfig{}, &notifications.ChannelNotificationState{}, &notifications.Delivery{}); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := notifications.NewVault([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := notifications.NewServiceWithSender(db, vault, &testNotificationSender{})
+	handler := NewHandlerHttpWithUpdates(nil, false, nil, nil, service)
+
+	save := httptest.NewRecorder()
+	handler.ServeHTTP(save, policyRequest(http.MethodPut, "/updates/notifications/channels", `{
+		"name":"Gotify home","type":"gotify","enabled":true,
+		"url":"https://gotify.example.com","token":"top-secret-token",
+		"notifyUpdates":true,"notifyErrors":true
+	}`))
+	if save.Code != http.StatusOK || strings.Contains(save.Body.String(), "top-secret-token") || strings.Contains(save.Body.String(), `"token"`) || !strings.Contains(save.Body.String(), `"hasToken":true`) {
+		t.Fatalf("save leaked notification secrets (%d): %s", save.Code, save.Body.String())
+	}
+
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, policyRequest(http.MethodGet, "/updates/notifications/channels", ""))
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), "top-secret-token") || strings.Contains(list.Body.String(), `"url"`) || !strings.Contains(list.Body.String(), `"target":"https://gotify.example.com"`) {
+		t.Fatalf("list leaked or lost notification channel state (%d): %s", list.Code, list.Body.String())
+	}
+
+	remove := httptest.NewRecorder()
+	handler.ServeHTTP(remove, policyRequest(http.MethodDelete, "/updates/notifications/channels/1", ""))
+	if remove.Code != http.StatusNoContent {
+		t.Fatalf("delete notification channel failed (%d): %s", remove.Code, remove.Body.String())
 	}
 }

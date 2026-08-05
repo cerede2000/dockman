@@ -38,7 +38,7 @@ func testService(t *testing.T) (*Service, *gorm.DB, *recordingSender) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&SMTPConfig{}, &NotificationState{}, &Delivery{}); err != nil {
+	if err := db.AutoMigrate(&SMTPConfig{}, &NotificationState{}, &ChannelConfig{}, &ChannelNotificationState{}, &Delivery{}); err != nil {
 		t.Fatal(err)
 	}
 	vault, err := NewVault([]byte("0123456789abcdef0123456789abcdef"))

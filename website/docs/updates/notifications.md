@@ -3,9 +3,24 @@ title: Notifications
 sidebar_position: 3
 ---
 
-# SMTP notifications
+# Notifications
 
-SMTP is the currently implemented notification channel. Configuration is per Docker host and stored encrypted in Dockman's database.
+Notification configuration is per Docker host. SMTP passwords, endpoint URLs, tokens and API keys are encrypted in Dockman's database and are never returned by the API.
+
+## Supported channels
+
+- SMTP;
+- generic JSON webhook;
+- Gotify;
+- ntfy;
+- Discord webhooks;
+- Apprise API.
+
+Every destination is isolated. A failing scan destination is recorded and remains eligible at the next scheduled scan without preventing delivery to other configured channels or failing the update cycle itself. Execution delivery failures remain visible in history and can be tested explicitly; Dockman does not create a hidden retry loop.
+
+The HTTP transports use POST, bounded payloads/responses and a ten-second timeout. Redirects are refused. HTTPS is required by default; private-network or plain-HTTP endpoints require an explicit opt-in. Loopback, link-local and metadata destinations remain blocked.
+
+## SMTP
 
 Supported transport modes:
 
@@ -24,7 +39,7 @@ Separate choices control notifications for:
 - failed executions and rollbacks;
 - scan or delivery errors.
 
-Unchanged scan results are fingerprinted to avoid repeated identical messages. Delivery history is bounded and visible in the Updates view.
+Unchanged scan results are fingerprinted independently for every channel to avoid repeated identical messages. A failed channel remains eligible for retry while a successful channel is not duplicated. Delivery history is bounded and visible in the Updates view.
 
 ## Deliverability
 
@@ -32,12 +47,31 @@ Dockman emits standards-compliant messages, but final inbox placement also depen
 
 ## Test procedure
 
-1. Save the SMTP configuration.
-2. Send a test message.
+1. Save the SMTP or HTTP-channel configuration.
+2. Send a test message from that channel.
 3. Verify sender, recipient, transport security and inbox placement.
 4. Trigger an enrolled update check and a protected execution separately.
 5. Confirm both delivery-history entries and expected messages.
 
-## Planned channels
+### Gotify example
 
-Webhook, Gotify, ntfy, Discord and Apprise are not implemented yet. They belong to the next notification expansion and must reuse the encrypted credential vault, bounded delivery history, deduplication and per-event routing rather than introduce separate background loops.
+1. In Gotify, create an application and copy its application token.
+2. In **Updates → Channels**, choose **Gotify**.
+3. Enter the server base URL, without `/message`, and the token.
+4. For an HTTPS service on a public address, leave private/HTTP access disabled. Enable it only for a trusted LAN address or HTTP-only installation.
+5. Save, then use **Send test**.
+
+### Generic webhook envelope
+
+```json
+{
+  "kind": "update",
+  "host": "local",
+  "title": "Dockman updates on local - 2 updated - 0 failed",
+  "message": "Dockman automatic image update summary…",
+  "severity": "success",
+  "timestamp": "2026-08-05T12:00:00Z"
+}
+```
+
+The generic webhook supports an optional bearer token or HTTP Basic credentials. Apprise expects its persistent API URL and configuration key; provider-specific destination URLs remain managed by Apprise itself.

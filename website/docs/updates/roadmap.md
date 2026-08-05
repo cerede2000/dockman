@@ -17,14 +17,11 @@ The implementation test plans in this repository use the following delivered seq
 | 6 | ✅ | Persistent pause/resume, manual cycle, execution limits and interrupted-run recovery |
 | 7 | ✅ | Safe previous-image cleanup with configurable retention and Prune integration |
 | 8 | ✅ | Informative semantic-version discovery and bulk policy editing |
+| 9 | ✅ | Isolated webhook, Gotify, ntfy, Discord and Apprise notification channels |
 
 Post-lot stabilization also delivered background operations, self-update checking, public-registry challenge support, local-image classification, Buildx lifecycle cleanup, UI progress and update-reference/stat fixes.
 
 ## Remaining roadmap
-
-### Notification expansion
-
-Webhook, Gotify, ntfy, Discord and Apprise adapters remain to be implemented. The target design is a common event envelope, per-event routing, encrypted secrets, retries/backoff, deduplication and bounded delivery history. SMTP remains the only current channel.
 
 ### Private registries
 
@@ -33,6 +30,10 @@ Private-registry credentials remain deliberately deferred. The implementation mu
 ### Advanced strategies
 
 Maintenance windows beyond per-target cron, canary batches, dependency/priority groups, concurrency rules and enforceable semantic version constraints remain future work. Current version discovery is informative and never rewrites Compose tags.
+
+### Git inbound webhooks
+
+Git synchronization currently uses bounded polling plus manual checks. Signed inbound provider webhooks remain a separate security-sensitive lot; see [Git webhook gap analysis](../git-sync/webhooks.md).
 
 ### Documentation/release
 
