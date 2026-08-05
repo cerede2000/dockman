@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/RA341/dockman/pkg/fileutil"
 	"github.com/RA341/dockman/pkg/syncmap"
+	"github.com/docker/docker/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/rs/zerolog/log"
@@ -109,9 +111,7 @@ func (s *Service) StatsStream(ctx context.Context, containers []container.Summar
 
 			stat, err := s.statsFor(cctx, cache, cont)
 			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					log.Warn().Err(err).Str("container", cont.ID[:12]).Msg("could not collect stats, skipping...")
-				}
+				logStatsCollectionError(err, cont.ID)
 				return
 			}
 			select {
@@ -147,9 +147,7 @@ func (s *Service) collectStats(ctx context.Context, containers []container.Summa
 
 			stat, err := s.statsFor(ctx, cache, cont)
 			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					log.Warn().Err(err).Str("container", cont.ID[:12]).Msg("could not collect stats, skipping...")
-				}
+				logStatsCollectionError(err, cont.ID)
 				return
 			}
 			results[i] = &stat
@@ -268,15 +266,44 @@ func (s *Service) readStats(ctx context.Context, id string) (container.StatsResp
 		IncludePreviousSample: false,
 	})
 	if err != nil {
-		return container.StatsResponse{}, fmt.Errorf("failed to get stats for cont %s: %w", id[:12], err)
+		return container.StatsResponse{}, fmt.Errorf("failed to get stats for cont %s: %w", shortContainerID(id), err)
 	}
 	defer fileutil.Close(resp.Body)
 
 	var statsJSON container.StatsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&statsJSON); err != nil {
-		return container.StatsResponse{}, fmt.Errorf("failed to unmarshal body for cont %s: %w", id[:12], err)
+		return container.StatsResponse{}, fmt.Errorf("failed to unmarshal body for cont %s: %w", shortContainerID(id), err)
 	}
 	return statsJSON, nil
+}
+
+func shortContainerID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+func transientStatsError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errdefs.IsNotFound(err) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such container") ||
+		strings.Contains(message, "container is restarting") ||
+		strings.Contains(message, "invalid id: id is empty")
+}
+
+func logStatsCollectionError(err error, id string) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	event := log.Warn()
+	if transientStatsError(err) {
+		event = log.Debug()
+	}
+	event.Err(err).Str("container", shortContainerID(id)).Msg("could not collect container stats; sample skipped")
 }
 
 func (s *Service) inspectDataFor(ctx context.Context, cache *hostStatsCache, info container.Summary) (inspectData, error) {

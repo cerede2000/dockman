@@ -30,3 +30,20 @@ func TestSummaryNameFallsBackToShortID(t *testing.T) {
 	require.Equal(t, "0123456789ab", summaryName(container.Summary{ID: "0123456789abcdef"}))
 	require.Equal(t, "named", summaryName(container.Summary{ID: "0123456789abcdef", Names: []string{"/named"}}))
 }
+
+func TestPreparedUpdateKeepsScannedTagAfterPullMovesIt(t *testing.T) {
+	current := container.Summary{Image: "sha256:old-image-without-a-tag"}
+	options := ForceUpdateOptions{ImagePrepared: true, ImageReference: "linuxserver/prowlarr:latest"}
+	require.Equal(t, "linuxserver/prowlarr:latest", forceUpdateImageReference(current, options))
+	require.Equal(t, "sha256:old-image-without-a-tag", forceUpdateImageReference(current, ForceUpdateOptions{}))
+	require.Equal(t, "sha256:old-image-without-a-tag", forceUpdateImageReference(current, ForceUpdateOptions{ImageReference: "unprepared:latest"}))
+}
+
+func TestAbsentOptionalHealthcheckLabelsAreNoOps(t *testing.T) {
+	service := &Service{}
+	inspect := &container.InspectResponse{Config: &container.Config{Labels: map[string]string{}}}
+	require.NoError(t, service.containerHealthCheckUptime(t.Context(), "unused", inspect))
+	require.NoError(t, service.containerHealthCheckPing(t.Context(), inspect))
+	require.NoError(t, service.containerHealthCheckUptime(t.Context(), "unused", nil))
+	require.NoError(t, service.containerHealthCheckPing(t.Context(), nil))
+}

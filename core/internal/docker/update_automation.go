@@ -191,7 +191,7 @@ func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automat
 		applied := make([]appliedStackUpdate, 0, len(targets))
 		for index, target := range targets {
 			result, updateErr := dkSrv.Updater.ForceUpdateContainer(ctx, func(context.Context, string) error { return nil }, logs, target.ContainerID, updater.ForceUpdateOptions{
-				VerifyHealth: target.RollbackEnabled, ImagePrepared: true,
+				VerifyHealth: target.RollbackEnabled, ImagePrepared: true, ImageReference: target.Image,
 			})
 			outcomes[index].PreviousImage = result.PreviousImage
 			if updateErr == nil {
@@ -210,8 +210,10 @@ func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automat
 				outcomes[index].State = updater.ExecutionRolledBack
 			}
 			markUnprocessedStackTargets(outcomes, index+1, "stack transaction stopped after a member failed")
-			if rollbackEnabled {
+			if rollbackEnabled && len(applied) > 0 {
 				rollbackAppliedStackTargets(ctx, dkSrv, unit, outcomes, applied, index, logs)
+			} else if len(applied) == 0 {
+				_, _ = fmt.Fprintln(logs, "No stack member was changed; rollback was not needed")
 			} else if len(applied) > 0 {
 				outcomes[index].Message += "; stack rollback is disabled, previously updated members were kept"
 			}

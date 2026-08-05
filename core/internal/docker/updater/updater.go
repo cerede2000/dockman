@@ -92,8 +92,9 @@ func (u *Service) ContainersUpdateByContainerID(ctx context.Context, containerID
 type ImagePuller func(ctx context.Context, imageTag string) error
 
 type ForceUpdateOptions struct {
-	VerifyHealth  bool
-	ImagePrepared bool
+	VerifyHealth   bool
+	ImagePrepared  bool
+	ImageReference string
 }
 
 type ForceUpdateResult struct {
@@ -189,7 +190,7 @@ func (u *Service) ForceUpdateContainer(ctx context.Context, pull ImagePuller, ou
 }
 
 func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, out io.Writer, cur container.Summary, options ForceUpdateOptions) (ForceUpdateResult, error) {
-	name, imgTag := summaryName(cur), cur.Image
+	name, imgTag := summaryName(cur), forceUpdateImageReference(cur, options)
 	result := ForceUpdateResult{ContainerID: cur.ID, ContainerName: name, Image: imgTag, PreviousImage: cur.ImageID}
 	report := func(format string, args ...any) { _, _ = fmt.Fprintf(out, format+"\r\n", args...) }
 	if imgTag == "" || strings.HasPrefix(imgTag, "sha256:") {
@@ -225,6 +226,20 @@ func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, ou
 	result.Updated = true
 	report("%s updated successfully", name)
 	return result, nil
+}
+
+// forceUpdateImageReference keeps the registry reference captured by the
+// update scan authoritative for a preloaded transaction. Pulling `:latest`
+// moves that tag to the new image, so a fresh Docker container listing may
+// expose the old running image only as sha256:<id>. That digest is rollback
+// material, not evidence that the Compose service is locally built.
+func forceUpdateImageReference(cur container.Summary, options ForceUpdateOptions) string {
+	if options.ImagePrepared {
+		if prepared := strings.TrimSpace(options.ImageReference); prepared != "" {
+			return prepared
+		}
+	}
+	return strings.TrimSpace(cur.Image)
 }
 
 // ContainersUpdateByImage finds all containers using the specified image,
@@ -639,10 +654,16 @@ func (u *Service) ContainerHealthCheck(ctx context.Context, containerID string, 
 const DockmanHealthCheckUptimeLabel = "dockman.update.healthcheck.uptime"
 
 func (u *Service) containerHealthCheckUptime(ctx context.Context, containerID string, c *container.InspectResponse) error {
-	lab := c.Config.Labels[DockmanHealthCheckUptimeLabel]
+	if c == nil || c.Config == nil {
+		return nil
+	}
+	lab := strings.TrimSpace(c.Config.Labels[DockmanHealthCheckUptimeLabel])
+	if lab == "" {
+		return nil
+	}
 	expectedUptime, err := time.ParseDuration(lab)
 	if err != nil {
-		log.Warn().Msg("invalid time format skipping uptime check")
+		log.Warn().Str("value", lab).Msg("invalid configured uptime healthcheck duration; skipping check")
 		return nil
 	}
 
@@ -688,17 +709,23 @@ const DockmanHealthCheckPingLabel = "dockman.update.healthcheck.ping"
 const DockmanHealthCheckPingTimeLabel = "dockman.update.healthcheck.time"
 
 func (u *Service) containerHealthCheckPing(ctx context.Context, c *container.InspectResponse) error {
+	if c == nil || c.Config == nil {
+		return nil
+	}
 	endpoint := c.Config.Labels[DockmanHealthCheckPingLabel]
 	if endpoint == "" {
-		log.Warn().Msg("healthcheck ping endpoint is empty skipping check")
 		return nil
 	}
 
-	val := c.Config.Labels[DockmanHealthCheckPingTimeLabel]
-	pingAfter, err := time.ParseDuration(val)
-	if err != nil {
-		log.Warn().Msg("invalid time format skipping ping endpoint check")
-		return nil
+	val := strings.TrimSpace(c.Config.Labels[DockmanHealthCheckPingTimeLabel])
+	pingAfter := time.Duration(0)
+	if val != "" {
+		var err error
+		pingAfter, err = time.ParseDuration(val)
+		if err != nil {
+			log.Warn().Str("value", val).Msg("invalid configured ping healthcheck delay; skipping check")
+			return nil
+		}
 	}
 
 	if pingAfter < 0 || pingAfter > 10*time.Minute {
