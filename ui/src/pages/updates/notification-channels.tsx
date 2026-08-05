@@ -47,7 +47,7 @@ const eventGroups = [
         ['git.deploy.success', 'Auto-deploy succeeded'], ['git.deploy.failure', 'Auto-deploy failed'], ['git.rollback', 'Rollback performed'],
     ]},
     {label: 'Container lifecycle', events: [
-        ['container.restart', 'Unexpected restart'], ['container.oom', 'Out of memory (OOM)'], ['container.unhealthy', 'Health became unhealthy'],
+        ['container.restart', 'Container restarted'], ['container.oom', 'Out of memory (OOM)'], ['container.unhealthy', 'Health became unhealthy'],
     ]},
 ] as const;
 
