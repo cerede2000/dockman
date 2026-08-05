@@ -19,7 +19,9 @@ import (
 
 const (
 	RuntimeDirectory = ".secrets"
+	HistoryDirectory = ".history"
 	MaxSecretBytes   = 1 << 20
+	HistoryLimit     = 3
 )
 
 var (
@@ -41,12 +43,42 @@ type Store interface {
 	Read(host, stackPath, name string) ([]byte, error)
 	Write(host, stackPath, name string, value []byte) (Metadata, error)
 	Delete(host, stackPath, name string) error
+	ListHistory(host, stackPath, name string) ([]Version, error)
+	Restore(host, stackPath, name, version string) (Metadata, error)
+	AnalyzeCompose(host, stackPath string) (ComposeAnalysis, error)
+	ListArchived(host, stackPath string) ([]ArchivedSecret, error)
+}
+
+type ComposeSecret struct {
+	Name     string   `json:"name"`
+	File     string   `json:"file,omitempty"`
+	Services []string `json:"services"`
+	External bool     `json:"external"`
+	Managed  bool     `json:"managed"`
+	Exists   bool     `json:"exists"`
+	Issue    string   `json:"issue,omitempty"`
+}
+
+type ComposeAnalysis struct {
+	Manifests []string        `json:"manifests"`
+	Secrets   []ComposeSecret `json:"secrets"`
 }
 
 type Metadata struct {
 	Name       string    `json:"name"`
 	Size       int64     `json:"size"`
 	ModifiedAt time.Time `json:"modifiedAt"`
+}
+
+type Version struct {
+	ID         string    `json:"id"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modifiedAt"`
+}
+
+type ArchivedSecret struct {
+	Name     string `json:"name"`
+	Versions int    `json:"versions"`
 }
 
 type PlainFileStore struct{ resolve FileSystemProvider }
@@ -137,6 +169,9 @@ func (s *PlainFileStore) Write(host, stackPath, name string, value []byte) (Meta
 	if err = stackFS.Chmod(directory, 0o700); err != nil {
 		return Metadata{}, fmt.Errorf("secure runtime secrets directory: %w", err)
 	}
+	if err = s.backupExisting(stackFS, directory, name); err != nil {
+		return Metadata{}, err
+	}
 
 	temporary, err := temporaryName()
 	if err != nil {
@@ -194,8 +229,179 @@ func (s *PlainFileStore) Delete(host, stackPath, name string) error {
 	if !info.Mode().IsRegular() {
 		return errors.New("runtime secret is not a regular file")
 	}
+	if err = s.backupExisting(stackFS, stackFS.Join(root, RuntimeDirectory), name); err != nil {
+		return err
+	}
 	if err = stackFS.RemoveAll(path); err != nil {
 		return fmt.Errorf("delete runtime secret: %w", err)
+	}
+	return nil
+}
+
+func (s *PlainFileStore) ListHistory(host, stackPath, name string) ([]Version, error) {
+	if !validSecretName(name) {
+		return nil, ErrInvalidName
+	}
+	stackFS, root, err := s.resolveStack(host, stackPath)
+	if err != nil {
+		return nil, err
+	}
+	directory := stackFS.Join(root, RuntimeDirectory, HistoryDirectory, name)
+	entries, err := stackFS.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []Version{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list runtime secret history: %w", err)
+	}
+	versions := make([]Version, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !validVersionID(entry.Name()) {
+			continue
+		}
+		info, statErr := stackFS.Lstat(stackFS.Join(directory, entry.Name()))
+		if statErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		versions = append(versions, Version{ID: entry.Name(), Size: info.Size(), ModifiedAt: info.ModTime().UTC()})
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i].ID > versions[j].ID })
+	return versions, nil
+}
+
+func (s *PlainFileStore) ListArchived(host, stackPath string) ([]ArchivedSecret, error) {
+	stackFS, root, err := s.resolveStack(host, stackPath)
+	if err != nil {
+		return nil, err
+	}
+	directory := stackFS.Join(root, RuntimeDirectory, HistoryDirectory)
+	entries, err := stackFS.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []ArchivedSecret{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list archived runtime secrets: %w", err)
+	}
+	current, err := s.List(host, stackPath)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]struct{}, len(current))
+	for _, item := range current {
+		present[item.Name] = struct{}{}
+	}
+	result := make([]ArchivedSecret, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || !validSecretName(entry.Name()) {
+			continue
+		}
+		if _, ok := present[entry.Name()]; ok {
+			continue
+		}
+		versions, listErr := s.ListHistory(host, stackPath, entry.Name())
+		if listErr == nil && len(versions) > 0 {
+			result = append(result, ArchivedSecret{Name: entry.Name(), Versions: len(versions)})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name) })
+	return result, nil
+}
+
+func (s *PlainFileStore) Restore(host, stackPath, name, version string) (Metadata, error) {
+	if !validSecretName(name) || !validVersionID(version) {
+		return Metadata{}, ErrInvalidName
+	}
+	stackFS, root, err := s.resolveStack(host, stackPath)
+	if err != nil {
+		return Metadata{}, err
+	}
+	path := stackFS.Join(root, RuntimeDirectory, HistoryDirectory, name, version)
+	info, err := stackFS.Lstat(path)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("inspect runtime secret version: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > MaxSecretBytes {
+		return Metadata{}, errors.New("runtime secret version is not a valid regular file")
+	}
+	value, err := stackFS.ReadFile(path)
+	if err != nil {
+		return Metadata{}, fmt.Errorf("read runtime secret version: %w", err)
+	}
+	defer clear(value)
+	return s.Write(host, stackPath, name, value)
+}
+
+func (s *PlainFileStore) backupExisting(stackFS filesystem.FileSystem, directory, name string) error {
+	source := stackFS.Join(directory, name)
+	info, err := stackFS.Lstat(source)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect runtime secret before backup: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > MaxSecretBytes {
+		return errors.New("runtime secret cannot be backed up safely")
+	}
+	value, err := stackFS.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("read runtime secret before backup: %w", err)
+	}
+	defer clear(value)
+	history := stackFS.Join(directory, HistoryDirectory, name)
+	if err = stackFS.MkdirAll(history, 0o700); err != nil {
+		return fmt.Errorf("create runtime secret history: %w", err)
+	}
+	if err = stackFS.Chmod(stackFS.Join(directory, HistoryDirectory), 0o700); err != nil {
+		return fmt.Errorf("secure runtime secret history root: %w", err)
+	}
+	if err = stackFS.Chmod(history, 0o700); err != nil {
+		return fmt.Errorf("secure runtime secret history: %w", err)
+	}
+	random, err := temporaryName()
+	if err != nil {
+		return err
+	}
+	version := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + strings.TrimPrefix(random, ".dockman-secret-")
+	path := stackFS.Join(history, version)
+	file, err := stackFS.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create runtime secret backup: %w", err)
+	}
+	if _, err = file.Write(value); err != nil {
+		_ = file.Close()
+		_ = stackFS.RemoveAll(path)
+		return fmt.Errorf("write runtime secret backup: %w", err)
+	}
+	if err = file.Close(); err != nil {
+		_ = stackFS.RemoveAll(path)
+		return fmt.Errorf("close runtime secret backup: %w", err)
+	}
+	if err = stackFS.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("secure runtime secret backup: %w", err)
+	}
+	return pruneHistory(stackFS, history)
+}
+
+func pruneHistory(stackFS filesystem.FileSystem, directory string) error {
+	entries, err := stackFS.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("list runtime secret history for retention: %w", err)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() && validVersionID(entry.Name()) {
+			ids = append(ids, entry.Name())
+		}
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
+	if len(ids) <= HistoryLimit {
+		return nil
+	}
+	for _, id := range ids[HistoryLimit:] {
+		if err = stackFS.RemoveAll(stackFS.Join(directory, id)); err != nil {
+			return fmt.Errorf("prune runtime secret history: %w", err)
+		}
 	}
 	return nil
 }
@@ -225,6 +431,10 @@ func (s *PlainFileStore) resolveStack(host, stackPath string) (filesystem.FileSy
 
 func validSecretName(name string) bool {
 	return secretNamePattern.MatchString(name) && name != "." && name != ".."
+}
+
+func validVersionID(value string) bool {
+	return len(value) > 20 && len(value) < 80 && !strings.ContainsAny(value, `/\\`) && value != "." && value != ".."
 }
 
 func temporaryName() (string, error) {

@@ -2,6 +2,7 @@
 /**/bin
 /**/node_modules
 /**/.dockman.yaml
+/**/.secrets/
 compose/*
 /**/test-compose
 

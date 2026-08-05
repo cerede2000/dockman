@@ -100,3 +100,72 @@ func TestPlainFileStoreRequiresExplicitExistingStackDirectory(t *testing.T) {
 	_, err := store.List("local", "compose/apps/missing")
 	require.ErrorIs(t, err, ErrInvalidStackPath)
 }
+
+func TestPlainFileStoreKeepsThreeSecureVersionsAndRestores(t *testing.T) {
+	store, roots := testStore(t)
+	for _, value := range []string{"one", "two", "three", "four", "five"} {
+		_, err := store.Write("local", "compose/apps/demo", "token", []byte(value))
+		require.NoError(t, err)
+	}
+	versions, err := store.ListHistory("local", "compose/apps/demo", "token")
+	require.NoError(t, err)
+	require.Len(t, versions, HistoryLimit)
+	for _, version := range versions {
+		info, statErr := os.Stat(filepath.Join(roots["local"], "apps", "demo", RuntimeDirectory, HistoryDirectory, "token", version.ID))
+		require.NoError(t, statErr)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+	_, err = store.Restore("local", "compose/apps/demo", "token", versions[len(versions)-1].ID)
+	require.NoError(t, err)
+	value, err := store.Read("local", "compose/apps/demo", "token")
+	require.NoError(t, err)
+	require.Equal(t, "two", string(value))
+}
+
+func TestPlainFileStoreListsAndRecoversDeletedSecret(t *testing.T) {
+	store, _ := testStore(t)
+	_, err := store.Write("local", "compose/apps/demo", "deleted_token", []byte("recover-me"))
+	require.NoError(t, err)
+	require.NoError(t, store.Delete("local", "compose/apps/demo", "deleted_token"))
+	archived, err := store.ListArchived("local", "compose/apps/demo")
+	require.NoError(t, err)
+	require.Equal(t, []ArchivedSecret{{Name: "deleted_token", Versions: 1}}, archived)
+	versions, err := store.ListHistory("local", "compose/apps/demo", "deleted_token")
+	require.NoError(t, err)
+	_, err = store.Restore("local", "compose/apps/demo", "deleted_token", versions[0].ID)
+	require.NoError(t, err)
+	value, err := store.Read("local", "compose/apps/demo", "deleted_token")
+	require.NoError(t, err)
+	require.Equal(t, "recover-me", string(value))
+}
+
+func TestPlainFileStoreAnalyzesComposeSecretReferences(t *testing.T) {
+	store, roots := testStore(t)
+	compose := `services:
+  api:
+    image: alpine
+    secrets:
+      - database_password
+      - source: external_token
+secrets:
+  database_password:
+    file: ./.secrets/database_password
+  external_token:
+    external: true
+  misplaced:
+    file: ../misplaced
+`
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
+	_, err := store.Write("local", "compose/apps/demo", "database_password", []byte("value"))
+	require.NoError(t, err)
+	analysis, err := store.AnalyzeCompose("local", "compose/apps/demo")
+	require.NoError(t, err)
+	require.Equal(t, []string{"compose.yml"}, analysis.Manifests)
+	require.Len(t, analysis.Secrets, 3)
+	require.Equal(t, "database_password", analysis.Secrets[0].Name)
+	require.True(t, analysis.Secrets[0].Managed)
+	require.True(t, analysis.Secrets[0].Exists)
+	require.Equal(t, []string{"api"}, analysis.Secrets[0].Services)
+	require.True(t, analysis.Secrets[1].External)
+	require.False(t, analysis.Secrets[2].Managed)
+}

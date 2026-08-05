@@ -30,15 +30,71 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", h.status)
 	mux.HandleFunc("GET /", h.list)
+	mux.HandleFunc("GET /compose", h.compose)
+	mux.HandleFunc("GET /history", h.archived)
 	mux.HandleFunc("GET /{name}", h.read)
 	mux.HandleFunc("PUT /{name}", h.write)
 	mux.HandleFunc("DELETE /{name}", h.delete)
+	mux.HandleFunc("GET /{name}/history", h.history)
+	mux.HandleFunc("POST /{name}/history/{version}/restore", h.restore)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) archived(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListArchived(host, r.URL.Query().Get("stack"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *HTTPHandler) compose(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.AnalyzeCompose(host, r.URL.Query().Get("stack"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) history(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListHistory(host, r.URL.Query().Get("stack"), r.PathValue("name"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *HTTPHandler) restore(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	item, err := h.service.Restore(host, r.URL.Query().Get("stack"), r.PathValue("name"), r.PathValue("version"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (h *HTTPHandler) status(w http.ResponseWriter, r *http.Request) {

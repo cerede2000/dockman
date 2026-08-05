@@ -21,3 +21,19 @@ func (s *Service) Write(host, stackPath, name string, value []byte) (Metadata, e
 func (s *Service) Delete(host, stackPath, name string) error {
 	return s.runtime.Delete(host, stackPath, name)
 }
+
+func (s *Service) ListHistory(host, stackPath, name string) ([]Version, error) {
+	return s.runtime.ListHistory(host, stackPath, name)
+}
+
+func (s *Service) Restore(host, stackPath, name, version string) (Metadata, error) {
+	return s.runtime.Restore(host, stackPath, name, version)
+}
+
+func (s *Service) AnalyzeCompose(host, stackPath string) (ComposeAnalysis, error) {
+	return s.runtime.AnalyzeCompose(host, stackPath)
+}
+
+func (s *Service) ListArchived(host, stackPath string) ([]ArchivedSecret, error) {
+	return s.runtime.ListArchived(host, stackPath)
+}

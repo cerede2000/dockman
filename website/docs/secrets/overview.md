@@ -45,6 +45,32 @@ Open **Settings → Secrets**, verify the active Docker host, then enter an alia
 - replacing a value never writes it to Dockman's SQLite database;
 - deleting a secret does not restart or recreate a container automatically.
 
+The eye button reveals the value only inside the explicit edit dialog. Multiline
+values remain masked until that button is used.
+
+## Compose checks and bounded history
+
+When a stack is loaded, Dockman reads only conventional manifests located at
+that exact stack root (`compose.yml`, `compose.yaml`, `docker-compose.yml` or
+`docker-compose.yaml`). It reports:
+
+- which services consume each declared secret;
+- whether the source is external or file-backed;
+- whether a file-backed source follows `./.secrets/<secret-name>`;
+- whether the expected runtime file exists.
+
+The check is request-driven: it does not recursively scan stacks and does not
+add a background watcher.
+
+Before replacing or deleting a value, Dockman saves the previous value under
+`.secrets/.history/`. Only the three latest versions per secret are retained.
+History directories use mode 0700 and version files use mode 0600. A deleted
+secret can be recovered from **Recover deleted secrets**. Restoring a version
+first preserves the current value when one exists.
+
+This history is a short operational safety net, not a backup strategy. It is
+stored on the same host and storage as the active secret.
+
 Recreate affected services after changing a mounted secret:
 
 ```console
@@ -65,7 +91,7 @@ Encrypted `secrets.sops.yaml` sources will be supported separately. They must ne
 
 Every operation is scoped by both Docker host and alias-qualified stack path. `local:compose/myapp` and `remote:compose/myapp` are distinct stores. Remote SSH hosts use their existing SFTP filesystem; secret values are not copied into Dockman's local configuration directory.
 
-There is no secret polling, background scheduler or resident plaintext cache. CPU overhead is zero while the feature is idle, and memory usage is bounded to one value with a 1 MiB maximum during an explicit operation.
+There is no secret polling, background scheduler or resident plaintext cache. CPU overhead is zero while the feature is idle, and memory usage is bounded to one value with a 1 MiB maximum during an explicit operation. Compose analysis reads at most four 4 MiB manifests and runs only when the user loads or refreshes a stack.
 
 ## Backup responsibility
 

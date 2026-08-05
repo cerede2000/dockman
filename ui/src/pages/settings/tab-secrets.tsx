@@ -4,7 +4,7 @@ import {
     IconButton, InputAdornment, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
     TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
-import {Add, DeleteOutlined, KeyOutlined, Refresh, Visibility, VisibilityOff} from "@mui/icons-material";
+import {Add, DeleteOutlined, History, KeyOutlined, Refresh, Restore, Visibility, VisibilityOff} from "@mui/icons-material";
 import {getBaseUrl} from "../../lib/api.ts";
 import {useHostStore} from "../compose/state/files.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
@@ -20,6 +20,13 @@ interface SecretForm {
     name: string;
     value: string;
 }
+
+interface SecretVersion { id: string; size: number; modifiedAt: string }
+interface ArchivedSecret { name: string; versions: number }
+interface ComposeSecretReference {
+    name: string; file?: string; services: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
+}
+interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
 
 const initialForm: SecretForm = {name: "", value: ""};
 
@@ -41,6 +48,11 @@ export default function TabSecrets() {
     const [visible, setVisible] = useState(false);
     const [deleteItem, setDeleteItem] = useState<RuntimeSecret | null>(null);
     const [confirmation, setConfirmation] = useState("");
+    const [analysis, setAnalysis] = useState<ComposeAnalysis | null>(null);
+    const [analysisError, setAnalysisError] = useState("");
+    const [historyItem, setHistoryItem] = useState<RuntimeSecret | null>(null);
+    const [versions, setVersions] = useState<SecretVersion[]>([]);
+    const [archived, setArchived] = useState<ArchivedSecret[]>([]);
 
     const base = useMemo(() => `${getBaseUrl("host", host)}/secrets`, [host]);
 
@@ -51,13 +63,27 @@ export default function TabSecrets() {
         }
         setLoading(true);
         try {
-            const response = await fetch(`${base}/?stack=${encodeURIComponent(requestedPath)}`);
+            const [response, composeResponse, archivedResponse] = await Promise.all([
+                fetch(`${base}/?stack=${encodeURIComponent(requestedPath)}`),
+                fetch(`${base}/compose?stack=${encodeURIComponent(requestedPath)}`),
+                fetch(`${base}/history?stack=${encodeURIComponent(requestedPath)}`),
+            ]);
             if (!response.ok) throw new Error(await responseError(response));
             setItems(await response.json() as RuntimeSecret[]);
+            if (composeResponse.ok) {
+                setAnalysis(await composeResponse.json() as ComposeAnalysis);
+                setAnalysisError("");
+            } else {
+                setAnalysis(null);
+                setAnalysisError(await responseError(composeResponse));
+            }
+            setArchived(archivedResponse.ok ? await archivedResponse.json() as ArchivedSecret[] : []);
             setLoadedPath(requestedPath);
         } catch (error) {
             setItems([]);
             setLoadedPath("");
+            setAnalysis(null);
+            setArchived([]);
             showError(`Unable to load secrets: ${(error as Error).message}`);
         } finally {
             setLoading(false);
@@ -68,6 +94,9 @@ export default function TabSecrets() {
         setItems([]);
         setLoadedPath("");
         setStackPath("");
+        setAnalysis(null);
+        setAnalysisError("");
+        setArchived([]);
     }, [host]);
 
     const openCreate = () => {
@@ -100,6 +129,43 @@ export default function TabSecrets() {
         setForm(initialForm);
         setVisible(false);
         setFormOpen(false);
+    };
+
+    const openCreateNamed = (name: string) => {
+        setForm({name, value: ""});
+        setVisible(false);
+        setFormOpen(true);
+    };
+
+    const openHistory = async (item: RuntimeSecret) => {
+        setSaving(true);
+        try {
+            const response = await fetch(`${base}/${encodeURIComponent(item.name)}/history?stack=${encodeURIComponent(loadedPath)}`);
+            if (!response.ok) throw new Error(await responseError(response));
+            setVersions(await response.json() as SecretVersion[]);
+            setHistoryItem(item);
+        } catch (error) {
+            showError(`Unable to load secret history: ${(error as Error).message}`);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const restoreVersion = async (version: SecretVersion) => {
+        if (!historyItem) return;
+        setSaving(true);
+        try {
+            const response = await fetch(`${base}/${encodeURIComponent(historyItem.name)}/history/${encodeURIComponent(version.id)}/restore?stack=${encodeURIComponent(loadedPath)}`, {method: "POST"});
+            if (!response.ok) throw new Error(await responseError(response));
+            setHistoryItem(null);
+            setVersions([]);
+            await load(loadedPath);
+            showSuccess("Previous runtime secret version restored securely.");
+        } catch (error) {
+            showError(`Unable to restore secret: ${(error as Error).message}`);
+        } finally {
+            setSaving(false);
+        }
     };
 
     const save = async () => {
@@ -172,6 +238,7 @@ export default function TabSecrets() {
                         <TableCell>{new Date(item.modifiedAt).toLocaleString()}</TableCell>
                         <TableCell align="right">
                             <Tooltip title="Reveal or replace"><IconButton size="small" onClick={() => void openEdit(item)} disabled={saving}><Visibility/></IconButton></Tooltip>
+                            <Tooltip title="Version history"><IconButton size="small" onClick={() => void openHistory(item)} disabled={saving}><History/></IconButton></Tooltip>
                             <Tooltip title="Delete"><IconButton size="small" color="error" onClick={() => {setDeleteItem(item); setConfirmation("");}} disabled={saving}><DeleteOutlined/></IconButton></Tooltip>
                         </TableCell>
                     </TableRow>)}
@@ -181,18 +248,56 @@ export default function TabSecrets() {
             </Table>
         </TableContainer>
 
+        {archived.length > 0 && <Paper variant="outlined" sx={{p: 2, mt: 2}}>
+            <Typography variant="subtitle1" sx={{fontWeight: 750}}>Recover deleted secrets</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{mb: 1}}>These values remain only in the bounded local history for this host.</Typography>
+            <Stack direction="row" spacing={1} sx={{flexWrap: "wrap"}}>{archived.map(item => <Chip key={item.name} icon={<History/>} label={`${item.name} · ${item.versions}`} onClick={() => void openHistory({name: item.name, size: 0, modifiedAt: ""})}/>)}</Stack>
+        </Paper>}
+
+        {loadedPath && <Paper variant="outlined" sx={{p: 2, mt: 2}}>
+            <Typography variant="subtitle1" sx={{fontWeight: 750, mb: 1}}>Compose references</Typography>
+            {analysisError && <Alert severity="warning">Compose analysis is unavailable: {analysisError}</Alert>}
+            {analysis && analysis.manifests.length === 0 && <Alert severity="info">No conventional Compose manifest was found at this stack root.</Alert>}
+            {analysis && analysis.manifests.length > 0 && <>
+                <Typography variant="caption" color="text.secondary">Analyzed: {analysis.manifests.join(", ")}</Typography>
+                <Table size="small" sx={{mt: 1}}><TableHead><TableRow><TableCell>Secret</TableCell><TableCell>Services</TableCell><TableCell>Source</TableCell><TableCell>Status</TableCell><TableCell/></TableRow></TableHead>
+                    <TableBody>{analysis.secrets.map(reference => <TableRow key={reference.name}>
+                        <TableCell sx={{fontFamily: "monospace"}}>{reference.name}</TableCell>
+                        <TableCell>{reference.services.join(", ") || "—"}</TableCell>
+                        <TableCell sx={{fontFamily: "monospace"}}>{reference.external ? "external" : reference.file || "—"}</TableCell>
+                        <TableCell><Chip size="small" color={reference.external || reference.exists ? "success" : reference.managed ? "warning" : "default"} variant="outlined" label={reference.external ? "external" : reference.exists ? "ready" : reference.issue || "unmanaged"}/></TableCell>
+                        <TableCell align="right">{reference.managed && !reference.exists && <Button size="small" onClick={() => openCreateNamed(reference.name)}>Create</Button>}</TableCell>
+                    </TableRow>)}</TableBody>
+                </Table>
+            </>}
+        </Paper>}
+
         <Dialog open={formOpen} onClose={saving ? undefined : closeForm} fullWidth maxWidth="sm">
             <DialogTitle>{items.some(item => item.name === form.name) ? "Edit runtime secret" : "Create runtime secret"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
                 <TextField label="Name" value={form.name} disabled={saving || items.some(item => item.name === form.name)}
                            helperText="Letters, numbers, dots, underscores and hyphens; maximum 128 characters."
                            onChange={event => setForm(current => ({...current, name: event.target.value}))}/>
-                <TextField label="Value" multiline minRows={5} type={visible ? "text" : "password"} value={form.value}
+                <TextField label="Value" multiline minRows={5} value={form.value}
                            onChange={event => setForm(current => ({...current, value: event.target.value}))}
-                           slotProps={{input: {endAdornment: <InputAdornment position="end"><IconButton onClick={() => setVisible(value => !value)}>{visible ? <VisibilityOff/> : <Visibility/>}</IconButton></InputAdornment>}}}/>
+                           sx={{"& .MuiInputBase-input": {WebkitTextSecurity: visible ? "none" : "disc"}}}
+                           slotProps={{input: {endAdornment: <InputAdornment position="end"><IconButton aria-label={visible ? "Hide secret value" : "Reveal secret value"} onClick={() => setVisible(value => !value)}>{visible ? <VisibilityOff/> : <Visibility/>}</IconButton></InputAdornment>}}}/>
                 <Alert severity="warning">The plaintext is returned only after an explicit reveal and is cleared from this dialog when it closes.</Alert>
             </Stack></DialogContent>
             <DialogActions><Button onClick={closeForm} disabled={saving}>Cancel</Button><Button variant="contained" onClick={() => void save()} disabled={saving || !form.name.trim()}>{saving ? <CircularProgress size={18}/> : "Save"}</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={historyItem !== null} onClose={saving ? undefined : () => setHistoryItem(null)} fullWidth maxWidth="sm">
+            <DialogTitle>Version history · {historyItem?.name}</DialogTitle>
+            <DialogContent><Stack spacing={1} sx={{mt: 1}}>
+                <Alert severity="info">Dockman retains the last {3} replaced or deleted values on this host. Values are never displayed here.</Alert>
+                {versions.map(version => <Paper variant="outlined" key={version.id} sx={{p: 1.25}}><Stack direction="row" spacing={1} sx={{alignItems: "center"}}>
+                    <Box sx={{flex: 1}}><Typography>{new Date(version.modifiedAt).toLocaleString()}</Typography><Typography variant="caption" color="text.secondary">{version.size} B</Typography></Box>
+                    <Button size="small" startIcon={<Restore/>} disabled={saving} onClick={() => void restoreVersion(version)}>Restore</Button>
+                </Stack></Paper>)}
+                {versions.length === 0 && <Typography color="text.secondary" sx={{py: 2, textAlign: "center"}}>No previous version is available.</Typography>}
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setHistoryItem(null)} disabled={saving}>Close</Button></DialogActions>
         </Dialog>
 
         <Dialog open={deleteItem !== null} onClose={saving ? undefined : () => setDeleteItem(null)} fullWidth maxWidth="xs">

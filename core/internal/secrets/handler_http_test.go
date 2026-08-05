@@ -70,3 +70,23 @@ func TestHTTPSecretErrorsDoNotEchoSubmittedValue(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.False(t, strings.Contains(recorder.Body.String(), secret))
 }
+
+func TestHTTPSecretHistoryRestore(t *testing.T) {
+	handler := testHTTPHandler(t)
+	for _, value := range []string{"first", "second"} {
+		payload, err := json.Marshal(writeInput{StackPath: "compose/demo", Value: value})
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, requestWithHost(http.MethodPut, "/token", payload))
+		require.Equal(t, http.StatusOK, recorder.Code)
+	}
+	historyRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(historyRecorder, requestWithHost(http.MethodGet, "/token/history?stack=compose%2Fdemo", nil))
+	require.Equal(t, http.StatusOK, historyRecorder.Code)
+	var versions []Version
+	require.NoError(t, json.Unmarshal(historyRecorder.Body.Bytes(), &versions))
+	require.Len(t, versions, 1)
+	restoreRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(restoreRecorder, requestWithHost(http.MethodPost, "/token/history/"+versions[0].ID+"/restore?stack=compose%2Fdemo", nil))
+	require.Equal(t, http.StatusOK, restoreRecorder.Code)
+}
