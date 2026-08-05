@@ -19,7 +19,7 @@ For users coming from v1, following are the steps to miagrate away from hosts.ya
  services:
    dockman:
      container_name: dockman
-     image: ghcr.io/ra341/dockman:latest
+     image: ghcr.io/cerede2000/dockman:integration
      environment:
        - DOCKMAN_COMPOSE_ROOT=/path/to/stacks
      volumes:

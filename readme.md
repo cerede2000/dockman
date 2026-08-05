@@ -1,73 +1,68 @@
 <div align="center">
-  <img src="website/static/img/dockman.svg" alt="Logo" width="200" height="200">
-  <h1>Dockman</h1>
-  <p>
-    A Docker management tool for users who want unfiltered access to their Docker Compose files.
-  </p>
-  <img src="https://github.com/RA341/assets/releases/download/dockman/dockman-demo.gif" alt="Dockman Demo" width="800">
+  <img src="website/static/img/dockman.svg" alt="Dockman logo" width="180" height="180">
+  <h1>Dockman — integration fork</h1>
+  <p>Compose editor, container monitor, Git synchronization and protected image updates in one lightweight Docker UI.</p>
 </div>
 
-## Contents
+> This repository is the active integration fork maintained at
+> [cerede2000/dockman](https://github.com/cerede2000/dockman). It is based on
+> [RA341/dockman](https://github.com/RA341/dockman) and remains licensed under AGPL-3.0.
 
-- [Install](#install)
-- [Docs](#docs)
-- [Contributing](#contributing)
-- [License](#license)
+## What is included
 
-## Install
+- Compose and configuration-file editor with validation, quick YAML navigation and stack actions.
+- Container and stack monitor, detailed inspect view, logs, processes, networks, mounts, security and terminal access.
+- Container and volume file browsers with upload, download, permissions and read-only detection.
+- Multi-host support through local Docker or SSH.
+- GitHub repository synchronization for complete stack folders, with policies, previews, conflicts, backups, provisioning and protected automatic deployment.
+- Image update discovery, scheduled opt-in policies, stack transactions, health validation, rollback, safe image cleanup and SMTP notifications.
+- Background Dockerfile builds using Buildx, persistent progress and automatic helper cleanup.
+- Hardened container image, origin checks, bounded HTTP requests, encrypted credentials and Docker socket-proxy support.
 
-To see full documentation go: https://dockman.radn.dev/docs/category/install
+## Quick start
 
-### Docker Run
+The `integration` image is the test channel for this fork. Pin its immutable digest for a reproducible deployment when promoting it beyond testing.
 
-Try Dockman with this docker run command
-
-> [!WARNING]
-> This quick-start command will **delete all dockman data** when the container stops. Use only for testing.
->
-> For a more persistent setup, see the [compose](#docker-compose) section below.
-
-```bash title="Bash"
-docker run --rm -p 8866:8866 -e DOCKMAN_LOG_AUTH_WARNING=false -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/ra341/dockman:latest
-```
-
-Access at http://localhost:8866
-
-### Docker Compose
-
-> [!IMPORTANT]
-> The stacks directory path must be absolute and identical in all three locations:
-> * 1️⃣ Environment variable: `DOCKMAN_COMPOSE_ROOT=/path/to/stacks`
-> * 2️⃣ The host side of the volume `/path/to/stacks`
-> * 3️⃣ The container side of the volume `/path/to/stacks`
-    This path consistency is essential for Dockman to locate and manage your compose files properly.
-
-```yaml title="docker-compose.yaml"
+```yaml
 services:
   dockman:
+    image: ghcr.io/cerede2000/dockman:integration
     container_name: dockman
-    image: ghcr.io/ra341/dockman:latest
     environment:
-      # 1️⃣
-      - DOCKMAN_COMPOSE_ROOT=/path/to/stacks
+      DOCKMAN_COMPOSE_ROOT: /server/stacks
+      DOCKMAN_CONFIG: /config
+      DOCKER_HOST: tcp://socketproxy:2375
+      DOCKMAN_AUTH_ENABLE: "true"
+      DOCKMAN_AUTH_USERNAME: admin
+      DOCKMAN_AUTH_PASSWORD: change-me
     volumes:
-      #  2️⃣              3️⃣                
-      - /path/to/stacks:/path/to/stacks
-      - /path/to/dockman/config:/config
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /server/stacks:/server/stacks
+      - /server/appdata/dockman:/config
     ports:
       - "8866:8866"
-    restart: always
+    restart: unless-stopped
 ```
 
-## Docs
+The stack path must be absolute and identical for `DOCKMAN_COMPOSE_ROOT`, the host mount and the container mount. Dockman must be able to write the stack directories for editing, Git import and provisioning.
 
-To see full documentation go: https://dockman.radn.dev/docs/intro
+For production-like installations, use a Docker socket proxy, enable authentication, keep `DOCKMAN_ALLOW_SELF_EXEC` disabled, mount the credential encryption keys as secrets and back up `/config`.
 
-## Contributing
+## Documentation
 
-See [Contributing.md](CONTRIBUTING.md)
+- [Container installation](website/docs/install/docker.mdx)
+- [Environment-variable reference](website/docs/install/env.md)
+- [Security model](website/docs/security.md)
+- [Docker socket proxy](website/docs/docker-socket/index.md)
+- [Git synchronization](website/docs/git-sync/overview.md)
+- [Image updates and rollback](website/docs/updates/overview.md)
+- [Buildx and background jobs](website/docs/operations/background-builds.md)
+- [Migration and release readiness](website/docs/operations/migration.md)
+- [Troubleshooting](website/docs/operations/troubleshooting.md)
+
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). The integration pipeline builds amd64 and arm64 images, runs backend/frontend tests, dependency audits, reachable Go-vulnerability checks, image scans and image signing.
 
 ## License
 
-This project is licensed under the GNU AFFERO GENERAL PUBLIC LICENSE v3.0. See the [LICENSE](LICENSE) file for details.
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).

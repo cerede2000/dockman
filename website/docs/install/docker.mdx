@@ -1,112 +1,140 @@
 ---
-title: Docker
+title: Docker installation
 sidebar_position: 0
 ---
 
-It is recommended to install dockman using [docker compose](#docker-compose),
-but if you want to test it out first you can use the [demo command](#docker-run-demo) below
+# Install the integration image
 
-## Docker Run (demo)
-
-Try Dockman with this docker run command
-
-:::important
-This is a **quick-start demo command** and will **delete all dockman data** when the container stops. Use only for testing.
-
-For a more persistent setup, see the [compose](#docker-compose) section below.
-:::
-
-```bash title="docker"
-docker run --rm -p 8866:8866 -e DOCKMAN_LOG_AUTH_WARNING=false -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/ra341/dockman:latest
-```
-
-### Go to
-```
-http://localhost:8866
-```
-
-## Docker Compose
-
-:::info
-The stacks directory path must be absolute and identical in all three locations:
-
-* 1️⃣ Environment variable: `DOCKMAN_COMPOSE_ROOT=/path/to/stacks`
-* 2️⃣ The host side of the volume `/path/to/stacks`
-* 3️⃣ The container side of the volume `/path/to/stacks`
-This path consistency is essential for Dockman to locate and manage your compose files properly.
-
-:::
-
-### Config generator
-
-Generate your config by using your preferred paths here
-
-
-
-import DockerComposeGenerator from '@site/src/components/compose-generator';
-
-<DockerComposeGenerator></DockerComposeGenerator>
-
-### Example with Real Path
-
-Assuming `compose root` is stored at
-
-```
-/home/zaphodb/stacks
-```
-
-Replace `/path/to/stacks` with your directory path:
-
-```yaml title="docker-compose.yaml"
-services:
-  dockman:
-    container_name: dockman
-    image: ghcr.io/ra341/dockman:latest
-    environment:
-      - DOCKMAN_COMPOSE_ROOT=/home/zaphodb/stacks
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /home/zaphodb/stacks:/home/zaphodb/stacks
-
-      # never mount this dir in your stacks
-      - /home/zaphodb/appdata/dockman/config:/config
-    ports:
-      - "8866:8866"
-    restart: always
-```
-
-## Docker Tags
-
-Dockman follows [semver](https://semver.org/) and tags its image as such.
-
-You can pin a dockman version using specific version tags, Find all available
-tags [here](https://github.com/RA341/dockman/pkgs/container/dockman/versions?filters%5Bversion_type%5D=tagged)
-
-:::tip
-Use `vX` for stability - guarantees your installation will always work
-
-Use `latest` for newest features - may contain breaking changes requiring manual intervention
-:::
-
-### Tags
-
-| Tag Pattern | Description                          | Example  | Recommended For                                              |
-|-------------|--------------------------------------|----------|--------------------------------------------------------------|
-| `vX.Y.Z`    | Exact version                        | `v1.2.0` | Pin (No updates)                                             |
-| `vX.Y`      | Latest patch for minor version       | `v1.2`   | Bug fixes                                                    |
-| `vX`        | Latest minor/patch for major version | `v1`     | New features                                                 |
-| `latest`    | Latest stable release                | `latest` | Always get the latest updates (May contain breaking changes) |
-| `canary`    | Unstable Development builds          | `canary` | Contributing/testing unreleased features                     |
-
-### Docker Compose Example
+## Minimal test deployment
 
 ```yaml
 services:
   dockman:
-    image: ghcr.io/ra341/dockman:v1.2.0  # Pin to specific version
+    image: ghcr.io/cerede2000/dockman:integration
     container_name: dockman
+    environment:
+      DOCKMAN_COMPOSE_ROOT: /server/stacks
+      DOCKMAN_CONFIG: /config
+    volumes:
+      - /server/stacks:/server/stacks
+      - /server/appdata/dockman:/config
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8866:8866"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 ```
+
+Open `http://HOST:8866`.
+
+:::warning
+Mounting `/var/run/docker.sock` gives Dockman Docker-daemon authority. A socket proxy is recommended for a persistent installation.
+:::
+
+## Path requirement
+
+The stack path must be the same absolute path in all three places:
+
+1. `DOCKMAN_COMPOSE_ROOT=/server/stacks`;
+2. host mount source `/server/stacks`;
+3. container mount target `/server/stacks`.
+
+This is required because Compose bind paths must remain meaningful to the Docker host. The mount must be writable for the editor, Git imports and provisioning.
+
+## Hardened socket-proxy deployment
+
+The following example shows the important Dockman-side settings. Complete the proxy permissions with the [socket-proxy guide](../docker-socket/index.md).
+
+```yaml
+services:
+  dockman:
+    image: ghcr.io/cerede2000/dockman:integration
+    container_name: dockman
+    depends_on:
+      socketproxy:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://socketproxy:2375
+      DOCKMAN_COMPOSE_ROOT: /server/stacks
+      DOCKMAN_CONFIG: /config
+      DOCKMAN_AUTH_ENABLE: "true"
+      DOCKMAN_AUTH_USERNAME: admin
+      DOCKMAN_AUTH_PASSWORD: ${DOCKMAN_AUTH_PASSWORD:?required}
+      DOCKMAN_GIT_SYNC: "true"
+      DOCKMAN_GIT_MASTER_KEY_FILE: /run/secrets/dockman_git_key
+      DOCKMAN_NOTIFICATION_MASTER_KEY_FILE: /run/secrets/dockman_notification_key
+      DOCKMAN_GIT_STORAGE_PATH: /git-data
+      TZ: Europe/Paris
+      PUID: "0"
+      PGID: "0"
+    secrets:
+      - dockman_git_key
+      - dockman_notification_key
+    volumes:
+      - /server/stacks:/server/stacks
+      - /server/appdata/dockman/config:/config
+      - /server/appdata/dockman/git:/git-data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "8866:8866"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8866/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+secrets:
+  dockman_git_key:
+    file: ./secrets/dockman_git_key
+  dockman_notification_key:
+    file: ./secrets/dockman_notification_key
+```
+
+Generate each master key as 32 random bytes or base64-encoded 32-byte material and store it outside the Dockman config volume. Losing a key makes the corresponding stored credentials unreadable.
+
+### Read-only root filesystem and PUID/PGID
+
+The entrypoint creates users and groups when `PUID` is non-zero. That requires a writable `/etc`. With `read_only: true`, run with `PUID=0` and `PGID=0`, then use `cap_drop`/`cap_add` as shown. `CHOWN` is needed only when provisioning deliberately changes ownership; `DAC_OVERRIDE` is needed to manage stack files that root may access but normal mode checks would reject.
+
+If you do not need cross-owner provisioning, omit `CHOWN`. Always test create, chmod and chown operations against the actual stack filesystem before enabling automatic provisioning.
+
+## Persistent data
+
+Back up these locations together:
+
+| Path | Purpose |
+|---|---|
+| `/config` | SQLite database, settings, Docker CLI state, generated keys when explicit secrets are not used |
+| `DOCKMAN_COMPOSE_ROOT` | Compose and configuration files managed by Dockman |
+| `DOCKMAN_GIT_STORAGE_PATH` | Compact Git objects and Git synchronization backups when configured separately |
+| master-key secrets | Required to decrypt Git and notification credentials |
+
+Do not place `/config` or `/git-data` inside the managed stack tree.
+
+## Updating Dockman
+
+The Settings page provides separate **Check for update** and **Update** actions. The update action remains available even when the digest is current so a Compose/configuration change can recreate Dockman.
+
+For rollback safety, pin the image digest used for a validated deployment. The moving `integration` tag is intended for testing current development work.
+
+## Custom SMTP CA
+
+For a private SMTP relay using STARTTLS:
+
+```yaml
+environment:
+  DOCKMAN_SMTP_CA_FILE: /etc/ssl/certs/smtp-ca.crt
+volumes:
+  - /server/certs/smtp-ca.crt:/etc/ssl/certs/smtp-ca.crt:ro
+```
+
+The file must contain the issuing CA chain in PEM format, not merely an unrelated server certificate. TLS verification is never disabled.

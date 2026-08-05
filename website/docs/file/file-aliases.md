@@ -39,11 +39,10 @@ container). This prevents confusion and makes troubleshooting easier.
 ```yml
 services:
   dockman:
-    image: ghcr.io/ra341/dockman:latest
+    image: ghcr.io/cerede2000/dockman:integration
     volumes:
       - /home/zaphodb/stacks:/home/zaphodb/stacks
       - /home/zaphodb/config/dockman:/config
-      - /var/run/docker.sock:/var/run/docker.sock
       - /home/zaphodb/appdata:/home/zaphodb/appdata  # <- your new mount
 ```
 
@@ -55,7 +54,7 @@ In this mount syntax:
 After adding the mount, restart your Dockman container for the changes to take effect:
 
 ```bash
-docker compose down && docker compose up -d
+docker compose up -d --force-recreate
 ```
 
 ### Step 2: Create the Alias
@@ -86,5 +85,4 @@ Once configured, your alias will appear in the file explorer sidebar, allowing i
 - **Permissions**: Ensure the Dockman container has appropriate read/write permissions for mounted directories
 - **Path consistency**: Using identical paths on both sides of the mount (e.g., `/path/on/host:/path/on/host`) helps
   avoid confusion when troubleshooting
-- **Security**: Only mount directories that You want Dockman to access, following the principle of least privilege
-```
+- **Security**: only mount directories that Dockman is expected to access, following the principle of least privilege

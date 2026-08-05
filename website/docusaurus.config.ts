@@ -22,7 +22,7 @@ const config: Config = {
 
     // GitHub pages deployment config.
     // If you aren't using GitHub pages, you don't need these.
-    organizationName: 'ra341',
+    organizationName: 'cerede2000',
     projectName: 'dockman',
 
     onBrokenLinks: 'warn',
@@ -46,10 +46,21 @@ const config: Config = {
             {
                 docs: {
                     sidebarPath: './sidebars.ts',
+                    lastVersion: 'current',
+                    versions: {
+                        current: {
+                            label: 'Integration',
+                            path: '',
+                        },
+                        latest: {
+                            label: 'Upstream snapshot',
+                            path: 'upstream-latest',
+                        },
+                    },
                     // Please change this to your repo.
                     // Remove this to remove the "edit this page" links.
                     editUrl:
-                        'https://github.com/RA341/dockman/tree/main/docs/',
+                        'https://github.com/cerede2000/dockman/tree/integration/website/docs/',
                 },
                 // todo blog
                 // blog: {
@@ -98,7 +109,7 @@ const config: Config = {
                 },
                 // {to: '/blog', label: 'Blog', position: 'left'},
                 {
-                    href: 'https://github.com/ra341/dockman',
+                    href: 'https://github.com/cerede2000/dockman',
                     label: 'GitHub',
                     position: 'right',
                 },
@@ -136,7 +147,7 @@ const config: Config = {
                         // },
                         {
                             label: 'Github Discussions',
-                            href: 'https://github.com/RA341/dockman/discussions',
+                            href: 'https://github.com/cerede2000/dockman/discussions',
                         },
                     ],
                 },

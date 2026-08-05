@@ -25,7 +25,7 @@ This method loads **all variables** from the specified file directly into the co
 * **Use Case:** Ideal for configurations that don't need to be visible or used in the `docker-compose.yml` file itself (
   e.g., a long list of application-specific settings).
 
-<!-- end list -->
+{/* end list */}
 
 ```yaml
 services:
@@ -46,7 +46,7 @@ daemon.
 * **Use Case:** Necessary when a variable needs to configure the **Compose file itself** (e.g., setting a container
   image tag, a port number, or assigning a secret to a specific environment key).
 
-<!-- end list -->
+{/* end list */}
 
 ```yaml
 services:

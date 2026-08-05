@@ -68,7 +68,7 @@ It is important that the above url is also the same when setting the `DOCKMAN_AU
 You can set the dockman app icon for provider using this url
 
 ```
-https://raw.githubusercontent.com/RA341/dockman/refs/heads/main/ui/public/dockman.svg
+https://raw.githubusercontent.com/cerede2000/dockman/refs/heads/integration/ui/public/dockman.svg
 ```
 
 ### Configure Dockman
@@ -85,7 +85,7 @@ DOCKMAN_AUTH_OIDC_CLIENT_SECRET: "lUZvQ914A4YzdrONc3mCYrtXUoObYetl"
 DOCKMAN_AUTH_OIDC_REDIRECT_URL: "http://localhost:8866/api/auth/login/oidc/callback"
 ```
 
-If you encounter issues, please open a [discussion on GitHub](https://github.com/RA341/dockman/discussions).
+If you encounter issues, please open a [discussion on GitHub](https://github.com/cerede2000/dockman/discussions).
 
 ### Disable https cookie
 
@@ -142,4 +142,3 @@ Set maximum concurrent sessions
 ```
  DOCKMAN_AUTH_MAX_SESSIONS = 5 # oldest session is automtially removed
 ```
-

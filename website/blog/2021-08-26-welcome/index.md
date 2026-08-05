@@ -10,7 +10,7 @@ the [blog plugin](https://docusaurus.io/docs/api/plugins/@docusaurus/plugin-cont
 
 Here are a few tips you might find useful.
 
-<!-- truncate -->
+{/* truncate */}
 
 Simply add Markdown files (or folders) to the `blog` directory.
 

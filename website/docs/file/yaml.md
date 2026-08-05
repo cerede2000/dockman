@@ -1,14 +1,19 @@
 ---
-title: YAML Files
+title: YAML and Compose navigation
 sidebar_position: 4
 ---
 
-# YAML Files
+# YAML files
 
-Dockman includes a quick formatting tool for YAML files.
+Press `Alt + L` to format the current YAML document.
 
-## Quick Format
+For Compose manifests, the editor toolbar exposes a quick outline for:
 
-Press `Alt + L` while editing any `.yml` or `.yaml` file to auto-format it.
+- services and each service name;
+- networks;
+- volumes;
+- secrets.
 
-**Example:** Messy indentation in your `docker-compose.yml`? Hit `Alt + L` and it's cleaned up instantly.
+Only real YAML keys are indexed; commented examples such as `# services:` are ignored. Selecting an item reveals and scrolls its source line to the top of the editor viewport where Monaco permits it.
+
+Formatting changes text and should be reviewed before saving. Git synchronization treats a saved formatting-only change like any other admissible local change.
