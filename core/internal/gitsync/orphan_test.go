@@ -60,10 +60,10 @@ func TestOrphanArchiveRequiresConfirmationAndNeverRemovesBeforeBackup(t *testing
 	require.Equal(t, 2, preview.Preserved)
 
 	_, err = service.ResolveGitOrphan(context.Background(), binding.ID, composePath, OrphanActionInput{Action: "archive"})
-	require.ErrorContains(t, err, orphanConfirmText)
+	require.ErrorContains(t, err, typedConfirmationText)
 	require.FileExists(t, composeFile)
 
-	result, err := service.ResolveGitOrphan(context.Background(), binding.ID, composePath, OrphanActionInput{Action: "archive", Confirmation: orphanConfirmText})
+	result, err := service.ResolveGitOrphan(context.Background(), binding.ID, composePath, OrphanActionInput{Action: "archive", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	backup, err := service.store.GetBackup(result.Backup)
 	require.NoError(t, err)
@@ -115,12 +115,12 @@ func TestOrphanDeleteCreatesBackupAndRefusesDirtyEditor(t *testing.T) {
 	row.AutoSyncError = "2 Git deletion(s) preserved locally; choose restore, archive, or explicit local deletion; no new Git commit, stack scan skipped"
 	require.NoError(t, service.store.SaveBinding(&row))
 	service.dirtyEditorPaths = func(string) []string { return []string{"compose/app/config.yml"} }
-	_, err = service.ResolveGitOrphan(context.Background(), binding.ID, "app/compose.yaml", OrphanActionInput{Action: "delete", Confirmation: orphanConfirmText})
+	_, err = service.ResolveGitOrphan(context.Background(), binding.ID, "app/compose.yaml", OrphanActionInput{Action: "delete", Confirmation: typedConfirmationText})
 	require.ErrorContains(t, err, "unsaved editor")
 	require.DirExists(t, filepath.Join(stackRoot, "app"))
 
 	service.dirtyEditorPaths = func(string) []string { return nil }
-	result, err := service.ResolveGitOrphan(context.Background(), binding.ID, "app/compose.yaml", OrphanActionInput{Action: "delete", Confirmation: orphanConfirmText})
+	result, err := service.ResolveGitOrphan(context.Background(), binding.ID, "app/compose.yaml", OrphanActionInput{Action: "delete", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	backup, err := service.store.GetBackup(result.Backup)
 	require.NoError(t, err)
@@ -189,7 +189,7 @@ func TestOrphanLocalRemovalRefusesFolderLinkRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, checkout.Push(&gitclient.PushOptions{}))
 
-	_, err = service.ResolveGitOrphan(context.Background(), binding.ID, "compose.yaml", OrphanActionInput{Action: "delete", Confirmation: orphanConfirmText})
+	_, err = service.ResolveGitOrphan(context.Background(), binding.ID, "compose.yaml", OrphanActionInput{Action: "delete", Confirmation: typedConfirmationText})
 	require.ErrorContains(t, err, "folder-link root")
 	require.FileExists(t, filepath.Join(stackRoot, "app", "compose.yaml"))
 }

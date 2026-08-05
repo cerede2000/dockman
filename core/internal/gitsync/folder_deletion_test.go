@@ -70,7 +70,7 @@ func TestFolderLinkDeletionPreservesGitAndForgetsBinding(t *testing.T) {
 	state, err := service.InspectFolderLinkDeletion(context.Background(), binding.ID)
 	require.NoError(t, err)
 	require.Equal(t, "up_to_date", state.State)
-	result, err := service.DeleteFolderLinkRoot(context.Background(), binding.ID, FolderLinkDeletionInput{Action: "preserve_git", Confirmation: deleteLinkedFolderConfirmText})
+	result, err := service.DeleteFolderLinkRoot(context.Background(), binding.ID, FolderLinkDeletionInput{Action: "preserve_git", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.Contains(t, result.Message, "Git was preserved")
 	require.NoDirExists(t, filepath.Join(stackRoot, "alpha"))
@@ -87,7 +87,7 @@ func TestFolderLinkDeletionCanSyncGitBeforeUnlink(t *testing.T) {
 	state, err := service.InspectFolderLinkDeletion(context.Background(), binding.ID)
 	require.NoError(t, err)
 	require.Equal(t, "local_changes", state.State)
-	result, err := service.DeleteFolderLinkRoot(context.Background(), binding.ID, FolderLinkDeletionInput{Action: "sync_git", Confirmation: deleteLinkedFolderConfirmText})
+	result, err := service.DeleteFolderLinkRoot(context.Background(), binding.ID, FolderLinkDeletionInput{Action: "sync_git", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.NotEmpty(t, result.CommitSHA)
 	contents, exists := remoteFolderFile(t, repository, "alpha/compose.yml")
@@ -98,7 +98,7 @@ func TestFolderLinkDeletionCanSyncGitBeforeUnlink(t *testing.T) {
 
 func TestFolderLinkDeletionCanRemoveSynchronizedGitContent(t *testing.T) {
 	service, stackRoot, repository, binding := prepareFolderLinkDeletion(t)
-	result, err := service.DeleteFolderLinkRoot(context.Background(), binding.ID, FolderLinkDeletionInput{Action: "delete_git", Confirmation: deleteLinkedFolderGitConfirm})
+	result, err := service.DeleteFolderLinkRoot(context.Background(), binding.ID, FolderLinkDeletionInput{Action: "delete_git", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.NotEmpty(t, result.CommitSHA)
 	_, exists := remoteFolderFile(t, repository, "alpha/compose.yml")

@@ -249,8 +249,8 @@ func TestPreviewSkipsSensitiveFilesUnlessExplicitlyConfirmed(t *testing.T) {
 	require.Equal(t, "skipped_sensitive", preview.Entries[0].Status)
 
 	_, err = service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{IncludeSensitive: true})
-	require.ErrorContains(t, err, sensitiveConfirmText)
-	preview, err = service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{IncludeSensitive: true, SensitiveConfirmation: sensitiveConfirmText})
+	require.ErrorContains(t, err, typedConfirmationText)
+	preview, err = service.PreviewBinding(binding.ID, "stack_to_repository", TransferInput{IncludeSensitive: true, SensitiveConfirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.Equal(t, 2, preview.Changed)
 	require.Zero(t, preview.Skipped)

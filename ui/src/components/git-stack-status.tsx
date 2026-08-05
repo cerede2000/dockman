@@ -1,5 +1,5 @@
 import {
-    Alert, Box, Button, CircularProgress, Divider, IconButton, Popover, Stack, TextField, Tooltip, Typography,
+    Alert, Box, Button, CircularProgress, Divider, IconButton, Popover, Stack, Tooltip, Typography,
 } from '@mui/material';
 import {
     CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, LinkOffOutlined, OpenInNew,
@@ -11,6 +11,7 @@ import {gitAPI as request, gitDateLabel as dateLabel} from '../lib/git-api.ts';
 import {useSnackbar} from '../hooks/snackbar.ts';
 import {gitStatusSeverity, type GitStackStatus, refreshGitStackStatuses} from './git-stack-status-store.ts';
 import GitBindingRecovery from './git-binding-recovery.tsx';
+import TypedConfirmationField, {TYPED_CONFIRMATION} from './typed-confirmation-field.tsx';
 
 
 const colors = {neutral: '#9e9e9e', info: '#64b5f6', warning: '#ffb74d', error: '#ef5350', success: '#66bb6a'};
@@ -261,7 +262,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                             {target.state === 'local_changes' && <Button size="small" color="success" startIcon={<CloudUploadOutlined/>} disabled={busy} onClick={() => void pushStack(target)}>Push to Git</Button>}
                             {target.selected && target.state !== 'up_to_date' && target.state !== 'locally_deleted' && target.state !== 'local_changes' && <Button size="small" startIcon={<CompareArrowsOutlined/>} onClick={() => openRelevantGitView(target)}>Open details</Button>}
                         </Stack>
-                        {deleteGitTarget?.bindingId === target.bindingId && deleteGitTarget.composePath === target.composePath && <Alert severity="error" sx={{mt: 1}}><Stack spacing={1}><Typography variant="caption">This commits the stack deletion to Git. Type <strong>DELETE STACK FROM GIT</strong> to confirm.</Typography><TextField size="small" value={deleteGitConfirmation} onChange={(event) => setDeleteGitConfirmation(event.target.value)} slotProps={{htmlInput: {autoComplete: 'off'}}}/><Stack direction="row" spacing={1}><Button size="small" onClick={() => { setDeleteGitTarget(null); setDeleteGitConfirmation(''); }}>Cancel</Button><Button size="small" color="error" variant="contained" disabled={busy || deleteGitConfirmation !== 'DELETE STACK FROM GIT'} onClick={() => void resolveLocalDeletion(target, 'delete_git')}>Confirm deletion</Button></Stack></Stack></Alert>}
+                        {deleteGitTarget?.bindingId === target.bindingId && deleteGitTarget.composePath === target.composePath && <Alert severity="error" sx={{mt: 1}}><Stack spacing={1}><Typography variant="caption">This commits the stack deletion to Git.</Typography><TypedConfirmationField value={deleteGitConfirmation} onChange={setDeleteGitConfirmation}/><Stack direction="row" spacing={1}><Button size="small" onClick={() => { setDeleteGitTarget(null); setDeleteGitConfirmation(''); }}>Cancel</Button><Button size="small" color="error" variant="contained" disabled={busy || deleteGitConfirmation !== TYPED_CONFIRMATION} onClick={() => void resolveLocalDeletion(target, 'delete_git')}>Confirm deletion</Button></Stack></Stack></Alert>}
                     </Box>)}
                 </Stack>
             </Stack> :
@@ -296,7 +297,7 @@ export default function GitStackStatusIndicator({status, size = 18, interactive 
                         <Button size="small" color="error" startIcon={<DeleteOutlined/>} disabled={busy} onClick={() => { setDeleteGitTarget(status); setDeleteGitPath(file.path); setDeleteGitConfirmation(''); }}>Delete from Git</Button>
                     </Stack>}
                 </Box>)}
-                {deleteGitTarget && <Alert severity="error"><Stack spacing={1}><Typography variant="caption">Type <strong>{deleteGitPath ? 'DELETE FILE FROM GIT' : 'DELETE STACK FROM GIT'}</strong> to confirm the committed Git deletion{deleteGitPath ? ` of ${deleteGitPath}` : ''}.</Typography><TextField size="small" value={deleteGitConfirmation} onChange={(event) => setDeleteGitConfirmation(event.target.value)} slotProps={{htmlInput: {autoComplete: 'off'}}}/><Stack direction="row" spacing={1}><Button size="small" onClick={() => { setDeleteGitTarget(null); setDeleteGitPath(''); setDeleteGitConfirmation(''); }}>Cancel</Button><Button size="small" color="error" variant="contained" disabled={busy || deleteGitConfirmation !== (deleteGitPath ? 'DELETE FILE FROM GIT' : 'DELETE STACK FROM GIT')} onClick={() => void resolveLocalDeletion(status, 'delete_git', deleteGitPath)}>Confirm deletion</Button></Stack></Stack></Alert>}
+                {deleteGitTarget && <Alert severity="error"><Stack spacing={1}><Typography variant="caption">This commits the Git deletion{deleteGitPath ? ` of ${deleteGitPath}` : ' of this stack'}.</Typography><TypedConfirmationField value={deleteGitConfirmation} onChange={setDeleteGitConfirmation}/><Stack direction="row" spacing={1}><Button size="small" onClick={() => { setDeleteGitTarget(null); setDeleteGitPath(''); setDeleteGitConfirmation(''); }}>Cancel</Button><Button size="small" color="error" variant="contained" disabled={busy || deleteGitConfirmation !== TYPED_CONFIRMATION} onClick={() => void resolveLocalDeletion(status, 'delete_git', deleteGitPath)}>Confirm deletion</Button></Stack></Stack></Alert>}
                 {confirmPush && <Alert severity="warning" action={<Stack direction="row" spacing={.5}><Button size="small" color="inherit" disabled={busy} onClick={() => setConfirmPush(false)}>Cancel</Button><Button size="small" color="warning" variant="contained" disabled={busy} onClick={() => void pushStack()}>{busy ? <CircularProgress size={14}/> : status.state === 'orphaned' ? 'Confirm restore' : 'Confirm push'}</Button></Stack>}>{status.state === 'orphaned' ? 'Restore every transferable file belonging to this stack back to Git?' : "Push every transferable local change belonging to this stack with Dockman's default commit message?"}</Alert>}
                 {error && <Alert severity="error" sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{error}</Alert>}
                 <Divider/>

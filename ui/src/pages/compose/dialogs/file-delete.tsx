@@ -2,7 +2,7 @@ import Button from '@mui/material/Button'
 import Dialog from '@mui/material/Dialog'
 import DialogActions from '@mui/material/DialogActions'
 import DialogTitle from '@mui/material/DialogTitle'
-import {Alert, Box, CircularProgress, Stack, TextField, Typography} from "@mui/material"
+import {Alert, Box, CircularProgress, Stack, Typography} from "@mui/material"
 import {create} from "zustand";
 import {useFiles} from "../../../context/file-context.tsx";
 import {useHostStore} from "../state/files.ts";
@@ -10,6 +10,7 @@ import {reconcileDeletedGitFile, refreshGitStackStatuses, refreshGitTrackedFile,
 import {withProtectedAPI} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {useEffect, useState} from "react";
+import TypedConfirmationField, {TYPED_CONFIRMATION} from "../../../components/typed-confirmation-field.tsx";
 
 interface FolderDeletionState {
     bindingId: string; host: string; stackPath: string; repositoryName: string; repositoryBranch: string;
@@ -84,7 +85,7 @@ const FileDelete = () => {
                 const encodedCompose = gitFile.composePath.split('/').map(encodeURIComponent).join('/')
                 const response = await fetch(withProtectedAPI(`/git/bindings/${gitFile.bindingId}/local-deletion/${encodedCompose}`), {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({action: 'delete_git', path: gitFile.relativePath, confirmation: 'DELETE FILE FROM GIT'}),
+                    body: JSON.stringify({action: 'delete_git', path: gitFile.relativePath, confirmation: TYPED_CONFIRMATION}),
                 })
                 if (!response.ok) {
                     let message = `Git deletion failed (${response.status})`
@@ -123,7 +124,7 @@ const FileDelete = () => {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     action,
-                    confirmation: action === 'delete_git' ? gitDeleteConfirmation : 'DELETE LOCAL LINKED FOLDER',
+                    confirmation: TYPED_CONFIRMATION,
                 }),
             })
             if (!response.ok) {
@@ -185,7 +186,7 @@ const FileDelete = () => {
                     {folderState.unreadableLocal > 0 && <Typography variant="body2">{folderState.unreadableLocal} synchronized local item(s) cannot be read.</Typography>}
                 </Alert>}
                 {folderState && <Alert severity="info">Choose whether Git must first receive readable local changes, remain untouched, or have the synchronized folder content deleted as well. No container or stack deployment is performed.</Alert>}
-                {folderState && <TextField size="small" label='Type DELETE FOLDER FROM GIT to enable Git deletion' value={gitDeleteConfirmation} onChange={(event) => setGitDeleteConfirmation(event.target.value)} fullWidth/>}
+                {folderState && <TypedConfirmationField value={gitDeleteConfirmation} onChange={setGitDeleteConfirmation}/>}
             </Stack>}
 
             {!linkedFolderRoot && gitFile?.tracked && gitFile.mutable && <Alert severity="warning" sx={{mt: 2, maxWidth: 560}}>
@@ -213,7 +214,7 @@ const FileDelete = () => {
                 {linkedFolderRoot ? <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{ml: 'auto'}}>
                     <Button variant="outlined" color="warning" disabled={busy || !folderState} onClick={() => void deleteLinkedFolder('preserve_git')}>Keep Git · delete local & unlink</Button>
                     <Button variant="contained" color="primary" disabled={busy || !folderState || folderState.conflicts > 0 || folderState.unreadableLocal > 0} onClick={() => void deleteLinkedFolder('sync_git')}>Update Git · delete local & unlink</Button>
-                    <Button variant="contained" color="error" disabled={busy || !folderState || gitDeleteConfirmation !== 'DELETE FOLDER FROM GIT'} onClick={() => void deleteLinkedFolder('delete_git')}>Delete local, Git & link</Button>
+                    <Button variant="contained" color="error" disabled={busy || !folderState || gitDeleteConfirmation !== TYPED_CONFIRMATION} onClick={() => void deleteLinkedFolder('delete_git')}>Delete local, Git & link</Button>
                 </Stack> : <Stack direction="row" spacing={1} sx={{ml: 'auto'}}>
                 <Button
                     onClick={() => void onDelete(false)}

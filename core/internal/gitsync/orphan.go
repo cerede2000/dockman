@@ -18,8 +18,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const orphanConfirmText = "REMOVE LOCAL ORPHAN"
-
 type OrphanActionInput struct {
 	Action       string `json:"action"`
 	Confirmation string `json:"confirmation"`
@@ -44,8 +42,8 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 	if action != "restore" && action != "archive" && action != "delete" {
 		return OrphanActionResult{}, errors.New("orphan action must be restore, archive, or delete")
 	}
-	if (action == "archive" || action == "delete") && input.Confirmation != orphanConfirmText {
-		return OrphanActionResult{}, fmt.Errorf("type %q to confirm the local stack removal", orphanConfirmText)
+	if (action == "archive" || action == "delete") && input.Confirmation != typedConfirmationText {
+		return OrphanActionResult{}, fmt.Errorf("type %q to confirm the local stack removal", typedConfirmationText)
 	}
 
 	automationLock := s.repositoryLock("automation:" + bindingID)

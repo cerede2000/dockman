@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -747,8 +748,8 @@ func (h *HTTPHandler) resetRepositoryToRemote(w http.ResponseWriter, r *http.Req
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if input.Confirmation != "RESET LOCAL GIT STATE" {
-		writeAPIError(w, http.StatusBadRequest, `type "RESET LOCAL GIT STATE" to confirm`)
+	if input.Confirmation != typedConfirmationText {
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("type %q to confirm", typedConfirmationText))
 		return
 	}
 	status, err := h.service.ResetRepositoryToRemote(r.Context(), r.PathValue("id"))

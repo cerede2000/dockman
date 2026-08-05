@@ -40,7 +40,6 @@ const (
 	maxIgnoreRules           = 1000
 	maxComparisonFileSize    = 2 << 20
 	gitBackupRetention       = 10
-	sensitiveConfirmText     = "INCLUDE SENSITIVE FILES"
 	syncProfileComposeOnly   = "compose_only"
 	syncProfileComposeConfig = "compose_config"
 	syncProfileAllFiles      = "all_files"
@@ -2176,8 +2175,8 @@ func (s *Service) loadTransferTrees(id, direction string, input TransferInput) (
 }
 
 func validateSensitiveOptIn(input TransferInput) error {
-	if input.IncludeSensitive && input.SensitiveConfirmation != sensitiveConfirmText {
-		return fmt.Errorf("sensitive file inclusion requires confirmation %q", sensitiveConfirmText)
+	if input.IncludeSensitive && input.SensitiveConfirmation != typedConfirmationText {
+		return fmt.Errorf("sensitive file inclusion requires confirmation %q", typedConfirmationText)
 	}
 	return nil
 }

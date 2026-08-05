@@ -120,17 +120,26 @@ func TestDockmanDockerfileBuildCanUseHostNetworkExplicitly(t *testing.T) {
 	}
 
 	require.NoError(t, service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:host", "host", io.Discard))
+	require.Len(t, runner.calls, 5)
+	builderName := runner.calls[1][7]
+	require.Regexp(t, `^dockman-[0-9]+-[0-9]+$`, builderName)
 	require.Equal(t, []string{
-		"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--load", "--progress=plain", "--network=host", "--tag", "demo:host", "--file", "Dockerfile", ".",
+		"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "create", "--name", builderName, "--driver", "docker-container", "--buildkitd-flags", "--allow-insecure-entitlement network.host",
 	}, runner.calls[1])
+	require.Equal(t, []string{
+		"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--builder", builderName, "--allow=network.host", "--load", "--progress=plain", "--network=host", "--tag", "demo:host", "--file", "Dockerfile", ".",
+	}, runner.calls[2])
+	require.Equal(t, []string{
+		"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", builderName,
+	}, runner.calls[3])
 }
 
 func TestDockerContainerDriverIsRemovedAfterBuild(t *testing.T) {
 	runner := &commandCaptureRunner{}
 	service := &Service{runner: runner}
-	require.NoError(t, service.cleanupDockmanBuildxHelper(context.Background(), ".", "docker-container"))
+	require.NoError(t, service.cleanupDockmanBuildxHelper(context.Background(), ".", "dockman-test-builder"))
 	require.Equal(t, [][]string{
-		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", "default"},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", "dockman-test-builder"},
 		{"docker", "rm", "--force", "buildx_buildkit_default"},
 	}, runner.calls)
 }
@@ -149,10 +158,13 @@ func TestDockerfileBuildCleansHelperAfterFailure(t *testing.T) {
 
 	err := service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:broken", "default", io.Discard)
 	require.ErrorContains(t, err, "build failed")
+	require.Len(t, runner.calls, 5)
+	builderName := runner.calls[1][7]
 	require.Equal(t, [][]string{
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"},
-		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--load", "--progress=plain", "--tag", "demo:broken", "--file", "Dockerfile", "."},
-		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", "default"},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "create", "--name", builderName, "--driver", "docker-container"},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--builder", builderName, "--load", "--progress=plain", "--tag", "demo:broken", "--file", "Dockerfile", "."},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", builderName},
 		{"docker", "rm", "--force", "buildx_buildkit_default"},
 	}, runner.calls)
 }

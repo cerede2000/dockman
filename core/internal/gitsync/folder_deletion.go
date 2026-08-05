@@ -14,11 +14,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
-const (
-	deleteLinkedFolderConfirmText = "DELETE LOCAL LINKED FOLDER"
-	deleteLinkedFolderGitConfirm  = "DELETE FOLDER FROM GIT"
-)
-
 type FolderLinkDeletionInput struct {
 	Action       string `json:"action"`
 	Confirmation string `json:"confirmation"`
@@ -159,12 +154,8 @@ func (s *Service) DeleteFolderLinkRoot(ctx context.Context, bindingID string, in
 	if action != "preserve_git" && action != "sync_git" && action != "delete_git" {
 		return FolderLinkDeletionResult{}, errors.New("folder deletion action must be preserve_git, sync_git, or delete_git")
 	}
-	confirmation := deleteLinkedFolderConfirmText
-	if action == "delete_git" {
-		confirmation = deleteLinkedFolderGitConfirm
-	}
-	if input.Confirmation != confirmation {
-		return FolderLinkDeletionResult{}, fmt.Errorf("type %q to confirm this folder deletion", confirmation)
+	if input.Confirmation != typedConfirmationText {
+		return FolderLinkDeletionResult{}, fmt.Errorf("type %q to confirm this folder deletion", typedConfirmationText)
 	}
 	automationLock := s.repositoryLock("automation:" + bindingID)
 	automationLock.Lock()

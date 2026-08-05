@@ -90,9 +90,9 @@ func TestLocalStackDeletionRequiresConfirmationBeforeDeletingGit(t *testing.T) {
 	service, _, repository, binding := prepareTrackedLocalDeletion(t)
 	remoteChange(t, repository.RemoteURL, "stacks/beta/remote-only.bin", "not selected by the synchronization policy\n")
 	_, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "beta/compose.yml", LocalDeletionActionInput{Action: "delete_git"})
-	require.ErrorContains(t, err, deleteGitStackConfirmText)
+	require.ErrorContains(t, err, typedConfirmationText)
 
-	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "beta/compose.yml", LocalDeletionActionInput{Action: "delete_git", Confirmation: deleteGitStackConfirmText})
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "beta/compose.yml", LocalDeletionActionInput{Action: "delete_git", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.NotEmpty(t, result.CommitSHA)
 	check, err := gitclient.PlainClone(t.TempDir(), false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
@@ -190,8 +190,8 @@ func TestLocalFileDeletionCanBeExcludedWhileGitCopyIsPreserved(t *testing.T) {
 func TestLocalFileDeletionRequiresConfirmationAndCanBeCommitted(t *testing.T) {
 	service, _, repository, binding := prepareTrackedFileDeletion(t)
 	_, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf"})
-	require.ErrorContains(t, err, deleteGitFileConfirmText)
-	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf", Confirmation: deleteGitFileConfirmText})
+	require.ErrorContains(t, err, typedConfirmationText)
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.NotEmpty(t, result.CommitSHA)
 	check, err := gitclient.PlainClone(t.TempDir(), false, &gitclient.CloneOptions{URL: repository.RemoteURL, ReferenceName: plumbing.NewBranchReferenceName("main"), SingleBranch: true})
@@ -223,7 +223,7 @@ func TestLocalAndGitDeletionSucceedsWhenFileWasNeverPushed(t *testing.T) {
 	require.NoError(t, os.Remove(path))
 	service.MarkLocalChange("local", "compose/alpha/never-pushed.bin")
 
-	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/never-pushed.bin", Confirmation: deleteGitFileConfirmText})
+	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/never-pushed.bin", Confirmation: typedConfirmationText})
 	require.NoError(t, err)
 	require.Contains(t, result.Message, "already absent from Git")
 	require.Empty(t, result.CommitSHA)
@@ -251,7 +251,7 @@ func TestLocalAndGitDeletionRemovesExactRuleAndSettlesImmediately(t *testing.T) 
 	require.NoError(t, os.Remove(path))
 	service.MarkLocalChange("local", "compose/alpha/one-off.bin")
 	result, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{
-		Action: "delete_git", Path: "alpha/one-off.bin", Confirmation: deleteGitFileConfirmText,
+		Action: "delete_git", Path: "alpha/one-off.bin", Confirmation: typedConfirmationText,
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, result.CommitSHA)
@@ -271,7 +271,7 @@ func TestLocalAndGitDeletionRemovesExactRuleAndSettlesImmediately(t *testing.T) 
 func TestLocalFileDeletionRefusesToDeleteGitWhenRemoteChanged(t *testing.T) {
 	service, _, repository, binding := prepareTrackedFileDeletion(t)
 	remoteChange(t, repository.RemoteURL, "stacks/alpha/test.conf", "enabled=false\n")
-	_, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf", Confirmation: deleteGitFileConfirmText})
+	_, err := service.ResolveLocalStackDeletion(context.Background(), binding.ID, "alpha/compose.yml", LocalDeletionActionInput{Action: "delete_git", Path: "alpha/test.conf", Confirmation: typedConfirmationText})
 	require.ErrorContains(t, err, "Git changed")
 }
 

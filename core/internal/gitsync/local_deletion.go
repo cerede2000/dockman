@@ -14,11 +14,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
-const (
-	deleteGitStackConfirmText = "DELETE STACK FROM GIT"
-	deleteGitFileConfirmText  = "DELETE FILE FROM GIT"
-)
-
 type LocalDeletionActionInput struct {
 	Action       string `json:"action"`
 	Path         string `json:"path,omitempty"`
@@ -95,12 +90,8 @@ func (s *Service) ResolveLocalStackDeletion(ctx context.Context, bindingID, comp
 	} else if action != "restore" && action != "delete_git" && action != "deselect" {
 		return LocalDeletionActionResult{}, errors.New("local stack deletion action must be restore, delete_git, or deselect")
 	}
-	confirmation := deleteGitStackConfirmText
-	if strings.TrimSpace(input.Path) != "" {
-		confirmation = deleteGitFileConfirmText
-	}
-	if action == "delete_git" && input.Confirmation != confirmation {
-		return LocalDeletionActionResult{}, fmt.Errorf("type %q to confirm the Git deletion", confirmation)
+	if action == "delete_git" && input.Confirmation != typedConfirmationText {
+		return LocalDeletionActionResult{}, fmt.Errorf("type %q to confirm the Git deletion", typedConfirmationText)
 	}
 
 	automationLock := s.repositoryLock("automation:" + bindingID)

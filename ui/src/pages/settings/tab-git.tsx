@@ -18,6 +18,7 @@ import CopyButton from "../../components/copy-button.tsx";
 import {useSearchParams} from 'react-router';
 import GitBindingRecovery, {type RecoveryBinding} from '../../components/git-binding-recovery.tsx';
 import GitPolicyFileTree, {type GitPolicyForm} from '../../components/git-policy-file-tree.tsx';
+import TypedConfirmationField, {TYPED_CONFIRMATION} from '../../components/typed-confirmation-field.tsx';
 
 type AuthType = "public" | "https_token" | "ssh_key";
 type RepositoryDialogMode = "import" | "github";
@@ -1400,18 +1401,17 @@ export default function TabGit() {
                     setIncludeSensitive(checked); setSensitiveConfirmation("");
                     if (!checked && transferBinding) void previewTransfer(transferBinding, transferDirection, false);
                 }}/>} label="Include sensitive files for this transfer only"/>}
-                {!conflictResolutionMode && includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TextField label='Type "INCLUDE SENSITIVE FILES"' value={sensitiveConfirmation} onChange={(event) => setSensitiveConfirmation(event.target.value)} onBlur={() => transferBinding && sensitiveConfirmation === "INCLUDE SENSITIVE FILES" && void previewTransfer(transferBinding, transferDirection, true)} fullWidth/></>}
+                {!conflictResolutionMode && includeSensitive && <><Alert severity="error">This may commit tokens, private keys, or .env secrets. It is disabled by default and never remembered.</Alert><TypedConfirmationField value={sensitiveConfirmation} onChange={setSensitiveConfirmation} onBlur={() => transferBinding && sensitiveConfirmation === TYPED_CONFIRMATION && void previewTransfer(transferBinding, transferDirection, true)}/></>}
                 {!conflictResolutionMode && transferDirection === "stack_to_repository" && <TextField inputRef={commitMessageRef} label="Commit message (optional)" defaultValue="" placeholder={`chore(stack): sync ${transferBinding?.stackPath || "stack"} from Dockman`} slotProps={{htmlInput: {maxLength: 300}}}/>}
             </Stack></DialogContent>
-            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button>{conflictResolutionMode ? <Button variant="contained" disabled={busy !== null || Object.keys(conflictDecisions).length === 0} onClick={() => void resolveAutomationConflicts()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}Resolve selected decisions</Button> : <Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.changed > 0 && safeTransferCount === 0 && resolvedConflictPaths.size === 0) || (includeSensitive && sensitiveConfirmation !== "INCLUDE SENSITIVE FILES")} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit selected and push" : "Backup and import selected"}</Button>}</DialogActions>
+            <DialogActions><Button onClick={closeTransfer} disabled={busy !== null}>Cancel</Button>{conflictResolutionMode ? <Button variant="contained" disabled={busy !== null || Object.keys(conflictDecisions).length === 0} onClick={() => void resolveAutomationConflicts()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}Resolve selected decisions</Button> : <Button variant="contained" color={transferDirection === "repository_to_stack" ? "warning" : "primary"} disabled={busy !== null || !transferPreview || (transferPreview.changed > 0 && safeTransferCount === 0 && resolvedConflictPaths.size === 0) || (includeSensitive && sensitiveConfirmation !== TYPED_CONFIRMATION)} onClick={() => void runTransfer()}>{busy?.startsWith("transfer-") && <CircularProgress size={16} sx={{mr: 1}}/>}{transferPreview?.changed === 0 ? "Confirm baseline" : transferDirection === "stack_to_repository" ? "Commit selected and push" : "Backup and import selected"}</Button>}</DialogActions>
         </Dialog>
 
         <Dialog open={localDeletionDecision !== null} onClose={() => busy === null && setLocalDeletionDecision(null)} maxWidth="sm" fullWidth>
             <DialogTitle>Confirm Git deletion?</DialogTitle><DialogContent><Stack spacing={2} sx={{pt: .5}}>
                 <Alert severity="error">This creates and pushes a Git commit deleting {localDeletionDecision?.wholeStack ? "the complete stack" : <strong>{localDeletionDecision?.path}</strong>}. Docker containers and volumes are never removed.</Alert>
-                <Typography>Type <strong>{localDeletionDecision?.wholeStack ? "DELETE STACK FROM GIT" : "DELETE FILE FROM GIT"}</strong> to confirm.</Typography>
-                <TextField value={localDeletionConfirmation} onChange={(event) => setLocalDeletionConfirmation(event.target.value)} autoComplete="off" autoFocus/>
-            </Stack></DialogContent><DialogActions><Button onClick={() => { setLocalDeletionDecision(null); setLocalDeletionConfirmation(""); }} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" disabled={busy !== null || localDeletionConfirmation !== (localDeletionDecision?.wholeStack ? "DELETE STACK FROM GIT" : "DELETE FILE FROM GIT")} onClick={() => {
+                <TypedConfirmationField value={localDeletionConfirmation} onChange={setLocalDeletionConfirmation} autoFocus/>
+            </Stack></DialogContent><DialogActions><Button onClick={() => { setLocalDeletionDecision(null); setLocalDeletionConfirmation(""); }} disabled={busy !== null}>Cancel</Button><Button color="error" variant="contained" disabled={busy !== null || localDeletionConfirmation !== TYPED_CONFIRMATION} onClick={() => {
                 if (!localDeletionDecision) return;
                 void runLocalDeletionAction({path: localDeletionDecision.path || localDeletionDecision.composePath, status: "deleted_locally"}, "delete_git");
             }}>Commit deletion and push</Button></DialogActions>
@@ -1422,10 +1422,10 @@ export default function TabGit() {
             <DialogContent dividers><Stack spacing={2}>
                 <Alert severity="error">Git no longer contains this complete stack directory. Dockman will create a backup first, then remove only its local folder. It will not run Compose down and will never remove Docker volumes.</Alert>
                 <Typography sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{orphanDecision?.composePath}</Typography>
-                <TextField autoFocus fullWidth label='Type "REMOVE LOCAL ORPHAN"' value={orphanConfirmation} onChange={(event) => setOrphanConfirmation(event.target.value)} slotProps={{htmlInput: {autoComplete: "off"}}}/>
+                <TypedConfirmationField autoFocus value={orphanConfirmation} onChange={setOrphanConfirmation}/>
                 {orphanDecision?.action === "archive" && <Alert severity="info">The archive is kept separately from rotating synchronization backups.</Alert>}
             </Stack></DialogContent>
-            <DialogActions><Button disabled={busy !== null} onClick={() => { setOrphanDecision(null); setOrphanConfirmation(""); }}>Cancel</Button><Button variant="contained" color={orphanDecision?.action === "archive" ? "warning" : "error"} disabled={busy !== null || orphanConfirmation !== "REMOVE LOCAL ORPHAN"} onClick={() => orphanDecision && void runOrphanAction(orphanDecision.composePath, orphanDecision.action)}>{busy?.startsWith("orphan-") && <CircularProgress size={16} sx={{mr: 1}}/>}{orphanDecision?.action === "archive" ? "Archive and remove" : "Backup and delete"}</Button></DialogActions>
+            <DialogActions><Button disabled={busy !== null} onClick={() => { setOrphanDecision(null); setOrphanConfirmation(""); }}>Cancel</Button><Button variant="contained" color={orphanDecision?.action === "archive" ? "warning" : "error"} disabled={busy !== null || orphanConfirmation !== TYPED_CONFIRMATION} onClick={() => orphanDecision && void runOrphanAction(orphanDecision.composePath, orphanDecision.action)}>{busy?.startsWith("orphan-") && <CircularProgress size={16} sx={{mr: 1}}/>}{orphanDecision?.action === "archive" ? "Archive and remove" : "Backup and delete"}</Button></DialogActions>
         </Dialog>
 
         <Dialog open={comparison !== null} onClose={() => busy === null && setComparison(null)} fullWidth maxWidth="lg">
@@ -1567,9 +1567,8 @@ export default function TabGit() {
             <DialogTitle>Reset local Git state to remote?</DialogTitle><DialogContent><Stack spacing={2}>
                 <Alert severity="warning">This discards commits that exist only in Dockman’s isolated Git repository. It does not modify stack files, containers, remote history, or synchronization baselines.</Alert>
                 <Typography>Use this after a rejected push or diverged history. The next stack synchronization will expose any real file differences through the normal preview and conflict workflow.</Typography>
-                <Typography>Type <strong>RESET LOCAL GIT STATE</strong> to confirm.</Typography>
-                <TextField value={resetRepositoryConfirmation} onChange={(event) => setResetRepositoryConfirmation(event.target.value)} autoComplete="off" autoFocus/>
-            </Stack></DialogContent><DialogActions><Button onClick={() => { setResetRepository(null); setResetRepositoryConfirmation(""); }} disabled={busy !== null}>Cancel</Button><Button color="warning" variant="contained" onClick={() => void confirmResetRepository()} disabled={busy !== null || resetRepositoryConfirmation !== "RESET LOCAL GIT STATE"}>{busy?.startsWith("reset-") && <CircularProgress size={16} sx={{mr: 1}}/>}Reset to remote</Button></DialogActions>
+                <TypedConfirmationField value={resetRepositoryConfirmation} onChange={setResetRepositoryConfirmation} autoFocus/>
+            </Stack></DialogContent><DialogActions><Button onClick={() => { setResetRepository(null); setResetRepositoryConfirmation(""); }} disabled={busy !== null}>Cancel</Button><Button color="warning" variant="contained" onClick={() => void confirmResetRepository()} disabled={busy !== null || resetRepositoryConfirmation !== TYPED_CONFIRMATION}>{busy?.startsWith("reset-") && <CircularProgress size={16} sx={{mr: 1}}/>}Reset to remote</Button></DialogActions>
         </Dialog>
 
         <Dialog open={deleteCredential !== null} onClose={() => busy === null && setDeleteCredential(null)} maxWidth="xs" fullWidth>
