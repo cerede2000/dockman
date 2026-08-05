@@ -1,4 +1,4 @@
-h1:cXsUHbKgh5HtbjGlbW3tMGlh/9xF7hbgOfrR580CsI0=
+h1:9fSBQyAP/Hy2l3d82NrWdYCN2K8F8Udzhkj0T3EASgg=
 20260208203619_mig.sql h1:xBogJIlN+Qqa/9+EkfhypXCAZ8Hlqawf9Vh4ZvllQkc=
 20260208221102_mig.sql h1:Qx+BFt3Ilnk8My/pLg74kR0Mpgz0DqcXeB4RsuM5qqI=
 20260722090000_git_sync_foundation.sql h1:zeelfWn1yknX4cx8az8Z3r/Ie8pr+2EJx4jwcYpAeyU=
@@ -26,3 +26,5 @@ h1:cXsUHbKgh5HtbjGlbW3tMGlh/9xF7hbgOfrR580CsI0=
 20260804210000_update_image_cleanup.sql h1:qvTEagszrMfwvq6JcdP9ePAyRN+T9mY0DIBP5SIkhWI=
 20260804220000_update_version_discovery.sql h1:xsoCcMnY4G2o7fMad5nBc2DRWZj8uN91n4Ix9fZcs4A=
 20260805120000_update_notification_channels.sql h1:2l0VacH8NOi2HV0kwOYbyMAThm0NvRkX/P7uph/x/n0=
+20260805150000_unified_notification_channels.sql h1:LzsHq5sW9OZoWrpTYKD2LBt7ZQY68F4ehUrE9eydBbo=
+20260805160000_git_webhooks.sql h1:z5TXp+rKC0YN5SQvBmb6latnqHlFhLposlq0XnN3zoY=

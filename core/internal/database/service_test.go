@@ -15,7 +15,7 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 
 	require.NoError(t, migrate(db, migrationDir, migrationPath))
 	for _, table := range []string{
-		"git_credentials", "git_repositories", "git_stack_bindings", "git_binding_baselines", "git_operations", "git_deployments", "git_stack_statuses", "update_policies", "update_scan_results", "update_scan_runs", "update_smtp_configs", "update_notification_states", "update_notification_channels", "update_notification_channel_states", "update_notification_deliveries", "update_execution_runs", "update_execution_results", "update_execution_blocks", "update_automation_controls", "update_image_cleanups",
+		"git_credentials", "git_repositories", "git_stack_bindings", "git_binding_baselines", "git_operations", "git_deployments", "git_stack_statuses", "git_repository_webhooks", "git_webhook_deliveries", "update_policies", "update_scan_results", "update_scan_runs", "update_smtp_configs", "update_notification_states", "update_notification_channels", "update_notification_channel_states", "update_notification_deliveries", "update_execution_runs", "update_execution_results", "update_execution_blocks", "update_automation_controls", "update_image_cleanups",
 	} {
 		var count int
 		require.NoError(t, db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count))
@@ -38,6 +38,10 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 	var cleanerCronColumns int
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('prune_configs') WHERE name='cron_expression'").Scan(&cleanerCronColumns))
 	require.Equal(t, 1, cleanerCronColumns)
+
+	var eventTypeColumns int
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('update_notification_channels') WHERE name='event_types'").Scan(&eventTypeColumns))
+	require.Equal(t, 1, eventTypeColumns)
 
 	for _, column := range []string{"host", "target_type", "target_key", "target_name", "enabled", "schedule", "rollback_enabled", "cleanup_enabled", "cleanup_keep", "version_policy", "version_prerelease"} {
 		var count int

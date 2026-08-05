@@ -71,6 +71,19 @@ func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.P
 		}
 		return dkSrv.Compose.RunDockerfileBuild(ctx, filename, imageTag, networkMode, writer)
 	})
+	if notificationService != nil {
+		buildJobs.SetNotifier(func(job DockerBuildJobView) {
+			kind, severity, title := notifications.EventBuildSuccess, "success", "Docker image build completed"
+			if job.Status != buildJobSucceeded {
+				kind, severity, title = notifications.EventBuildFailure, "error", "Docker image build failed"
+			}
+			message := fmt.Sprintf("Host: %s\nImage: %s\nDockerfile: %s\nStatus: %s", job.Host, job.ImageTag, job.Filename, job.Status)
+			if job.Error != "" {
+				message += "\nError: " + job.Error
+			}
+			notificationService.Enqueue(notifications.ChannelEvent{Kind: kind, Host: job.Host, Title: title, Message: message, Severity: severity, Time: time.Now().UTC()})
+		})
+	}
 	hand := &HandlerHttp{srv: srv, allowSelfExec: allowSelfExec, updatePolicies: policies, updateAutomation: automation, notifications: notificationService, buildJobs: buildJobs}
 	return hand.register()
 }

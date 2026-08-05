@@ -19,7 +19,7 @@ The implementation test plans in this repository use the following delivered seq
 | 8 | ✅ | Informative semantic-version discovery and bulk policy editing |
 | 9 | ✅ | Isolated webhook, Gotify, ntfy, Discord and Apprise notification channels |
 
-Post-lot stabilization also delivered background operations, self-update checking, public-registry challenge support, local-image classification, Buildx lifecycle cleanup, UI progress and update-reference/stat fixes.
+Post-lot stabilization also delivered background operations, self-update checking, public-registry challenge support, local-image classification, Buildx lifecycle cleanup, UI progress, update-reference/stat fixes, unified multi-channel event subscriptions and signed GitHub synchronization webhooks.
 
 ## Remaining roadmap
 
@@ -31,9 +31,9 @@ Private-registry credentials remain deliberately deferred. The implementation mu
 
 Maintenance windows beyond per-target cron, canary batches, dependency/priority groups, concurrency rules and enforceable semantic version constraints remain future work. Current version discovery is informative and never rewrites Compose tags.
 
-### Git inbound webhooks
+### Additional Git providers
 
-Git synchronization currently uses bounded polling plus manual checks. Signed inbound provider webhooks remain a separate security-sensitive lot; see [Git webhook gap analysis](../git-sync/webhooks.md).
+Signed GitHub push webhooks are delivered. GitLab and Bitbucket require explicit provider adapters rather than pretending their signatures and payloads are GitHub-compatible; see [GitHub webhooks](../git-sync/webhooks.md).
 
 ### Documentation/release
 

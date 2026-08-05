@@ -5,7 +5,7 @@ sidebar_position: 3
 
 # Notifications
 
-Notification configuration is per Docker host. SMTP passwords, endpoint URLs, tokens and API keys are encrypted in Dockman's database and are never returned by the API.
+Notification configuration is per Docker host. SMTP is an ordinary named channel, just like the HTTP providers: several SMTP relays, recipients or mixed providers can coexist. Passwords, endpoint URLs, tokens and API keys are encrypted in Dockman's database and are never returned by the API.
 
 ## Supported channels
 
@@ -30,14 +30,18 @@ Supported transport modes:
 
 TLS verification remains enabled. Private relay CAs can be mounted with `DOCKMAN_SMTP_CA_FILE`.
 
-## Events
+## Event subscriptions
 
-Separate choices control notifications for:
+Every channel independently subscribes to any combination of:
 
-- updates/new versions detected;
-- successful automatic executions;
-- failed executions and rollbacks;
-- scan or delivery errors.
+- image updates available, successful updates, failures and rollbacks;
+- Docker cleaner completion or failure;
+- background image-build completion or failure;
+- Git synchronization success/failure, conflicts and newly discovered stacks;
+- Git auto-deployment success/failure and rollback;
+- unexpected container restart, OOM termination and unhealthy transition.
+
+Container lifecycle events are observed by Dockman's server through the already shared Docker event stream. They remain active when no browser is open and do not add a polling loop. Explicit operator stops and ordinary starts are not reported as incidents.
 
 Unchanged scan results are fingerprinted independently for every channel to avoid repeated identical messages. A failed channel remains eligible for retry while a successful channel is not duplicated. Delivery history is bounded and visible in the Updates view.
 
@@ -47,7 +51,7 @@ Dockman emits standards-compliant messages, but final inbox placement also depen
 
 ## Test procedure
 
-1. Save the SMTP or HTTP-channel configuration.
+1. Open **Updates → Notifications**, add an SMTP or HTTP channel and choose its subscribed events.
 2. Send a test message from that channel.
 3. Verify sender, recipient, transport security and inbox placement.
 4. Trigger an enrolled update check and a protected execution separately.
@@ -65,7 +69,7 @@ Dockman emits standards-compliant messages, but final inbox placement also depen
 
 ```json
 {
-  "kind": "update",
+  "kind": "build.success",
   "host": "local",
   "title": "Dockman updates on local - 2 updated - 0 failed",
   "message": "Dockman automatic image update summary…",
@@ -74,4 +78,4 @@ Dockman emits standards-compliant messages, but final inbox placement also depen
 }
 ```
 
-The generic webhook supports an optional bearer token or HTTP Basic credentials. Apprise expects its persistent API URL and configuration key; provider-specific destination URLs remain managed by Apprise itself.
+The generic webhook supports an optional bearer token or HTTP Basic credentials. Apprise expects its persistent API URL and configuration key; provider-specific destination URLs remain managed by Apprise itself. Producers enqueue into one bounded worker, so a slow notification endpoint never blocks the Docker, build, cleaner or Git action and cannot grow memory without a fixed ceiling.

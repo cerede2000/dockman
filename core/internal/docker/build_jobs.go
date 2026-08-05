@@ -109,6 +109,13 @@ type DockerBuildJobManager struct {
 	jobs    map[string]*dockerBuildJob
 	execute buildJobExecutor
 	sem     chan struct{}
+	notify  func(DockerBuildJobView)
+}
+
+func (m *DockerBuildJobManager) SetNotifier(notify func(DockerBuildJobView)) {
+	m.mu.Lock()
+	m.notify = notify
+	m.mu.Unlock()
 }
 
 func NewDockerBuildJobManager(execute buildJobExecutor) *DockerBuildJobManager {
@@ -190,6 +197,12 @@ func (m *DockerBuildJobManager) complete(job *dockerBuildJob, status string, err
 	}
 	job.mu.Unlock()
 	job.cancel()
+	m.mu.Lock()
+	notify := m.notify
+	m.mu.Unlock()
+	if notify != nil {
+		notify(job.snapshot(0, false))
+	}
 }
 
 func (m *DockerBuildJobManager) List(host string) []DockerBuildJobView {

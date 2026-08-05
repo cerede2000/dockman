@@ -8,7 +8,7 @@ import {
 } from "@mui/material";
 import {
     Add, ArchiveOutlined, BlockOutlined, CheckCircleOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
-    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, PauseCircleOutlined, PlayCircleOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined,
+    FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, PauseCircleOutlined, PlayCircleOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined, WebhookOutlined,
 } from "@mui/icons-material";
 import {gitAPI as api, GitAPIError as APIError, gitComparisonLanguage as comparisonLanguage, gitDateLabel as dateLabel} from "../../lib/git-api.ts";
 import {formatBytes} from "../../lib/editor.ts";
@@ -64,6 +64,11 @@ interface Repository {
     excludePatterns: string[];
     commitAuthorName: string;
     commitAuthorEmail: string;
+}
+
+interface RepositoryWebhook {
+    id?: string; repositoryId: string; enabled: boolean; configured: boolean; path?: string; secret?: string;
+    lastDeliveryId?: string; lastEvent?: string; lastStatus?: string; lastError?: string; lastReceivedAt?: string;
 }
 
 interface RepositoryStatus {
@@ -267,6 +272,9 @@ export default function TabGit() {
     const [resetRepository, setResetRepository] = useState<Repository | null>(null);
     const [resetRepositoryConfirmation, setResetRepositoryConfirmation] = useState("");
     const [historyRepository, setHistoryRepository] = useState<Repository | null>(null);
+	const [webhookRepository, setWebhookRepository] = useState<Repository | null>(null);
+	const [repositoryWebhook, setRepositoryWebhook] = useState<RepositoryWebhook | null>(null);
+	const [webhookEnabled, setWebhookEnabled] = useState(false);
     const [operations, setOperations] = useState<Operation[]>([]);
     const [bindings, setBindings] = useState<Binding[]>([]);
     const [stackTargets, setStackTargets] = useState<StackTarget[]>([]);
@@ -318,6 +326,7 @@ export default function TabGit() {
     const [searchParams, setSearchParams] = useSearchParams();
     const openedGitDeepLink = useRef('');
     const {handleCopy: copyRepositoryUrl, copiedId: copiedRepositoryUrl} = useCopyButton();
+	const {handleCopy: copyWebhookValue, copiedId: copiedWebhookValue} = useCopyButton();
     const deferredPreviewSearch = useDeferredValue(previewSearch);
     const previewEntries = useMemo(() => transferPreview?.entries || [], [transferPreview?.entries]);
     const previewSearchPaths = useMemo(() => previewEntries.map((entry) => entry.path.toLowerCase()), [previewEntries]);
@@ -555,6 +564,37 @@ export default function TabGit() {
             showError((error as Error).message);
         }
     };
+
+	const openRepositoryWebhook = async (repository: Repository) => {
+		setBusy(`repository-webhook-${repository.id}`);
+		try {
+			const view = await api<RepositoryWebhook>(`/repositories/${repository.id}/webhook`);
+			setWebhookRepository(repository);
+			setRepositoryWebhook(view);
+			setWebhookEnabled(view.enabled);
+		} catch (error) {
+			showError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const saveRepositoryWebhook = async (rotateSecret = false) => {
+		if (!webhookRepository) return;
+		setBusy(`repository-webhook-save-${webhookRepository.id}`);
+		try {
+			const view = await api<RepositoryWebhook>(`/repositories/${webhookRepository.id}/webhook`, {
+				method: "PUT", body: JSON.stringify({enabled: webhookEnabled, rotateSecret}),
+			});
+			setRepositoryWebhook(view);
+			setWebhookEnabled(view.enabled);
+			showSuccess(rotateSecret ? "Webhook secret rotated. Update it in GitHub before closing this dialog." : "Git webhook configuration saved.");
+		} catch (error) {
+			showError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBusy(null);
+		}
+	};
 
     const confirmDeleteRepository = async () => {
         if (!deleteRepository) return;
@@ -1153,6 +1193,7 @@ export default function TabGit() {
                                         <Tooltip title="Pull fast-forward changes"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "pull")}><CloudDownloadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         <Tooltip title="Push local commits"><span><IconButton size="small" disabled={busy !== null || !repository.workspacePresent} onClick={() => void repositoryAction(repository, "push")}><CloudUploadOutlined fontSize="small"/></IconButton></span></Tooltip>
                                         {gitStatus && (gitStatus.diverged || gitStatus.ahead > 0) && <Tooltip title="Discard Dockman's local Git commits and reset to the remote branch"><span><IconButton size="small" color="warning" disabled={busy !== null || !repository.workspacePresent} onClick={() => { setResetRepositoryConfirmation(""); setResetRepository(repository); }}><UndoOutlined fontSize="small"/></IconButton></span></Tooltip>}
+										{repository.provider === "github" && <Tooltip title="Configure signed GitHub webhook"><span><IconButton size="small" disabled={busy !== null} onClick={() => void openRepositoryWebhook(repository)}><WebhookOutlined fontSize="small"/></IconButton></span></Tooltip>}
                                         <Tooltip title="Repository policy and Git commit identity"><IconButton size="small" disabled={busy !== null} onClick={() => openRepositoryPolicy(repository)}><TuneOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Operation history"><IconButton size="small" disabled={busy !== null} onClick={() => void openHistory(repository)}><HistoryOutlined fontSize="small"/></IconButton></Tooltip>
                                         <Tooltip title="Remove local workspace"><IconButton size="small" color="error" disabled={busy !== null} onClick={() => setDeleteRepository(repository)}><DeleteOutlined fontSize="small"/></IconButton></Tooltip>
@@ -1234,6 +1275,19 @@ export default function TabGit() {
                 </Table></TableContainer>
             </Paper>
         </Stack>
+
+        <Dialog open={webhookRepository !== null} onClose={() => busy === null && setWebhookRepository(null)} fullWidth maxWidth="md">
+			<DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><WebhookOutlined/>GitHub webhook — {webhookRepository?.name}</DialogTitle>
+			<DialogContent dividers><Stack spacing={2}>
+				<Alert severity="info">A signed push webhook starts the existing safe synchronization pipeline immediately. Polling remains as a low-frequency fallback; duplicate deliveries and burst pushes are rejected or coalesced.</Alert>
+				<FormControlLabel control={<Switch checked={webhookEnabled} onChange={(event) => setWebhookEnabled(event.target.checked)}/>} label="Enable inbound GitHub webhook"/>
+				{repositoryWebhook?.path && <Stack spacing={.5}><Typography variant="caption" color="text.secondary">Payload URL</Typography><Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><TextField fullWidth size="small" value={`${window.location.origin}${repositoryWebhook.path}`} slotProps={{htmlInput: {readOnly: true}}}/><CopyButton handleCopy={copyWebhookValue} activeID={copiedWebhookValue || ""} thisID={`${window.location.origin}${repositoryWebhook.path}`} tooltip="Copy webhook URL"/></Stack></Stack>}
+				{repositoryWebhook?.secret && <Alert severity="warning"><Stack spacing={1}><Typography>This secret is displayed once. Configure it in GitHub with content type <code>application/json</code>, SSL verification enabled, and only the <code>push</code> event.</Typography><Stack direction="row" spacing={.5} sx={{alignItems: "center"}}><TextField fullWidth size="small" value={repositoryWebhook.secret} slotProps={{htmlInput: {readOnly: true}}}/><CopyButton handleCopy={copyWebhookValue} activeID={copiedWebhookValue || ""} thisID={repositoryWebhook.secret} tooltip="Copy webhook secret"/></Stack></Stack></Alert>}
+				{repositoryWebhook?.configured && !repositoryWebhook.secret && <Alert severity="success">A signing secret is configured and is never returned by the API. Rotate it if it is lost or exposed.</Alert>}
+				{repositoryWebhook?.lastReceivedAt && <Paper variant="outlined" sx={{p: 1.5}}><Stack direction={{xs: "column", sm: "row"}} spacing={1}><Chip size="small" variant="outlined" color={repositoryWebhook.lastStatus === "accepted" ? "success" : repositoryWebhook.lastStatus === "error" ? "error" : "default"} label={repositoryWebhook.lastStatus || "unknown"}/><Typography variant="body2">{repositoryWebhook.lastEvent} · {dateLabel(repositoryWebhook.lastReceivedAt)}</Typography><Typography variant="caption" color="text.secondary" sx={{fontFamily: "monospace"}}>{repositoryWebhook.lastDeliveryId}</Typography></Stack>{repositoryWebhook.lastError && <Typography color="error" variant="body2">{repositoryWebhook.lastError}</Typography>}</Paper>}
+			</Stack></DialogContent>
+			<DialogActions><Button onClick={() => setWebhookRepository(null)} disabled={busy !== null}>Close</Button><Box sx={{flex: 1}}/>{repositoryWebhook?.configured && <Button color="warning" onClick={() => void saveRepositoryWebhook(true)} disabled={busy !== null}>Rotate secret</Button>}<Button variant="contained" onClick={() => void saveRepositoryWebhook(false)} disabled={busy !== null}>{busy?.startsWith("repository-webhook-save-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save</Button></DialogActions>
+		</Dialog>
 
         <Dialog open={policyRepository !== null} onClose={() => busy === null && setPolicyRepository(null)} fullWidth maxWidth="sm">
             <DialogTitle sx={{display: "flex", alignItems: "center", gap: 1}}><TuneOutlined/>Repository policy and commit identity</DialogTitle>

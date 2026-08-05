@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RA341/dockman/internal/docker/updater"
@@ -131,17 +132,19 @@ type Service struct {
 	vault         *Vault
 	sender        Sender
 	channelSender ChannelSender
+	eventQueue    chan ChannelEvent
+	dispatchOnce  sync.Once
 }
 
 func NewService(db *gorm.DB, vault *Vault) *Service {
 	caFile, caFileRequired := smtpCAFileFromEnvironment()
 	return &Service{db: db, vault: vault, sender: NetworkSender{
 		Timeout: 20 * time.Second, CAFile: caFile, RequireCAFile: caFileRequired,
-	}, channelSender: HTTPChannelSender{Timeout: 10 * time.Second}}
+	}, channelSender: HTTPChannelSender{Timeout: 10 * time.Second}, eventQueue: make(chan ChannelEvent, 256)}
 }
 
 func NewServiceWithSender(db *gorm.DB, vault *Vault, sender Sender) *Service {
-	return &Service{db: db, vault: vault, sender: sender, channelSender: HTTPChannelSender{Timeout: 10 * time.Second}}
+	return &Service{db: db, vault: vault, sender: sender, channelSender: HTTPChannelSender{Timeout: 10 * time.Second}, eventQueue: make(chan ChannelEvent, 256)}
 }
 
 func (s *Service) Get(host string) (ConfigView, []Delivery, error) {
@@ -251,36 +254,45 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 			deliveryErrors = append(deliveryErrors, fmt.Errorf("load %s notification state: %w", destination.name, stateErr))
 			continue
 		}
-		notifyAvailable := destination.notifyUpdates && availableFingerprint != "" && availableFingerprint != state.LastAvailableFingerprint
-		notifyErrors := destination.notifyErrors && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint
+		notifyAvailable := eventTypeEnabled(destination.events, EventUpdateAvailable) && availableFingerprint != "" && availableFingerprint != state.LastAvailableFingerprint
+		notifyErrors := eventTypeEnabled(destination.events, EventUpdateFailure) && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint
 		if !notifyAvailable && !notifyErrors {
 			if resetErr := s.resetResolvedChannelFingerprints(&state, availableFingerprint, errorFingerprint); resetErr != nil {
 				deliveryErrors = append(deliveryErrors, resetErr)
 			}
 			continue
 		}
-		messageAvailable, messageFailures := available, failures
-		if !notifyAvailable {
-			messageAvailable = nil
-		}
-		if !notifyErrors {
-			messageFailures = nil
-		}
-		subject := notificationSubject(run.Host, len(messageAvailable), len(messageFailures))
-		body := notificationBody(run, messageAvailable, messageFailures)
-		severity := "info"
-		if len(messageFailures) > 0 {
-			severity = "error"
-		}
-		if sendErr := destination.send(ctx, ChannelEvent{Kind: "scan", Host: run.Host, Title: subject, Message: body, Severity: severity, Time: time.Now()}); sendErr != nil {
-			deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+		if notifyAvailable && notifyErrors {
+			subject := notificationSubject(run.Host, len(available), len(failures))
+			body := notificationBody(run, available, failures)
+			if sendErr := destination.send(ctx, ChannelEvent{Kind: EventUpdateFailure, Host: run.Host, Title: subject, Message: body, Severity: "error", Time: time.Now()}); sendErr != nil {
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			} else {
+				state.LastAvailableFingerprint = availableFingerprint
+				state.LastErrorFingerprint = errorFingerprint
+			}
+			if saveErr := s.saveChannelState(&state); saveErr != nil {
+				deliveryErrors = append(deliveryErrors, saveErr)
+			}
 			continue
 		}
-		if destination.notifyUpdates {
-			state.LastAvailableFingerprint = availableFingerprint
+		if notifyAvailable {
+			subject := notificationSubject(run.Host, len(available), 0)
+			body := notificationBody(run, available, nil)
+			if sendErr := destination.send(ctx, ChannelEvent{Kind: EventUpdateAvailable, Host: run.Host, Title: subject, Message: body, Severity: "info", Time: time.Now()}); sendErr != nil {
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			} else {
+				state.LastAvailableFingerprint = availableFingerprint
+			}
 		}
-		if destination.notifyErrors {
-			state.LastErrorFingerprint = errorFingerprint
+		if notifyErrors {
+			subject := notificationSubject(run.Host, 0, len(failures))
+			body := notificationBody(run, nil, failures)
+			if sendErr := destination.send(ctx, ChannelEvent{Kind: EventUpdateFailure, Host: run.Host, Title: subject, Message: body, Severity: "error", Time: time.Now()}); sendErr != nil {
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			} else {
+				state.LastErrorFingerprint = errorFingerprint
+			}
 		}
 		if saveErr := s.saveChannelState(&state); saveErr != nil {
 			deliveryErrors = append(deliveryErrors, saveErr)
@@ -314,41 +326,41 @@ func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecuti
 	slices.Sort(allFailures)
 	var deliveryErrors []error
 	for _, destination := range destinations {
-		successes, failures := allSuccesses, allFailures
-		if !destination.notifyUpdates {
-			successes = nil
-		}
-		if !destination.notifyErrors {
-			failures = nil
-		}
-		if len(successes) == 0 && len(failures) == 0 {
+		if len(allSuccesses) > 0 && len(allFailures) > 0 && eventTypeEnabled(destination.events, EventUpdateSuccess) && eventTypeEnabled(destination.events, EventUpdateFailure) {
+			subject, body := executionNotification(run, allSuccesses, allFailures)
+			if sendErr := destination.send(ctx, ChannelEvent{Kind: EventUpdateFailure, Host: run.Host, Title: subject, Message: body, Severity: "error", Time: time.Now()}); sendErr != nil {
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			}
 			continue
 		}
-		subject, body := executionNotification(run, successes, failures)
-		severity := "success"
-		if len(failures) > 0 {
-			severity = "error"
+		if len(allSuccesses) > 0 && eventTypeEnabled(destination.events, EventUpdateSuccess) {
+			subject, body := executionNotification(run, allSuccesses, nil)
+			if sendErr := destination.send(ctx, ChannelEvent{Kind: EventUpdateSuccess, Host: run.Host, Title: subject, Message: body, Severity: "success", Time: time.Now()}); sendErr != nil {
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			}
 		}
-		if sendErr := destination.send(ctx, ChannelEvent{Kind: "update", Host: run.Host, Title: subject, Message: body, Severity: severity, Time: time.Now()}); sendErr != nil {
-			deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+		if len(allFailures) > 0 && eventTypeEnabled(destination.events, EventUpdateFailure) {
+			subject, body := executionNotification(run, nil, allFailures)
+			if sendErr := destination.send(ctx, ChannelEvent{Kind: EventUpdateFailure, Host: run.Host, Title: subject, Message: body, Severity: "error", Time: time.Now()}); sendErr != nil {
+				deliveryErrors = append(deliveryErrors, fmt.Errorf("%s: %w", destination.name, sendErr))
+			}
 		}
 	}
 	return errors.Join(deliveryErrors...)
 }
 
 type notificationDestination struct {
-	key           string
-	name          string
-	notifyUpdates bool
-	notifyErrors  bool
-	send          func(context.Context, ChannelEvent) error
+	key    string
+	name   string
+	events []string
+	send   func(context.Context, ChannelEvent) error
 }
 
 func (s *Service) enabledDestinations(host string) ([]notificationDestination, error) {
 	var destinations []notificationDestination
 	var smtp SMTPConfig
 	if err := s.db.Where("host = ? AND enabled = ?", host, true).First(&smtp).Error; err == nil {
-		destinations = append(destinations, notificationDestination{key: "smtp", name: "SMTP", notifyUpdates: smtp.NotifyUpdates, notifyErrors: smtp.NotifyErrors, send: func(ctx context.Context, event ChannelEvent) error {
+		destinations = append(destinations, notificationDestination{key: "smtp", name: "SMTP", events: normalizeEventTypes(nil, smtp.NotifyUpdates, smtp.NotifyErrors), send: func(ctx context.Context, event ChannelEvent) error {
 			return s.deliver(ctx, smtp, event.Kind, event.Title, event.Message)
 		}})
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -360,7 +372,7 @@ func (s *Service) enabledDestinations(host string) ([]notificationDestination, e
 	}
 	for _, channel := range channels {
 		channel := channel
-		destinations = append(destinations, notificationDestination{key: channelStateKey(channel.ID), name: channel.Name, notifyUpdates: channel.NotifyUpdates, notifyErrors: channel.NotifyErrors, send: func(ctx context.Context, event ChannelEvent) error {
+		destinations = append(destinations, notificationDestination{key: channelStateKey(channel.ID), name: channel.Name, events: channelEventTypes(channel), send: func(ctx context.Context, event ChannelEvent) error {
 			secrets, err := s.decryptChannel(channel)
 			if err != nil {
 				configurationError := fmt.Errorf("decrypt notification channel %s: %w", channel.Name, err)

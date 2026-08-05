@@ -23,7 +23,7 @@ func testService(t *testing.T, enabled bool) (*Service, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Credential{}, &Repository{}, &StackBinding{}, &BindingBaseline{}, &Operation{}, &GitBackup{}, &Deployment{}, &GitStackStatus{}))
+	require.NoError(t, db.AutoMigrate(&Credential{}, &Repository{}, &StackBinding{}, &BindingBaseline{}, &Operation{}, &GitBackup{}, &Deployment{}, &GitStackStatus{}, &RepositoryWebhook{}, &WebhookDelivery{}))
 	vault, err := NewVault(bytes.Repeat([]byte{0x13}, 32))
 	require.NoError(t, err)
 	return NewService(enabled, NewStore(db), vault, filepath.Join(t.TempDir(), "repositories")), db
@@ -48,6 +48,27 @@ func compactTestCheckout(t *testing.T, repo *gitclient.Repository, branch string
 	require.NoError(t, err)
 	require.NoError(t, worktree.Checkout(&gitclient.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(branch), Force: true}))
 	return temporary, path, cleanup
+}
+
+func TestAutomationRecoveryEmitsSuccessNotification(t *testing.T) {
+	service, _ := testService(t, true)
+	binding := StackBinding{
+		UUID: uuid.NewString(), RepositoryUUID: uuid.NewString(), Host: "local", StackPath: "compose/demo",
+		SubPath: "demo", Enabled: true, AutoSyncEnabled: true, AutoSyncState: "up_to_date",
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+
+	var events []AutomationEvent
+	service.ConfigureEventNotifier(func(event AutomationEvent) { events = append(events, event) })
+	previous := binding
+	previous.AutoSyncState = "error"
+	previous.AutoSyncError = "temporary fetch failure"
+	service.notifyAutomationResult(binding.UUID, AutoSyncResult{
+		BindingID: binding.UUID, State: "up_to_date", Message: "No synchronization change detected",
+	}, nil, false, &previous)
+
+	require.Len(t, events, 1)
+	require.Equal(t, "git.sync.success", events[0].Kind)
 }
 
 func TestRepositoryManualFetchPullAndPush(t *testing.T) {

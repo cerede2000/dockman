@@ -70,6 +70,18 @@ func (s *Store) SaveRepository(row *Repository) error { return s.db.Save(row).Er
 
 func (s *Store) DeleteRepository(id string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var webhookIDs []string
+		if err := tx.Unscoped().Model(&RepositoryWebhook{}).Where("repository_uuid = ?", id).Pluck("uuid", &webhookIDs).Error; err != nil {
+			return err
+		}
+		if len(webhookIDs) > 0 {
+			if err := tx.Unscoped().Where("webhook_uuid IN ?", webhookIDs).Delete(&WebhookDelivery{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Unscoped().Where("repository_uuid = ?", id).Delete(&RepositoryWebhook{}).Error; err != nil {
+				return err
+			}
+		}
 		var bindingIDs []string
 		if err := tx.Unscoped().Model(&StackBinding{}).Where("repository_uuid = ?", id).Pluck("uuid", &bindingIDs).Error; err != nil {
 			return err

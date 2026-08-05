@@ -36,6 +36,7 @@ import (
 	"github.com/RA341/dockman/pkg/argos"
 	"github.com/RA341/dockman/pkg/logger"
 	"github.com/RA341/dockman/pkg/memlimit"
+	"github.com/moby/moby/client"
 
 	"github.com/rs/zerolog/log"
 )
@@ -167,6 +168,41 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Warn().Str("path", notificationKeyPath).Msg("notification master key was generated locally; mount NOTIFICATION_MASTER_KEY_FILE as a Docker secret for production")
 	}
 	notificationSrv := notifications.NewService(gormDB, notificationVault)
+	if err := notificationSrv.MigrateLegacySMTPConfigs(); err != nil {
+		log.Fatal().Err(err).Msg("unable to migrate legacy SMTP notification configuration")
+	}
+	notificationSrv.StartDispatcher(conf.ServerContext)
+	cleanerSrv.SetNotifier(func(_ context.Context, result cleaner.PruneResult, automated bool) {
+		kind, severity, title := notifications.EventCleanerSuccess, "success", "Docker cleaner completed"
+		parts := []string{fmt.Sprintf("Host: %s", result.Host)}
+		if automated {
+			parts = append(parts, "Trigger: scheduled")
+		} else {
+			parts = append(parts, "Trigger: manual")
+		}
+		failed := result.Err != ""
+		if result.Err != "" {
+			parts = append(parts, "Error: "+result.Err)
+		}
+		for _, item := range []struct {
+			name  string
+			value cleaner.OpResult
+		}{
+			{"Containers", result.Containers}, {"Images", result.Images}, {"Volumes", result.Volumes},
+			{"Networks", result.Networks}, {"Build cache", result.BuildCache},
+		} {
+			if item.value.Err != "" {
+				failed = true
+				parts = append(parts, item.name+": "+item.value.Err)
+			} else if item.value.Success != "" {
+				parts = append(parts, item.name+": "+item.value.Success)
+			}
+		}
+		if failed {
+			kind, severity, title = notifications.EventCleanerFailure, "error", "Docker cleaner failed"
+		}
+		notificationSrv.Enqueue(notifications.ChannelEvent{Kind: kind, Host: result.Host, Title: title, Message: strings.Join(parts, "\n"), Severity: severity, Time: time.Now().UTC()})
+	})
 	updateAutomationSrv, err := updater.NewAutomationService(
 		updater.NewScanStore(gormDB),
 		func(ctx context.Context, hostname string) ([]updater.UpdateEnrollment, error) {
@@ -237,6 +273,9 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("invalid Git storage configuration")
 	}
 	gitSyncSrv := gitsync.NewService(conf.GitSyncEnabled, gitStore, gitVault, gitWorkspaceRoot)
+	gitSyncSrv.ConfigureEventNotifier(func(event gitsync.AutomationEvent) {
+		notificationSrv.Enqueue(notifications.ChannelEvent{Kind: event.Kind, Host: event.Host, Title: event.Title, Message: event.Message, Severity: event.Severity, Time: time.Now().UTC()})
+	})
 	gitSyncSrv.ConfigureCommitProvenance(conf.GitCommitInstance)
 	if err := gitSyncSrv.ConfigureRetention(conf.GitHistoryRetentionDays, conf.GitBackupRetentionDays); err != nil {
 		log.Fatal().Err(err).Msg("invalid Git retention configuration")
@@ -302,6 +341,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Warn().Int64("operations", interrupted).Msg("marked interrupted Git operations as failed")
 	}
 	gitSyncSrv.StartAutomation(conf.ServerContext)
+	gitSyncSrv.StartWebhookWorker(conf.ServerContext)
 
 	viewerSrv := viewer.New(
 		hostManager.GetDockerService,
@@ -346,17 +386,35 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 			continue
 		}
 		events, unsubscribe := dkSrv.Container.SubscribeEvents()
-		go watchUpdatePolicyEvents(conf.ServerContext, hostname, events, unsubscribe, updateAutomationSrv)
+		go watchUpdatePolicyEvents(conf.ServerContext, hostname, events, unsubscribe, updateAutomationSrv, notificationSrv, dkSrv.Container)
 	}
 
 	log.Info().Msg("Dockman initialized successfully")
 	return app
 }
 
-func watchUpdatePolicyEvents(ctx context.Context, hostname string, events <-chan container.Event, unsubscribe func(), automation *updater.AutomationService) {
+func watchUpdatePolicyEvents(ctx context.Context, hostname string, events <-chan container.Event, unsubscribe func(), automation *updater.AutomationService, notificationSrv *notifications.Service, containers *container.Service) {
 	defer unsubscribe()
 	var timer *time.Timer
 	var timerC <-chan time.Time
+	restartCounts := make(map[string]int)
+	lastRestartNotification := make(map[string]time.Time)
+	notify := func(event container.Event, kind, title, severity, detail string) {
+		message := fmt.Sprintf("Host: %s\nContainer: %s\nImage: %s", hostname, event.Name, event.Image)
+		if detail != "" {
+			message += "\n" + detail
+		}
+		notificationSrv.Enqueue(notifications.ChannelEvent{Kind: kind, Host: hostname, Title: title, Message: message, Severity: severity, Time: time.Now().UTC()})
+	}
+	inspectRestartCount := func(event container.Event) (int, bool) {
+		inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		inspected, err := containers.Cli().ContainerInspect(inspectCtx, event.ID, client.ContainerInspectOptions{})
+		if err != nil || inspected.Container.State == nil {
+			return 0, false
+		}
+		return inspected.Container.RestartCount, true
+	}
 	defer func() {
 		if timer != nil {
 			timer.Stop()
@@ -384,6 +442,33 @@ func watchUpdatePolicyEvents(ctx context.Context, hostname string, events <-chan
 					timer.Reset(2 * time.Second)
 				}
 				timerC = timer.C
+			}
+			switch event.Action {
+			case "oom":
+				notify(event, notifications.EventContainerOOM, "Container terminated by OOM", "error", "Docker reported an out-of-memory event.")
+			case "health_status":
+				if event.Status == "unhealthy" {
+					notify(event, notifications.EventContainerUnhealthy, "Container became unhealthy", "error", "Health status: unhealthy")
+				}
+			case "restart":
+				lastRestartNotification[event.ID] = time.Now()
+				notify(event, notifications.EventContainerRestart, "Container restarted", "warning", "Docker reported a restart action.")
+			case "die":
+				if count, found := inspectRestartCount(event); found {
+					restartCounts[event.ID] = count
+				}
+			case "start":
+				if count, found := inspectRestartCount(event); found {
+					previous, known := restartCounts[event.ID]
+					restartCounts[event.ID] = count
+					if known && count > previous && time.Since(lastRestartNotification[event.ID]) > 10*time.Second {
+						lastRestartNotification[event.ID] = time.Now()
+						notify(event, notifications.EventContainerRestart, "Container restarted automatically", "warning", fmt.Sprintf("Restart count: %d", count))
+					}
+				}
+			case "destroy":
+				delete(restartCounts, event.ID)
+				delete(lastRestartNotification, event.ID)
 			}
 		case <-timerC:
 			timerC = nil
@@ -480,6 +565,7 @@ func (a *App) registerApiRoutes(publicApiMux *http.ServeMux) {
 	authRouter := http.NewServeMux()
 	a.registerApiAuthRoutes(authRouter)
 	withSubRouter(publicApiMux, "/auth", authRouter)
+	withSubRouter(publicApiMux, "/git-webhooks", gitsync.NewWebhookHandler(a.GitSync))
 
 	protectedApiMux := http.NewServeMux()
 	a.registerApiProtectedRoutes(protectedApiMux)

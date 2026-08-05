@@ -65,6 +65,7 @@ Git policies do not read excluded trees. Sensitive files, special files, Git met
 - Ordinary requests and uploads have separate size limits.
 - Header and idle timeouts protect slow or abandoned connections.
 - Authentication middleware protects administrative APIs.
+- The sole unauthenticated GitHub webhook route accepts POST JSON only and is protected by a per-repository HMAC-SHA256 secret, exact repository/branch checks, bounded replay storage, payload limits and a coalescing queue.
 - Typed destructive confirmations use the single word `CONFIRM` while retaining action-specific warnings.
 
 ## Automation safeguards

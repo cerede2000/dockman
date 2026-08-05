@@ -118,3 +118,84 @@ func TestChannelPayloadsAndEndpointHardening(t *testing.T) {
 		}
 	}
 }
+
+func TestChannelEventSubscriptionsAreIndependent(t *testing.T) {
+	service, _, _ := testService(t)
+	sender := &recordingChannelSender{errFor: map[string]error{}}
+	service.channelSender = sender
+	_, err := service.SaveChannel("local", ChannelInput{Name: "builds", Type: ChannelWebhook, Enabled: true, URL: "https://hooks.example.com/builds", Events: []string{EventBuildSuccess}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.SaveChannel("local", ChannelInput{Name: "git", Type: ChannelWebhook, Enabled: true, URL: "https://hooks.example.com/git", Events: []string{EventGitSyncFailure}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Publish(context.Background(), ChannelEvent{Kind: EventBuildSuccess, Host: "local", Title: "Built"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.rows) != 1 || sender.rows[0].Name != "builds" {
+		t.Fatalf("event was delivered to the wrong subscriptions: %#v", sender.rows)
+	}
+	if _, err := service.SaveChannel("local", ChannelInput{Name: "invalid", Type: ChannelWebhook, Enabled: true, URL: "https://hooks.example.com/invalid", Events: []string{"unknown.event"}}); err == nil {
+		t.Fatal("unknown event subscription was accepted")
+	}
+}
+
+func TestMultipleSMTPChannelsAndLegacyMigration(t *testing.T) {
+	service, db, _ := testService(t)
+	legacyPassword, err := service.vault.Encrypt([]byte("legacy-secret"), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := SMTPConfig{Host: "local", Enabled: true, Server: "smtp.legacy.example", Port: 587, Security: SecuritySTARTTLS, Username: "dockman", EncryptedPassword: legacyPassword, FromAddress: "dockman@example.com", Recipients: "ops@example.com", NotifyUpdates: true, NotifyErrors: true}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MigrateLegacySMTPConfigs(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.SaveChannel("local", ChannelInput{Name: "SMTP backup", Type: ChannelSMTP, Enabled: true, Server: "smtp.backup.example", Port: 465, Security: SecurityTLS, FromAddress: "dockman@example.com", Recipients: "backup@example.com", Events: []string{EventBuildFailure}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	views, err := service.ListChannels("local")
+	if err != nil || len(views) != 2 || second.Type != ChannelSMTP {
+		t.Fatalf("multiple SMTP channels were not preserved: %#v, %v", views, err)
+	}
+	var legacyCount int64
+	if err := db.Model(&SMTPConfig{}).Count(&legacyCount).Error; err != nil || legacyCount != 0 {
+		t.Fatalf("legacy SMTP row still active: count=%d err=%v", legacyCount, err)
+	}
+	// A second startup is idempotent and cannot recreate or duplicate SMTP.
+	if err := service.MigrateLegacySMTPConfigs(); err != nil {
+		t.Fatal(err)
+	}
+	views, err = service.ListChannels("local")
+	if err != nil || len(views) != 2 {
+		t.Fatalf("SMTP migration was not idempotent: %#v, %v", views, err)
+	}
+}
+
+func TestUpdateNotificationSubscriptionsDoNotCrossDeliver(t *testing.T) {
+	service, _, _ := testService(t)
+	sender := &recordingChannelSender{errFor: map[string]error{}}
+	service.channelSender = sender
+	_, err := service.SaveChannel("local", ChannelInput{Name: "success-only", Type: ChannelWebhook, Enabled: true, URL: "https://hooks.example.com/success", Events: []string{EventUpdateSuccess}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := service.NotifyScan(context.Background(), updater.UpdateScanRun{Host: "local", Trigger: "scheduled", Schedule: "0 4 * * *", CompletedAt: &now}, []updater.ContainerUpdateCheck{{ContainerName: "web", Image: "web:latest", Status: updater.ContainerUpdateAvailable}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.events) != 0 {
+		t.Fatalf("success-only channel received an availability scan: %#v", sender.events)
+	}
+	if err := service.NotifyExecution(context.Background(), updater.UpdateExecutionRun{Host: "local", Updated: 1, CompletedAt: &now}, []updater.UpdateExecutionOutcome{{UpdateExecutionTarget: updater.UpdateExecutionTarget{ContainerName: "web", Image: "web:latest"}, State: updater.ExecutionUpdated}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.events) != 1 || sender.events[0].Kind != EventUpdateSuccess {
+		t.Fatalf("success event was not delivered exactly once: %#v", sender.events)
+	}
+}

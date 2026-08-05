@@ -29,6 +29,8 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("POST /repositories", h.createRepository)
 	mux.HandleFunc("POST /repositories/github", h.createGitHubRepository)
 	mux.HandleFunc("PUT /repositories/{id}/policy", h.updateRepositoryPolicy)
+	mux.HandleFunc("GET /repositories/{id}/webhook", h.repositoryWebhook)
+	mux.HandleFunc("PUT /repositories/{id}/webhook", h.configureRepositoryWebhook)
 	mux.HandleFunc("GET /repositories/{id}/status", h.repositoryStatus)
 	mux.HandleFunc("POST /repositories/{id}/fetch", h.fetchRepository)
 	mux.HandleFunc("POST /repositories/{id}/pull", h.pullRepository)
@@ -87,6 +89,35 @@ func NewHTTPHandler(service *Service) http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) repositoryWebhook(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.RepositoryWebhook(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) configureRepositoryWebhook(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	var input RepositoryWebhookInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := h.service.ConfigureRepositoryWebhook(r.PathValue("id"), input)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) repositoryStackCatalog(w http.ResponseWriter, r *http.Request) {

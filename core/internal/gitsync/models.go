@@ -44,6 +44,30 @@ type Repository struct {
 
 func (Repository) TableName() string { return "git_repositories" }
 
+type RepositoryWebhook struct {
+	gorm.Model
+	UUID            string `gorm:"not null;uniqueIndex"`
+	RepositoryUUID  string `gorm:"not null;uniqueIndex"`
+	Enabled         bool   `gorm:"not null;default:false"`
+	EncryptedSecret []byte `gorm:"type:blob;not null"`
+	LastDeliveryID  string
+	LastEvent       string
+	LastStatus      string
+	LastError       string `gorm:"type:text"`
+	LastReceivedAt  *time.Time
+}
+
+func (RepositoryWebhook) TableName() string { return "git_repository_webhooks" }
+
+type WebhookDelivery struct {
+	gorm.Model
+	WebhookUUID string `gorm:"not null;uniqueIndex:idx_git_webhook_delivery"`
+	DeliveryID  string `gorm:"not null;uniqueIndex:idx_git_webhook_delivery"`
+	Event       string `gorm:"not null"`
+}
+
+func (WebhookDelivery) TableName() string { return "git_webhook_deliveries" }
+
 type StackBinding struct {
 	gorm.Model
 	UUID                      string `gorm:"not null;uniqueIndex"`

@@ -34,6 +34,11 @@ type Service struct {
 
 	taskList syncmap.Map[string, gocron.Job]
 	schd     gocron.Scheduler
+	notify   func(context.Context, PruneResult, bool)
+}
+
+func (s *Service) SetNotifier(notify func(context.Context, PruneResult, bool)) {
+	s.notify = notify
 }
 
 func NewService(cont GetService, store Store) *Service {
@@ -101,6 +106,9 @@ func (s *Service) RunOnce(ctx context.Context, host string, pruneConfig *PruneCo
 
 	cli, err := s.cli(host)
 	if err != nil {
+		if s.notify != nil {
+			s.notify(ctx, PruneResult{Host: host, Err: err.Error()}, false)
+		}
 		return fmt.Errorf("could find docker client: %w", err)
 	}
 
@@ -111,6 +119,9 @@ func (s *Service) RunOnce(ctx context.Context, host string, pruneConfig *PruneCo
 	err = s.store.AddResult(&res)
 	if err != nil {
 		s.log.Err(err).Msg("Failed to add result for cleaner")
+	}
+	if s.notify != nil {
+		s.notify(ctx, res, false)
 	}
 
 	return nil
@@ -313,6 +324,9 @@ func (s *Service) clean(ctx context.Context, host string) {
 		if storeErr := s.store.AddResult(&result); storeErr != nil {
 			s.log.Err(storeErr).Msg("Failed to add cleaner error result")
 		}
+		if s.notify != nil {
+			s.notify(ctx, result, true)
+		}
 		return
 	}
 
@@ -322,6 +336,9 @@ func (s *Service) clean(ctx context.Context, host string) {
 	defer func() {
 		if err := s.store.AddResult(&result); err != nil {
 			s.log.Err(err).Msg("Failed to add result for cleaner")
+		}
+		if s.notify != nil {
+			s.notify(ctx, result, true)
 		}
 	}()
 

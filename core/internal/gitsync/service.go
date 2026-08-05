@@ -96,6 +96,23 @@ type Service struct {
 	hostKeys             []ssh.PublicKey
 	hostKeysFetchedAt    time.Time
 	commitInstance       string
+	eventNotifier        func(AutomationEvent)
+	webhookQueue         chan string
+	webhookMu            sync.Mutex
+	webhookPending       map[string]struct{}
+}
+
+type AutomationEvent struct {
+	Host      string
+	BindingID string
+	Kind      string
+	Title     string
+	Message   string
+	Severity  string
+}
+
+func (s *Service) ConfigureEventNotifier(notifier func(AutomationEvent)) {
+	s.eventNotifier = notifier
 }
 
 // ConfigureEditorCoherence prevents an incoming transfer from overwriting a
@@ -130,7 +147,7 @@ func NewService(enabled bool, store *Store, vault *Vault, workspaceRoot ...strin
 			return errors.New("GitHub API redirect refused")
 		},
 	}
-	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, backupRoot: strings.TrimSuffix(root, string(os.PathSeparator)) + "-backups", historyRetentionDays: 30, backupRetentionDays: 30, commitInstance: "dockman", locks: map[string]*sync.Mutex{}}
+	return &Service{enabled: enabled, store: store, vault: vault, http: client, githubAPIBase: "https://api.github.com", workspaceRoot: root, backupRoot: strings.TrimSuffix(root, string(os.PathSeparator)) + "-backups", historyRetentionDays: 30, backupRetentionDays: 30, commitInstance: "dockman", locks: map[string]*sync.Mutex{}, webhookQueue: make(chan string, 64), webhookPending: map[string]struct{}{}}
 }
 
 // ConfigureCommitProvenance sets the stable instance label recorded in every

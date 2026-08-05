@@ -52,6 +52,7 @@ type AutoSyncResult struct {
 	RolledBack     []string `json:"rolledBack,omitempty"`
 	RollbackFailed []string `json:"rollbackFailed,omitempty"`
 	SyncFailed     []string `json:"syncFailed,omitempty"`
+	Discovered     []string `json:"discovered,omitempty"`
 	Message        string   `json:"message"`
 }
 
@@ -277,7 +278,10 @@ func (s *Service) runDueAutoSyncs(ctx context.Context, now time.Time) {
 }
 
 func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncResult, error) {
-	return s.runBindingAutoSync(ctx, id, false)
+	previous, _ := s.store.GetBinding(id)
+	result, err := s.runBindingAutoSync(ctx, id, false)
+	s.notifyAutomationResult(id, result, err, false, &previous)
+	return result, err
 }
 
 // RunBindingAutoSyncNow is an explicit user-triggered synchronization. Unlike
@@ -285,7 +289,10 @@ func (s *Service) RunBindingAutoSync(ctx context.Context, id string) (AutoSyncRe
 // may retry a failed or rolled-back deployment on the same Git commit. The
 // commit-only shortcut remains reserved for idle background polling.
 func (s *Service) RunBindingAutoSyncNow(ctx context.Context, id string) (AutoSyncResult, error) {
-	return s.runBindingAutoSync(ctx, id, true)
+	previous, _ := s.store.GetBinding(id)
+	result, err := s.runBindingAutoSync(ctx, id, true)
+	s.notifyAutomationResult(id, result, err, true, &previous)
+	return result, err
 }
 
 func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bool) (AutoSyncResult, error) {
@@ -418,6 +425,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			return nil
 		}
 		if len(newTargets) > 0 {
+			result.Discovered = append([]string(nil), newTargets...)
 			var registerErr error
 			binding, registerErr = s.registerDiscoveredDeploymentTargets(binding, newTargets)
 			if registerErr != nil {
@@ -551,6 +559,52 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		s.updateActiveStackStatuses(binding, stackSyncUpToDate, "", synchronizedCommit, true)
 	}
 	return result, nil
+}
+
+func (s *Service) notifyAutomationResult(id string, result AutoSyncResult, syncErr error, explicit bool, previous *StackBinding) {
+	if s.eventNotifier == nil {
+		return
+	}
+	binding, err := s.store.GetBinding(id)
+	if err != nil {
+		return
+	}
+	emit := func(kind, title, message, severity string) {
+		s.eventNotifier(AutomationEvent{Host: binding.Host, BindingID: id, Kind: kind, Title: title, Message: message, Severity: severity})
+	}
+	details := fmt.Sprintf("Folder Link: %s\nHost: %s\nState: %s\n%s", binding.StackPath, binding.Host, result.State, result.Message)
+	previousState, previousError := "", ""
+	if previous != nil {
+		previousState, previousError = previous.AutoSyncState, previous.AutoSyncError
+	}
+	stateChanged := previousState != result.State || (strings.TrimSpace(binding.AutoSyncError) != "" && binding.AutoSyncError != previousError)
+	if syncErr != nil || result.State == "error" || result.State == "partial" || result.State == "blocked" {
+		if syncErr != nil && strings.TrimSpace(result.Message) == "" {
+			details += "\nError: " + safeGitError(syncErr)
+		}
+		if explicit || stateChanged {
+			emit("git.sync.failure", "Git synchronization needs attention", details, "error")
+		}
+	} else if result.State == "conflict" {
+		if explicit || stateChanged {
+			emit("git.conflict", "Git synchronization conflict", details, "warning")
+		}
+	} else if result.Changed > 0 || len(result.Deployed) > 0 || len(result.Discovered) > 0 || explicit || (stateChanged && (result.State == "up_to_date" || result.State == "watching")) {
+		emit("git.sync.success", "Git synchronization completed", details, "success")
+	}
+	if len(result.Discovered) > 0 {
+		emit("git.stack.discovered", "New Git stack discovered", details+"\nStacks: "+strings.Join(result.Discovered, ", "), "info")
+	}
+	if len(result.Deployed) > 0 {
+		emit("git.deploy.success", "Git stack deployment completed", details+"\nDeployed: "+strings.Join(result.Deployed, ", "), "success")
+	}
+	if len(result.DeployFailed) > 0 {
+		emit("git.deploy.failure", "Git stack deployment failed", details+"\nFailed: "+strings.Join(result.DeployFailed, ", "), "error")
+	}
+	if len(result.RolledBack) > 0 || len(result.RollbackFailed) > 0 {
+		rollback := append(append([]string(nil), result.RolledBack...), result.RollbackFailed...)
+		emit("git.rollback", "Git deployment rollback performed", details+"\nStacks: "+strings.Join(rollback, ", "), "warning")
+	}
 }
 
 func preservedDeletionMessage(message string) string {

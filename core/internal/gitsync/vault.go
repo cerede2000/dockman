@@ -88,22 +88,30 @@ func decodeVaultKey(raw []byte) ([]byte, error) {
 }
 
 func (v *Vault) Encrypt(plaintext []byte, credentialUUID string) ([]byte, error) {
+	return v.EncryptFor(plaintext, "git-credential/"+credentialUUID)
+}
+
+func (v *Vault) EncryptFor(plaintext []byte, scope string) ([]byte, error) {
 	nonce := make([]byte, v.aead.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	aad := []byte("dockman/git-credential/" + credentialUUID)
+	aad := []byte("dockman/" + scope)
 	out := append([]byte{vaultVersion}, nonce...)
 	return v.aead.Seal(out, nonce, plaintext, aad), nil
 }
 
 func (v *Vault) Decrypt(ciphertext []byte, credentialUUID string) ([]byte, error) {
+	return v.DecryptFor(ciphertext, "git-credential/"+credentialUUID)
+}
+
+func (v *Vault) DecryptFor(ciphertext []byte, scope string) ([]byte, error) {
 	nonceSize := v.aead.NonceSize()
 	if len(ciphertext) < 1+nonceSize || ciphertext[0] != vaultVersion {
 		return nil, errors.New("unsupported or invalid encrypted credential")
 	}
 	nonce := ciphertext[1 : 1+nonceSize]
-	aad := []byte("dockman/git-credential/" + credentialUUID)
+	aad := []byte("dockman/" + scope)
 	plain, err := v.aead.Open(nil, nonce, ciphertext[1+nonceSize:], aad)
 	if err != nil {
 		return nil, errors.New("unable to decrypt Git credential")
