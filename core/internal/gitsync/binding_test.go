@@ -25,6 +25,21 @@ type denyAtomicReplacementFS struct {
 	filesystem.FileSystem
 }
 
+func TestRuntimeSecretsDirectoryIsAlwaysExcludedFromGit(t *testing.T) {
+	stackRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", ".secrets"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", "compose.yml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "app", ".secrets", "token"), []byte("plaintext-must-never-transfer\n"), 0o600))
+
+	for _, includeSensitive := range []bool{false, true} {
+		files, err := collectStackFiles(filesystem.NewLocal(stackRoot), "app", includeSensitive, syncPolicy{profile: syncProfileAllFiles})
+		require.NoError(t, err)
+		require.Contains(t, files, "compose.yml")
+		require.NotContains(t, files, ".secrets")
+		require.NotContains(t, files, ".secrets/token")
+	}
+}
+
 func (d denyAtomicReplacementFS) OpenFile(filename string, flag int, perm fs.FileMode) (io.ReadWriteCloser, error) {
 	if strings.Contains(filepath.Base(filename), ".dockman-git-") {
 		return nil, fs.ErrPermission

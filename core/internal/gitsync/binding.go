@@ -3119,7 +3119,11 @@ func isProvisionControlPath(relative string) bool {
 
 func shouldSkipPath(path string, directory bool) bool {
 	base := strings.ToLower(filepath.Base(path))
-	return directory && (base == ".git" || base == ".dockman-backups" || strings.HasPrefix(base, ".dockman-provision-staging-"))
+	// .secrets contains materialized plaintext runtime values. It is a hard
+	// boundary: neither broad policies nor the explicit sensitive-file opt-in
+	// may ever transfer it to Git. Encrypted SOPS sources live outside this
+	// directory and are handled by their own provider.
+	return directory && (base == ".git" || base == ".secrets" || base == ".dockman-backups" || strings.HasPrefix(base, ".dockman-provision-staging-"))
 }
 
 func isSensitivePath(path string) bool {

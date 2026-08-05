@@ -5,6 +5,7 @@ import TabDockerHosts from "./tab-host.tsx";
 import TabDockman from "./tab-dockman.tsx";
 import TabGit from "./tab-git.tsx";
 import TabViews from './tab-views.tsx';
+import TabSecrets from './tab-secrets.tsx';
 
 interface TabConfig {
     label: string;
@@ -23,6 +24,10 @@ const tabConfigurations: TabConfig[] = [
     {
         label: "Git",
         component: <TabGit/>
+    },
+    {
+        label: "Secrets",
+        component: <TabSecrets/>
     },
     {
         label: "Views",

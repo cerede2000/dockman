@@ -31,6 +31,7 @@ import (
 	hostMiddleware "github.com/RA341/dockman/internal/host/middleware"
 	"github.com/RA341/dockman/internal/info"
 	"github.com/RA341/dockman/internal/notifications"
+	"github.com/RA341/dockman/internal/secrets"
 	"github.com/RA341/dockman/internal/ssh"
 	"github.com/RA341/dockman/internal/viewer"
 	"github.com/RA341/dockman/pkg/argos"
@@ -57,6 +58,7 @@ type App struct {
 	UpdatePolicies   *updater.PolicyService
 	UpdateAutomation *updater.AutomationService
 	Notifications    *notifications.Service
+	Secrets          *secrets.Service
 }
 
 func (a *App) VerifyServices() error {
@@ -143,6 +145,11 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		hostManager.GetAlias,
 		dockyamlSrv.GetYaml,
 	)
+	secretRuntimeStore := secrets.NewPlainFileStore(func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
+		stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)
+		return stackFS, relpath, loadErr
+	})
+	secretSrv := secrets.NewService(secretRuntimeStore)
 
 	//err := git.NewMigrator(composeRoot)
 	//if err != nil {
@@ -373,6 +380,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		UpdatePolicies:   updatePolicySrv,
 		UpdateAutomation: updateAutomationSrv,
 		Notifications:    notificationSrv,
+		Secrets:          secretSrv,
 	}
 	err = app.VerifyServices()
 	if err != nil {
@@ -658,6 +666,10 @@ func (a *App) registerApiHostRoutes(hostMux *http.ServeMux) {
 		"/docker",
 		docker.NewHandlerHttpWithUpdates(a.HostManager.GetDockerService, a.Config.AllowSelfExec, a.UpdatePolicies, a.UpdateAutomation, a.Notifications),
 	)
+	// Runtime Compose secrets are host-scoped. The middleware-selected host is
+	// resolved again for every operation, so local and SSH hosts never share
+	// state or filesystem handles.
+	withSubRouter(hostMux, "/secrets", secrets.NewHTTPHandler(a.Secrets))
 	// cleaner
 	hostMux.Handle(cleaner.NewHandler(a.CleanerSrv))
 	// viewer
