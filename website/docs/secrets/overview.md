@@ -106,23 +106,32 @@ Configure an independently backed-up age identity and its public recipient:
 services:
   dockman:
     environment:
-      DOCKMAN_SOPS_AGE_KEY_FILE: /run/secrets/dockman_sops_age_key
+      DOCKMAN_SOPS_AGE_KEY_FILE: /config/secrets/dockman-sops-age-key.txt
       DOCKMAN_SOPS_AGE_RECIPIENT: age1example...
-    secrets:
-      - dockman_sops_age_key
-
-secrets:
-  dockman_sops_age_key:
-    file: ./secrets/dockman-sops-age-key.txt
 ```
 
-Create that identity outside Dockman, keep mode `0600`, record the printed
-public recipient, and back the identity up separately:
+The Dockman image includes the pinned `age-keygen` CLI. Generate the identity
+inside the running container directly in its persistent `/config` mount:
 
 ```console
-age-keygen -o dockman-sops-age-key.txt
-chmod 0600 dockman-sops-age-key.txt
+docker exec dockman dockman-age-keygen
 ```
+
+The helper creates `/config/secrets/dockman-sops-age-key.txt` with directory
+mode `0700`, file mode `0600`, and ownership matching `PUID:PGID`. It refuses
+to overwrite an existing identity and prints its public `age1...` recipient.
+The underlying `age-keygen` binary is also available for manual operation.
+Point
+`DOCKMAN_SOPS_AGE_KEY_FILE` to
+`/config/secrets/dockman-sops-age-key.txt`, put that recipient in
+`DOCKMAN_SOPS_AGE_RECIPIENT`, then recreate Dockman. `/config` must be
+persistent.
+
+Back up the private identity outside the host before relying on encrypted
+recovery. Never commit it; only the `age1...` recipient is public. Generate one
+identity per separate Dockman instance. A single multi-host Dockman instance
+can use the same identity for its managed hosts unless operational separation
+requires independent instances.
 
 The Secrets page then provides two explicit actions:
 

@@ -2,10 +2,17 @@
 
 ## 1. Préparation indépendante
 
-1. Générer une identité hors Dockman avec `age-keygen -o dockman-sops-age-key.txt`.
-2. Conserver le destinataire public `age1...` affiché et appliquer `chmod 0600` au fichier.
-3. Monter le fichier en lecture seule dans Dockman.
-4. Définir `DOCKMAN_SOPS_AGE_KEY_FILE` et `DOCKMAN_SOPS_AGE_RECIPIENT`, puis recréer Dockman.
+1. Générer l'identité directement dans le volume persistant de Dockman :
+
+   ```console
+   docker exec dockman dockman-age-keygen
+   ```
+
+2. Vérifier que le dossier est en `0700`, le fichier en `0600`, avec le même
+   propriétaire que `PUID:PGID`, puis conserver le destinataire public `age1...`.
+3. Sauvegarder le fichier privé en dehors de l'hôte sans le placer dans Git.
+4. Définir `DOCKMAN_SOPS_AGE_KEY_FILE=/config/secrets/dockman-sops-age-key.txt`
+   et `DOCKMAN_SOPS_AGE_RECIPIENT`, puis recréer Dockman.
 
 Attendu : **Settings → Secrets** affiche `SOPS/age · ready`. La clé privée ne
 doit apparaître ni dans l'interface, ni dans les logs, ni dans `docker inspect`.

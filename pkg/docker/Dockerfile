@@ -8,6 +8,7 @@ ARG COMPOSE_X_CRYPTO_VERSION=v0.54.0
 ARG COMPOSE_X_TEXT_VERSION=v0.40.0
 ARG COMPOSE_GRPC_VERSION=v1.82.1
 ARG SOPS_VERSION=v3.13.3
+ARG AGE_VERSION=v1.3.1
 ARG NODE_IMAGE_DIGEST=sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 ARG GO_IMAGE_DIGEST=sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
 ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
@@ -98,12 +99,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS sops_builder
 
 ARG SOPS_VERSION
+ARG AGE_VERSION
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go install -trimpath -ldflags "-s -w" \
       "github.com/getsops/sops/v3/cmd/sops@${SOPS_VERSION}" && \
-    SOPS_DISABLE_VERSION_CHECK=1 /go/bin/sops --version
+    CGO_ENABLED=0 go install -trimpath -ldflags "-s -w" \
+      "filippo.io/age/cmd/age-keygen@${AGE_VERSION}" && \
+    SOPS_DISABLE_VERSION_CHECK=1 /go/bin/sops --version && \
+    /go/bin/age-keygen --version
 
 FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
 
@@ -112,10 +117,12 @@ FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
 RUN apk add --no-cache tzdata su-exec docker-cli docker-cli-buildx
 
 COPY pkg/docker/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY pkg/docker/dockman-age-keygen.sh /usr/local/bin/dockman-age-keygen
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/dockman-age-keygen
 
 COPY --from=compose_cli_builder /out/docker-compose /usr/local/bin/docker-compose
 COPY --from=sops_builder /go/bin/sops /usr/local/bin/sops
+COPY --from=sops_builder /go/bin/age-keygen /usr/local/bin/age-keygen
 
 # identify dockman containers
 LABEL dockman.container=true
@@ -132,6 +139,7 @@ ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG SOPS_VERSION
+ARG AGE_VERSION
 ARG NODE_IMAGE_DIGEST
 ARG GO_IMAGE_DIGEST
 ARG ALPINE_IMAGE_DIGEST
@@ -151,6 +159,7 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
       dev.dockman.build.compose-grpc="${COMPOSE_GRPC_VERSION}" \
       dev.dockman.build.sops="${SOPS_VERSION}" \
+      dev.dockman.build.age="${AGE_VERSION}" \
       dev.dockman.build.node-digest="${NODE_IMAGE_DIGEST}" \
       dev.dockman.build.go-digest="${GO_IMAGE_DIGEST}" \
       dev.dockman.build.alpine-digest="${ALPINE_IMAGE_DIGEST}"
@@ -163,7 +172,7 @@ COPY --from=back /out/dockman-file-helper-* /usr/local/libexec/
 COPY --from=front /frontend/dist/ ./dist
 
 RUN docker-compose version && docker --version && docker buildx version && \
-    SOPS_DISABLE_VERSION_CHECK=1 sops --version
+    SOPS_DISABLE_VERSION_CHECK=1 sops --version && age-keygen --version
 
 EXPOSE 8866
 
