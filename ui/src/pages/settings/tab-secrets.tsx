@@ -24,7 +24,7 @@ interface SecretForm {
 interface SecretVersion { id: string; size: number; modifiedAt: string }
 interface ArchivedSecret { name: string; versions: number }
 interface ComposeSecretReference {
-    name: string; file?: string; runtimeName?: string; services: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
+    name: string; file?: string; environment?: string; runtimeName?: string; services: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
 }
 interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
 interface StackOption { path: string; alias: string; manifests: string[] }
@@ -342,7 +342,7 @@ export default function TabSecrets() {
                     {sopsStatus?.mode !== "inline" && <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
                             onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>}
                     {sopsStatus?.mode !== "inline" ? <Button color="success" variant="contained" startIcon={<LockOutlined/>}
-                            disabled={saving || !sopsStatus?.available || items.length === 0 || !analysis?.manifests.length || analysis.secrets.some(reference => reference.managed)}
+                            disabled={saving || !sopsStatus?.available || items.length === 0 || !analysis?.manifests.length || analysis.secrets.some(reference => reference.managed || Boolean(reference.file && reference.services.length > 0) || Boolean(reference.environment && (reference.issue || reference.services.length > 0 && !items.some(item => item.name === reference.environment))))}
                             onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>Enable inline</Button>
                         : <Button color="warning" variant="outlined" startIcon={<Download/>} disabled={saving}
                             onClick={() => {setSopsAction("inline-disable"); setConfirmation("");}}>Materialize and disable</Button>}
@@ -351,8 +351,8 @@ export default function TabSecrets() {
             <Alert severity="info" sx={{mt: 1.5}}>{sopsStatus?.mode === "inline"
                 ? "Every create, edit and delete rewrites and decrypt-verifies the encrypted source atomically. Compose actions receive values in their process environment only."
                 : "Materialization replaces matching runtime values atomically one by one. Enabling inline verifies the ciphertext before removing .secrets and its plaintext history."}</Alert>
-            {sopsStatus?.mode !== "inline" && analysis?.secrets.some(reference => reference.managed) && <Alert severity="warning" sx={{mt: 1}}>
-                Inline mode cannot be enabled while Compose still references files under <code>.secrets</code>. Replace those declarations with environment interpolation such as <code>{"${API_TOKEN}"}</code> first.
+            {sopsStatus?.mode !== "inline" && analysis?.secrets.some(reference => reference.managed || Boolean(reference.file && reference.services.length > 0)) && <Alert severity="warning" sx={{mt: 1}}>
+                Encrypted-only inline mode cannot retain a used plaintext <code>file:</code> source. For a file inside the container, replace <code>file: ./.secrets/token</code> with <code>environment: TOKEN</code>; for direct injection, use <code>{"${TOKEN}"}</code>.
             </Alert>}
         </Paper>}
 
@@ -372,9 +372,9 @@ export default function TabSecrets() {
                     <TableBody>{analysis.secrets.map(reference => <TableRow key={reference.name}>
                         <TableCell sx={{fontFamily: "monospace"}}>{reference.name}</TableCell>
                         <TableCell>{reference.services.join(", ") || "—"}</TableCell>
-                        <TableCell sx={{fontFamily: "monospace"}}>{reference.external ? "external" : reference.file || "—"}</TableCell>
-                        <TableCell><Tooltip title={reference.issue || ""}><Chip size="small" color={reference.external || reference.exists ? "success" : reference.managed ? "warning" : "default"} variant="outlined" label={reference.external ? "external" : reference.exists ? "ready" : reference.managed ? "missing" : "not managed"}/></Tooltip></TableCell>
-                        <TableCell align="right">{reference.managed && !reference.exists && <Button size="small" onClick={() => openCreateNamed(reference.runtimeName || reference.name)}>Create</Button>}</TableCell>
+                        <TableCell sx={{fontFamily: "monospace"}}>{reference.external ? "external" : reference.environment ? `environment: ${reference.environment}` : reference.file || "—"}</TableCell>
+                        <TableCell><Tooltip title={reference.issue || (reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment) ? `Create ${reference.environment} before enabling inline mode.` : "")}><Chip size="small" color={reference.issue || reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment) ? "error" : reference.external || reference.environment || reference.exists ? "success" : reference.managed ? "warning" : "default"} variant="outlined" label={reference.issue ? "invalid" : reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment) ? "missing encrypted value" : reference.external ? "external" : reference.environment ? "encrypted inline → file" : reference.exists ? "ready" : reference.managed ? "missing" : "not managed"}/></Tooltip></TableCell>
+                        <TableCell align="right">{((reference.managed && !reference.exists) || (reference.environment && !items.some(item => item.name === reference.environment))) && <Button size="small" onClick={() => openCreateNamed(reference.runtimeName || reference.name)}>Create</Button>}</TableCell>
                     </TableRow>)}</TableBody>
                 </Table>
             </>}
@@ -424,7 +424,7 @@ export default function TabSecrets() {
                     {sopsAction === "export"
                         ? "This replaces secrets.sops.yaml with every current runtime secret after encrypting and verifying it with the configured age identity."
                         : sopsAction === "materialize" ? "This decrypts secrets.sops.yaml in memory and replaces matching files under .secrets. Values absent from the source are preserved."
-                            : sopsAction === "inline-enable" ? `Dockman first encrypts and verifies every runtime secret, creates compose-sops.sh for independent recovery, then removes .secrets and its plaintext history. Compose manifest: ${analysis?.manifests[0] || "compose.yml"}.`
+                            : sopsAction === "inline-enable" ? `Dockman first encrypts and verifies every runtime secret, validates direct environment and environment-backed file secrets, creates compose-sops.sh for independent recovery, then removes .secrets and its plaintext history. Compose manifest: ${analysis?.manifests[0] || "compose.yml"}.`
                                 : "This materializes every encrypted value under .secrets, then removes the inline marker and recovery script. The encrypted source is preserved."}
                 </Alert>
                 <TypedConfirmationField value={confirmation} onChange={setConfirmation}/>

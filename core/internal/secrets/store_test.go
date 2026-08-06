@@ -187,3 +187,25 @@ secrets:
 	require.True(t, analysis.Secrets[3].Managed, "Compose secret keys do not have to match their source filename")
 	require.Equal(t, "runtime-token.txt", analysis.Secrets[3].RuntimeName)
 }
+
+func TestPlainFileStoreAnalyzesEnvironmentBackedComposeSecret(t *testing.T) {
+	store, roots := testStore(t)
+	compose := `services:
+  app:
+    image: example/app
+    secrets: [api_token]
+secrets:
+  api_token:
+    environment: API_TOKEN
+`
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
+
+	analysis, err := store.AnalyzeCompose("local", "compose/apps/demo")
+	require.NoError(t, err)
+	require.Len(t, analysis.Secrets, 1)
+	require.Equal(t, "API_TOKEN", analysis.Secrets[0].Environment)
+	require.Equal(t, "API_TOKEN", analysis.Secrets[0].RuntimeName)
+	require.Empty(t, analysis.Secrets[0].File)
+	require.Empty(t, analysis.Secrets[0].Issue)
+	require.Equal(t, []string{"app"}, analysis.Secrets[0].Services)
+}

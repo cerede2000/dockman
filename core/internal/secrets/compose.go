@@ -87,6 +87,11 @@ func (s *PlainFileStore) AnalyzeCompose(host, stackPath string) (ComposeAnalysis
 					state.Issue = "runtime secret is missing"
 				}
 			}
+		} else if state.Environment != "" {
+			state.RuntimeName = strings.TrimSpace(state.Environment)
+			if !inlineEnvironmentNamePattern.MatchString(state.RuntimeName) {
+				state.Issue = "environment source is not a valid environment variable name"
+			}
 		} else if !state.External {
 			state.Issue = "no file source is declared"
 		}
@@ -113,6 +118,9 @@ func collectComposeSecrets(document *yaml.Node, states map[string]*composeSecret
 			if definition.Kind == yaml.MappingNode {
 				if file := mappingValue(definition, "file"); file != nil && file.Kind == yaml.ScalarNode {
 					state.File = file.Value
+				}
+				if environment := mappingValue(definition, "environment"); environment != nil && environment.Kind == yaml.ScalarNode {
+					state.Environment = environment.Value
 				}
 				if external := mappingValue(definition, "external"); external != nil {
 					state.External = external.Value == "true" || external.Kind == yaml.MappingNode

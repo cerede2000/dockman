@@ -117,8 +117,8 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 		return SOPSResult{}, fmt.Errorf("analyze Compose before enabling inline mode: %w", err)
 	}
 	for _, reference := range analysis.Secrets {
-		if reference.Managed {
-			return SOPSResult{}, fmt.Errorf("Compose secret %q still uses %s; replace file-backed references with ${ENV_NAME} before enabling inline mode", reference.Name, reference.File)
+		if reference.Managed || reference.File != "" && len(reference.Services) > 0 {
+			return SOPSResult{}, fmt.Errorf("Compose secret %q still uses %s; replace it with an environment-backed Compose secret (environment: ENV_NAME) or ${ENV_NAME} before enabling inline mode", reference.Name, reference.File)
 		}
 	}
 
@@ -139,6 +139,18 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 		}
 		if strings.IndexByte(value, 0) >= 0 {
 			return SOPSResult{}, fmt.Errorf("secret %q contains a NUL byte and cannot be injected", name)
+		}
+	}
+	for _, reference := range analysis.Secrets {
+		if reference.Environment == "" || len(reference.Services) == 0 {
+			continue
+		}
+		name := strings.TrimSpace(reference.Environment)
+		if !inlineEnvironmentNamePattern.MatchString(name) {
+			return SOPSResult{}, fmt.Errorf("Compose secret %q uses invalid environment source %q", reference.Name, reference.Environment)
+		}
+		if _, exists := values[name]; !exists {
+			return SOPSResult{}, fmt.Errorf("Compose secret %q requires encrypted value %q; create that secret before enabling inline mode", reference.Name, name)
 		}
 	}
 	if err = writeAtomic(stackFS, stackFS.Join(root, SOPSRecoveryScriptFile), []byte(recoveryScript(composeFile)), 0o700); err != nil {
@@ -232,6 +244,15 @@ func (p *SOPSProvider) WriteInline(parent context.Context, host, stackPath, name
 func (p *SOPSProvider) DeleteInline(parent context.Context, host, stackPath, name string) error {
 	if !inlineEnvironmentNamePattern.MatchString(name) {
 		return ErrInvalidName
+	}
+	analysis, err := p.runtime.AnalyzeCompose(host, stackPath)
+	if err != nil {
+		return fmt.Errorf("analyze Compose before deleting inline secret: %w", err)
+	}
+	for _, reference := range analysis.Secrets {
+		if strings.TrimSpace(reference.Environment) == name && len(reference.Services) > 0 {
+			return fmt.Errorf("inline secret %q supplies Compose file secret %q used by %s; remove that Compose reference before deleting it", name, reference.Name, strings.Join(reference.Services, ", "))
+		}
 	}
 	p.operation.Lock()
 	defer p.operation.Unlock()

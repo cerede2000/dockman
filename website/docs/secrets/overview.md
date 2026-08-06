@@ -157,7 +157,8 @@ Inline mode does not require Git. It works for a stack that exists only on the
 local Compose filesystem:
 
 1. create secrets using valid environment names such as `API_TOKEN`;
-2. reference them from Compose with `${API_TOKEN}`;
+2. reference them directly with `${API_TOKEN}`, as an environment-backed
+   Compose secret, or both;
 3. select **Enable inline** and type `CONFIRM`.
 
 Dockman encrypts and decrypt-verifies every current value before deleting
@@ -182,8 +183,45 @@ services:
 ```
 
 The resulting container configuration contains `API_TOKEN` in plaintext, as
-with every Docker environment variable. Prefer file-backed Compose secrets for
-applications supporting `*_FILE` if protection from Docker inspect is needed.
+with every Docker environment variable.
+
+For applications that read `/run/secrets/...` or support the `*_FILE`
+convention, Compose can create the container-side file directly from the same
+in-memory environment supplied by Dockman:
+
+```yaml
+secrets:
+  database_password:
+    environment: DATABASE_PASSWORD
+
+services:
+  database:
+    image: postgres:latest
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets:
+      - source: database_password
+        target: database_password
+        mode: 0440
+```
+
+Here, `DATABASE_PASSWORD` exists only inside encrypted `secrets.sops.yaml` at
+rest. Dockman decrypts it into the Compose process environment; Compose mounts
+it read-only as `/run/secrets/database_password` in the selected service. The
+same stack may simultaneously use other values through `${API_TOKEN}`. This is
+the recommended hybrid policy because file consumers avoid putting the secret
+value in the final container environment or `docker inspect` output.
+
+An old declaration such as `file: ./.secrets/database_password` must be
+converted to `environment: DATABASE_PASSWORD` before inline mode is enabled.
+Dockman also refuses any other used file-backed Compose secret: leaving one in
+place would contradict the encrypted-only-at-rest policy even if it lived
+outside `.secrets`.
+Dockman refuses the conversion when a used environment-backed Compose secret
+has no matching encrypted value, so deleting `.secrets` cannot silently break
+the next deployment. Once inline mode is active, Dockman also refuses to delete
+a value still used as an environment-backed Compose file secret; remove the
+Compose reference first.
 
 ### Recovery without Dockman
 
@@ -200,7 +238,9 @@ Supported recovery actions are `up`, `down`, `start`, `stop`, `restart`,
 `sops exec-env` mechanism; it does not call Dockman or its API. Consequently a
 plain `docker compose up` is insufficient for an inline stack, but the stack
 remains operational independently through its repository-local recovery
-script.
+script. Direct `${NAME}` interpolation and top-level
+`secrets.<name>.environment: NAME` declarations both work through this same
+recovery path.
 
 `secrets.sops.yaml` is included by the Docker Compose-only Git profile when it
 is adjacent to a catalogued Compose manifest. The `.secrets/` directory remains

@@ -53,6 +53,7 @@ type Store interface {
 type ComposeSecret struct {
 	Name        string   `json:"name"`
 	File        string   `json:"file,omitempty"`
+	Environment string   `json:"environment,omitempty"`
 	RuntimeName string   `json:"runtimeName,omitempty"`
 	Services    []string `json:"services"`
 	External    bool     `json:"external"`
