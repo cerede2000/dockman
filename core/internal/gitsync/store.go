@@ -2,7 +2,9 @@ package gitsync
 
 import (
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -151,7 +153,29 @@ func (s *Store) ListAutoSyncBindings() ([]StackBinding, error) {
 	return rows, err
 }
 
-func (s *Store) SaveBinding(row *StackBinding) error { return s.db.Save(row).Error }
+// SaveBinding persists mutable Folder Link state while protecting its two
+// endpoints. Changing either endpoint turns the same binding into a different
+// synchronization contract and can silently copy a repository-root link into
+// a generated folder such as stacks/compose. Such a move must be expressed as
+// an explicit unlink followed by a new link, never as a side effect of saving
+// policy, automation, catalog, or runtime state.
+func (s *Store) SaveBinding(row *StackBinding) error {
+	if strings.TrimSpace(row.UUID) == "" {
+		return errors.New("folder link UUID is required")
+	}
+	var existing StackBinding
+	err := s.db.Unscoped().Select("id", "uuid", "repository_uuid", "host", "stack_path", "sub_path").
+		Where("uuid = ?", row.UUID).Take(&existing).Error
+	if err == nil {
+		if existing.RepositoryUUID != row.RepositoryUUID || existing.Host != row.Host ||
+			existing.StackPath != row.StackPath || existing.SubPath != row.SubPath {
+			return fmt.Errorf("folder link target is immutable; unlink and create a new link to change repository, host, source folder, or Git destination")
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return s.db.Save(row).Error
+}
 
 func (s *Store) ReconcileGitStackStatuses(binding StackBinding, composePaths []string, initialState string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {

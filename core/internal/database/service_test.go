@@ -35,6 +35,18 @@ func TestEmbeddedMigrationsCreateGitSyncFoundation(t *testing.T) {
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('git_stack_statuses') WHERE name='pause_reason'").Scan(&pauseReasonColumns))
 	require.Equal(t, 1, pauseReasonColumns)
 
+	_, err = db.Exec(`INSERT INTO git_stack_bindings
+		(uuid, repository_uuid, host, stack_path, sub_path, enabled)
+		VALUES ('binding-root', 'repository', 'local', 'compose', '.', 1)`)
+	require.NoError(t, err)
+	_, err = db.Exec("UPDATE git_stack_bindings SET sync_profile='compose_only' WHERE uuid='binding-root'")
+	require.NoError(t, err, "mutable Folder Link settings must remain writable")
+	_, err = db.Exec("UPDATE git_stack_bindings SET sub_path='stacks/compose' WHERE uuid='binding-root'")
+	require.ErrorContains(t, err, "folder link target is immutable")
+	var repositorySubPath string
+	require.NoError(t, db.QueryRow("SELECT sub_path FROM git_stack_bindings WHERE uuid='binding-root'").Scan(&repositorySubPath))
+	require.Equal(t, ".", repositorySubPath)
+
 	var cleanerCronColumns int
 	require.NoError(t, db.QueryRow("SELECT count(*) FROM pragma_table_info('prune_configs') WHERE name='cron_expression'").Scan(&cleanerCronColumns))
 	require.Equal(t, 1, cleanerCronColumns)

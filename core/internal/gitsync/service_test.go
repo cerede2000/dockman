@@ -71,6 +71,31 @@ func TestAutomationRecoveryEmitsSuccessNotification(t *testing.T) {
 	require.Equal(t, "git.sync.success", events[0].Kind)
 }
 
+func TestFolderLinkTargetCannotChangeDuringLaterSaves(t *testing.T) {
+	service, _ := testService(t, true)
+	binding := StackBinding{
+		UUID: uuid.NewString(), RepositoryUUID: uuid.NewString(), Host: "local",
+		StackPath: "compose", SubPath: ".", Enabled: true,
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+
+	// Normal policy/runtime updates keep a repository-root target intact.
+	binding.SyncProfile = syncProfileComposeOnly
+	binding.AutoSyncState = "watching"
+	require.NoError(t, service.store.SaveBinding(&binding))
+	stored, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, ".", stored.SubPath)
+
+	// A stale form/default must not be able to move it to stacks/compose.
+	binding.SubPath = "stacks/compose"
+	err = service.store.SaveBinding(&binding)
+	require.ErrorContains(t, err, "folder link target is immutable")
+	stored, err = service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, ".", stored.SubPath)
+}
+
 func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	service, _ := testService(t, true)
 	remotePath, _ := createTestRemote(t)
