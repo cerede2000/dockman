@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,10 @@ type writeInput struct {
 	Encoding  string `json:"encoding,omitempty"`
 }
 
+type stackInput struct {
+	StackPath string `json:"stackPath"`
+}
+
 type readOutput struct {
 	Name     string `json:"name"`
 	Value    string `json:"value"`
@@ -33,6 +38,9 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /compose", h.compose)
 	mux.HandleFunc("GET /history", h.archived)
 	mux.HandleFunc("GET /stacks", h.stacks)
+	mux.HandleFunc("GET /sops", h.sopsStatus)
+	mux.HandleFunc("POST /sops/export", h.sopsExport)
+	mux.HandleFunc("POST /sops/materialize", h.sopsMaterialize)
 	mux.HandleFunc("GET /{name}", h.read)
 	mux.HandleFunc("PUT /{name}", h.write)
 	mux.HandleFunc("DELETE /{name}", h.delete)
@@ -44,6 +52,47 @@ func NewHTTPHandler(service *Service) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) sopsStatus(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	status, err := h.service.SOPSStatus(host, r.URL.Query().Get("stack"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *HTTPHandler) sopsExport(w http.ResponseWriter, r *http.Request) {
+	h.sopsAction(w, r, h.service.ExportSOPS)
+}
+
+func (h *HTTPHandler) sopsMaterialize(w http.ResponseWriter, r *http.Request) {
+	h.sopsAction(w, r, h.service.MaterializeSOPS)
+}
+
+func (h *HTTPHandler) sopsAction(w http.ResponseWriter, r *http.Request, action func(context.Context, string, string) (SOPSResult, error)) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	var input stackInput
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.StackPath) == "" {
+		http.Error(w, "invalid SOPS request", http.StatusBadRequest)
+		return
+	}
+	result, err := action(r.Context(), host, input.StackPath)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) stacks(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +167,7 @@ func (h *HTTPHandler) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": true, "host": host, "runtimeDirectory": RuntimeDirectory,
-		"modes": []string{"plain_file"}, "maxSecretBytes": MaxSecretBytes,
+		"modes": []string{"plain_file", "sops_age"}, "maxSecretBytes": MaxSecretBytes,
 	})
 }
 
@@ -214,6 +263,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, ErrSecretTooLarge):
 		status = http.StatusRequestEntityTooLarge
+	case errors.Is(err, ErrSOPSUnavailable):
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, fs.ErrNotExist):
 		status = http.StatusNotFound
 	case errors.Is(err, fs.ErrPermission):

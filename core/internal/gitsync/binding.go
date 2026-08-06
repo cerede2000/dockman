@@ -39,6 +39,7 @@ const (
 	maxIgnoreFileSize        = 64 << 10
 	maxIgnoreRules           = 1000
 	maxComparisonFileSize    = 2 << 20
+	maxSOPSSourceSize        = 4 << 20
 	gitBackupRetention       = 10
 	syncProfileComposeOnly   = "compose_only"
 	syncProfileComposeConfig = "compose_config"
@@ -249,6 +250,7 @@ var composeConfigRules = mustRules([]string{
 var composeOnlyRules = mustRules([]string{
 	".env.example", ".env.*.example", ".env.sample", ".env.*.sample",
 	".env.template", ".env.*.template", ".env.dist", ".env.*.dist",
+	"secrets.sops.yaml",
 })
 
 func (s *Service) ListBindings() ([]BindingView, error) {
@@ -2291,7 +2293,9 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if len(result)+1 > maxBindingFiles {
 				return 0, stackInventoryLimitError(policy, childRel, maxBindingFiles)
 			}
-			sensitive := isSensitivePath(childRel)
+			sensitive := isSensitiveTransferPath(childRel, info.Size(), func() (io.ReadCloser, error) {
+				return targetFS.OpenFile(child, os.O_RDONLY, 0)
+			})
 			if sensitive && !includeSensitive {
 				result[childRel] = transferFile{path: childRel, size: info.Size(), sensitive: true, skipReason: "sensitive"}
 				continue
@@ -2499,7 +2503,7 @@ func collectRepositoryTreeFiles(repo *gitclient.Repository, tree *object.Tree, s
 			if len(result)+1 > maxBindingFiles {
 				return 0, stackInventoryLimitError(policy, rel, maxBindingFiles)
 			}
-			sensitive := isSensitivePath(rel)
+			sensitive := isSensitiveTransferPath(rel, size, gitBlobOpener(repo, entry.Hash))
 			if sensitive && !includeSensitive {
 				result[rel] = transferFile{path: rel, size: size, sensitive: true, skipReason: "sensitive"}
 				continue
@@ -3136,6 +3140,52 @@ func isSensitivePath(path string) bool {
 		return true
 	}
 	return strings.Contains(base, "secret") || strings.Contains(base, "credential")
+}
+
+// isSensitiveTransferPath makes the conventional SOPS source transferable
+// only after checking that every Dockman-managed value is encrypted and that
+// SOPS metadata carries an encrypted MAC. A plaintext file merely named
+// secrets.sops.yaml therefore remains behind the normal sensitive-file gate.
+func isSensitiveTransferPath(relative string, size int64, open func() (io.ReadCloser, error)) bool {
+	if strings.ToLower(filepath.Base(relative)) != "secrets.sops.yaml" {
+		return isSensitivePath(relative)
+	}
+	if size <= 0 || size > maxSOPSSourceSize {
+		return true
+	}
+	reader, err := open()
+	if err != nil {
+		return true
+	}
+	defer reader.Close()
+	contents, err := io.ReadAll(io.LimitReader(reader, maxSOPSSourceSize+1))
+	if err != nil || int64(len(contents)) > maxSOPSSourceSize {
+		return true
+	}
+	var document map[string]any
+	if err = yaml.Unmarshal(contents, &document); err != nil || len(document) < 2 {
+		return true
+	}
+	metadata, ok := document["sops"].(map[string]any)
+	if !ok {
+		return true
+	}
+	mac, ok := metadata["mac"].(string)
+	if !ok || !strings.HasPrefix(mac, "ENC[") {
+		return true
+	}
+	encrypted := 0
+	for name, raw := range document {
+		if name == "sops" {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok || !strings.HasPrefix(value, "ENC[") {
+			return true
+		}
+		encrypted++
+	}
+	return encrypted == 0
 }
 
 // Environment templates document variable names and safe example values. Keep

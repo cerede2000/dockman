@@ -51,6 +51,19 @@ func TestPlainFileStoreWritesSecureAtomicRuntimeSecret(t *testing.T) {
 	require.Equal(t, "correct horse battery staple\n", string(value))
 }
 
+func TestPlainFileStorePreservesSafeRuntimeReadPermissions(t *testing.T) {
+	store, roots := testStore(t)
+	_, err := store.Write("local", "compose/apps/demo", "container_token", []byte("first"))
+	require.NoError(t, err)
+	path := filepath.Join(roots["local"], "apps", "demo", RuntimeDirectory, "container_token")
+	require.NoError(t, os.Chmod(path, 0o444))
+	_, err = store.Write("local", "compose/apps/demo", "container_token", []byte("second"))
+	require.NoError(t, err)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o444), info.Mode().Perm())
+}
+
 func TestPlainFileStoreIsolatesHostsWithIdenticalStackPaths(t *testing.T) {
 	store, roots := testStore(t)
 	_, err := store.Write("local", "compose/apps/demo", "token", []byte("local-value"))

@@ -98,7 +98,60 @@ docker compose up -d --force-recreate app
 .secrets/
 ```
 
-Encrypted `secrets.sops.yaml` sources will be supported separately. They must never be stored inside `.secrets/`.
+## Encrypted Git source with SOPS and age
+
+Configure an independently backed-up age identity and its public recipient:
+
+```yaml
+services:
+  dockman:
+    environment:
+      DOCKMAN_SOPS_AGE_KEY_FILE: /run/secrets/dockman_sops_age_key
+      DOCKMAN_SOPS_AGE_RECIPIENT: age1example...
+    secrets:
+      - dockman_sops_age_key
+
+secrets:
+  dockman_sops_age_key:
+    file: ./secrets/dockman-sops-age-key.txt
+```
+
+Create that identity outside Dockman, keep mode `0600`, record the printed
+public recipient, and back the identity up separately:
+
+```console
+age-keygen -o dockman-sops-age-key.txt
+chmod 0600 dockman-sops-age-key.txt
+```
+
+The Secrets page then provides two explicit actions:
+
+- **Encrypt runtime** reads the current `.secrets` values into bounded memory,
+  encrypts them through SOPS, decrypt-verifies the result with the configured
+  identity, and atomically writes standard `secrets.sops.yaml` ciphertext;
+- **Materialize source** decrypts that source in memory and writes matching
+  runtime files under `.secrets`. Runtime files absent from the source are
+  preserved, never deleted implicitly.
+
+`secrets.sops.yaml` is included by the Docker Compose-only Git profile when it
+is adjacent to a catalogued Compose manifest. The `.secrets/` directory remains
+an unconditional Git boundary. Existing safe runtime permissions such as
+`0444` or `0440` are preserved when a value is replaced, which supports
+non-root images using file-based secrets.
+
+The source is a normal SOPS document, so recovery is not tied to Dockman:
+
+```console
+SOPS_AGE_KEY_FILE=./dockman-sops-age-key.txt \
+  sops decrypt --input-type yaml --output-type json secrets.sops.yaml
+```
+
+SOPS/age configuration is instance-wide but every read and write remains
+scoped to the selected Dockman host and alias-qualified stack. For an SSH host,
+the encrypted source and materialized files stay on that remote filesystem;
+only the bounded operation transits Dockman's memory. The private identity is
+never copied into a stack, remote host, Git repository, API response, log, or
+SQLite database.
 
 ## Multiple hosts
 
@@ -108,4 +161,4 @@ There is no secret polling, background scheduler or resident plaintext cache. CP
 
 ## Backup responsibility
 
-Plain-file mode protects permissions, not storage encryption. Back up `.secrets/` through an encrypted backup system and restrict access to the Compose root. The later SOPS/age mode will allow encrypted sources in Git and deterministic recovery using an independently backed-up age identity.
+Plain-file mode protects permissions, not storage encryption. Back up `.secrets/` through an encrypted backup system and restrict access to the Compose root. SOPS/age provides an encrypted, Git-compatible recovery source, but loss of the independently backed-up age identity makes that source unrecoverable.

@@ -25,6 +25,24 @@ type denyAtomicReplacementFS struct {
 	filesystem.FileSystem
 }
 
+func TestComposeOnlyIncludesSOPSConventionWithoutOpeningRuntimeSecrets(t *testing.T) {
+	policy := syncPolicy{
+		profile: syncProfileComposeOnly,
+		compose: map[string]struct{}{"app/compose.yml": {}},
+	}
+	require.True(t, policy.includesFile("app/secrets.sops.yaml"))
+	valid := "token: ENC[AES256_GCM,data:cipher]\nsops:\n  mac: ENC[AES256_GCM,data:mac]\n"
+	require.False(t, isSensitiveTransferPath("app/secrets.sops.yaml", int64(len(valid)), func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(valid)), nil
+	}))
+	plain := "token: plaintext\nsops:\n  mac: ENC[AES256_GCM,data:mac]\n"
+	require.True(t, isSensitiveTransferPath("app/secrets.sops.yaml", int64(len(plain)), func() (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(plain)), nil
+	}))
+	require.True(t, shouldSkipPath("app/.secrets", true))
+	require.True(t, isSensitivePath("app/secrets.yaml"), "other secret-named YAML remains protected")
+}
+
 func TestRuntimeSecretsDirectoryIsAlwaysExcludedFromGit(t *testing.T) {
 	stackRoot := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(stackRoot, "app", ".secrets"), 0o700))

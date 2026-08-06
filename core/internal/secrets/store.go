@@ -178,6 +178,17 @@ func (s *PlainFileStore) Write(host, stackPath, name string, value []byte) (Meta
 		return Metadata{}, err
 	}
 	directory := stackFS.Join(root, RuntimeDirectory)
+	destination := stackFS.Join(directory, name)
+	targetMode := os.FileMode(0o600)
+	if existing, statErr := stackFS.Lstat(destination); statErr == nil && existing.Mode().IsRegular() {
+		permissions := existing.Mode().Perm()
+		// Preserve deliberately configured read access (for example 0444 for a
+		// non-root container), but never carry writable or executable access
+		// beyond the owner into a newly materialized value.
+		if permissions&0o022 == 0 && permissions&0o111 == 0 {
+			targetMode = permissions
+		}
+	}
 	if err = stackFS.MkdirAll(directory, 0o700); err != nil {
 		return Metadata{}, fmt.Errorf("create runtime secrets directory: %w", err)
 	}
@@ -193,7 +204,6 @@ func (s *PlainFileStore) Write(host, stackPath, name string, value []byte) (Meta
 		return Metadata{}, err
 	}
 	temporaryPath := stackFS.Join(directory, temporary)
-	destination := stackFS.Join(directory, name)
 	file, err := stackFS.OpenFile(temporaryPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("create temporary runtime secret: %w", err)
@@ -218,7 +228,7 @@ func (s *PlainFileStore) Write(host, stackPath, name string, value []byte) (Meta
 		return Metadata{}, fmt.Errorf("atomically replace runtime secret: %w", err)
 	}
 	written = true
-	if err = stackFS.Chmod(destination, 0o600); err != nil {
+	if err = stackFS.Chmod(destination, targetMode); err != nil {
 		return Metadata{}, fmt.Errorf("secure runtime secret: %w", err)
 	}
 	info, err := stackFS.Lstat(destination)

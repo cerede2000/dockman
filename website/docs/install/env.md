@@ -70,6 +70,16 @@ For production, mount `DOCKMAN_GIT_MASTER_KEY_FILE` as a secret. Back it up sepa
 
 `DOCKMAN_GIT_STORAGE_PATH` must be absolute and cannot be a filesystem root. Dockman stores Git objects without a permanent duplicate worktree and creates temporary worktrees only for transfers.
 
+## Compose secrets and SOPS/age
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `DOCKMAN_SOPS_BINARY` | `sops` | SOPS executable used for explicit encrypted-source operations |
+| `DOCKMAN_SOPS_AGE_KEY_FILE` | empty | Mounted age identity file; back it up independently from Dockman |
+| `DOCKMAN_SOPS_AGE_RECIPIENT` | empty | Public age recipient matching the configured identity |
+
+No SOPS process, polling loop or plaintext cache exists while the feature is idle.
+
 ## Notifications and SMTP trust
 
 | Variable | Default | Purpose |
@@ -115,6 +125,8 @@ DOCKMAN_AUTH_PASSWORD=replace-this
 DOCKMAN_GIT_SYNC=true
 DOCKMAN_GIT_MASTER_KEY_FILE=/run/secrets/dockman_git_key
 DOCKMAN_NOTIFICATION_MASTER_KEY_FILE=/run/secrets/dockman_notification_key
+DOCKMAN_SOPS_AGE_KEY_FILE=/run/secrets/dockman_sops_age_key
+DOCKMAN_SOPS_AGE_RECIPIENT=age1replace-with-your-public-recipient
 DOCKMAN_GIT_STORAGE_PATH=/git-data
 TZ=Europe/Paris
 ```

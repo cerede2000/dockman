@@ -145,10 +145,11 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		hostManager.GetAlias,
 		dockyamlSrv.GetYaml,
 	)
-	secretRuntimeStore := secrets.NewPlainFileStore(func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
+	secretResolver := func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
 		stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)
 		return stackFS, relpath, loadErr
-	})
+	}
+	secretRuntimeStore := secrets.NewPlainFileStore(secretResolver)
 	secretRuntimeStore.ConfigureAliases(func(hostname string) ([]string, error) {
 		aliases, listErr := hostManager.ListAliases(hostname)
 		if listErr != nil {
@@ -161,6 +162,13 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		return names, nil
 	})
 	secretSrv := secrets.NewService(secretRuntimeStore)
+	secretSrv.ConfigureSOPS(secrets.NewSOPSProvider(
+		secretRuntimeStore,
+		secretResolver,
+		conf.SOPSBinary,
+		conf.SOPSAgeKeyFile,
+		conf.SOPSAgeRecipient,
+	))
 
 	//err := git.NewMigrator(composeRoot)
 	//if err != nil {

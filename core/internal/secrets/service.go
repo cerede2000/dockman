@@ -1,10 +1,17 @@
 package secrets
 
+import "context"
+
 // Service keeps the public contract provider-neutral. Plain files are the
 // first implementation; SOPS/age will materialize through the same store.
-type Service struct{ runtime Store }
+type Service struct {
+	runtime   Store
+	encrypted *SOPSProvider
+}
 
 func NewService(runtime Store) *Service { return &Service{runtime: runtime} }
+
+func (s *Service) ConfigureSOPS(provider *SOPSProvider) { s.encrypted = provider }
 
 func (s *Service) List(host, stackPath string) ([]Metadata, error) {
 	return s.runtime.List(host, stackPath)
@@ -40,4 +47,25 @@ func (s *Service) ListArchived(host, stackPath string) ([]ArchivedSecret, error)
 
 func (s *Service) ListStacks(host string) ([]StackOption, error) {
 	return s.runtime.ListStacks(host)
+}
+
+func (s *Service) SOPSStatus(host, stackPath string) (SOPSStatus, error) {
+	if s.encrypted == nil {
+		return SOPSStatus{SourcePath: SOPSSourceFile}, nil
+	}
+	return s.encrypted.Status(host, stackPath)
+}
+
+func (s *Service) ExportSOPS(ctx context.Context, host, stackPath string) (SOPSResult, error) {
+	if s.encrypted == nil {
+		return SOPSResult{}, ErrSOPSUnavailable
+	}
+	return s.encrypted.Export(ctx, host, stackPath)
+}
+
+func (s *Service) MaterializeSOPS(ctx context.Context, host, stackPath string) (SOPSResult, error) {
+	if s.encrypted == nil {
+		return SOPSResult{}, ErrSOPSUnavailable
+	}
+	return s.encrypted.Materialize(ctx, host, stackPath)
 }

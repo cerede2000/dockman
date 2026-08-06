@@ -4,7 +4,7 @@ import {
     IconButton, InputAdornment, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
     TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
-import {Add, DeleteOutlined, History, KeyOutlined, Refresh, Restore, Visibility, VisibilityOff} from "@mui/icons-material";
+import {Add, DeleteOutlined, Download, History, KeyOutlined, LockOutlined, Refresh, Restore, Upload, Visibility, VisibilityOff} from "@mui/icons-material";
 import {getBaseUrl} from "../../lib/api.ts";
 import {useHostStore} from "../compose/state/files.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
@@ -28,6 +28,7 @@ interface ComposeSecretReference {
 }
 interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
 interface StackOption { path: string; alias: string; manifests: string[] }
+interface SOPSStatus { available: boolean; sourcePath: string; sourceExists: boolean; recipient?: string; issue?: string }
 
 const initialForm: SecretForm = {name: "", value: ""};
 
@@ -56,6 +57,8 @@ export default function TabSecrets() {
     const [archived, setArchived] = useState<ArchivedSecret[]>([]);
     const [stackOptions, setStackOptions] = useState<StackOption[]>([]);
     const [catalogLoading, setCatalogLoading] = useState(false);
+    const [sopsStatus, setSopsStatus] = useState<SOPSStatus | null>(null);
+    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | null>(null);
 
     const base = useMemo(() => `${getBaseUrl("host", host)}/secrets`, [host]);
 
@@ -80,10 +83,11 @@ export default function TabSecrets() {
         }
         setLoading(true);
         try {
-            const [response, composeResponse, archivedResponse] = await Promise.all([
+            const [response, composeResponse, archivedResponse, sopsResponse] = await Promise.all([
                 fetch(`${base}/?stack=${encodeURIComponent(requestedPath)}`),
                 fetch(`${base}/compose?stack=${encodeURIComponent(requestedPath)}`),
                 fetch(`${base}/history?stack=${encodeURIComponent(requestedPath)}`),
+                fetch(`${base}/sops?stack=${encodeURIComponent(requestedPath)}`),
             ]);
             if (!response.ok) throw new Error(await responseError(response));
             setItems(await response.json() as RuntimeSecret[]);
@@ -95,12 +99,14 @@ export default function TabSecrets() {
                 setAnalysisError(await responseError(composeResponse));
             }
             setArchived(archivedResponse.ok ? await archivedResponse.json() as ArchivedSecret[] : []);
+            setSopsStatus(sopsResponse.ok ? await sopsResponse.json() as SOPSStatus : null);
             setLoadedPath(requestedPath);
         } catch (error) {
             setItems([]);
             setLoadedPath("");
             setAnalysis(null);
             setArchived([]);
+            setSopsStatus(null);
             showError(`Unable to load secrets: ${(error as Error).message}`);
         } finally {
             setLoading(false);
@@ -114,6 +120,7 @@ export default function TabSecrets() {
         setAnalysis(null);
         setAnalysisError("");
         setArchived([]);
+        setSopsStatus(null);
         setStackOptions([]);
         void loadStackOptions();
     }, [host, loadStackOptions]);
@@ -224,6 +231,31 @@ export default function TabSecrets() {
         }
     };
 
+    const runSOPS = async () => {
+        if (!sopsAction || !loadedPath || confirmation !== TYPED_CONFIRMATION) return;
+        const action = sopsAction;
+        setSaving(true);
+        try {
+            const response = await fetch(`${base}/sops/${action}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({stackPath: loadedPath}),
+            });
+            if (!response.ok) throw new Error(await responseError(response));
+            const result = await response.json() as {names: string[]};
+            setSopsAction(null);
+            setConfirmation("");
+            await load(loadedPath);
+            showSuccess(action === "export"
+                ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
+                : `${result.names.length} encrypted secret(s) materialized securely.`);
+        } catch (error) {
+            showError(`Unable to ${action} SOPS secrets: ${(error as Error).message}`);
+        } finally {
+            setSaving(false);
+        }
+    };
+
     return <Box sx={{p: 3, maxWidth: 1100, mx: "auto"}}>
         <Stack direction={{xs: "column", md: "row"}} spacing={2} sx={{justifyContent: "space-between", mb: 2}}>
             <Box>
@@ -232,10 +264,13 @@ export default function TabSecrets() {
                     File-backed runtime secrets for <strong>{host}</strong>. Values stay with the selected Docker host and are never stored in Dockman&apos;s database.
                 </Typography>
             </Box>
-            <Chip icon={<KeyOutlined/>} color="success" variant="outlined" label="Plain files · ready"/>
+            <Stack direction="row" spacing={1}>
+                <Chip icon={<KeyOutlined/>} color="success" variant="outlined" label="Plain files · ready"/>
+                <Chip icon={<LockOutlined/>} color={sopsStatus?.available ? "success" : "default"} variant="outlined" label={sopsStatus?.available ? "SOPS/age · ready" : "SOPS/age · not configured"}/>
+            </Stack>
         </Stack>
         <Alert severity="info" sx={{mb: 2}}>
-            Enter a stack directory including its Dockman alias. Secrets are written to <code>.secrets/</code> with directory mode 0700 and file mode 0600. SOPS/age encrypted sources arrive in the next lot.
+            Runtime values are written to <code>.secrets/</code>. An optional standard <code>secrets.sops.yaml</code> source can be committed safely and materialized on demand with an independently backed-up age identity.
         </Alert>
         <Paper variant="outlined" sx={{p: 2, mb: 2}}>
             <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
@@ -283,6 +318,26 @@ export default function TabSecrets() {
                 </TableBody>
             </Table>
         </TableContainer>
+
+        {loadedPath && <Paper variant="outlined" sx={{p: 2, mt: 2}}>
+            <Stack direction={{xs: "column", md: "row"}} spacing={2} sx={{alignItems: {md: "center"}}}>
+                <Box sx={{flex: 1}}>
+                    <Typography variant="subtitle1" sx={{fontWeight: 750}}>Encrypted source · SOPS/age</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        {sopsStatus?.sourceExists ? <><code>secrets.sops.yaml</code> is present for this stack.</> : <>No encrypted source exists for this stack.</>}
+                    </Typography>
+                    {!sopsStatus?.available && <Typography variant="caption" color="warning.main">{sopsStatus?.issue || "SOPS/age is not configured on this Dockman instance."}</Typography>}
+                    {sopsStatus?.available && sopsStatus.recipient && <Typography component="div" variant="caption" color="text.secondary" sx={{overflowWrap: "anywhere"}}>Recipient: <code>{sopsStatus.recipient}</code></Typography>}
+                </Box>
+                <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
+                    <Button variant="outlined" startIcon={<Upload/>} disabled={saving || !sopsStatus?.available || items.length === 0}
+                            onClick={() => {setSopsAction("export"); setConfirmation("");}}>Encrypt runtime</Button>
+                    <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
+                            onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>
+                </Stack>
+            </Stack>
+            <Alert severity="info" sx={{mt: 1.5}}>Materialization replaces matching runtime values atomically one by one and preserves runtime secrets absent from the encrypted source.</Alert>
+        </Paper>}
 
         {archived.length > 0 && <Paper variant="outlined" sx={{p: 2, mt: 2}}>
             <Typography variant="subtitle1" sx={{fontWeight: 750}}>Recover deleted secrets</Typography>
@@ -343,6 +398,19 @@ export default function TabSecrets() {
                 <TypedConfirmationField value={confirmation} onChange={setConfirmation}/>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setDeleteItem(null)} disabled={saving}>Cancel</Button><Button color="error" variant="contained" onClick={() => void remove()} disabled={saving || confirmation !== TYPED_CONFIRMATION}>Delete</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={sopsAction !== null} onClose={saving ? undefined : () => setSopsAction(null)} fullWidth maxWidth="xs">
+            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : "Materialize encrypted secrets?"}</DialogTitle>
+            <DialogContent><Stack spacing={2} sx={{mt: 1}}>
+                <Alert severity={sopsAction === "export" ? "warning" : "info"}>
+                    {sopsAction === "export"
+                        ? "This replaces secrets.sops.yaml with every current runtime secret after encrypting and verifying it with the configured age identity."
+                        : "This decrypts secrets.sops.yaml in memory and replaces matching files under .secrets. Values absent from the source are preserved."}
+                </Alert>
+                <TypedConfirmationField value={confirmation} onChange={setConfirmation}/>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setSopsAction(null)} disabled={saving}>Cancel</Button><Button variant="contained" onClick={() => void runSOPS()} disabled={saving || confirmation !== TYPED_CONFIRMATION}>{saving ? <CircularProgress size={18}/> : "Confirm"}</Button></DialogActions>
         </Dialog>
     </Box>;
 }
