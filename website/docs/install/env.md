@@ -74,11 +74,11 @@ For production, mount `DOCKMAN_GIT_MASTER_KEY_FILE` as a secret. Back it up sepa
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `DOCKMAN_SOPS_BINARY` | `sops` | SOPS executable used for explicit encrypted-source operations |
+| `DOCKMAN_SOPS_BINARY` | `sops` | SOPS executable used for explicit operations and inline Compose injection |
 | `DOCKMAN_SOPS_AGE_KEY_FILE` | empty | Persistent age identity file; back it up independently from Dockman |
 | `DOCKMAN_SOPS_AGE_RECIPIENT` | empty | Public age recipient matching the configured identity |
 
-No SOPS process, polling loop or plaintext cache exists while the feature is idle.
+No SOPS process, polling loop or plaintext cache exists while the feature is idle. Inline mode is configured per stack and works without a Git folder link.
 The image contains pinned `sops` and `age-keygen` CLIs. Generate a persistent
 identity under `/config/secrets` with `docker exec dockman
 dockman-age-keygen`, or follow the complete

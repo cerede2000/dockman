@@ -20,12 +20,16 @@ type commandCaptureRunner struct {
 	calls     [][]string
 	failBuild bool
 	driver    string
+	env       []string
 }
 
-func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, out, _ io.Writer) error {
+func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, env []string, out, _ io.Writer) error {
 	r.args = append([]string(nil), args...)
 	r.wd = wd
 	r.calls = append(r.calls, append([]string(nil), args...))
+	if len(env) > 0 {
+		r.env = append([]string(nil), env...)
+	}
 	joined := strings.Join(args, " ")
 	if r.driver != "" && strings.Contains(joined, "docker buildx ls --format") {
 		if out != nil {
@@ -36,6 +40,32 @@ func (r *commandCaptureRunner) Run(_ context.Context, args []string, wd string, 
 		return errors.New("build failed")
 	}
 	return nil
+}
+
+func TestComposeActionReceivesInlineEnvironmentWithoutChangingCommand(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "compose.yml"), []byte("services: {}\n"), 0o600))
+	runner := &commandCaptureRunner{}
+	service := &Service{
+		hostname: "local",
+		runner:   runner,
+		parser: func(filename, _ string) (Host, error) {
+			return Host{Fs: filesystem.NewLocal(root), Relpath: filename}, nil
+		},
+	}
+	service.SetEnvironmentProvider(func(_ context.Context, host string, _ filesystem.FileSystem, relpath string) ([]string, error) {
+		require.Equal(t, "local", host)
+		require.Equal(t, "compose.yml", relpath)
+		return []string{"API_TOKEN=secret"}, nil
+	})
+	require.NoError(t, service.Up(context.Background(), "compose.yml", io.Discard))
+	require.Equal(t, []string{"API_TOKEN=secret"}, runner.env)
+	require.Contains(t, strings.Join(runner.args, " "), "up -d")
+}
+
+func TestInlineEnvironmentOverridesInheritedValueOnce(t *testing.T) {
+	merged := mergeEnvironment([]string{"PATH=/bin", "API_TOKEN=old", "OTHER=value"}, []string{"API_TOKEN=new"})
+	require.Equal(t, []string{"PATH=/bin", "OTHER=value", "API_TOKEN=new"}, merged)
 }
 
 func TestSplitCommandLine(t *testing.T) {

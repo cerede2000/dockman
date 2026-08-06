@@ -30,6 +30,13 @@ type Service struct {
 
 	activeClients syncmap.Map[string, *ActiveHost]
 	aliasStore    AliasStore
+	composeEnv    compose.EnvironmentProvider
+}
+
+// ConfigureComposeEnvironment wires an event-driven secret provider into every
+// short-lived Docker service created for local or SSH hosts.
+func (s *Service) ConfigureComposeEnvironment(provider compose.EnvironmentProvider) {
+	s.composeEnv = provider
 }
 
 func NewService(
@@ -170,6 +177,7 @@ func (s *Service) GetDockerService(name string) (*docker.Service, error) {
 			}, nil
 		},
 	)
+	service.Compose.SetEnvironmentProvider(s.composeEnv)
 
 	// reverse of the parser above: map the daemon's absolute compose-file
 	// path back to "alias/relpath" by matching it against the alias roots,

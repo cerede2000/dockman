@@ -28,7 +28,7 @@ interface ComposeSecretReference {
 }
 interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
 interface StackOption { path: string; alias: string; manifests: string[] }
-interface SOPSStatus { available: boolean; sourcePath: string; sourceExists: boolean; recipient?: string; issue?: string }
+interface SOPSStatus { available: boolean; sourcePath: string; sourceExists: boolean; mode: "materialized" | "inline"; recoveryScript?: string; recipient?: string; issue?: string }
 
 const initialForm: SecretForm = {name: "", value: ""};
 
@@ -58,7 +58,7 @@ export default function TabSecrets() {
     const [stackOptions, setStackOptions] = useState<StackOption[]>([]);
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [sopsStatus, setSopsStatus] = useState<SOPSStatus | null>(null);
-    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | null>(null);
+    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | "inline-enable" | "inline-disable" | null>(null);
 
     const base = useMemo(() => `${getBaseUrl("host", host)}/secrets`, [host]);
 
@@ -236,19 +236,21 @@ export default function TabSecrets() {
         const action = sopsAction;
         setSaving(true);
         try {
-            const response = await fetch(`${base}/sops/${action}`, {
+            const endpoint = action === "inline-enable" ? "sops/inline/enable" : action === "inline-disable" ? "sops/inline/disable" : `sops/${action}`;
+            const response = await fetch(`${base}/${endpoint}`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({stackPath: loadedPath}),
+                body: JSON.stringify({stackPath: loadedPath, composeFile: analysis?.manifests[0] || "compose.yml"}),
             });
             if (!response.ok) throw new Error(await responseError(response));
             const result = await response.json() as {names: string[]};
             setSopsAction(null);
             setConfirmation("");
             await load(loadedPath);
-            showSuccess(action === "export"
-                ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
-                : `${result.names.length} encrypted secret(s) materialized securely.`);
+            showSuccess(action === "export" ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
+                : action === "materialize" ? `${result.names.length} encrypted secret(s) materialized securely.`
+                    : action === "inline-enable" ? `${result.names.length} secret(s) now stay encrypted at rest and are injected only for Compose actions.`
+                        : `${result.names.length} secret(s) materialized; inline mode disabled.`);
         } catch (error) {
             showError(`Unable to ${action} SOPS secrets: ${(error as Error).message}`);
         } finally {
@@ -261,11 +263,12 @@ export default function TabSecrets() {
             <Box>
                 <Typography variant="h5" sx={{fontWeight: 800}}>Compose secrets</Typography>
                 <Typography variant="body2" color="text.secondary">
-                    File-backed runtime secrets for <strong>{host}</strong>. Values stay with the selected Docker host and are never stored in Dockman&apos;s database.
+                    Portable Compose secrets for <strong>{host}</strong>. Values stay with the selected host and are never stored in Dockman&apos;s database.
                 </Typography>
             </Box>
             <Stack direction="row" spacing={1}>
-                <Chip icon={<KeyOutlined/>} color="success" variant="outlined" label="Plain files · ready"/>
+                <Chip icon={sopsStatus?.mode === "inline" ? <LockOutlined/> : <KeyOutlined/>} color="success" variant="outlined"
+                      label={sopsStatus?.mode === "inline" ? "Encrypted inline · active" : "Plain files · ready"}/>
                 <Chip icon={<LockOutlined/>}
                       color={sopsStatus?.available ? "success" : "default"}
                       variant="outlined"
@@ -273,7 +276,7 @@ export default function TabSecrets() {
             </Stack>
         </Stack>
         <Alert severity="info" sx={{mb: 2}}>
-            Runtime values are written to <code>.secrets/</code>. An optional standard <code>secrets.sops.yaml</code> source can be committed safely and materialized on demand with an independently backed-up age identity.
+            {sopsStatus?.mode === "inline" ? <><code>secrets.sops.yaml</code> is the active encrypted store. Values are decrypted only for an explicit reveal or Compose action; no <code>.secrets/</code> plaintext is kept.</> : <>Runtime values are written to <code>.secrets/</code>. An optional standard <code>secrets.sops.yaml</code> source can be committed safely and materialized on demand.</>}
         </Alert>
         <Paper variant="outlined" sx={{p: 2, mb: 2}}>
             <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
@@ -312,7 +315,7 @@ export default function TabSecrets() {
                         <TableCell>{new Date(item.modifiedAt).toLocaleString()}</TableCell>
                         <TableCell align="right">
                             <Tooltip title="Reveal or replace"><IconButton size="small" onClick={() => void openEdit(item)} disabled={saving}><Visibility/></IconButton></Tooltip>
-                            <Tooltip title="Version history"><IconButton size="small" onClick={() => void openHistory(item)} disabled={saving}><History/></IconButton></Tooltip>
+                            <Tooltip title={sopsStatus?.mode === "inline" ? "Inline values have no plaintext history" : "Version history"}><span><IconButton size="small" onClick={() => void openHistory(item)} disabled={saving || sopsStatus?.mode === "inline"}><History/></IconButton></span></Tooltip>
                             <Tooltip title="Delete"><IconButton size="small" color="error" onClick={() => {setDeleteItem(item); setConfirmation("");}} disabled={saving}><DeleteOutlined/></IconButton></Tooltip>
                         </TableCell>
                     </TableRow>)}
@@ -331,15 +334,26 @@ export default function TabSecrets() {
                     </Typography>
                     {!sopsStatus?.available && <Typography variant="caption" color="warning.main">{sopsStatus?.issue || "SOPS/age is not configured on this Dockman instance."}</Typography>}
                     {sopsStatus?.available && sopsStatus.recipient && <Typography component="div" variant="caption" color="text.secondary" sx={{overflowWrap: "anywhere"}}>Recipient: <code>{sopsStatus.recipient}</code></Typography>}
+                    {sopsStatus?.mode === "inline" && <Typography component="div" variant="caption" color="success.main">Inline encrypted-at-rest mode · recovery: <code>{sopsStatus.recoveryScript || "compose-sops.sh"}</code></Typography>}
                 </Box>
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
-                    <Button variant="outlined" startIcon={<Upload/>} disabled={saving || !sopsStatus?.available || items.length === 0}
-                            onClick={() => {setSopsAction("export"); setConfirmation("");}}>Encrypt runtime</Button>
-                    <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
-                            onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>
+                    {sopsStatus?.mode !== "inline" && <Button variant="outlined" startIcon={<Upload/>} disabled={saving || !sopsStatus?.available || items.length === 0}
+                            onClick={() => {setSopsAction("export"); setConfirmation("");}}>Encrypt runtime</Button>}
+                    {sopsStatus?.mode !== "inline" && <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
+                            onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>}
+                    {sopsStatus?.mode !== "inline" ? <Button color="success" variant="contained" startIcon={<LockOutlined/>}
+                            disabled={saving || !sopsStatus?.available || items.length === 0 || !analysis?.manifests.length || analysis.secrets.some(reference => reference.managed)}
+                            onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>Enable inline</Button>
+                        : <Button color="warning" variant="outlined" startIcon={<Download/>} disabled={saving}
+                            onClick={() => {setSopsAction("inline-disable"); setConfirmation("");}}>Materialize and disable</Button>}
                 </Stack>
             </Stack>
-            <Alert severity="info" sx={{mt: 1.5}}>Materialization replaces matching runtime values atomically one by one and preserves runtime secrets absent from the encrypted source.</Alert>
+            <Alert severity="info" sx={{mt: 1.5}}>{sopsStatus?.mode === "inline"
+                ? "Every create, edit and delete rewrites and decrypt-verifies the encrypted source atomically. Compose actions receive values in their process environment only."
+                : "Materialization replaces matching runtime values atomically one by one. Enabling inline verifies the ciphertext before removing .secrets and its plaintext history."}</Alert>
+            {sopsStatus?.mode !== "inline" && analysis?.secrets.some(reference => reference.managed) && <Alert severity="warning" sx={{mt: 1}}>
+                Inline mode cannot be enabled while Compose still references files under <code>.secrets</code>. Replace those declarations with environment interpolation such as <code>{"${API_TOKEN}"}</code> first.
+            </Alert>}
         </Paper>}
 
         {archived.length > 0 && <Paper variant="outlined" sx={{p: 2, mt: 2}}>
@@ -370,7 +384,7 @@ export default function TabSecrets() {
             <DialogTitle>{items.some(item => item.name === form.name) ? "Edit runtime secret" : "Create runtime secret"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
                 <TextField label="Name" value={form.name} disabled={saving || items.some(item => item.name === form.name)}
-                           helperText="Letters, numbers, dots, underscores and hyphens; maximum 128 characters."
+                           helperText={sopsStatus?.mode === "inline" ? "Environment variable name: letters, numbers and underscores; it cannot start with a number." : "Letters, numbers, dots, underscores and hyphens; maximum 128 characters."}
                            onChange={event => setForm(current => ({...current, name: event.target.value}))}/>
                 <TextField label="Value" multiline minRows={5} value={form.value}
                            onChange={event => setForm(current => ({...current, value: event.target.value}))}
@@ -404,12 +418,14 @@ export default function TabSecrets() {
         </Dialog>
 
         <Dialog open={sopsAction !== null} onClose={saving ? undefined : () => setSopsAction(null)} fullWidth maxWidth="xs">
-            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : "Materialize encrypted secrets?"}</DialogTitle>
+            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : sopsAction === "materialize" ? "Materialize encrypted secrets?" : sopsAction === "inline-enable" ? "Enable encrypted inline mode?" : "Materialize and disable inline mode?"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
-                <Alert severity={sopsAction === "export" ? "warning" : "info"}>
+                <Alert severity={sopsAction === "export" || sopsAction === "inline-enable" ? "warning" : "info"}>
                     {sopsAction === "export"
                         ? "This replaces secrets.sops.yaml with every current runtime secret after encrypting and verifying it with the configured age identity."
-                        : "This decrypts secrets.sops.yaml in memory and replaces matching files under .secrets. Values absent from the source are preserved."}
+                        : sopsAction === "materialize" ? "This decrypts secrets.sops.yaml in memory and replaces matching files under .secrets. Values absent from the source are preserved."
+                            : sopsAction === "inline-enable" ? `Dockman first encrypts and verifies every runtime secret, creates compose-sops.sh for independent recovery, then removes .secrets and its plaintext history. Compose manifest: ${analysis?.manifests[0] || "compose.yml"}.`
+                                : "This materializes every encrypted value under .secrets, then removes the inline marker and recovery script. The encrypted source is preserved."}
                 </Alert>
                 <TypedConfirmationField value={confirmation} onChange={setConfirmation}/>
             </Stack></DialogContent>

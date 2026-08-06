@@ -72,7 +72,7 @@ func (c *Service) readProc(ctx context.Context) (procSample, error) {
 	}
 	out := new(bytes.Buffer)
 	errW := new(bytes.Buffer)
-	if err := c.runner.Run(ctx, []string{"cat", "/proc/stat", "/proc/meminfo"}, ".", out, errW); err != nil {
+	if err := c.runner.Run(ctx, []string{"cat", "/proc/stat", "/proc/meminfo"}, ".", nil, out, errW); err != nil {
 		if errW.Len() > 0 {
 			return procSample{}, fmt.Errorf("%s", errW.String())
 		}

@@ -169,6 +169,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		conf.SOPSAgeKeyFile,
 		conf.SOPSAgeRecipient,
 	))
+	hostManager.ConfigureComposeEnvironment(secretSrv.ComposeEnvironment)
 
 	//err := git.NewMigrator(composeRoot)
 	//if err != nil {

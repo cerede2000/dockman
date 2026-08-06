@@ -29,11 +29,13 @@ const (
 var ErrSOPSUnavailable = errors.New("SOPS/age is not configured")
 
 type SOPSStatus struct {
-	Available    bool   `json:"available"`
-	SourcePath   string `json:"sourcePath"`
-	SourceExists bool   `json:"sourceExists"`
-	Recipient    string `json:"recipient,omitempty"`
-	Issue        string `json:"issue,omitempty"`
+	Available      bool   `json:"available"`
+	SourcePath     string `json:"sourcePath"`
+	SourceExists   bool   `json:"sourceExists"`
+	Mode           string `json:"mode"`
+	RecoveryScript string `json:"recoveryScript,omitempty"`
+	Recipient      string `json:"recipient,omitempty"`
+	Issue          string `json:"issue,omitempty"`
 }
 
 type SOPSResult struct {
@@ -128,7 +130,26 @@ func NewSOPSProvider(runtime Store, resolve FileSystemProvider, binary, keyFile,
 }
 
 func (p *SOPSProvider) Status(host, stackPath string) (SOPSStatus, error) {
-	status := SOPSStatus{SourcePath: SOPSSourceFile, Recipient: p.recipient}
+	status := SOPSStatus{SourcePath: SOPSSourceFile, Recipient: p.recipient, Mode: "materialized"}
+	stackFS, root, err := p.resolveStack(host, stackPath)
+	if err != nil {
+		return status, err
+	}
+	if enabled, inlineErr := inlineMarkerExists(stackFS, root); inlineErr != nil {
+		return status, inlineErr
+	} else if enabled {
+		status.Mode = "inline"
+		status.RecoveryScript = SOPSRecoveryScriptFile
+	}
+	info, sourceErr := stackFS.Lstat(stackFS.Join(root, SOPSSourceFile))
+	if sourceErr == nil {
+		if !info.Mode().IsRegular() || info.Size() > maxSOPSSourceBytes {
+			return status, errors.New("encrypted secret source is not a bounded regular file")
+		}
+		status.SourceExists = true
+	} else if !errors.Is(sourceErr, fs.ErrNotExist) {
+		return status, fmt.Errorf("inspect encrypted secret source: %w", sourceErr)
+	}
 	if p.binary == "" || p.keyFile == "" || p.recipient == "" {
 		status.Issue = "configure DOCKMAN_SOPS_AGE_KEY_FILE and DOCKMAN_SOPS_AGE_RECIPIENT"
 		return status, nil
@@ -142,21 +163,6 @@ func (p *SOPSProvider) Status(host, stackPath string) (SOPSStatus, error) {
 		return status, nil
 	}
 	status.Available = true
-	stackFS, root, err := p.resolveStack(host, stackPath)
-	if err != nil {
-		return status, err
-	}
-	info, err := stackFS.Lstat(stackFS.Join(root, SOPSSourceFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return status, nil
-	}
-	if err != nil {
-		return status, fmt.Errorf("inspect encrypted secret source: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxSOPSSourceBytes {
-		return status, errors.New("encrypted secret source is not a bounded regular file")
-	}
-	status.SourceExists = true
 	return status, nil
 }
 

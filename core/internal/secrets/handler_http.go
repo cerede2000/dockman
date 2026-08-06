@@ -21,7 +21,8 @@ type writeInput struct {
 }
 
 type stackInput struct {
-	StackPath string `json:"stackPath"`
+	StackPath   string `json:"stackPath"`
+	ComposeFile string `json:"composeFile,omitempty"`
 }
 
 type readOutput struct {
@@ -41,6 +42,8 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /sops", h.sopsStatus)
 	mux.HandleFunc("POST /sops/export", h.sopsExport)
 	mux.HandleFunc("POST /sops/materialize", h.sopsMaterialize)
+	mux.HandleFunc("POST /sops/inline/enable", h.sopsInlineEnable)
+	mux.HandleFunc("POST /sops/inline/disable", h.sopsInlineDisable)
 	mux.HandleFunc("GET /{name}", h.read)
 	mux.HandleFunc("PUT /{name}", h.write)
 	mux.HandleFunc("DELETE /{name}", h.delete)
@@ -52,6 +55,40 @@ func NewHTTPHandler(service *Service) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) sopsInlineEnable(w http.ResponseWriter, r *http.Request) {
+	h.sopsInlineAction(w, r, true)
+}
+
+func (h *HTTPHandler) sopsInlineDisable(w http.ResponseWriter, r *http.Request) {
+	h.sopsInlineAction(w, r, false)
+}
+
+func (h *HTTPHandler) sopsInlineAction(w http.ResponseWriter, r *http.Request, enable bool) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	var input stackInput
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.StackPath) == "" {
+		http.Error(w, "invalid inline SOPS request", http.StatusBadRequest)
+		return
+	}
+	var result SOPSResult
+	var err error
+	if enable {
+		result, err = h.service.EnableInlineSOPS(r.Context(), host, input.StackPath, input.ComposeFile)
+	} else {
+		result, err = h.service.DisableInlineSOPS(r.Context(), host, input.StackPath)
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) sopsStatus(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +204,7 @@ func (h *HTTPHandler) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": true, "host": host, "runtimeDirectory": RuntimeDirectory,
-		"modes": []string{"plain_file", "sops_age"}, "maxSecretBytes": MaxSecretBytes,
+		"modes": []string{"plain_file", "sops_age_materialized", "sops_age_inline"}, "maxSecretBytes": MaxSecretBytes,
 	})
 }
 
@@ -176,7 +213,7 @@ func (h *HTTPHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := h.service.List(host, r.URL.Query().Get("stack"))
+	items, err := h.service.ListManaged(r.Context(), host, r.URL.Query().Get("stack"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -189,7 +226,7 @@ func (h *HTTPHandler) read(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	value, err := h.service.Read(host, r.URL.Query().Get("stack"), r.PathValue("name"))
+	value, err := h.service.ReadManaged(r.Context(), host, r.URL.Query().Get("stack"), r.PathValue("name"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -226,7 +263,7 @@ func (h *HTTPHandler) write(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer clear(value)
-	item, err := h.service.Write(host, input.StackPath, r.PathValue("name"), value)
+	item, err := h.service.WriteManaged(r.Context(), host, input.StackPath, r.PathValue("name"), value)
 	input.Value = ""
 	if err != nil {
 		writeError(w, err)
@@ -240,7 +277,7 @@ func (h *HTTPHandler) delete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.service.Delete(host, r.URL.Query().Get("stack"), r.PathValue("name")); err != nil {
+	if err := h.service.DeleteManaged(r.Context(), host, r.URL.Query().Get("stack"), r.PathValue("name")); err != nil {
 		writeError(w, err)
 		return
 	}

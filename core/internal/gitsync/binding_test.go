@@ -31,6 +31,8 @@ func TestComposeOnlyIncludesSOPSConventionWithoutOpeningRuntimeSecrets(t *testin
 		compose: map[string]struct{}{"app/compose.yml": {}},
 	}
 	require.True(t, policy.includesFile("app/secrets.sops.yaml"))
+	require.True(t, policy.includesFile("app/.dockman-sops-inline"))
+	require.True(t, policy.includesFile("app/compose-sops.sh"))
 	valid := "token: ENC[AES256_GCM,data:cipher]\nsops:\n  mac: ENC[AES256_GCM,data:mac]\n"
 	require.False(t, isSensitiveTransferPath("app/secrets.sops.yaml", int64(len(valid)), func() (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader(valid)), nil

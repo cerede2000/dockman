@@ -250,7 +250,7 @@ var composeConfigRules = mustRules([]string{
 var composeOnlyRules = mustRules([]string{
 	".env.example", ".env.*.example", ".env.sample", ".env.*.sample",
 	".env.template", ".env.*.template", ".env.dist", ".env.*.dist",
-	"secrets.sops.yaml",
+	"secrets.sops.yaml", ".dockman-sops-inline", "compose-sops.sh",
 })
 
 func (s *Service) ListBindings() ([]BindingView, error) {

@@ -110,7 +110,7 @@ func (c *Service) createDockmanBuildxBuilder(ctx context.Context, wd, builderNam
 		args = append(args, "--buildkitd-flags", "--allow-insecure-entitlement network.host")
 	}
 	var output bytes.Buffer
-	if err := c.runner.Run(ctx, dockmanNativeBuildxArgs(args), wd, io.Discard, &output); err != nil {
+	if err := c.runner.Run(ctx, dockmanNativeBuildxArgs(args), wd, nil, io.Discard, &output); err != nil {
 		message := strings.TrimSpace(output.String())
 		if message == "" {
 			message = err.Error()
@@ -130,7 +130,7 @@ func dockmanNativeBuildxArgs(args []string) []string {
 func (c *Service) dockmanBuildxDriver(ctx context.Context, wd string) string {
 	var output bytes.Buffer
 	args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"})
-	if err := c.runner.Run(ctx, args, wd, &output, io.Discard); err != nil {
+	if err := c.runner.Run(ctx, args, wd, nil, &output, io.Discard); err != nil {
 		return "unknown"
 	}
 	for _, line := range strings.Split(output.String(), "\n") {
@@ -154,13 +154,13 @@ func (c *Service) cleanupDockmanBuildxHelper(ctx context.Context, wd, builderNam
 	if builderName != "" {
 		var output bytes.Buffer
 		args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "rm", "--force", builderName})
-		if err := c.runner.Run(ctx, args, wd, nil, &output); err != nil {
+		if err := c.runner.Run(ctx, args, wd, nil, nil, &output); err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove isolated builder %s: %s", builderName, strings.TrimSpace(output.String())))
 		}
 	}
 
 	var output bytes.Buffer
-	if err := c.runner.Run(ctx, []string{"docker", "rm", "--force", "buildx_buildkit_default"}, wd, nil, &output); err != nil {
+	if err := c.runner.Run(ctx, []string{"docker", "rm", "--force", "buildx_buildkit_default"}, wd, nil, nil, &output); err != nil {
 		message := strings.TrimSpace(output.String())
 		if !strings.Contains(strings.ToLower(message), "no such container") {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove legacy helper container: %s", message))
@@ -177,7 +177,7 @@ func (c *Service) runDockerCLI(ctx context.Context, args []string, wd string, st
 	}
 
 	errWriter := new(bytes.Buffer)
-	if err := c.runner.Run(ctx, args, wd, stream, errWriter); err != nil {
+	if err := c.runner.Run(ctx, args, wd, nil, stream, errWriter); err != nil {
 		if errWriter.Len() > 0 {
 			return fmt.Errorf("%s", errWriter.String())
 		}
@@ -334,7 +334,7 @@ func splitCommandLine(input string) ([]string, error) {
 // is unauthenticated and fails on private registries.
 func (c *Service) PullImage(ctx context.Context, imageTag string, out io.Writer) error {
 	errWriter := new(bytes.Buffer)
-	if err := c.runner.Run(ctx, []string{"docker", "pull", imageTag}, ".", out, errWriter); err != nil {
+	if err := c.runner.Run(ctx, []string{"docker", "pull", imageTag}, ".", nil, out, errWriter); err != nil {
 		if errWriter.Len() > 0 {
 			return fmt.Errorf("%s", strings.TrimSpace(errWriter.String()))
 		}

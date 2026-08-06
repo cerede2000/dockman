@@ -30,6 +30,10 @@ type Host struct {
 
 type FilenameParser func(filename string, host string) (Host, error)
 
+// EnvironmentProvider returns short-lived KEY=value entries for one Compose
+// invocation. Implementations must not persist plaintext or retain a cache.
+type EnvironmentProvider func(context.Context, string, filesystem.FileSystem, string) ([]string, error)
+
 type Service struct {
 	TTY      bool
 	cont     *container.Service
@@ -39,7 +43,10 @@ type Service struct {
 	// reverse of parser: absolute compose path -> dockman filename;
 	// injected by the host service which owns the alias table
 	pathResolver PathResolver
+	environment  EnvironmentProvider
 }
+
+func (c *Service) SetEnvironmentProvider(provider EnvironmentProvider) { c.environment = provider }
 
 func NewComposeTerminal(
 	hostname string,
@@ -82,6 +89,7 @@ func (c *Service) version(ctx context.Context) ([]string, error) {
 		[]string{split[0], split[1], "version"},
 		"",
 		nil,
+		nil,
 		&errWriter,
 	)
 	if err == nil {
@@ -92,6 +100,7 @@ func (c *Service) version(ctx context.Context) ([]string, error) {
 		ctx,
 		[]string{composeStandalone, "version"},
 		"",
+		nil,
 		nil,
 		&errWriter,
 	)
@@ -138,6 +147,18 @@ func (c *Service) withCmdProgress(
 	}
 
 	envs := loadEnvFile(fileParts.Fs, fileParts.Relpath)
+	var secretEnvironment []string
+	if c.environment != nil {
+		secretEnvironment, err = c.environment(ctx, c.hostname, fileParts.Fs, fileParts.Relpath)
+		if err != nil {
+			return fmt.Errorf("load inline SOPS environment: %w", err)
+		}
+		defer func() {
+			for index := range secretEnvironment {
+				secretEnvironment[index] = ""
+			}
+		}()
+	}
 
 	// docker compose --envfile=... -f some/file/path/compose.yml --progress=<val>
 	fullCmd := append(
@@ -169,7 +190,7 @@ func (c *Service) withCmdProgress(
 	}
 
 	errWriter := new(bytes.Buffer)
-	err = c.runner.Run(ctx, cleanCmd, fileParts.Fs.Root(), stream, errWriter)
+	err = c.runner.Run(ctx, cleanCmd, fileParts.Fs.Root(), secretEnvironment, stream, errWriter)
 	if err != nil {
 		message := strings.TrimSpace(errWriter.String())
 		if message != "" {

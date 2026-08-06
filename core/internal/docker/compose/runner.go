@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/RA341/dockman/pkg/fileutil"
@@ -16,6 +18,7 @@ type CmdRunner interface {
 		ctx context.Context,
 		cmd []string,
 		wd string,
+		env []string,
 		stdIn io.Writer,
 		stdErr io.Writer,
 	) error
@@ -31,6 +34,7 @@ func (l *LocalRunner) Run(
 	ctx context.Context,
 	cmd []string,
 	wd string,
+	env []string,
 	out io.Writer,
 	errWriter io.Writer,
 ) error {
@@ -40,6 +44,9 @@ func (l *LocalRunner) Run(
 
 	ins := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
 	ins.Dir = wd
+	if len(env) > 0 {
+		ins.Env = mergeEnvironment(os.Environ(), env)
+	}
 	ins.Stdout = out
 	// Keep stderr visible in the live action stream while also retaining it for
 	// the API error. Previously local Compose failures were displayed to the
@@ -65,6 +72,7 @@ func (r *RemoteRunner) Run(
 	ctx context.Context,
 	cmd []string,
 	wd string,
+	env []string,
 	out io.Writer,
 	errWriter io.Writer,
 ) error {
@@ -74,11 +82,32 @@ func (r *RemoteRunner) Run(
 	}
 	defer fileutil.Close(session)
 
-	fullCmd := fmt.Sprintf(
-		"cd %s && %s",
-		shellQuote(wd),
-		quoteRemoteCommand(cmd),
-	)
+	fullCmd := fmt.Sprintf("cd %s && %s", shellQuote(wd), quoteRemoteCommand(cmd))
+	if len(env) > 0 {
+		// Send secret values through the encrypted SSH channel on stdin. They are
+		// never written to the remote filesystem and, unlike `env KEY=value ...`,
+		// never appear in the remote process command line.
+		var script strings.Builder
+		script.WriteString("set -eu\ncd ")
+		script.WriteString(shellQuote(wd))
+		script.WriteByte('\n')
+		for _, entry := range env {
+			name, value, found := strings.Cut(entry, "=")
+			if !found || !environmentNamePattern.MatchString(name) || strings.IndexByte(value, 0) >= 0 {
+				return fmt.Errorf("invalid inline secret environment entry")
+			}
+			script.WriteString("export ")
+			script.WriteString(name)
+			script.WriteByte('=')
+			script.WriteString(shellQuote(value))
+			script.WriteByte('\n')
+		}
+		script.WriteString("exec ")
+		script.WriteString(quoteRemoteCommand(cmd))
+		script.WriteByte('\n')
+		session.Stdin = strings.NewReader(script.String())
+		fullCmd = "sh -s"
+	}
 
 	session.Stdout = out
 	session.Stderr = combineWriters(out, errWriter)
@@ -96,6 +125,27 @@ func (r *RemoteRunner) Run(
 	defer close(done)
 
 	return session.Run(fullCmd)
+}
+
+var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func mergeEnvironment(base, overrides []string) []string {
+	keys := make(map[string]struct{}, len(overrides))
+	for _, entry := range overrides {
+		name, _, found := strings.Cut(entry, "=")
+		if found {
+			keys[name] = struct{}{}
+		}
+	}
+	merged := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		name, _, found := strings.Cut(entry, "=")
+		if _, replaced := keys[name]; found && replaced {
+			continue
+		}
+		merged = append(merged, entry)
+	}
+	return append(merged, overrides...)
 }
 
 func quoteRemoteCommand(cmd []string) string {

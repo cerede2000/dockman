@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -81,4 +82,79 @@ func TestSOPSMaterializeRejectsNestedOrNonStringDocument(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", SOPSSourceFile), []byte("encrypted"), 0o644))
 	_, err := provider.Materialize(context.Background(), "local", "compose/apps/demo")
 	require.ErrorContains(t, err, "flat string map")
+}
+
+func TestSOPSInlineModeKeepsOnlyCiphertextAndInjectsComposeEnvironment(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("inline-only-value"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte("services: {}\n"), 0o600))
+
+	result, err := provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, []string{"API_TOKEN"}, result.Names)
+	stackRoot := filepath.Join(roots["local"], "apps", "demo")
+	_, err = os.Stat(filepath.Join(stackRoot, RuntimeDirectory))
+	require.ErrorIs(t, err, os.ErrNotExist, "plaintext runtime values and history must be removed")
+	ciphertext, err := os.ReadFile(filepath.Join(stackRoot, SOPSSourceFile))
+	require.NoError(t, err)
+	require.NotContains(t, string(ciphertext), "inline-only-value")
+	marker, err := os.Stat(filepath.Join(stackRoot, SOPSInlineMarkerFile))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), marker.Mode().Perm())
+	script, err := os.Stat(filepath.Join(stackRoot, SOPSRecoveryScriptFile))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), script.Mode().Perm())
+	require.NoError(t, exec.Command("sh", "-n", filepath.Join(stackRoot, SOPSRecoveryScriptFile)).Run())
+
+	environment, err := provider.ComposeEnvironment(context.Background(), "local", filesystem.NewLocal(roots["local"]), "apps/demo/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, []string{"API_TOKEN=inline-only-value"}, environment)
+}
+
+func TestSOPSInlineEditsRewriteCiphertextWithoutMaterializing(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("first"))
+	require.NoError(t, err)
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.NoError(t, err)
+
+	_, err = provider.WriteInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN", []byte("second"))
+	require.NoError(t, err)
+	value, err := provider.ReadInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN")
+	require.NoError(t, err)
+	require.Equal(t, "second", string(value))
+	require.NoError(t, provider.DeleteInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN"))
+	_, err = provider.ReadInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN")
+	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(filepath.Join(roots["local"], "apps", "demo", RuntimeDirectory))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestSOPSInlineRejectsNonEnvironmentSecretNames(t *testing.T) {
+	provider, runtime, _, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "cloudflare-token", []byte("value"))
+	require.NoError(t, err)
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.ErrorContains(t, err, "cannot be used inline")
+}
+
+func TestSOPSInlineRefusesToRemoveFilesStillReferencedByCompose(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("value"))
+	require.NoError(t, err)
+	compose := `services:
+  app:
+    image: example/app
+    secrets: [api_token]
+secrets:
+  api_token:
+    file: ./.secrets/API_TOKEN
+`
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.ErrorContains(t, err, "still uses")
+	value, readErr := runtime.Read("local", "compose/apps/demo", "API_TOKEN")
+	require.NoError(t, readErr)
+	require.Equal(t, "value", string(value), "failed conversion must preserve plaintext runtime source")
 }
