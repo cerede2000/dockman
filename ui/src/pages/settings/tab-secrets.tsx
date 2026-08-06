@@ -4,7 +4,7 @@ import {
     IconButton, InputAdornment, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
     TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
-import {Add, DeleteOutlined, Download, History, KeyOutlined, LockOutlined, Refresh, Restore, Upload, Visibility, VisibilityOff} from "@mui/icons-material";
+import {Add, ContentCopy, DeleteOutlined, Download, History, KeyOutlined, LockOutlined, Refresh, Restore, SettingsSuggest, Upload, Visibility, VisibilityOff} from "@mui/icons-material";
 import {getBaseUrl} from "../../lib/api.ts";
 import {useHostStore} from "../compose/state/files.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
@@ -24,13 +24,14 @@ interface SecretForm {
 interface SecretVersion { id: string; size: number; modifiedAt: string }
 interface ArchivedSecret { name: string; versions: number }
 interface ComposeSecretReference {
-    name: string; file?: string; environment?: string; runtimeName?: string; services: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
+    name: string; file?: string; environment?: string; runtimeName?: string; services: string[]; readOnlyServices?: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
 }
 interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
 interface StackOption { path: string; alias: string; manifests: string[] }
 interface SOPSStatus { available: boolean; sourcePath: string; sourceExists: boolean; mode: "materialized" | "inline"; recoveryScript?: string; recipient?: string; issue?: string }
 
 const initialForm: SecretForm = {name: "", value: ""};
+const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 async function responseError(response: Response): Promise<string> {
     const message = (await response.text()).trim();
@@ -58,9 +59,71 @@ export default function TabSecrets() {
     const [stackOptions, setStackOptions] = useState<StackOption[]>([]);
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [sopsStatus, setSopsStatus] = useState<SOPSStatus | null>(null);
-    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | "inline-enable" | "inline-disable" | null>(null);
+    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | "inline-enable" | null>(null);
+    const [hostWizardOpen, setHostWizardOpen] = useState(false);
+    const [hostContainer, setHostContainer] = useState("dockman");
+    const [hostStackRoot, setHostStackRoot] = useState("/server/stacks");
+    const [containerAgeKey, setContainerAgeKey] = useState("/config/secrets/dockman-sops-age-key.txt");
+    const [hostAgeKey, setHostAgeKey] = useState("/etc/dockman-secrets/age-key.txt");
+    const [hostSshTarget, setHostSshTarget] = useState("");
+    const [hostFileMode, setHostFileMode] = useState("0444");
 
     const base = useMemo(() => `${getBaseUrl("host", host)}/secrets`, [host]);
+    const hostInstallCommand = useMemo(() => {
+        const container = hostContainer.trim() || "dockman";
+        const agePath = hostAgeKey.trim();
+        const ageDirectory = agePath.includes("/") ? agePath.slice(0, agePath.lastIndexOf("/")) || "/" : ".";
+        const prepare = `set -eu
+umask 077
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+docker cp ${shellQuote(`${container}:/usr/local/libexec/dockman-secrets-host`)} "$workdir/dockman-secrets-host"
+docker cp ${shellQuote(`${container}:/usr/local/bin/sops`)} "$workdir/sops"
+docker cp ${shellQuote(`${container}:${containerAgeKey.trim()}`)} "$workdir/age-key.txt"
+chmod 0600 "$workdir/age-key.txt"
+chmod 0755 "$workdir/dockman-secrets-host" "$workdir/sops"`;
+        if (host !== "local") {
+            const target = hostSshTarget.trim() || "USER@REMOTE_HOST";
+            return `${prepare}
+remote_tmp="$(ssh ${shellQuote(target)} mktemp -d)"
+scp "$workdir/dockman-secrets-host" "$workdir/sops" "$workdir/age-key.txt" ${shellQuote(target)}:"$remote_tmp/"
+ssh -t ${shellQuote(target)} sudo install -d -m 0700 ${shellQuote(ageDirectory)}
+ssh -t ${shellQuote(target)} sudo install -m 0600 "$remote_tmp/age-key.txt" ${shellQuote(agePath)}
+status=0
+ssh -t ${shellQuote(target)} sudo "$remote_tmp/dockman-secrets-host" install --stack-root ${shellQuote(hostStackRoot.trim())} --age-key ${shellQuote(agePath)} --sops-source "$remote_tmp/sops" --file-mode ${shellQuote(hostFileMode)} --activate || status=$?
+ssh ${shellQuote(target)} rm -rf "$remote_tmp"
+exit "$status"`;
+        }
+        return `${prepare}
+sudo install -d -m 0700 ${shellQuote(ageDirectory)}
+sudo install -m 0600 "$workdir/age-key.txt" ${shellQuote(agePath)}
+sudo "$workdir/dockman-secrets-host" install \
+  --stack-root ${shellQuote(hostStackRoot.trim())} \
+  --age-key ${shellQuote(agePath)} \
+  --sops-source "$workdir/sops" \
+  --file-mode ${shellQuote(hostFileMode)} \
+  --activate
+sudo systemctl --no-pager status dockman-secrets-host.service`;
+    }, [containerAgeKey, host, hostAgeKey, hostContainer, hostFileMode, hostSshTarget, hostStackRoot]);
+
+    const copyHostCommand = async () => {
+        try {
+            if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(hostInstallCommand);
+            else {
+                const area = document.createElement("textarea");
+                area.value = hostInstallCommand;
+                area.style.position = "fixed";
+                area.style.opacity = "0";
+                document.body.appendChild(area);
+                area.select();
+                document.execCommand("copy");
+                area.remove();
+            }
+            showSuccess("Host installation command copied.");
+        } catch (error) {
+            showError(`Unable to copy the command: ${(error as Error).message}`);
+        }
+    };
 
     const loadStackOptions = useCallback(async () => {
         setCatalogLoading(true);
@@ -236,7 +299,7 @@ export default function TabSecrets() {
         const action = sopsAction;
         setSaving(true);
         try {
-            const endpoint = action === "inline-enable" ? "sops/inline/enable" : action === "inline-disable" ? "sops/inline/disable" : `sops/${action}`;
+            const endpoint = action === "inline-enable" ? "sops/inline/enable" : `sops/${action}`;
             const response = await fetch(`${base}/${endpoint}`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -249,8 +312,7 @@ export default function TabSecrets() {
             await load(loadedPath);
             showSuccess(action === "export" ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
                 : action === "materialize" ? `${result.names.length} encrypted secret(s) materialized securely.`
-                    : action === "inline-enable" ? `${result.names.length} secret(s) now stay encrypted at rest and are injected only for Compose actions.`
-                        : `${result.names.length} secret(s) materialized; inline mode disabled.`);
+                    : `${result.names.length} secret(s) now stay encrypted at rest. Install or refresh the host boot runtime before recreating file-secret consumers.`);
         } catch (error) {
             showError(`Unable to ${action} SOPS secrets: ${(error as Error).message}`);
         } finally {
@@ -267,8 +329,8 @@ export default function TabSecrets() {
                 </Typography>
             </Box>
             <Stack direction="row" spacing={1}>
-                <Chip icon={sopsStatus?.mode === "inline" ? <LockOutlined/> : <KeyOutlined/>} color="success" variant="outlined"
-                      label={sopsStatus?.mode === "inline" ? "Encrypted inline · active" : "Plain files · ready"}/>
+                <Chip icon={sopsStatus?.mode === "inline" ? <LockOutlined/> : <KeyOutlined/>} color={sopsStatus?.mode === "inline" ? "success" : "warning"} variant="outlined"
+                      label={sopsStatus?.mode === "inline" ? "Encrypted runtime · active" : "Migration mode · plaintext files"}/>
                 <Chip icon={<LockOutlined/>}
                       color={sopsStatus?.available ? "success" : "default"}
                       variant="outlined"
@@ -276,7 +338,7 @@ export default function TabSecrets() {
             </Stack>
         </Stack>
         <Alert severity="info" sx={{mb: 2}}>
-            {sopsStatus?.mode === "inline" ? <><code>secrets.sops.yaml</code> is the active encrypted store. Values are decrypted only for an explicit reveal or Compose action; no <code>.secrets/</code> plaintext is kept.</> : <>Runtime values are written to <code>.secrets/</code>. An optional standard <code>secrets.sops.yaml</code> source can be committed safely and materialized on demand.</>}
+            {sopsStatus?.mode === "inline" ? <><code>secrets.sops.yaml</code> is the only persistent store. File delivery uses host tmpfs and inline delivery decrypts only for an explicit Compose action.</> : <>Migration mode still writes runtime values to persistent <code>.secrets/</code>. Encrypt and enable the autonomous runtime to reach the ciphertext-only target.</>}
         </Alert>
         <Paper variant="outlined" sx={{p: 2, mb: 2}}>
             <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
@@ -303,6 +365,7 @@ export default function TabSecrets() {
                     Load
                 </Button>
                 <Button variant="outlined" startIcon={<Add/>} disabled={!loadedPath || loading} onClick={openCreate}>New secret</Button>
+                <Button variant="outlined" startIcon={<SettingsSuggest/>} onClick={() => setHostWizardOpen(true)}>Host boot wizard</Button>
             </Stack>
         </Paper>
         <TableContainer component={Paper} variant="outlined">
@@ -341,18 +404,17 @@ export default function TabSecrets() {
                             onClick={() => {setSopsAction("export"); setConfirmation("");}}>Encrypt runtime</Button>}
                     {sopsStatus?.mode !== "inline" && <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
                             onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>}
-                    {sopsStatus?.mode !== "inline" ? <Button color="success" variant="contained" startIcon={<LockOutlined/>}
-                            disabled={saving || !sopsStatus?.available || items.length === 0 || !analysis?.manifests.length || analysis.secrets.some(reference => reference.managed || Boolean(reference.file && reference.services.length > 0) || Boolean(reference.environment && (reference.issue || reference.services.length > 0 && !items.some(item => item.name === reference.environment))))}
-                            onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>Enable inline</Button>
-                        : <Button color="warning" variant="outlined" startIcon={<Download/>} disabled={saving}
-                            onClick={() => {setSopsAction("inline-disable"); setConfirmation("");}}>Materialize and disable</Button>}
+                    {sopsStatus?.mode !== "inline" && <Button color="success" variant="contained" startIcon={<LockOutlined/>}
+                            disabled={saving || !sopsStatus?.available || items.length === 0 || !analysis?.manifests.length || analysis.secrets.some(reference => Boolean(reference.file && reference.services.length > 0 && !reference.managed) || Boolean(reference.environment && (reference.issue || reference.services.length > 0 && !items.some(item => item.name === reference.environment))))}
+                            onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>Enable encrypted runtime</Button>}
                 </Stack>
+                {host !== "local" && <TextField fullWidth size="small" label="SSH target used from the Dockman host" placeholder="user@remote-host" value={hostSshTarget} onChange={event => setHostSshTarget(event.target.value)} helperText="The command exports the signed-in Dockman image tools, transfers them over your SSH client, then installs the runtime on the selected remote host."/>}
             </Stack>
             <Alert severity="info" sx={{mt: 1.5}}>{sopsStatus?.mode === "inline"
                 ? "Every create, edit and delete rewrites and decrypt-verifies the encrypted source atomically. Compose actions receive values in their process environment only."
                 : "Materialization replaces matching runtime values atomically one by one. Enabling inline verifies the ciphertext before removing .secrets and its plaintext history."}</Alert>
-            {sopsStatus?.mode !== "inline" && analysis?.secrets.some(reference => reference.managed || Boolean(reference.file && reference.services.length > 0)) && <Alert severity="warning" sx={{mt: 1}}>
-                Encrypted-only inline mode cannot retain a used plaintext <code>file:</code> source. For a file inside the container, replace <code>file: ./.secrets/token</code> with <code>environment: TOKEN</code>; for direct injection, use <code>{"${TOKEN}"}</code>.
+            {sopsStatus?.mode !== "inline" && analysis?.secrets.some(reference => reference.managed) && <Alert severity="warning" sx={{mt: 1}}>
+                File secrets remain compatible through <code>file: ./.secrets/token</code>, but the host boot runtime must be installed first. It recreates <code>.secrets</code> as tmpfs before Docker starts; no plaintext persists on disk.
             </Alert>}
         </Paper>}
 
@@ -384,7 +446,7 @@ export default function TabSecrets() {
             <DialogTitle>{items.some(item => item.name === form.name) ? "Edit runtime secret" : "Create runtime secret"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
                 <TextField label="Name" value={form.name} disabled={saving || items.some(item => item.name === form.name)}
-                           helperText={sopsStatus?.mode === "inline" ? "Environment variable name: letters, numbers and underscores; it cannot start with a number." : "Letters, numbers, dots, underscores and hyphens; maximum 128 characters."}
+                           helperText={sopsStatus?.mode === "inline" ? "File names may use dots or hyphens. Inline environment consumers require a name such as API_TOKEN." : "Letters, numbers, dots, underscores and hyphens; maximum 128 characters."}
                            onChange={event => setForm(current => ({...current, name: event.target.value}))}/>
                 <TextField label="Value" multiline minRows={5} value={form.value}
                            onChange={event => setForm(current => ({...current, value: event.target.value}))}
@@ -418,18 +480,37 @@ export default function TabSecrets() {
         </Dialog>
 
         <Dialog open={sopsAction !== null} onClose={saving ? undefined : () => setSopsAction(null)} fullWidth maxWidth="xs">
-            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : sopsAction === "materialize" ? "Materialize encrypted secrets?" : sopsAction === "inline-enable" ? "Enable encrypted inline mode?" : "Materialize and disable inline mode?"}</DialogTitle>
+            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : sopsAction === "materialize" ? "Materialize encrypted secrets?" : "Enable encrypted runtime?"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
                 <Alert severity={sopsAction === "export" || sopsAction === "inline-enable" ? "warning" : "info"}>
                     {sopsAction === "export"
                         ? "This replaces secrets.sops.yaml with every current runtime secret after encrypting and verifying it with the configured age identity."
                         : sopsAction === "materialize" ? "This decrypts secrets.sops.yaml in memory and replaces matching files under .secrets. Values absent from the source are preserved."
-                            : sopsAction === "inline-enable" ? `Dockman first encrypts and verifies every runtime secret, validates direct environment and environment-backed file secrets, creates compose-sops.sh for independent recovery, then removes .secrets and its plaintext history. Compose manifest: ${analysis?.manifests[0] || "compose.yml"}.`
-                                : "This materializes every encrypted value under .secrets, then removes the inline marker and recovery script. The encrypted source is preserved."}
+                            : `Dockman encrypts and verifies every value, supports both file: ./.secrets/name and inline environment references, creates compose-sops.sh for independent recovery, then removes persistent .secrets and its plaintext history. The host boot runtime must be installed before file-secret services are recreated. Compose manifest: ${analysis?.manifests[0] || "compose.yml"}.`}
                 </Alert>
                 <TypedConfirmationField value={confirmation} onChange={setConfirmation}/>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setSopsAction(null)} disabled={saving}>Cancel</Button><Button variant="contained" onClick={() => void runSOPS()} disabled={saving || confirmation !== TYPED_CONFIRMATION}>{saving ? <CircularProgress size={18}/> : "Confirm"}</Button></DialogActions>
+        </Dialog>
+
+        <Dialog open={hostWizardOpen} onClose={() => setHostWizardOpen(false)} fullWidth maxWidth="md">
+            <DialogTitle>Autonomous encrypted secret runtime</DialogTitle>
+            <DialogContent><Stack spacing={2} sx={{mt: 1}}>
+                <Alert severity="info">Run this once on each Docker host. The installed one-shot systemd service decrypts into per-stack tmpfs mounts before Docker starts. It has no daemon, polling, database dependency or idle overhead.</Alert>
+                <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
+                    <TextField fullWidth size="small" label="Dockman container name" value={hostContainer} onChange={event => setHostContainer(event.target.value)}/>
+                    <TextField fullWidth size="small" label="Host stack root" value={hostStackRoot} onChange={event => setHostStackRoot(event.target.value)}/>
+                </Stack>
+                <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
+                    <TextField fullWidth size="small" label="Age key inside Dockman" value={containerAgeKey} onChange={event => setContainerAgeKey(event.target.value)}/>
+                    <TextField fullWidth size="small" label="Protected age key on host" value={hostAgeKey} onChange={event => setHostAgeKey(event.target.value)}/>
+                    <TextField sx={{minWidth: 150}} size="small" label="File mode" value={hostFileMode} onChange={event => setHostFileMode(event.target.value)} helperText="0444 for non-root images"/>
+                </Stack>
+                <TextField multiline minRows={12} maxRows={18} value={hostInstallCommand} slotProps={{input: {readOnly: true}}}/>
+                <Alert severity="warning">The command copies the existing identity with mode 0600; it never prints it. Back this key up separately. Losing it makes every encrypted source unreadable. Configure the Dockman stack bind as <code>{`${hostStackRoot}:${hostStackRoot}:rslave`}</code>, then recreate Dockman once. The one-way rslave propagation makes new host tmpfs mounts visible without granting mount propagation back to the host.</Alert>
+                <Typography variant="body2" color="text.secondary">Recovery without Dockman: run <code>sudo systemctl restart dockman-secrets-host</code>, then execute <code>./compose-sops.sh up</code> in the stack directory. For a remote host, run the generated command on that host with its own identity.</Typography>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={() => setHostWizardOpen(false)}>Close</Button><Button variant="contained" startIcon={<ContentCopy/>} onClick={() => void copyHostCommand()}>Copy command</Button></DialogActions>
         </Dialog>
     </Box>;
 }

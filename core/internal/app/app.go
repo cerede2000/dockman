@@ -162,13 +162,34 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		return names, nil
 	})
 	secretSrv := secrets.NewService(secretRuntimeStore)
-	secretSrv.ConfigureSOPS(secrets.NewSOPSProvider(
+	sopsProvider := secrets.NewSOPSProvider(
 		secretRuntimeStore,
 		secretResolver,
 		conf.SOPSBinary,
 		conf.SOPSAgeKeyFile,
 		conf.SOPSAgeRecipient,
-	))
+	)
+	sopsProvider.ConfigureRuntimeMountVerifier(func(ctx context.Context, hostname, absolutePath string) (bool, error) {
+		sshClient, getErr := hostManager.GetSSH(hostname)
+		if getErr != nil {
+			return false, getErr
+		}
+		if sshClient == nil {
+			return secrets.IsManagedHostRuntimeMount(absolutePath)
+		}
+		session, sessionErr := sshClient.NewSession()
+		if sessionErr != nil {
+			return false, fmt.Errorf("verify remote volatile secret runtime: %w", sessionErr)
+		}
+		defer session.Close()
+		quotedPath := "'" + strings.ReplaceAll(absolutePath, "'", "'\"'\"'") + "'"
+		command := "test \"$(findmnt -rn -o FSTYPE,SOURCE --target " + quotedPath + " 2>/dev/null)\" = \"tmpfs dockman-secrets\""
+		if runErr := session.Run(command); runErr != nil {
+			return false, nil
+		}
+		return true, nil
+	})
+	secretSrv.ConfigureSOPS(sopsProvider)
 	hostManager.ConfigureComposeEnvironment(secretSrv.ComposeEnvironment)
 
 	//err := git.NewMigrator(composeRoot)

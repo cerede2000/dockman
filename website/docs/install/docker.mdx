@@ -38,7 +38,7 @@ The stack path must be the same absolute path in all three places:
 2. host mount source `/server/stacks`;
 3. container mount target `/server/stacks`.
 
-This is required because Compose bind paths must remain meaningful to the Docker host. The mount must be writable for the editor, Git imports and provisioning.
+This is required because Compose bind paths must remain meaningful to the Docker host. The mount must be writable for the editor, Git imports and provisioning. Use `rslave` propagation with the autonomous Secrets runtime: host-created tmpfs mounts enter Dockman, while container-created mounts cannot propagate back to the host.
 
 ## Hardened socket-proxy deployment
 
@@ -70,7 +70,7 @@ services:
       - dockman_git_key
       - dockman_notification_key
     volumes:
-      - /server/stacks:/server/stacks
+      - /server/stacks:/server/stacks:rslave
       - /server/appdata/dockman/config:/config
       - /server/appdata/dockman/git:/git-data
     read_only: true

@@ -1,5 +1,11 @@
 # Secrets — cahier de test du lot 5 SOPS inline
 
+> **Archive de lot.** Ce comportement intermédiaire est remplacé par le runtime
+> autonome chiffré prenant en charge simultanément les secrets fichier tmpfs et
+> l'injection inline. Pour valider l'implémentation livrée, utiliser
+> `docs/secrets-autonomous-runtime-test-plan-fr.md`. Les étapes ci-dessous sont
+> conservées uniquement comme historique de non-régression du lot 5.
+
 ## 1. Préparation locale sans Git
 
 1. Utiliser une stack locale sans folder link Git.
@@ -83,6 +89,12 @@ la suppression de `.secrets`, avec le nom manquant dans le message.
 Essayer ensuite de supprimer `FILE_TOKEN` tant que le service le référence.
 Dockman doit refuser la suppression et préserver la valeur chiffrée. Retirer la
 référence du Compose permet ensuite sa suppression explicite.
+
+Ajouter enfin `read_only: true` au service consommant `file_token`. Dockman
+doit signaler avant activation que Docker Compose ne supporte que `file:` dans
+ce cas. Retirer le secret fichier et utiliser directement
+`DIRECT_TOKEN: ${FILE_TOKEN}` doit permettre l'activation tout en conservant le
+rootfs read-only.
 
 ## 5. Absence d'overhead au repos
 

@@ -204,7 +204,7 @@ func (h *HTTPHandler) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": true, "host": host, "runtimeDirectory": RuntimeDirectory,
-		"modes": []string{"plain_file", "sops_age_materialized", "sops_age_inline"}, "maxSecretBytes": MaxSecretBytes,
+		"modes": []string{"migration_plain_file", "sops_age_tmpfs_file", "sops_age_inline_environment"}, "maxSecretBytes": MaxSecretBytes,
 	})
 }
 

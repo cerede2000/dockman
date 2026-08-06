@@ -51,15 +51,16 @@ type Store interface {
 }
 
 type ComposeSecret struct {
-	Name        string   `json:"name"`
-	File        string   `json:"file,omitempty"`
-	Environment string   `json:"environment,omitempty"`
-	RuntimeName string   `json:"runtimeName,omitempty"`
-	Services    []string `json:"services"`
-	External    bool     `json:"external"`
-	Managed     bool     `json:"managed"`
-	Exists      bool     `json:"exists"`
-	Issue       string   `json:"issue,omitempty"`
+	Name             string   `json:"name"`
+	File             string   `json:"file,omitempty"`
+	Environment      string   `json:"environment,omitempty"`
+	RuntimeName      string   `json:"runtimeName,omitempty"`
+	Services         []string `json:"services"`
+	ReadOnlyServices []string `json:"readOnlyServices,omitempty"`
+	External         bool     `json:"external"`
+	Managed          bool     `json:"managed"`
+	Exists           bool     `json:"exists"`
+	Issue            string   `json:"issue,omitempty"`
 }
 
 type ComposeAnalysis struct {

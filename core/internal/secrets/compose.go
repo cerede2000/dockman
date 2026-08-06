@@ -17,7 +17,8 @@ var composeManifestNames = []string{"compose.yml", "compose.yaml", "docker-compo
 
 type composeSecretState struct {
 	ComposeSecret
-	services map[string]struct{}
+	services         map[string]struct{}
+	readOnlyServices map[string]struct{}
 }
 
 // AnalyzeCompose inspects only conventional manifests at the selected stack
@@ -61,6 +62,11 @@ func (s *PlainFileStore) AnalyzeCompose(host, stackPath string) (ComposeAnalysis
 			state.Services = append(state.Services, service)
 		}
 		sort.Strings(state.Services)
+		state.ReadOnlyServices = make([]string, 0, len(state.readOnlyServices))
+		for service := range state.readOnlyServices {
+			state.ReadOnlyServices = append(state.ReadOnlyServices, service)
+		}
+		sort.Strings(state.ReadOnlyServices)
 		if state.File != "" {
 			clean := path.Clean(strings.TrimSpace(state.File))
 			clean = strings.TrimPrefix(clean, "./")
@@ -91,6 +97,8 @@ func (s *PlainFileStore) AnalyzeCompose(host, stackPath string) (ComposeAnalysis
 			state.RuntimeName = strings.TrimSpace(state.Environment)
 			if !inlineEnvironmentNamePattern.MatchString(state.RuntimeName) {
 				state.Issue = "environment source is not a valid environment variable name"
+			} else if len(state.ReadOnlyServices) > 0 {
+				state.Issue = fmt.Sprintf("Docker Compose cannot mount an environment-backed secret into read-only service(s): %s; use direct ${%s}, disable read_only, or keep a materialized file source", strings.Join(state.ReadOnlyServices, ", "), state.RuntimeName)
 			}
 		} else if !state.External {
 			state.Issue = "no file source is declared"
@@ -134,6 +142,10 @@ func collectComposeSecrets(document *yaml.Node, states map[string]*composeSecret
 	}
 	for i := 0; i+1 < len(services.Content); i += 2 {
 		serviceName, definition := services.Content[i].Value, services.Content[i+1]
+		readOnly := false
+		if value := mappingValue(definition, "read_only"); value != nil && value.Kind == yaml.ScalarNode {
+			readOnly = strings.EqualFold(strings.TrimSpace(value.Value), "true")
+		}
 		used := mappingValue(definition, "secrets")
 		if used == nil || used.Kind != yaml.SequenceNode {
 			continue
@@ -148,7 +160,11 @@ func collectComposeSecrets(document *yaml.Node, states map[string]*composeSecret
 				}
 			}
 			if name != "" {
-				ensureComposeSecret(states, name).services[serviceName] = struct{}{}
+				state := ensureComposeSecret(states, name)
+				state.services[serviceName] = struct{}{}
+				if readOnly {
+					state.readOnlyServices[serviceName] = struct{}{}
+				}
 			}
 		}
 	}
@@ -158,7 +174,11 @@ func ensureComposeSecret(states map[string]*composeSecretState, name string) *co
 	if state, ok := states[name]; ok {
 		return state
 	}
-	state := &composeSecretState{ComposeSecret: ComposeSecret{Name: name, Services: []string{}}, services: map[string]struct{}{}}
+	state := &composeSecretState{
+		ComposeSecret:     ComposeSecret{Name: name, Services: []string{}, ReadOnlyServices: []string{}},
+		services:          map[string]struct{}{},
+		readOnlyServices: map[string]struct{}{},
+	}
 	states[name] = state
 	return state
 }

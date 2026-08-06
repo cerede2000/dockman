@@ -131,15 +131,18 @@ func TestSOPSInlineEditsRewriteCiphertextWithoutMaterializing(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestSOPSInlineRejectsNonEnvironmentSecretNames(t *testing.T) {
-	provider, runtime, _, _ := testSOPSProvider(t)
+func TestEncryptedRuntimeAllowsFileOnlySecretNamesWithoutEnvironmentLeak(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
 	_, err := runtime.Write("local", "compose/apps/demo", "cloudflare-token", []byte("value"))
 	require.NoError(t, err)
 	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
-	require.ErrorContains(t, err, "cannot be used inline")
+	require.NoError(t, err)
+	environment, err := provider.ComposeEnvironment(context.Background(), "local", filesystem.NewLocal(roots["local"]), "apps/demo/compose.yml")
+	require.NoError(t, err)
+	require.Empty(t, environment, "file-only names must not leak into the Compose environment")
 }
 
-func TestSOPSInlineRefusesToRemoveFilesStillReferencedByCompose(t *testing.T) {
+func TestSOPSEncryptedRuntimeSupportsFileSecretsWithoutPersistentPlaintext(t *testing.T) {
 	provider, runtime, roots, _ := testSOPSProvider(t)
 	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("value"))
 	require.NoError(t, err)
@@ -153,10 +156,68 @@ secrets:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
 	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
-	require.ErrorContains(t, err, "still uses")
-	value, readErr := runtime.Read("local", "compose/apps/demo", "API_TOKEN")
+	require.NoError(t, err)
+	_, readErr := runtime.Read("local", "compose/apps/demo", "API_TOKEN")
+	require.Error(t, readErr, "persistent plaintext runtime source must be removed")
+	script, readErr := os.ReadFile(filepath.Join(roots["local"], "apps", "demo", SOPSRecoveryScriptFile))
 	require.NoError(t, readErr)
-	require.Equal(t, "value", string(value), "failed conversion must preserve plaintext runtime source")
+	require.Contains(t, string(script), "dockman-secrets-host.service")
+}
+
+func TestComposeEnvironmentRequiresHostRuntimeOnlyForRealManagedFileReference(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("value"))
+	require.NoError(t, err)
+	compose := `# documentation example: file: ./.secrets/IGNORED
+services:
+  app:
+    image: example/app
+    environment:
+      API_TOKEN: ${API_TOKEN}
+`
+	stackRoot := filepath.Join(roots["local"], "apps", "demo")
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yml"), []byte(compose), 0o600))
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.NoError(t, err)
+	_, err = provider.ComposeEnvironment(context.Background(), "local", filesystem.NewLocal(roots["local"]), "apps/demo/compose.yml")
+	require.NoError(t, err, "comments must not produce a false file-runtime requirement")
+
+	compose = `services:
+  app:
+    image: example/app
+    secrets: [api_token]
+secrets:
+  api_token:
+    file: ./.secrets/API_TOKEN
+`
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yml"), []byte(compose), 0o600))
+	_, err = provider.ComposeEnvironment(context.Background(), "local", filesystem.NewLocal(roots["local"]), "apps/demo/compose.yml")
+	require.ErrorContains(t, err, "dockman-secrets-host.service")
+}
+
+func TestEncryptedEditRefreshesExistingVolatileRuntime(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("first"))
+	require.NoError(t, err)
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.NoError(t, err)
+	runtimeDirectory := filepath.Join(roots["local"], "apps", "demo", RuntimeDirectory)
+	require.NoError(t, os.Mkdir(runtimeDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(runtimeDirectory, HostRuntimeMarkerFile), []byte("version=1\n"), 0o400))
+	provider.ConfigureRuntimeMountVerifier(func(context.Context, string, string) (bool, error) { return true, nil })
+
+	_, err = provider.WriteInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN", []byte("second"))
+	require.NoError(t, err)
+	value, err := os.ReadFile(filepath.Join(runtimeDirectory, "API_TOKEN"))
+	require.NoError(t, err)
+	require.Equal(t, "second", string(value))
+	info, err := os.Stat(filepath.Join(runtimeDirectory, "API_TOKEN"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o444), info.Mode().Perm())
+
+	require.NoError(t, provider.DeleteInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN"))
+	_, err = os.Stat(filepath.Join(runtimeDirectory, "API_TOKEN"))
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestSOPSInlineSupportsEnvironmentBackedComposeFileSecrets(t *testing.T) {
@@ -208,6 +269,28 @@ secrets:
 	require.Equal(t, "preserved", string(value), "failed conversion must preserve plaintext runtime source")
 }
 
+func TestSOPSInlineRefusesEnvironmentBackedSecretForReadOnlyService(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("preserved"))
+	require.NoError(t, err)
+	compose := `services:
+  frontend:
+    image: example/frontend
+    read_only: true
+    secrets: [api_token]
+secrets:
+  api_token:
+    environment: API_TOKEN
+`
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
+
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.ErrorContains(t, err, "Docker Compose supports only file sources")
+	value, readErr := runtime.Read("local", "compose/apps/demo", "API_TOKEN")
+	require.NoError(t, readErr)
+	require.Equal(t, "preserved", string(value), "failed conversion must preserve plaintext runtime source")
+}
+
 func TestSOPSInlineProtectsEnvironmentBackedComposeSecretFromDeletion(t *testing.T) {
 	provider, runtime, roots, _ := testSOPSProvider(t)
 	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("preserved"))
@@ -227,6 +310,29 @@ secrets:
 	err = provider.DeleteInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN")
 	require.ErrorContains(t, err, `supplies Compose file secret "api_token"`)
 	value, readErr := provider.ReadInline(context.Background(), "local", "compose/apps/demo", "API_TOKEN")
+	require.NoError(t, readErr)
+	require.Equal(t, "preserved", string(value))
+}
+
+func TestEncryptedRuntimeProtectsManagedFileSecretFromDeletion(t *testing.T) {
+	provider, runtime, roots, _ := testSOPSProvider(t)
+	_, err := runtime.Write("local", "compose/apps/demo", "cloudflare-token", []byte("preserved"))
+	require.NoError(t, err)
+	compose := `services:
+  cloudflared:
+    image: cloudflare/cloudflared
+    read_only: true
+    secrets: [tunnel_token]
+secrets:
+  tunnel_token:
+    file: ./.secrets/cloudflare-token
+`
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
+	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.NoError(t, err)
+	err = provider.DeleteInline(context.Background(), "local", "compose/apps/demo", "cloudflare-token")
+	require.ErrorContains(t, err, `supplies Compose file secret "tunnel_token"`)
+	value, readErr := provider.ReadInline(context.Background(), "local", "compose/apps/demo", "cloudflare-token")
 	require.NoError(t, readErr)
 	require.Equal(t, "preserved", string(value))
 }

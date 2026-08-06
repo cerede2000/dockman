@@ -16,7 +16,7 @@ export default function DockerComposeGenerator() {
       - DOCKMAN_COMPOSE_ROOT=${stacksPath}
     volumes:
       #  2️⃣              3️⃣                
-      - ${stacksPath}:${stacksPath}
+      - ${stacksPath}:${stacksPath}:rslave
       - ${configPath}:/config
       - /var/run/docker.sock:/var/run/docker.sock
     ports:

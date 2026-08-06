@@ -111,7 +111,6 @@ func (r *RemoteRunner) Run(
 
 	session.Stdout = out
 	session.Stderr = combineWriters(out, errWriter)
-	session.Stdin = nil
 
 	done := make(chan struct{})
 	go func() {

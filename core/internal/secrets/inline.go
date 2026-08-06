@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -57,7 +58,7 @@ func inlineMarkerExists(stackFS filesystem.FileSystem, root string) (bool, error
 
 // ComposeEnvironment decrypts only when an action targets an explicitly opted
 // in stack. There is no polling, plaintext file or cross-action cache.
-func (p *SOPSProvider) ComposeEnvironment(parent context.Context, _ string, stackFS filesystem.FileSystem, composeRelpath string) ([]string, error) {
+func (p *SOPSProvider) ComposeEnvironment(parent context.Context, host string, stackFS filesystem.FileSystem, composeRelpath string) ([]string, error) {
 	root := filepath.Dir(strings.TrimPrefix(composeRelpath, "/"))
 	enabled, err := inlineMarkerExists(stackFS, root)
 	if err != nil || !enabled {
@@ -70,11 +71,24 @@ func (p *SOPSProvider) ComposeEnvironment(parent context.Context, _ string, stac
 	if err != nil {
 		return nil, err
 	}
+	volatile, err := p.volatileRuntimeAvailable(parent, host, stackFS, root)
+	if err != nil {
+		return nil, err
+	}
+	if volatile {
+		if err = syncVolatileRuntime(stackFS, root, values); err != nil {
+			return nil, err
+		}
+	} else if composeUsesManagedFileSecrets(stackFS, composeRelpath) {
+		return nil, errors.New("volatile file secrets are not mounted; run sudo systemctl restart dockman-secrets-host.service and verify the Dockman stack bind uses rslave propagation")
+	}
 	names := sortedValueNames(values)
 	environment := make([]string, 0, len(names))
 	for _, name := range names {
 		if !inlineEnvironmentNamePattern.MatchString(name) {
-			return nil, fmt.Errorf("inline SOPS key %q is not a valid environment variable name", name)
+			// File-only secret names may contain dots or dashes. They remain in
+			// tmpfs and must not be exported to the Compose process.
+			continue
 		}
 		if strings.IndexByte(values[name], 0) >= 0 {
 			return nil, fmt.Errorf("inline SOPS value %q contains a NUL byte", name)
@@ -116,9 +130,10 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 	if err != nil {
 		return SOPSResult{}, fmt.Errorf("analyze Compose before enabling inline mode: %w", err)
 	}
+	requiresRuntimeFiles := false
 	for _, reference := range analysis.Secrets {
-		if reference.Managed || reference.File != "" && len(reference.Services) > 0 {
-			return SOPSResult{}, fmt.Errorf("Compose secret %q still uses %s; replace it with an environment-backed Compose secret (environment: ENV_NAME) or ${ENV_NAME} before enabling inline mode", reference.Name, reference.File)
+		if reference.Managed && len(reference.Services) > 0 {
+			requiresRuntimeFiles = true
 		}
 	}
 
@@ -134,8 +149,8 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 		return SOPSResult{}, fmt.Errorf("verify inline environment: %w", err)
 	}
 	for name, value := range values {
-		if !inlineEnvironmentNamePattern.MatchString(name) {
-			return SOPSResult{}, fmt.Errorf("secret %q cannot be used inline; use an environment name such as API_TOKEN", name)
+		if !validSecretName(name) {
+			return SOPSResult{}, fmt.Errorf("secret %q is not a valid file or environment secret name", name)
 		}
 		if strings.IndexByte(value, 0) >= 0 {
 			return SOPSResult{}, fmt.Errorf("secret %q contains a NUL byte and cannot be injected", name)
@@ -146,6 +161,9 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 			continue
 		}
 		name := strings.TrimSpace(reference.Environment)
+		if len(reference.ReadOnlyServices) > 0 {
+			return SOPSResult{}, fmt.Errorf("Compose secret %q uses environment source %q with read-only service(s) %s; Docker Compose supports only file sources there, so use file: ./.secrets/%s with the autonomous tmpfs runtime", reference.Name, name, strings.Join(reference.ReadOnlyServices, ", "), name)
+		}
 		if !inlineEnvironmentNamePattern.MatchString(name) {
 			return SOPSResult{}, fmt.Errorf("Compose secret %q uses invalid environment source %q", reference.Name, reference.Environment)
 		}
@@ -153,7 +171,7 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 			return SOPSResult{}, fmt.Errorf("Compose secret %q requires encrypted value %q; create that secret before enabling inline mode", reference.Name, name)
 		}
 	}
-	if err = writeAtomic(stackFS, stackFS.Join(root, SOPSRecoveryScriptFile), []byte(recoveryScript(composeFile)), 0o700); err != nil {
+	if err = writeAtomic(stackFS, stackFS.Join(root, SOPSRecoveryScriptFile), []byte(recoveryScript(composeFile, requiresRuntimeFiles)), 0o700); err != nil {
 		return SOPSResult{}, fmt.Errorf("write recovery script: %w", err)
 	}
 	// This intentionally removes bounded plaintext history as well. Keeping it
@@ -204,7 +222,7 @@ func (p *SOPSProvider) ListInline(parent context.Context, host, stackPath string
 }
 
 func (p *SOPSProvider) ReadInline(parent context.Context, host, stackPath, name string) ([]byte, error) {
-	if !inlineEnvironmentNamePattern.MatchString(name) {
+	if !validSecretName(name) {
 		return nil, ErrInvalidName
 	}
 	_, _, values, err := p.inlineValues(parent, host, stackPath)
@@ -219,7 +237,7 @@ func (p *SOPSProvider) ReadInline(parent context.Context, host, stackPath, name 
 }
 
 func (p *SOPSProvider) WriteInline(parent context.Context, host, stackPath, name string, value []byte) (Metadata, error) {
-	if !inlineEnvironmentNamePattern.MatchString(name) {
+	if !validSecretName(name) {
 		return Metadata{}, ErrInvalidName
 	}
 	if len(value) > MaxSecretBytes {
@@ -238,11 +256,18 @@ func (p *SOPSProvider) WriteInline(parent context.Context, host, stackPath, name
 	if err = p.writeValues(parent, stackFS, root, values); err != nil {
 		return Metadata{}, err
 	}
+	if volatile, checkErr := p.volatileRuntimeAvailable(parent, host, stackFS, root); checkErr != nil {
+		return Metadata{}, checkErr
+	} else if volatile {
+		if err = syncVolatileRuntime(stackFS, root, values); err != nil {
+			return Metadata{}, fmt.Errorf("ciphertext updated but volatile runtime refresh failed: %w", err)
+		}
+	}
 	return Metadata{Name: name, Size: int64(len(value)), ModifiedAt: time.Now().UTC()}, nil
 }
 
 func (p *SOPSProvider) DeleteInline(parent context.Context, host, stackPath, name string) error {
-	if !inlineEnvironmentNamePattern.MatchString(name) {
+	if !validSecretName(name) {
 		return ErrInvalidName
 	}
 	analysis, err := p.runtime.AnalyzeCompose(host, stackPath)
@@ -250,6 +275,9 @@ func (p *SOPSProvider) DeleteInline(parent context.Context, host, stackPath, nam
 		return fmt.Errorf("analyze Compose before deleting inline secret: %w", err)
 	}
 	for _, reference := range analysis.Secrets {
+		if reference.Managed && reference.RuntimeName == name && len(reference.Services) > 0 {
+			return fmt.Errorf("encrypted secret %q supplies Compose file secret %q used by %s; remove that Compose reference before deleting it", name, reference.Name, strings.Join(reference.Services, ", "))
+		}
 		if strings.TrimSpace(reference.Environment) == name && len(reference.Services) > 0 {
 			return fmt.Errorf("inline secret %q supplies Compose file secret %q used by %s; remove that Compose reference before deleting it", name, reference.Name, strings.Join(reference.Services, ", "))
 		}
@@ -264,7 +292,106 @@ func (p *SOPSProvider) DeleteInline(parent context.Context, host, stackPath, nam
 		return fs.ErrNotExist
 	}
 	delete(values, name)
-	return p.writeValues(parent, stackFS, root, values)
+	if err = p.writeValues(parent, stackFS, root, values); err != nil {
+		return err
+	}
+	if volatile, checkErr := p.volatileRuntimeAvailable(parent, host, stackFS, root); checkErr != nil {
+		return checkErr
+	} else if volatile {
+		if err = syncVolatileRuntime(stackFS, root, values); err != nil {
+			return fmt.Errorf("ciphertext updated but volatile runtime refresh failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func (p *SOPSProvider) volatileRuntimeAvailable(ctx context.Context, host string, stackFS filesystem.FileSystem, root string) (bool, error) {
+	marker := stackFS.Join(root, RuntimeDirectory, HostRuntimeMarkerFile)
+	info, err := stackFS.Lstat(marker)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect volatile secret runtime: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 32 {
+		return false, errors.New("volatile secret runtime marker is invalid")
+	}
+	value, err := stackFS.ReadFile(marker)
+	if err != nil {
+		return false, fmt.Errorf("read volatile secret runtime marker: %w", err)
+	}
+	if strings.TrimSpace(string(value)) != "version=1" {
+		return false, errors.New("volatile secret runtime marker has an unsupported version")
+	}
+	absolute, err := stackFS.Abs(stackFS.Join(root, RuntimeDirectory))
+	if err != nil {
+		return false, fmt.Errorf("resolve volatile secret runtime: %w", err)
+	}
+	if p.verifyRuntime != nil {
+		return p.verifyRuntime(ctx, host, absolute)
+	}
+	return IsManagedHostRuntimeMount(absolute)
+}
+
+func syncVolatileRuntime(stackFS filesystem.FileSystem, root string, values map[string]string) error {
+	directory := stackFS.Join(root, RuntimeDirectory)
+	entries, err := stackFS.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("list volatile secret runtime: %w", err)
+	}
+	for _, entry := range entries {
+		if !validSecretName(entry.Name()) {
+			continue
+		}
+		if _, keep := values[entry.Name()]; keep {
+			continue
+		}
+		info, statErr := stackFS.Lstat(stackFS.Join(directory, entry.Name()))
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode().IsRegular() {
+			if err = stackFS.RemoveAll(stackFS.Join(directory, entry.Name())); err != nil {
+				return fmt.Errorf("remove stale volatile secret %q: %w", entry.Name(), err)
+			}
+		}
+	}
+	for _, name := range sortedValueNames(values) {
+		value := []byte(values[name])
+		err = writeAtomic(stackFS, stackFS.Join(directory, name), value, 0o444)
+		clear(value)
+		if err != nil {
+			return fmt.Errorf("refresh volatile secret %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func composeUsesManagedFileSecrets(stackFS filesystem.FileSystem, composeRelpath string) bool {
+	info, err := stackFS.Lstat(composeRelpath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxComposeBytes {
+		return false
+	}
+	value, err := stackFS.ReadFile(composeRelpath)
+	if err != nil {
+		return false
+	}
+	defer clear(value)
+	var document yaml.Node
+	if yaml.Unmarshal(value, &document) != nil {
+		return false
+	}
+	states := map[string]*composeSecretState{}
+	collectComposeSecrets(&document, states)
+	for _, state := range states {
+		clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(state.File)))
+		clean = strings.TrimPrefix(clean, "./")
+		if len(state.services) > 0 && strings.HasPrefix(clean, RuntimeDirectory+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *SOPSProvider) inlineValues(parent context.Context, host, stackPath string) (filesystem.FileSystem, string, map[string]string, error) {
@@ -360,7 +487,16 @@ func isComposeManifestName(name string) bool {
 	}
 }
 
-func recoveryScript(composeFile string) string {
+func recoveryScript(composeFile string, requiresRuntimeFiles bool) string {
+	runtimeCheck := ""
+	if requiresRuntimeFiles {
+		runtimeCheck = `
+if ! awk -v path="$PWD/.secrets" '$5 == path { found=1 } END { exit !found }' /proc/self/mountinfo; then
+  echo "volatile file secrets are not mounted; run: sudo systemctl restart dockman-secrets-host.service" >&2
+  exit 78
+fi
+`
+	}
 	return `#!/bin/sh
 set -eu
 
@@ -371,6 +507,7 @@ command -v sops >/dev/null 2>&1 || { echo "sops is required" >&2; exit 127; }
 command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 127; }
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+` + runtimeCheck + `
 action="${1:-up}"
 case "$action" in
   up) command='docker compose -f ` + composeFile + ` up -d --remove-orphans' ;;

@@ -113,20 +113,27 @@ func (w *limitedWriter) Write(value []byte) (int, error) {
 }
 
 type SOPSProvider struct {
-	runtime   Store
-	resolve   FileSystemProvider
-	binary    string
-	keyFile   string
-	recipient string
-	runner    SOPSRunner
-	operation sync.Mutex
+	runtime       Store
+	resolve       FileSystemProvider
+	binary        string
+	keyFile       string
+	recipient     string
+	runner        SOPSRunner
+	verifyRuntime RuntimeMountVerifier
+	operation     sync.Mutex
 }
+
+type RuntimeMountVerifier func(context.Context, string, string) (bool, error)
 
 func NewSOPSProvider(runtime Store, resolve FileSystemProvider, binary, keyFile, recipient string) *SOPSProvider {
 	return &SOPSProvider{
 		runtime: runtime, resolve: resolve, binary: strings.TrimSpace(binary),
 		keyFile: strings.TrimSpace(keyFile), recipient: strings.TrimSpace(recipient), runner: execSOPSRunner{},
 	}
+}
+
+func (p *SOPSProvider) ConfigureRuntimeMountVerifier(verifier RuntimeMountVerifier) {
+	p.verifyRuntime = verifier
 }
 
 func (p *SOPSProvider) Status(host, stackPath string) (SOPSStatus, error) {

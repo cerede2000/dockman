@@ -209,3 +209,23 @@ secrets:
 	require.Empty(t, analysis.Secrets[0].Issue)
 	require.Equal(t, []string{"app"}, analysis.Secrets[0].Services)
 }
+
+func TestPlainFileStoreRejectsEnvironmentBackedSecretForReadOnlyService(t *testing.T) {
+	store, roots := testStore(t)
+	compose := `services:
+  frontend:
+    image: example/frontend
+    read_only: true
+    secrets: [api_token]
+secrets:
+  api_token:
+    environment: API_TOKEN
+`
+	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
+
+	analysis, err := store.AnalyzeCompose("local", "compose/apps/demo")
+	require.NoError(t, err)
+	require.Len(t, analysis.Secrets, 1)
+	require.Equal(t, []string{"frontend"}, analysis.Secrets[0].ReadOnlyServices)
+	require.ErrorContains(t, errors.New(analysis.Secrets[0].Issue), "cannot mount an environment-backed secret")
+}
