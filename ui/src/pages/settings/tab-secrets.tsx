@@ -266,7 +266,10 @@ export default function TabSecrets() {
             </Box>
             <Stack direction="row" spacing={1}>
                 <Chip icon={<KeyOutlined/>} color="success" variant="outlined" label="Plain files · ready"/>
-                <Chip icon={<LockOutlined/>} color={sopsStatus?.available ? "success" : "default"} variant="outlined" label={sopsStatus?.available ? "SOPS/age · ready" : "SOPS/age · not configured"}/>
+                <Chip icon={<LockOutlined/>}
+                      color={sopsStatus?.available ? "success" : "default"}
+                      variant="outlined"
+                      label={!loadedPath ? "SOPS/age · select a stack" : sopsStatus?.available ? "SOPS/age · ready" : "SOPS/age · not configured"}/>
             </Stack>
         </Stack>
         <Alert severity="info" sx={{mb: 2}}>
