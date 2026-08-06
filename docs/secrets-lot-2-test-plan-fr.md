@@ -40,6 +40,28 @@ secrets:
 4. Vérifier que `shared_token` est indiqué **external** et qu'aucun fichier local n'est demandé.
 5. Déclarer temporairement `file: ../token` : Dockman doit signaler que la source sort de `.secrets`.
 
+### Nom de clé différent du fichier
+
+Utiliser ensuite :
+
+```yaml
+secrets:
+  database_password:
+    file: ./.secrets/db-password.txt
+```
+
+Résultat attendu : aucune erreur de correspondance de nom. Dockman propose de
+créer `db-password.txt`, puis affiche la référence comme prête.
+
+## 2 bis. Sélecteur de stack
+
+1. Ouvrir l'onglet Secrets sur le host local.
+2. Vérifier que le champ propose les stacks, regroupées par alias.
+3. Choisir une stack : elle doit être chargée sans recopier son chemin.
+4. Passer sur un host SSH : la liste doit être remplacée par celle de ce host.
+5. Créer ensuite une stack et utiliser le bouton de rafraîchissement du champ.
+6. Vérifier que la saisie manuelle reste possible si une stack dépasse les limites de découverte.
+
 ## 3. Historique borné
 
 1. Remplacer cinq fois la valeur de `database_password`.

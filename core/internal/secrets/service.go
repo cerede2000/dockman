@@ -37,3 +37,7 @@ func (s *Service) AnalyzeCompose(host, stackPath string) (ComposeAnalysis, error
 func (s *Service) ListArchived(host, stackPath string) ([]ArchivedSecret, error) {
 	return s.runtime.ListArchived(host, stackPath)
 }
+
+func (s *Service) ListStacks(host string) ([]StackOption, error) {
+	return s.runtime.ListStacks(host)
+}

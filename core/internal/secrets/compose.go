@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 
@@ -62,20 +62,30 @@ func (s *PlainFileStore) AnalyzeCompose(host, stackPath string) (ComposeAnalysis
 		}
 		sort.Strings(state.Services)
 		if state.File != "" {
-			clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(state.File)))
+			clean := path.Clean(strings.TrimSpace(state.File))
 			clean = strings.TrimPrefix(clean, "./")
-			expected := RuntimeDirectory + "/" + state.Name
-			state.Managed = clean == expected && validSecretName(state.Name)
+			parts := strings.Split(clean, "/")
+			switch {
+			case strings.Contains(clean, "$"):
+				state.Issue = "source uses variable interpolation and cannot be resolved safely"
+			case path.IsAbs(clean):
+				state.Issue = "valid Compose source, but outside Dockman's managed .secrets directory"
+			case len(parts) == 2 && parts[0] == RuntimeDirectory && validSecretName(parts[1]):
+				state.Managed = true
+				state.RuntimeName = parts[1]
+			case strings.HasPrefix(clean, RuntimeDirectory+"/"):
+				state.Issue = "nested paths inside .secrets are not managed; use .secrets/<filename>"
+			default:
+				state.Issue = "valid Compose source, but outside Dockman's managed .secrets directory"
+			}
 			if state.Managed {
-				info, statErr := stackFS.Lstat(stackFS.Join(root, RuntimeDirectory, state.Name))
+				info, statErr := stackFS.Lstat(stackFS.Join(root, RuntimeDirectory, state.RuntimeName))
 				state.Exists = statErr == nil && info.Mode().IsRegular()
 				if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 					state.Issue = "runtime secret cannot be inspected"
 				} else if !state.Exists {
 					state.Issue = "runtime secret is missing"
 				}
-			} else {
-				state.Issue = "file is outside .secrets or does not match the secret name"
 			}
 		} else if !state.External {
 			state.Issue = "no file source is declared"

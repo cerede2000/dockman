@@ -32,6 +32,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /", h.list)
 	mux.HandleFunc("GET /compose", h.compose)
 	mux.HandleFunc("GET /history", h.archived)
+	mux.HandleFunc("GET /stacks", h.stacks)
 	mux.HandleFunc("GET /{name}", h.read)
 	mux.HandleFunc("PUT /{name}", h.write)
 	mux.HandleFunc("DELETE /{name}", h.delete)
@@ -43,6 +44,19 @@ func NewHTTPHandler(service *Service) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) stacks(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListStacks(host)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (h *HTTPHandler) archived(w http.ResponseWriter, r *http.Request) {

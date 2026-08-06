@@ -47,16 +47,18 @@ type Store interface {
 	Restore(host, stackPath, name, version string) (Metadata, error)
 	AnalyzeCompose(host, stackPath string) (ComposeAnalysis, error)
 	ListArchived(host, stackPath string) ([]ArchivedSecret, error)
+	ListStacks(host string) ([]StackOption, error)
 }
 
 type ComposeSecret struct {
-	Name     string   `json:"name"`
-	File     string   `json:"file,omitempty"`
-	Services []string `json:"services"`
-	External bool     `json:"external"`
-	Managed  bool     `json:"managed"`
-	Exists   bool     `json:"exists"`
-	Issue    string   `json:"issue,omitempty"`
+	Name        string   `json:"name"`
+	File        string   `json:"file,omitempty"`
+	RuntimeName string   `json:"runtimeName,omitempty"`
+	Services    []string `json:"services"`
+	External    bool     `json:"external"`
+	Managed     bool     `json:"managed"`
+	Exists      bool     `json:"exists"`
+	Issue       string   `json:"issue,omitempty"`
 }
 
 type ComposeAnalysis struct {
@@ -81,11 +83,24 @@ type ArchivedSecret struct {
 	Versions int    `json:"versions"`
 }
 
-type PlainFileStore struct{ resolve FileSystemProvider }
+type StackOption struct {
+	Path      string   `json:"path"`
+	Alias     string   `json:"alias"`
+	Manifests []string `json:"manifests"`
+}
+
+type AliasProvider func(host string) ([]string, error)
+
+type PlainFileStore struct {
+	resolve FileSystemProvider
+	aliases AliasProvider
+}
 
 func NewPlainFileStore(resolve FileSystemProvider) *PlainFileStore {
 	return &PlainFileStore{resolve: resolve}
 }
+
+func (s *PlainFileStore) ConfigureAliases(provider AliasProvider) { s.aliases = provider }
 
 func (s *PlainFileStore) List(host, stackPath string) ([]Metadata, error) {
 	stackFS, root, err := s.resolveStack(host, stackPath)

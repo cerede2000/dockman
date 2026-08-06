@@ -149,6 +149,17 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		stackFS, relpath, _, loadErr := fileSrv.LoadAll(stackPath, hostname)
 		return stackFS, relpath, loadErr
 	})
+	secretRuntimeStore.ConfigureAliases(func(hostname string) ([]string, error) {
+		aliases, listErr := hostManager.ListAliases(hostname)
+		if listErr != nil {
+			return nil, listErr
+		}
+		names := make([]string, 0, len(aliases))
+		for _, alias := range aliases {
+			names = append(names, alias.Alias)
+		}
+		return names, nil
+	})
 	secretSrv := secrets.NewService(secretRuntimeStore)
 
 	//err := git.NewMigrator(composeRoot)

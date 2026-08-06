@@ -59,6 +59,19 @@ that exact stack root (`compose.yml`, `compose.yaml`, `docker-compose.yml` or
 - whether a file-backed source follows `./.secrets/<secret-name>`;
 - whether the expected runtime file exists.
 
+The Compose key and source filename may differ. For example,
+`database_password: {file: ./.secrets/db-password.txt}` is managed correctly
+and creates or checks `db-password.txt`. A file outside `.secrets` remains a
+valid Compose source; Dockman labels it **not managed** instead of treating it
+as an invalid Compose declaration.
+
+The settings page discovers conventional Compose manifests across every alias
+of the active host and offers their stack directories in a grouped selector.
+Selection triggers loading directly. Manual entry remains available for an
+unusual or temporarily undiscoverable path. Discovery is bounded to 1000
+directories, 500 stacks and eight levels per alias, and runs only when the
+Secrets tab opens or its refresh button is pressed.
+
 The check is request-driven: it does not recursively scan stacks and does not
 add a background watcher.
 

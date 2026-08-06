@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {
-    Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
+    Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
     IconButton, InputAdornment, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
     TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
@@ -24,9 +24,10 @@ interface SecretForm {
 interface SecretVersion { id: string; size: number; modifiedAt: string }
 interface ArchivedSecret { name: string; versions: number }
 interface ComposeSecretReference {
-    name: string; file?: string; services: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
+    name: string; file?: string; runtimeName?: string; services: string[]; external: boolean; managed: boolean; exists: boolean; issue?: string;
 }
 interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
+interface StackOption { path: string; alias: string; manifests: string[] }
 
 const initialForm: SecretForm = {name: "", value: ""};
 
@@ -53,8 +54,24 @@ export default function TabSecrets() {
     const [historyItem, setHistoryItem] = useState<RuntimeSecret | null>(null);
     const [versions, setVersions] = useState<SecretVersion[]>([]);
     const [archived, setArchived] = useState<ArchivedSecret[]>([]);
+    const [stackOptions, setStackOptions] = useState<StackOption[]>([]);
+    const [catalogLoading, setCatalogLoading] = useState(false);
 
     const base = useMemo(() => `${getBaseUrl("host", host)}/secrets`, [host]);
+
+    const loadStackOptions = useCallback(async () => {
+        setCatalogLoading(true);
+        try {
+            const response = await fetch(`${base}/stacks`);
+            if (!response.ok) throw new Error(await responseError(response));
+            setStackOptions(await response.json() as StackOption[]);
+        } catch (error) {
+            setStackOptions([]);
+            showError(`Unable to discover Compose stacks: ${(error as Error).message}`);
+        } finally {
+            setCatalogLoading(false);
+        }
+    }, [base, showError]);
 
     const load = useCallback(async (requestedPath = stackPath.trim()) => {
         if (!requestedPath) {
@@ -97,7 +114,9 @@ export default function TabSecrets() {
         setAnalysis(null);
         setAnalysisError("");
         setArchived([]);
-    }, [host]);
+        setStackOptions([]);
+        void loadStackOptions();
+    }, [host, loadStackOptions]);
 
     const openCreate = () => {
         setForm(initialForm);
@@ -220,8 +239,25 @@ export default function TabSecrets() {
         </Alert>
         <Paper variant="outlined" sx={{p: 2, mb: 2}}>
             <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
-                <TextField fullWidth size="small" label="Stack directory" placeholder="compose/myapp" value={stackPath}
-                           onChange={event => setStackPath(event.target.value)} onKeyDown={event => event.key === "Enter" && void load()}/>
+                <Autocomplete freeSolo fullWidth options={stackOptions} inputValue={stackPath}
+                              loading={catalogLoading}
+                              groupBy={option => option.alias}
+                              getOptionLabel={option => typeof option === "string" ? option : option.path}
+                              onInputChange={(_, value) => setStackPath(value)}
+                              onChange={(_, value) => {
+                                  const path = typeof value === "string" ? value : value?.path || "";
+                                  setStackPath(path);
+                                  if (path) void load(path);
+                              }}
+                              renderOption={(props, option) => <li {...props} key={typeof option === "string" ? option : option.path}>
+                                  <Box><Typography variant="body2" sx={{fontFamily: "monospace"}}>{typeof option === "string" ? option : option.path}</Typography>
+                                      {typeof option !== "string" && <Typography variant="caption" color="text.secondary">{option.manifests.join(", ")}</Typography>}
+                                  </Box>
+                              </li>}
+                              renderInput={params => <TextField {...params} size="small" label="Compose stack" placeholder="Select or enter compose/myapp"
+                                                                onKeyDown={event => event.key === "Enter" && stackPath.trim() && void load()}
+                                                                slotProps={{...params.slotProps, input: {...params.slotProps.input, endAdornment: <>{catalogLoading && <CircularProgress size={16}/>} {params.slotProps.input?.endAdornment}</>}}}/>} />
+                <Tooltip title="Refresh stack list"><span><IconButton disabled={catalogLoading} onClick={() => void loadStackOptions()}>{catalogLoading ? <CircularProgress size={18}/> : <Refresh/>}</IconButton></span></Tooltip>
                 <Button variant="contained" startIcon={loading ? <CircularProgress size={16}/> : <Refresh/>} disabled={loading} onClick={() => void load()}>
                     Load
                 </Button>
@@ -265,8 +301,8 @@ export default function TabSecrets() {
                         <TableCell sx={{fontFamily: "monospace"}}>{reference.name}</TableCell>
                         <TableCell>{reference.services.join(", ") || "—"}</TableCell>
                         <TableCell sx={{fontFamily: "monospace"}}>{reference.external ? "external" : reference.file || "—"}</TableCell>
-                        <TableCell><Chip size="small" color={reference.external || reference.exists ? "success" : reference.managed ? "warning" : "default"} variant="outlined" label={reference.external ? "external" : reference.exists ? "ready" : reference.issue || "unmanaged"}/></TableCell>
-                        <TableCell align="right">{reference.managed && !reference.exists && <Button size="small" onClick={() => openCreateNamed(reference.name)}>Create</Button>}</TableCell>
+                        <TableCell><Tooltip title={reference.issue || ""}><Chip size="small" color={reference.external || reference.exists ? "success" : reference.managed ? "warning" : "default"} variant="outlined" label={reference.external ? "external" : reference.exists ? "ready" : reference.managed ? "missing" : "not managed"}/></Tooltip></TableCell>
+                        <TableCell align="right">{reference.managed && !reference.exists && <Button size="small" onClick={() => openCreateNamed(reference.runtimeName || reference.name)}>Create</Button>}</TableCell>
                     </TableRow>)}</TableBody>
                 </Table>
             </>}

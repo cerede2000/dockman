@@ -154,6 +154,8 @@ secrets:
     external: true
   misplaced:
     file: ../misplaced
+  named_differently:
+    file: ./.secrets/runtime-token.txt
 `
 	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
 	_, err := store.Write("local", "compose/apps/demo", "database_password", []byte("value"))
@@ -161,11 +163,14 @@ secrets:
 	analysis, err := store.AnalyzeCompose("local", "compose/apps/demo")
 	require.NoError(t, err)
 	require.Equal(t, []string{"compose.yml"}, analysis.Manifests)
-	require.Len(t, analysis.Secrets, 3)
+	require.Len(t, analysis.Secrets, 4)
 	require.Equal(t, "database_password", analysis.Secrets[0].Name)
 	require.True(t, analysis.Secrets[0].Managed)
 	require.True(t, analysis.Secrets[0].Exists)
 	require.Equal(t, []string{"api"}, analysis.Secrets[0].Services)
 	require.True(t, analysis.Secrets[1].External)
 	require.False(t, analysis.Secrets[2].Managed)
+	require.Equal(t, "named_differently", analysis.Secrets[3].Name)
+	require.True(t, analysis.Secrets[3].Managed, "Compose secret keys do not have to match their source filename")
+	require.Equal(t, "runtime-token.txt", analysis.Secrets[3].RuntimeName)
 }
