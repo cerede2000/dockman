@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {
-    Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
+    Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
     IconButton, InputAdornment, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
     TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
@@ -28,6 +28,10 @@ interface ComposeSecretReference {
 }
 interface ComposeAnalysis { manifests: string[]; secrets: ComposeSecretReference[] }
 interface StackOption { path: string; alias: string; manifests: string[] }
+interface CatalogStack extends StackOption { mode: "migration" | "encrypted" }
+interface CatalogAssignment { stackPath: string; alias: string; manifests: string[]; mode: string }
+interface CatalogSecret { name: string; assignments: CatalogAssignment[] }
+interface SecretCatalog { secrets: CatalogSecret[]; stacks: CatalogStack[] }
 interface SOPSStatus { available: boolean; sourcePath: string; sourceExists: boolean; mode: "materialized" | "inline"; recoveryScript?: string; recipient?: string; issue?: string }
 
 const initialForm: SecretForm = {name: "", value: ""};
@@ -57,6 +61,10 @@ export default function TabSecrets() {
     const [versions, setVersions] = useState<SecretVersion[]>([]);
     const [archived, setArchived] = useState<ArchivedSecret[]>([]);
     const [stackOptions, setStackOptions] = useState<StackOption[]>([]);
+    const [catalog, setCatalog] = useState<SecretCatalog>({secrets: [], stacks: []});
+    const [globalOpen, setGlobalOpen] = useState(false);
+    const [globalForm, setGlobalForm] = useState<{name: string; value: string; stackPaths: string[]}>({name: "", value: "", stackPaths: []});
+    const [globalVisible, setGlobalVisible] = useState(false);
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [sopsStatus, setSopsStatus] = useState<SOPSStatus | null>(null);
     const [sopsAction, setSopsAction] = useState<"export" | "materialize" | "inline-enable" | null>(null);
@@ -128,11 +136,14 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
     const loadStackOptions = useCallback(async () => {
         setCatalogLoading(true);
         try {
-            const response = await fetch(`${base}/stacks`);
+            const response = await fetch(`${base}/catalog`);
             if (!response.ok) throw new Error(await responseError(response));
-            setStackOptions(await response.json() as StackOption[]);
+            const result = await response.json() as SecretCatalog;
+            setCatalog(result);
+            setStackOptions(result.stacks);
         } catch (error) {
             setStackOptions([]);
+            setCatalog({secrets: [], stacks: []});
             showError(`Unable to discover Compose stacks: ${(error as Error).message}`);
         } finally {
             setCatalogLoading(false);
@@ -185,6 +196,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         setArchived([]);
         setSopsStatus(null);
         setStackOptions([]);
+        setCatalog({secrets: [], stacks: []});
         void loadStackOptions();
     }, [host, loadStackOptions]);
 
@@ -269,6 +281,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             if (!response.ok) throw new Error(await responseError(response));
             closeForm();
             await load(loadedPath);
+            await loadStackOptions();
             showSuccess("Runtime secret saved securely.");
         } catch (error) {
             showError(`Unable to save secret: ${(error as Error).message}`);
@@ -286,6 +299,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             setDeleteItem(null);
             setConfirmation("");
             await load(loadedPath);
+            await loadStackOptions();
             showSuccess("Runtime secret deleted.");
         } catch (error) {
             showError(`Unable to delete secret: ${(error as Error).message}`);
@@ -306,13 +320,16 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                 body: JSON.stringify({stackPath: loadedPath, composeFile: analysis?.manifests[0] || "compose.yml"}),
             });
             if (!response.ok) throw new Error(await responseError(response));
-            const result = await response.json() as {names: string[]};
+            const result = await response.json() as {names: string[]; runtimeState?: string; runtimeIssue?: string};
             setSopsAction(null);
             setConfirmation("");
             await load(loadedPath);
+            await loadStackOptions();
             showSuccess(action === "export" ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
                 : action === "materialize" ? `${result.names.length} encrypted secret(s) materialized securely.`
-                    : `${result.names.length} secret(s) now stay encrypted at rest. Install or refresh the host boot runtime before recreating file-secret consumers.`);
+                    : result.runtimeState === "ready" ? `${result.names.length} secret(s) encrypted and volatile file runtime ready.`
+                        : result.runtimeIssue ? `${result.names.length} secret(s) encrypted. ${result.runtimeIssue}`
+                            : `${result.names.length} secret(s) now stay encrypted at rest. Host reconciliation was requested automatically.`);
         } catch (error) {
             showError(`Unable to ${action} SOPS secrets: ${(error as Error).message}`);
         } finally {
@@ -320,7 +337,45 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         }
     };
 
-    return <Box sx={{p: 3, maxWidth: 1100, mx: "auto"}}>
+    const openGlobal = (item?: CatalogSecret) => {
+        setGlobalForm({name: item?.name || "", value: "", stackPaths: item?.assignments.map(assignment => assignment.stackPath) || []});
+        setGlobalVisible(false);
+        setGlobalOpen(true);
+    };
+
+    const closeGlobal = () => {
+        setGlobalForm({name: "", value: "", stackPaths: []});
+        setGlobalVisible(false);
+        setGlobalOpen(false);
+    };
+
+    const saveGlobal = async () => {
+        if (!globalForm.name.trim() || !globalForm.value || globalForm.stackPaths.length === 0) return;
+        const name = globalForm.name.trim();
+        const assignedPaths = [...globalForm.stackPaths];
+        setSaving(true);
+        try {
+            const response = await fetch(`${base}/assign`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({...globalForm, name, stackPaths: assignedPaths, encoding: "utf-8"}),
+            });
+            if (!response.ok) throw new Error(await responseError(response));
+            const assignments = await response.json() as CatalogAssignment[];
+            closeGlobal();
+            await loadStackOptions();
+            if (loadedPath && assignedPaths.includes(loadedPath)) await load(loadedPath);
+            showSuccess(`${name} encrypted for ${assignments.length} stack(s).`);
+        } catch (error) {
+            showError(`Unable to assign global secret: ${(error as Error).message}`);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const encryptedStacks = catalog.stacks.filter(stack => stack.mode === "encrypted");
+
+    return <Box sx={{p: 3, maxWidth: 1400, mx: "auto"}}>
         <Stack direction={{xs: "column", md: "row"}} spacing={2} sx={{justifyContent: "space-between", mb: 2}}>
             <Box>
                 <Typography variant="h5" sx={{fontWeight: 800}}>Compose secrets</Typography>
@@ -340,6 +395,28 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         <Alert severity="info" sx={{mb: 2}}>
             {sopsStatus?.mode === "inline" ? <><code>secrets.sops.yaml</code> is the only persistent store. File delivery uses host tmpfs and inline delivery decrypts only for an explicit Compose action.</> : <>Migration mode still writes runtime values to persistent <code>.secrets/</code>. Encrypt and enable the autonomous runtime to reach the ciphertext-only target.</>}
         </Alert>
+        <Paper variant="outlined" sx={{p: 2, mb: 2}}>
+            <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}, mb: 1.5}}>
+                <Box sx={{flex: 1}}>
+                    <Typography variant="h6" sx={{fontWeight: 750}}>Global secret assignments</Typography>
+                    <Typography variant="body2" color="text.secondary">Manage by secret, then choose its stacks. Values remain independently encrypted inside every assigned stack.</Typography>
+                </Box>
+                <Tooltip title="Refresh global catalog"><span><IconButton disabled={catalogLoading} onClick={() => void loadStackOptions()}>{catalogLoading ? <CircularProgress size={18}/> : <Refresh/>}</IconButton></span></Tooltip>
+                <Button variant="contained" startIcon={<Add/>} disabled={encryptedStacks.length === 0} onClick={() => openGlobal()}>Create / assign secret</Button>
+            </Stack>
+            {encryptedStacks.length === 0 && <Alert severity="info">Enable encrypted runtime on at least one stack to manage assignments globally without creating plaintext files.</Alert>}
+            {catalog.secrets.length > 0 && <TableContainer sx={{maxHeight: 320}}><Table stickyHeader size="small">
+                <TableHead><TableRow><TableCell>Secret</TableCell><TableCell>Assigned stacks</TableCell><TableCell align="right">Action</TableCell></TableRow></TableHead>
+                <TableBody>{catalog.secrets.map(item => <TableRow key={item.name} hover>
+                    <TableCell sx={{fontFamily: "monospace", fontWeight: 700}}>{item.name}</TableCell>
+                    <TableCell><Stack direction="row" spacing={0.75} sx={{flexWrap: "wrap", gap: 0.75}}>{item.assignments.map(assignment =>
+                        <Chip key={assignment.stackPath} size="small" color={assignment.mode === "encrypted" ? "success" : "warning"} variant="outlined" label={assignment.stackPath}
+                              onClick={() => {setStackPath(assignment.stackPath); void load(assignment.stackPath);}}/>)}</Stack></TableCell>
+                    <TableCell align="right"><Button size="small" disabled={encryptedStacks.length === 0} onClick={() => openGlobal(item)}>Apply / assign</Button></TableCell>
+                </TableRow>)}</TableBody>
+            </Table></TableContainer>}
+            {!catalogLoading && catalog.secrets.length === 0 && encryptedStacks.length > 0 && <Typography color="text.secondary" sx={{py: 2, textAlign: "center"}}>No secret assignment yet.</Typography>}
+        </Paper>
         <Paper variant="outlined" sx={{p: 2, mb: 2}}>
             <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
                 <Autocomplete freeSolo fullWidth options={stackOptions} inputValue={stackPath}
@@ -405,8 +482,8 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                     {sopsStatus?.mode !== "inline" && <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
                             onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>}
                     {sopsStatus?.mode !== "inline" && <Button color="success" variant="contained" startIcon={<LockOutlined/>}
-                            disabled={saving || !sopsStatus?.available || items.length === 0 || !analysis?.manifests.length || analysis.secrets.some(reference => Boolean(reference.file && reference.services.length > 0 && !reference.managed) || Boolean(reference.environment && (reference.issue || reference.services.length > 0 && !items.some(item => item.name === reference.environment))))}
-                            onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>Enable encrypted runtime</Button>}
+                            disabled={saving || !sopsStatus?.available || !analysis?.manifests.length || analysis.secrets.some(reference => Boolean(reference.file && reference.services.length > 0 && !reference.managed) || Boolean(reference.environment && reference.issue))}
+                            onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>{items.length === 0 ? "Initialize encrypted runtime" : "Enable encrypted runtime"}</Button>}
                 </Stack>
                 {host !== "local" && <TextField fullWidth size="small" label="SSH target used from the Dockman host" placeholder="user@remote-host" value={hostSshTarget} onChange={event => setHostSshTarget(event.target.value)} helperText="The command exports the signed-in Dockman image tools, transfers them over your SSH client, then installs the runtime on the selected remote host."/>}
             </Stack>
@@ -431,16 +508,47 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             {analysis && analysis.manifests.length > 0 && <>
                 <Typography variant="caption" color="text.secondary">Analyzed: {analysis.manifests.join(", ")}</Typography>
                 <Table size="small" sx={{mt: 1}}><TableHead><TableRow><TableCell>Secret</TableCell><TableCell>Services</TableCell><TableCell>Source</TableCell><TableCell>Status</TableCell><TableCell/></TableRow></TableHead>
-                    <TableBody>{analysis.secrets.map(reference => <TableRow key={reference.name}>
-                        <TableCell sx={{fontFamily: "monospace"}}>{reference.name}</TableCell>
-                        <TableCell>{reference.services.join(", ") || "—"}</TableCell>
-                        <TableCell sx={{fontFamily: "monospace"}}>{reference.external ? "external" : reference.environment ? `environment: ${reference.environment}` : reference.file || "—"}</TableCell>
-                        <TableCell><Tooltip title={reference.issue || (reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment) ? `Create ${reference.environment} before enabling inline mode.` : "")}><Chip size="small" color={reference.issue || reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment) ? "error" : reference.external || reference.environment || reference.exists ? "success" : reference.managed ? "warning" : "default"} variant="outlined" label={reference.issue ? "invalid" : reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment) ? "missing encrypted value" : reference.external ? "external" : reference.environment ? "encrypted inline → file" : reference.exists ? "ready" : reference.managed ? "missing" : "not managed"}/></Tooltip></TableCell>
-                        <TableCell align="right">{((reference.managed && !reference.exists) || (reference.environment && !items.some(item => item.name === reference.environment))) && <Button size="small" onClick={() => openCreateNamed(reference.runtimeName || reference.name)}>Create</Button>}</TableCell>
-                    </TableRow>)}</TableBody>
+                    <TableBody>{analysis.secrets.map(reference => {
+                        const encryptedValueExists = items.some(item => item.name === (reference.runtimeName || reference.environment || reference.name));
+                        const runtimePending = sopsStatus?.mode === "inline" && reference.managed && encryptedValueExists && !reference.exists && reference.issue === "runtime secret is missing";
+                        const inlineMissing = Boolean(reference.environment && reference.services.length > 0 && !items.some(item => item.name === reference.environment));
+                        const issue = runtimePending ? "Automatic host materialization is pending." : reference.issue || (inlineMissing ? `Assign ${reference.environment} to this stack.` : "");
+                        const label = runtimePending ? "materializing" : reference.issue ? "invalid" : inlineMissing ? "missing encrypted value" : reference.external ? "external" : reference.environment ? "encrypted inline → file" : reference.exists ? "ready" : reference.managed ? "missing" : "not managed";
+                        const color = runtimePending || inlineMissing ? "warning" : reference.issue ? "error" : reference.external || reference.environment || reference.exists ? "success" : reference.managed ? "warning" : "default";
+                        return <TableRow key={reference.name}>
+                            <TableCell sx={{fontFamily: "monospace"}}>{reference.name}</TableCell>
+                            <TableCell>{reference.services.join(", ") || "—"}</TableCell>
+                            <TableCell sx={{fontFamily: "monospace"}}>{reference.external ? "external" : reference.environment ? `environment: ${reference.environment}` : reference.file || "—"}</TableCell>
+                            <TableCell><Tooltip title={issue}><Chip size="small" color={color} variant="outlined" label={label}/></Tooltip></TableCell>
+                            <TableCell align="right">{((reference.managed && !encryptedValueExists) || inlineMissing) && <Button size="small" onClick={() => openCreateNamed(reference.runtimeName || reference.name)}>Create</Button>}</TableCell>
+                        </TableRow>;
+                    })}</TableBody>
                 </Table>
             </>}
         </Paper>}
+
+        <Dialog open={globalOpen} onClose={saving ? undefined : closeGlobal} fullWidth maxWidth="md">
+            <DialogTitle>Global encrypted secret assignment</DialogTitle>
+            <DialogContent><Stack spacing={2} sx={{mt: 1}}>
+                <Alert severity="info">One action applies the value to every selected stack. Each stack keeps its own independently encrypted <code>secrets.sops.yaml</code>; unselecting a stack does not delete its existing value.</Alert>
+                <TextField label="Secret name" value={globalForm.name} disabled={saving}
+                           onChange={event => setGlobalForm(current => ({...current, name: event.target.value}))}
+                           helperText="Use an environment-compatible name such as DATABASE_PASSWORD when inline delivery may be needed."/>
+                <TextField label="Value" multiline minRows={4} value={globalForm.value}
+                           onChange={event => setGlobalForm(current => ({...current, value: event.target.value}))}
+                           sx={{"& .MuiInputBase-input": {WebkitTextSecurity: globalVisible ? "none" : "disc"}}}
+                           slotProps={{input: {endAdornment: <InputAdornment position="end"><IconButton aria-label={globalVisible ? "Hide secret value" : "Reveal secret value"} onClick={() => setGlobalVisible(value => !value)}>{globalVisible ? <VisibilityOff/> : <Visibility/>}</IconButton></InputAdornment>}}}/>
+                <Autocomplete multiple disableCloseOnSelect options={encryptedStacks} value={encryptedStacks.filter(stack => globalForm.stackPaths.includes(stack.path))}
+                              isOptionEqualToValue={(option, value) => option.path === value.path}
+                              getOptionLabel={option => option.path}
+                              groupBy={option => option.alias}
+                              onChange={(_, values) => setGlobalForm(current => ({...current, stackPaths: values.map(value => value.path)}))}
+                              renderOption={(props, option, {selected}) => <li {...props} key={option.path}><Checkbox size="small" checked={selected}/><Box><Typography variant="body2" sx={{fontFamily: "monospace"}}>{option.path}</Typography><Typography variant="caption" color="text.secondary">{option.manifests.join(", ")}</Typography></Box></li>}
+                              renderInput={params => <TextField {...params} label="Assigned encrypted stacks" placeholder="Select one or more stacks"/>}/>
+                <Alert severity="warning">The value is sent only for this explicit action, never stored in Dockman&apos;s database, and each ciphertext is verified before replacement.</Alert>
+            </Stack></DialogContent>
+            <DialogActions><Button onClick={closeGlobal} disabled={saving}>Cancel</Button><Button variant="contained" onClick={() => void saveGlobal()} disabled={saving || !globalForm.name.trim() || !globalForm.value || globalForm.stackPaths.length === 0}>{saving ? <CircularProgress size={18}/> : "Encrypt and apply"}</Button></DialogActions>
+        </Dialog>
 
         <Dialog open={formOpen} onClose={saving ? undefined : closeForm} fullWidth maxWidth="sm">
             <DialogTitle>{items.some(item => item.name === form.name) ? "Edit runtime secret" : "Create runtime secret"}</DialogTitle>
@@ -496,7 +604,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         <Dialog open={hostWizardOpen} onClose={() => setHostWizardOpen(false)} fullWidth maxWidth="md">
             <DialogTitle>Autonomous encrypted secret runtime</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
-                <Alert severity="info">Run this once on each Docker host. The installed one-shot systemd service decrypts into per-stack tmpfs mounts before Docker starts. It has no daemon, polling, database dependency or idle overhead.</Alert>
+                <Alert severity="info">Run this once on each Docker host. The installed one-shot service decrypts into per-stack tmpfs mounts before Docker starts, and a systemd.path trigger reconciles newly activated stacks automatically. There is no daemon, polling, database dependency or idle loop.</Alert>
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
                     <TextField fullWidth size="small" label="Dockman container name" value={hostContainer} onChange={event => setHostContainer(event.target.value)}/>
                     <TextField fullWidth size="small" label="Host stack root" value={hostStackRoot} onChange={event => setHostStackRoot(event.target.value)}/>
@@ -508,7 +616,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                 </Stack>
                 <TextField multiline minRows={12} maxRows={18} value={hostInstallCommand} slotProps={{input: {readOnly: true}}}/>
                 <Alert severity="warning">The command copies the existing identity with mode 0600; it never prints it. Back this key up separately. Losing it makes every encrypted source unreadable. Configure the Dockman stack bind as <code>{`${hostStackRoot}:${hostStackRoot}:rslave`}</code>, then recreate Dockman once. The one-way rslave propagation makes new host tmpfs mounts visible without granting mount propagation back to the host.</Alert>
-                <Typography variant="body2" color="text.secondary">Recovery without Dockman: run <code>sudo systemctl restart dockman-secrets-host</code>, then execute <code>./compose-sops.sh up</code> in the stack directory. For a remote host, run the generated command on that host with its own identity.</Typography>
+                <Typography variant="body2" color="text.secondary">New encrypted stacks request their first materialization automatically. Recovery without Dockman remains available with <code>sudo systemctl start dockman-secrets-host</code>, followed by <code>./compose-sops.sh up</code>. For a remote host, run the generated command on that host with its own identity.</Typography>
             </Stack></DialogContent>
             <DialogActions><Button onClick={() => setHostWizardOpen(false)}>Close</Button><Button variant="contained" startIcon={<ContentCopy/>} onClick={() => void copyHostCommand()}>Copy command</Button></DialogActions>
         </Dialog>

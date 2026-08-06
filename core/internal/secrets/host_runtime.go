@@ -21,7 +21,13 @@ const (
 	HostRuntimeBinaryPath = "/usr/local/libexec/dockman-secrets-host"
 	HostRuntimeSOPSPath   = "/usr/local/libexec/dockman-sops"
 	HostRuntimeUnitName   = "dockman-secrets-host.service"
-	HostRuntimeMarkerFile = ".dockman-runtime-tmpfs"
+	HostReconcileUnitName = "dockman-secrets-reconcile.service"
+	HostReconcilePathName = "dockman-secrets-reconcile.path"
+	// HostRuntimeReconcileRequestFile contains only a timestamp. Writing it
+	// asks the host-side systemd.path unit to run the fixed materializer; it
+	// never carries a secret or an arbitrary command.
+	HostRuntimeReconcileRequestFile = ".dockman-secrets-reconcile"
+	HostRuntimeMarkerFile           = ".dockman-runtime-tmpfs"
 )
 
 // HostRuntimeConfig is intentionally independent from Dockman's database.
@@ -52,6 +58,9 @@ func (c *HostRuntimeConfig) normalize() error {
 	}
 	if !filepath.IsAbs(c.StackRoot) || c.StackRoot == string(filepath.Separator) {
 		return errors.New("stack root must be an absolute non-root directory")
+	}
+	if strings.ContainsAny(c.StackRoot, "\r\n") {
+		return errors.New("stack root cannot contain line breaks")
 	}
 	if !filepath.IsAbs(c.AgeKeyFile) || !filepath.IsAbs(c.SOPSBinary) {
 		return errors.New("age identity and SOPS paths must be absolute")

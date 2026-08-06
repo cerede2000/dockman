@@ -36,9 +36,11 @@ func InstallHostRuntime(options HostInstallOptions) error {
 	sopsTarget := rooted(root, HostRuntimeSOPSPath)
 	configTarget := rooted(root, HostRuntimeConfigPath)
 	unitTarget := rooted(root, "/etc/systemd/system/"+HostRuntimeUnitName)
+	reconcileUnitTarget := rooted(root, "/etc/systemd/system/"+HostReconcileUnitName)
+	reconcilePathTarget := rooted(root, "/etc/systemd/system/"+HostReconcilePathName)
 	dropInTarget := rooted(root, "/etc/systemd/system/docker.service.d/20-dockman-secrets.conf")
 	socketDropInTarget := rooted(root, "/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf")
-	for _, destination := range []string{helperTarget, sopsTarget, configTarget, unitTarget, dropInTarget, socketDropInTarget} {
+	for _, destination := range []string{helperTarget, sopsTarget, configTarget, unitTarget, reconcileUnitTarget, reconcilePathTarget, dropInTarget, socketDropInTarget} {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 			return err
 		}
@@ -77,8 +79,39 @@ WantedBy=multi-user.target
 Requires=dockman-secrets-host.service
 After=dockman-secrets-host.service
 `
+	reconcileUnit := `[Unit]
+Description=Reconcile encrypted Compose secrets into volatile memory
+Documentation=https://github.com/cerede2000/dockman
+Requires=dockman-secrets-host.service
+After=local-fs.target dockman-secrets-host.service
+StartLimitIntervalSec=10
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/dockman-secrets-host materialize --config /etc/dockman-secrets-host.json
+NoNewPrivileges=yes
+`
+	reconcilePath := fmt.Sprintf(`[Unit]
+Description=Watch for explicit Dockman secret reconciliation requests
+Documentation=https://github.com/cerede2000/dockman
+After=local-fs.target
+
+[Path]
+PathChanged=%q
+Unit=%s
+
+[Install]
+WantedBy=multi-user.target
+`, filepath.Join(options.Config.StackRoot, HostRuntimeReconcileRequestFile), HostReconcileUnitName)
 	if err = writeHostFileAtomic(unitTarget, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
+	}
+	if err = writeHostFileAtomic(reconcileUnitTarget, []byte(reconcileUnit), 0o644); err != nil {
+		return fmt.Errorf("write systemd reconcile unit: %w", err)
+	}
+	if err = writeHostFileAtomic(reconcilePathTarget, []byte(reconcilePath), 0o644); err != nil {
+		return fmt.Errorf("write systemd reconcile path: %w", err)
 	}
 	if err = writeHostFileAtomic(dropInTarget, []byte(dropIn), 0o644); err != nil {
 		return fmt.Errorf("write Docker systemd dependency: %w", err)
@@ -87,7 +120,7 @@ After=dockman-secrets-host.service
 		return fmt.Errorf("write Docker socket systemd dependency: %w", err)
 	}
 	if options.Activate && root == "/" {
-		for _, args := range [][]string{{"daemon-reload"}, {"enable", HostRuntimeUnitName}, {"restart", HostRuntimeUnitName}} {
+		for _, args := range [][]string{{"daemon-reload"}, {"enable", HostRuntimeUnitName}, {"enable", "--now", HostReconcilePathName}, {"restart", HostRuntimeUnitName}} {
 			if output, runErr := exec.Command("systemctl", args...).CombinedOutput(); runErr != nil {
 				return fmt.Errorf("systemctl %v: %s", args, string(output))
 			}

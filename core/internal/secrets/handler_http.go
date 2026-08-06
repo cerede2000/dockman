@@ -25,6 +25,13 @@ type stackInput struct {
 	ComposeFile string `json:"composeFile,omitempty"`
 }
 
+type assignInput struct {
+	Name       string   `json:"name"`
+	Value      string   `json:"value"`
+	Encoding   string   `json:"encoding,omitempty"`
+	StackPaths []string `json:"stackPaths"`
+}
+
 type readOutput struct {
 	Name     string `json:"name"`
 	Value    string `json:"value"`
@@ -39,6 +46,8 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /compose", h.compose)
 	mux.HandleFunc("GET /history", h.archived)
 	mux.HandleFunc("GET /stacks", h.stacks)
+	mux.HandleFunc("GET /catalog", h.catalog)
+	mux.HandleFunc("POST /assign", h.assign)
 	mux.HandleFunc("GET /sops", h.sopsStatus)
 	mux.HandleFunc("POST /sops/export", h.sopsExport)
 	mux.HandleFunc("POST /sops/materialize", h.sopsMaterialize)
@@ -55,6 +64,56 @@ func NewHTTPHandler(service *Service) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (h *HTTPHandler) catalog(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.ListCatalog(r.Context(), host)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) assign(w http.ResponseWriter, r *http.Request) {
+	host, ok := requestHost(w, r)
+	if !ok {
+		return
+	}
+	var input assignInput
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxSecretBytes*2+(32<<10)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		http.Error(w, "invalid global secret assignment", http.StatusBadRequest)
+		return
+	}
+	var value []byte
+	var err error
+	switch strings.ToLower(strings.TrimSpace(input.Encoding)) {
+	case "", "utf-8", "utf8":
+		value = []byte(input.Value)
+	case "base64":
+		value, err = base64.StdEncoding.DecodeString(input.Value)
+	default:
+		http.Error(w, "encoding must be utf-8 or base64", http.StatusBadRequest)
+		return
+	}
+	input.Value = ""
+	if err != nil {
+		http.Error(w, "invalid base64 secret value", http.StatusBadRequest)
+		return
+	}
+	defer clear(value)
+	result, err := h.service.AssignEncrypted(r.Context(), host, input.Name, value, input.StackPaths)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *HTTPHandler) sopsInlineEnable(w http.ResponseWriter, r *http.Request) {

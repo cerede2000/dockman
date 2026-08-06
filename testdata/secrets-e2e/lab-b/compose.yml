@@ -1,0 +1,18 @@
+name: dockman-secrets-lab-b
+
+services:
+  consumer:
+    image: alpine:3.22
+    user: "65534:65534"
+    read_only: true
+    network_mode: none
+    restart: unless-stopped
+    command: ["sh", "-ec", "test -s /run/secrets/shared_token; echo SECOND_STACK_READY; exec sleep infinity"]
+    secrets:
+      - source: shared_token
+        target: shared_token
+        mode: 0444
+
+secrets:
+  shared_token:
+    file: ./.secrets/SHARED_TOKEN

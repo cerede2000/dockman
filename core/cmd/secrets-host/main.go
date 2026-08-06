@@ -59,7 +59,7 @@ func main() {
 		if err != nil {
 			fail(err.Error())
 		}
-		fmt.Println("host secret runtime installed; recreate Dockman once so pre-existing tmpfs submounts are visible inside its stack bind mount")
+		fmt.Println("host secret runtime installed; new encrypted stacks are reconciled automatically; recreate Dockman once so pre-existing tmpfs submounts are visible inside its stack bind mount")
 	default:
 		fail("unknown action: " + os.Args[1])
 	}

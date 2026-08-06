@@ -29,18 +29,20 @@ l'activation et ne supprime aucun fichier existant.
 
    ```console
    sudo systemctl is-enabled dockman-secrets-host.service
+   sudo systemctl is-enabled dockman-secrets-reconcile.path
+   sudo systemctl is-active dockman-secrets-reconcile.path
    sudo systemctl status dockman-secrets-host.service
    sudo stat -c '%a %U:%G %n' /etc/dockman-secrets-host.json \
      /etc/dockman-secrets/age-key.txt
    ```
 
-Attendu : service activé, fichiers sensibles en `0600`, aucun secret affiché
-par la commande ou journalisé. Le helper est un `oneshot` terminé, sans daemon.
+Attendu : service de boot et path de réconciliation activés, fichiers sensibles
+en `0600`, aucun secret affiché par la commande ou journalisé. Le helper est un
+`oneshot` terminé, sans daemon ni boucle de polling.
 
 ## 3. Migration sans plaintext persistant
 
-1. Créer `FILE_TOKEN` et `INLINE_TOKEN` dans Dockman.
-2. Utiliser le premier en fichier et le second en environnement :
+1. Utiliser `FILE_TOKEN` en fichier et `INLINE_TOKEN` en environnement :
 
    ```yaml
    secrets:
@@ -58,17 +60,21 @@ par la commande ou journalisé. Le helper est un `oneshot` terminé, sans daemon
        command: ["sh", "-c", "test -s /run/secrets/file_token && sleep infinity"]
    ```
 
-3. Cliquer **Enable encrypted runtime** et saisir `CONFIRM`.
-4. Redémarrer le service hôte :
+2. Cliquer **Initialize encrypted runtime** et saisir `CONFIRM` sans créer de
+   valeur factice.
+3. Depuis **Global secret assignments**, affecter `FILE_TOKEN` et
+   `INLINE_TOKEN` à la stack.
+4. Vérifier sans redémarrer manuellement de service :
 
    ```console
-   sudo systemctl restart dockman-secrets-host.service
    findmnt /server/stacks/chemin/stack/.secrets
+   sudo journalctl -u dockman-secrets-reconcile.service -n 20
    ```
 
 Attendu : `secrets.sops.yaml`, `.dockman-sops-inline` et `compose-sops.sh`
 existent ; la valeur n'apparaît dans aucun de ces fichiers. `.secrets` est de
-type `tmpfs`. Le service `read_only` démarre avec son secret fichier.
+type `tmpfs`. La création de la stack et de ses secrets a déclenché le oneshot
+automatiquement et le service `read_only` démarre avec son secret fichier.
 
 ## 4. Cloisonnement Docker
 
@@ -115,12 +121,14 @@ Si le tmpfs fichier manque, le script donne la commande systemd à exécuter.
 ## 7. Rotation, suppression et Git
 
 1. Modifier un secret depuis Dockman et vérifier que le ciphertext change.
-2. Relancer le service hôte et recréer uniquement le consommateur.
+2. Vérifier que le tmpfs est actualisé automatiquement, puis recréer uniquement
+   le consommateur.
 3. Supprimer un secret après avoir retiré sa référence Compose.
 4. Synchroniser la stack vers Git.
 
 Attendu : Git reçoit le ciphertext et les fichiers portables, jamais
-`.secrets`. Une valeur supprimée disparaît du tmpfs au prochain materialize.
+`.secrets` ni `.dockman-secrets-reconcile`. Une valeur supprimée disparaît du
+tmpfs au cours de la réconciliation explicite déclenchée par Dockman.
 
 ## 8. Garde-fous
 

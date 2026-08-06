@@ -76,6 +76,8 @@ func TestInstallHostRuntimeWritesIndependentSystemdKit(t *testing.T) {
 	for _, path := range []string{
 		HostRuntimeBinaryPath, HostRuntimeSOPSPath, HostRuntimeConfigPath,
 		"/etc/systemd/system/" + HostRuntimeUnitName,
+		"/etc/systemd/system/" + HostReconcileUnitName,
+		"/etc/systemd/system/" + HostReconcilePathName,
 		"/etc/systemd/system/docker.service.d/20-dockman-secrets.conf",
 		"/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf",
 	} {
@@ -86,6 +88,10 @@ func TestInstallHostRuntimeWritesIndependentSystemdKit(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(unit), "Before=docker.service docker.socket")
 	require.Contains(t, string(unit), "ExecStop=")
+	pathUnit, err := os.ReadFile(rooted(root, "/etc/systemd/system/"+HostReconcilePathName))
+	require.NoError(t, err)
+	require.Contains(t, string(pathUnit), `PathChanged="/server/stacks/.dockman-secrets-reconcile"`)
+	require.Contains(t, string(pathUnit), "Unit="+HostReconcileUnitName)
 	info, err := os.Stat(rooted(root, HostRuntimeConfigPath))
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())

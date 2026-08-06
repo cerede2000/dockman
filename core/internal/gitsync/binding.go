@@ -3127,6 +3127,9 @@ func shouldSkipPath(path string, directory bool) bool {
 	// boundary: neither broad policies nor the explicit sensitive-file opt-in
 	// may ever transfer it to Git. Encrypted SOPS sources live outside this
 	// directory and are handled by their own provider.
+	if base == ".dockman-secrets-reconcile" {
+		return true
+	}
 	return directory && (base == ".git" || base == ".secrets" || base == ".dockman-backups" || strings.HasPrefix(base, ".dockman-provision-staging-"))
 }
 

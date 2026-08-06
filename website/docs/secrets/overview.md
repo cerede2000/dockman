@@ -172,8 +172,9 @@ local Compose filesystem:
    `file: ./.secrets/API_TOKEN`, or both;
 3. install the host boot runtime from **Host boot wizard**;
 4. select **Enable encrypted runtime** and type `CONFIRM`;
-5. run `sudo systemctl restart dockman-secrets-host` once after activating a
-   new stack, then recreate its services.
+5. create or assign values from the global secret catalog, then recreate the
+   consuming services. The host runtime reconciles a newly activated stack
+   automatically.
 
 Dockman encrypts and decrypt-verifies every current value before deleting
 `.secrets/` and its bounded plaintext history. It writes only:
@@ -258,6 +259,7 @@ image, copies the configured age identity without printing it, and installs:
 - `/usr/local/libexec/dockman-sops`;
 - `/etc/dockman-secrets-host.json` with mode `0600`;
 - `dockman-secrets-host.service`;
+- `dockman-secrets-reconcile.path` and its fixed one-shot service;
 - Docker service and socket drop-ins requiring that service.
 
 The unit runs after local filesystems and before Docker. It scans only explicit
@@ -266,6 +268,15 @@ empty tmpfs over that stack's `.secrets`, decrypts in bounded memory and writes
 the values atomically. It exits immediately and retains no process, polling
 loop or cache. A non-empty persistent `.secrets` directory is never covered:
 the helper stops instead of hiding unexpected plaintext.
+
+When Dockman activates a new encrypted stack or finds a missing volatile file
+runtime during an explicit Compose action, it updates only
+`.dockman-secrets-reconcile` at the configured stack-root. That file contains
+a timestamp, never a secret or a command. `systemd.path` reacts to the kernel
+filesystem event and invokes the fixed bounded materializer. Dockman does not
+receive the systemd socket, host command execution, `CAP_SYS_ADMIN` or a
+privileged container. Repeated requests are rate-limited by systemd and there
+is no polling process while idle.
 
 The supported automatic boot path targets Linux hosts using systemd and the
 standard `mount`, `umount` and `findmnt` tools (normally provided by
@@ -283,7 +294,7 @@ cannot propagate back to the host.
 For manual recovery, restore the independently backed-up age identity, run:
 
 ```console
-sudo systemctl restart dockman-secrets-host.service
+sudo systemctl start dockman-secrets-reconcile.service
 ```
 
 Then run from the stack directory:
@@ -335,6 +346,21 @@ matching identity; use separate Dockman instances and recipients when strict
 cryptographic separation between hosts is required.
 
 There is no secret polling, background scheduler or resident plaintext cache. CPU overhead is zero while the feature is idle. A single value is limited to 1 MiB and an encrypted source to 4 MiB during an explicit operation. Compose analysis reads at most four 4 MiB manifests and runs only when the user loads or refreshes a stack.
+
+## Global assignments
+
+The Secrets page starts with a host-wide catalog grouped by secret name. A
+single explicit action can create or replace the same value in up to 50
+selected encrypted stacks. This is a global management view, not a global
+plaintext or database vault: Dockman writes and decrypt-verifies an independent
+`secrets.sops.yaml` in every selected stack. A failure rolls back ciphertexts
+already changed by that action. Removing a stack from the selection never
+silently deletes its existing value; deletion stays a per-stack explicit
+operation so Compose references can be checked first.
+
+A new stack can initialize encrypted runtime while it contains zero values.
+This avoids placeholder secrets and lets its first real value be created from
+the global catalog directly into ciphertext.
 
 ## Backup responsibility
 

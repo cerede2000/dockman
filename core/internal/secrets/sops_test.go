@@ -112,6 +112,20 @@ func TestSOPSInlineModeKeepsOnlyCiphertextAndInjectsComposeEnvironment(t *testin
 	require.Equal(t, []string{"API_TOKEN=inline-only-value"}, environment)
 }
 
+func TestEncryptedRuntimeInitializesWithoutPlaintextBootstrap(t *testing.T) {
+	provider, _, roots, _ := testSOPSProvider(t)
+	result, err := provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
+	require.NoError(t, err)
+	require.Empty(t, result.Names)
+	stackRoot := filepath.Join(roots["local"], "apps", "demo")
+	_, err = os.Stat(filepath.Join(stackRoot, RuntimeDirectory))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	ciphertext, err := os.ReadFile(filepath.Join(stackRoot, SOPSSourceFile))
+	require.NoError(t, err)
+	require.NotContains(t, string(ciphertext), "placeholder")
+	require.FileExists(t, filepath.Join(stackRoot, SOPSInlineMarkerFile))
+}
+
 func TestSOPSInlineEditsRewriteCiphertextWithoutMaterializing(t *testing.T) {
 	provider, runtime, roots, _ := testSOPSProvider(t)
 	_, err := runtime.Write("local", "compose/apps/demo", "API_TOKEN", []byte("first"))
@@ -157,11 +171,14 @@ secrets:
 	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
 	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
 	require.NoError(t, err)
+	request, requestErr := os.Stat(filepath.Join(roots["local"], HostRuntimeReconcileRequestFile))
+	require.NoError(t, requestErr, "enabling a file-secret stack must request host reconciliation automatically")
+	require.Equal(t, os.FileMode(0o600), request.Mode().Perm())
 	_, readErr := runtime.Read("local", "compose/apps/demo", "API_TOKEN")
 	require.Error(t, readErr, "persistent plaintext runtime source must be removed")
 	script, readErr := os.ReadFile(filepath.Join(roots["local"], "apps", "demo", SOPSRecoveryScriptFile))
 	require.NoError(t, readErr)
-	require.Contains(t, string(script), "dockman-secrets-host.service")
+	require.Contains(t, string(script), "dockman-secrets-reconcile.service")
 }
 
 func TestComposeEnvironmentRequiresHostRuntimeOnlyForRealManagedFileReference(t *testing.T) {
@@ -192,7 +209,7 @@ secrets:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "compose.yml"), []byte(compose), 0o600))
 	_, err = provider.ComposeEnvironment(context.Background(), "local", filesystem.NewLocal(roots["local"]), "apps/demo/compose.yml")
-	require.ErrorContains(t, err, "dockman-secrets-host.service")
+	require.ErrorContains(t, err, "dockman-secrets-reconcile.path")
 }
 
 func TestEncryptedEditRefreshesExistingVolatileRuntime(t *testing.T) {
@@ -248,7 +265,7 @@ secrets:
 	require.Equal(t, []string{"API_TOKEN=file-secret-value", "DIRECT_TOKEN=direct-value"}, environment)
 }
 
-func TestSOPSInlineRequiresEnvironmentBackedComposeSecretValue(t *testing.T) {
+func TestSOPSInlineAllowsMissingEnvironmentValueForEncryptedAssignment(t *testing.T) {
 	provider, runtime, roots, _ := testSOPSProvider(t)
 	_, err := runtime.Write("local", "compose/apps/demo", "OTHER_TOKEN", []byte("preserved"))
 	require.NoError(t, err)
@@ -263,10 +280,12 @@ secrets:
 	require.NoError(t, os.WriteFile(filepath.Join(roots["local"], "apps", "demo", "compose.yml"), []byte(compose), 0o600))
 
 	_, err = provider.EnableInline(context.Background(), "local", "compose/apps/demo", "compose.yml")
-	require.ErrorContains(t, err, `requires encrypted value "API_TOKEN"`)
-	value, readErr := runtime.Read("local", "compose/apps/demo", "OTHER_TOKEN")
+	require.NoError(t, err)
+	value, readErr := provider.ReadInline(context.Background(), "local", "compose/apps/demo", "OTHER_TOKEN")
 	require.NoError(t, readErr)
-	require.Equal(t, "preserved", string(value), "failed conversion must preserve plaintext runtime source")
+	require.Equal(t, "preserved", string(value), "existing value must be preserved in ciphertext")
+	_, readErr = runtime.Read("local", "compose/apps/demo", "OTHER_TOKEN")
+	require.Error(t, readErr, "plaintext runtime source must be removed after conversion")
 }
 
 func TestSOPSInlineRefusesEnvironmentBackedSecretForReadOnlyService(t *testing.T) {

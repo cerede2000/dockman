@@ -42,6 +42,8 @@ func TestComposeOnlyIncludesSOPSConventionWithoutOpeningRuntimeSecrets(t *testin
 		return io.NopCloser(strings.NewReader(plain)), nil
 	}))
 	require.True(t, shouldSkipPath("app/.secrets", true))
+	require.True(t, shouldSkipPath(".dockman-secrets-reconcile", false))
+	require.True(t, shouldSkipPath("nested/.dockman-secrets-reconcile", false))
 	require.True(t, isSensitivePath("app/secrets.yaml"), "other secret-named YAML remains protected")
 }
 

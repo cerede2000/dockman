@@ -39,8 +39,10 @@ type SOPSStatus struct {
 }
 
 type SOPSResult struct {
-	SourcePath string   `json:"sourcePath"`
-	Names      []string `json:"names"`
+	SourcePath   string   `json:"sourcePath"`
+	Names        []string `json:"names"`
+	RuntimeState string   `json:"runtimeState,omitempty"`
+	RuntimeIssue string   `json:"runtimeIssue,omitempty"`
 }
 
 type materializationSnapshot struct {

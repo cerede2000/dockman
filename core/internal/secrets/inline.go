@@ -80,7 +80,21 @@ func (p *SOPSProvider) ComposeEnvironment(parent context.Context, host string, s
 			return nil, err
 		}
 	} else if composeUsesManagedFileSecrets(stackFS, composeRelpath) {
-		return nil, errors.New("volatile file secrets are not mounted; run sudo systemctl restart dockman-secrets-host.service and verify the Dockman stack bind uses rslave propagation")
+		if requestErr := requestHostRuntimeReconcile(stackFS); requestErr != nil {
+			return nil, fmt.Errorf("volatile file secrets are not mounted and automatic host reconciliation could not be requested: %w", requestErr)
+		}
+		if p.verifyRuntime != nil {
+			volatile, err = p.waitForVolatileRuntime(parent, host, stackFS, root, 5*time.Second)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !volatile {
+			return nil, errors.New("volatile file secrets are not mounted after automatic reconciliation; verify dockman-secrets-reconcile.path is active and the Dockman stack bind uses rslave propagation, or start dockman-secrets-host.service manually")
+		}
+		if err = syncVolatileRuntime(stackFS, root, values); err != nil {
+			return nil, err
+		}
 	}
 	names := sortedValueNames(values)
 	environment := make([]string, 0, len(names))
@@ -137,10 +151,41 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 		}
 	}
 
-	// Export and verify ciphertext before removing any runtime plaintext.
-	result, err := p.Export(parent, host, stackPath)
+	// Export and verify ciphertext before removing any runtime plaintext. A
+	// brand-new stack may initialize an empty encrypted source directly, so no
+	// placeholder secret ever needs to be persisted first.
+	var result SOPSResult
+	runtimeItems, err := p.runtime.List(host, stackPath)
 	if err != nil {
 		return SOPSResult{}, err
+	}
+	if len(runtimeItems) > 0 {
+		result, err = p.Export(parent, host, stackPath)
+		if err != nil {
+			return SOPSResult{}, err
+		}
+	} else {
+		p.operation.Lock()
+		existing, sourceErr := stackFS.Lstat(stackFS.Join(root, SOPSSourceFile))
+		switch {
+		case sourceErr == nil && existing.Mode().IsRegular():
+			values, readErr := p.readValues(parent, stackFS, root)
+			if readErr != nil {
+				p.operation.Unlock()
+				return SOPSResult{}, fmt.Errorf("verify existing encrypted source: %w", readErr)
+			}
+			result = SOPSResult{SourcePath: SOPSSourceFile, Names: sortedValueNames(values)}
+		case errors.Is(sourceErr, fs.ErrNotExist):
+			if writeErr := p.writeValues(parent, stackFS, root, map[string]string{}); writeErr != nil {
+				p.operation.Unlock()
+				return SOPSResult{}, fmt.Errorf("initialize encrypted source: %w", writeErr)
+			}
+			result = SOPSResult{SourcePath: SOPSSourceFile, Names: []string{}}
+		default:
+			p.operation.Unlock()
+			return SOPSResult{}, errors.New("existing encrypted source is not a regular file")
+		}
+		p.operation.Unlock()
 	}
 	p.operation.Lock()
 	defer p.operation.Unlock()
@@ -167,9 +212,9 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 		if !inlineEnvironmentNamePattern.MatchString(name) {
 			return SOPSResult{}, fmt.Errorf("Compose secret %q uses invalid environment source %q", reference.Name, reference.Environment)
 		}
-		if _, exists := values[name]; !exists {
-			return SOPSResult{}, fmt.Errorf("Compose secret %q requires encrypted value %q; create that secret before enabling inline mode", reference.Name, name)
-		}
+		// Missing values remain visible as incomplete Compose references in the
+		// UI, but do not force a plaintext bootstrap. They can be assigned from
+		// the global encrypted catalog immediately after initialization.
 	}
 	if err = writeAtomic(stackFS, stackFS.Join(root, SOPSRecoveryScriptFile), []byte(recoveryScript(composeFile, requiresRuntimeFiles)), 0o700); err != nil {
 		return SOPSResult{}, fmt.Errorf("write recovery script: %w", err)
@@ -181,6 +226,24 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 	}
 	if err = writeAtomic(stackFS, stackFS.Join(root, SOPSInlineMarkerFile), []byte("version=1\n"), 0o600); err != nil {
 		return SOPSResult{}, fmt.Errorf("activate inline SOPS policy: %w", err)
+	}
+	result.RuntimeState = "not-required"
+	if requiresRuntimeFiles {
+		result.RuntimeState = "pending"
+		if requestErr := requestHostRuntimeReconcile(stackFS); requestErr != nil {
+			result.RuntimeIssue = "encrypted runtime is active but automatic host reconciliation could not be requested: " + requestErr.Error()
+			return result, nil
+		}
+		if p.verifyRuntime != nil {
+			ready, waitErr := p.waitForVolatileRuntime(parent, host, stackFS, root, 5*time.Second)
+			if waitErr != nil {
+				result.RuntimeIssue = waitErr.Error()
+			} else if ready {
+				result.RuntimeState = "ready"
+			} else {
+				result.RuntimeIssue = "host reconciliation was requested but the tmpfs is not visible yet"
+			}
+		}
 	}
 	return result, nil
 }
@@ -262,6 +325,8 @@ func (p *SOPSProvider) WriteInline(parent context.Context, host, stackPath, name
 		if err = syncVolatileRuntime(stackFS, root, values); err != nil {
 			return Metadata{}, fmt.Errorf("ciphertext updated but volatile runtime refresh failed: %w", err)
 		}
+	} else if requestErr := requestHostRuntimeReconcile(stackFS); requestErr != nil {
+		return Metadata{}, fmt.Errorf("ciphertext updated but automatic host reconciliation could not be requested: %w", requestErr)
 	}
 	return Metadata{Name: name, Size: int64(len(value)), ModifiedAt: time.Now().UTC()}, nil
 }
@@ -301,6 +366,8 @@ func (p *SOPSProvider) DeleteInline(parent context.Context, host, stackPath, nam
 		if err = syncVolatileRuntime(stackFS, root, values); err != nil {
 			return fmt.Errorf("ciphertext updated but volatile runtime refresh failed: %w", err)
 		}
+	} else if requestErr := requestHostRuntimeReconcile(stackFS); requestErr != nil {
+		return fmt.Errorf("ciphertext updated but automatic host reconciliation could not be requested: %w", requestErr)
 	}
 	return nil
 }
@@ -332,6 +399,39 @@ func (p *SOPSProvider) volatileRuntimeAvailable(ctx context.Context, host string
 		return p.verifyRuntime(ctx, host, absolute)
 	}
 	return IsManagedHostRuntimeMount(absolute)
+}
+
+// requestHostRuntimeReconcile writes only a timestamp at the filesystem root.
+// The host-side systemd.path unit maps that event to one fixed, bounded
+// materialization command. Dockman receives no systemd socket or host command
+// execution capability.
+func requestHostRuntimeReconcile(stackFS filesystem.FileSystem) error {
+	request := []byte(time.Now().UTC().Format(time.RFC3339Nano) + "\n")
+	return writeAtomic(stackFS, HostRuntimeReconcileRequestFile, request, 0o600)
+}
+
+func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host string, stackFS filesystem.FileSystem, root string, timeout time.Duration) (bool, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		ready, err := p.volatileRuntimeAvailable(ctx, host, stackFS, root)
+		if err != nil {
+			return false, err
+		}
+		if ready {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return false, nil
+			}
+			return false, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func syncVolatileRuntime(stackFS filesystem.FileSystem, root string, values map[string]string) error {
@@ -492,7 +592,7 @@ func recoveryScript(composeFile string, requiresRuntimeFiles bool) string {
 	if requiresRuntimeFiles {
 		runtimeCheck = `
 if ! awk -v path="$PWD/.secrets" '$5 == path { found=1 } END { exit !found }' /proc/self/mountinfo; then
-  echo "volatile file secrets are not mounted; run: sudo systemctl restart dockman-secrets-host.service" >&2
+  echo "volatile file secrets are not mounted; run: sudo systemctl start dockman-secrets-reconcile.service" >&2
   exit 78
 fi
 `

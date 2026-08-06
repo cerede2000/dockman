@@ -1,0 +1,34 @@
+name: dockman-secrets-lab-a
+
+services:
+  file-reader:
+    image: alpine:3.22
+    user: "65534:65534"
+    read_only: true
+    network_mode: none
+    restart: unless-stopped
+    command: ["sh", "-ec", "test -s /run/secrets/shared_token; echo FILE_READY; exec sleep infinity"]
+    secrets:
+      - source: shared_token
+        target: shared_token
+        mode: 0444
+
+  inline-reader:
+    image: alpine:3.22
+    read_only: true
+    network_mode: none
+    restart: unless-stopped
+    environment:
+      INLINE_TOKEN: ${INLINE_TOKEN:?INLINE_TOKEN is required}
+    command: ["sh", "-ec", "test -n \"$$INLINE_TOKEN\"; echo INLINE_READY; exec sleep infinity"]
+
+  isolated:
+    image: alpine:3.22
+    read_only: true
+    network_mode: none
+    restart: unless-stopped
+    command: ["sh", "-ec", "test ! -e /run/secrets/shared_token; test -z \"$${INLINE_TOKEN:-}\"; echo ISOLATED; exec sleep infinity"]
+
+secrets:
+  shared_token:
+    file: ./.secrets/SHARED_TOKEN
