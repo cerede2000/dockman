@@ -267,3 +267,44 @@ func TestRecoveryScriptRefreshDoesNotCreateAMissingScript(t *testing.T) {
 	refreshRecoveryScript(filesystem.NewLocal(root), "app", "compose.yml", true)
 	require.NoFileExists(t, filepath.Join(root, "app", SOPSRecoveryScriptFile))
 }
+
+// Deleting the folder of a stack whose tmpfs is mounted used to go half-way:
+// RemoveAll deletes secrets.sops.yaml and everything around it, then fails on
+// the mount point with EBUSY - a directory neither there nor gone, a dangling
+// mount, and the ciphertext already lost.
+func TestDeleteGuardReleasesTheRuntimeBeforeTheFolderGoes(t *testing.T) {
+	provider, _, stack := encryptedStackWithMountedRuntime(t, true)
+	service := NewService(provider.runtime)
+	service.ConfigureSOPS(provider)
+
+	require.NoError(t, service.GuardFileDeletion("local", "compose/app"))
+	require.NoFileExists(t, filepath.Join(stack, RuntimeDirectory, HostRuntimeMarkerFile),
+		"the mount must be released so RemoveAll never walks into it")
+}
+
+// A host that will not release the mount must block the deletion outright: a
+// refusal leaves the stack whole, a half-deletion does not.
+func TestDeleteGuardRefusesWhenTheRuntimeSurvives(t *testing.T) {
+	previous := volatileReleaseTimeout
+	volatileReleaseTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { volatileReleaseTimeout = previous })
+
+	provider, _, stack := encryptedStackWithMountedRuntime(t, false)
+	service := NewService(provider.runtime)
+	service.ConfigureSOPS(provider)
+
+	err := service.GuardFileDeletion("local", "compose/app")
+	require.ErrorContains(t, err, "refusing to delete")
+	require.FileExists(t, filepath.Join(stack, SOPSSourceFile), "the ciphertext must survive a refused deletion")
+	require.FileExists(t, filepath.Join(stack, SOPSInlineMarkerFile))
+}
+
+// An ordinary folder is not slowed down or blocked by any of this.
+func TestDeleteGuardIgnoresAnythingNotEncrypted(t *testing.T) {
+	provider, _, _ := encryptedStackWithMountedRuntime(t, true)
+	service := NewService(provider.runtime)
+	service.ConfigureSOPS(provider)
+
+	require.NoError(t, service.GuardFileDeletion("local", "compose/somewhere-else"))
+	require.NoError(t, service.GuardFileDeletion("local", ""))
+}
