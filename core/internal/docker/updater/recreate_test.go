@@ -32,7 +32,13 @@ type fakeDockerClient struct {
 	failStart  map[string]error
 	failRemove map[string]error
 	failRename map[string]error
+	failStop   map[string]error
 	failCreate error
+
+	// stopReallyStops mirrors a daemon that carried the stop out even though
+	// the call reported an error, which is what a deadline reached mid-stop
+	// looks like from here.
+	stopReallyStops bool
 }
 
 type fakeContainer struct {
@@ -49,6 +55,7 @@ func newFakeDockerClient() *fakeDockerClient {
 		failStart:  map[string]error{},
 		failRemove: map[string]error{},
 		failRename: map[string]error{},
+		failStop:   map[string]error{},
 	}
 }
 
@@ -151,11 +158,15 @@ func (f *fakeDockerClient) ContainerStop(_ context.Context, containerID string, 
 	f.record("stop:" + containerID)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	err := f.failStop[containerID]
+	if err != nil && !f.stopReallyStops {
+		return client.ContainerStopResult{}, err
+	}
 	if item, ok := f.containers[containerID]; ok {
 		item.running = false
 		item.status = container.ContainerState("exited")
 	}
-	return client.ContainerStopResult{}, nil
+	return client.ContainerStopResult{}, err
 }
 
 func (f *fakeDockerClient) ContainerRemove(_ context.Context, containerID string, _ client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
@@ -360,4 +371,33 @@ func TestRecreateSkipsVerificationWhenHealthIsNotRequested(t *testing.T) {
 	require.NoError(t, service.ContainerRecreateWithOptions(t.Context(), "app:v2", testSummary("old000000000a", "app"), false))
 	require.False(t, fake.exists("old000000000a"))
 	require.Equal(t, "app", fake.nameOf("new000000000b"))
+}
+
+// The stop was the one step that gave up without trying to put the service
+// back. A daemon that carried the stop out and still reported an error - a
+// deadline reached mid-stop - left the container down indefinitely.
+func TestRecreateBringsTheContainerBackWhenStopReportsAnError(t *testing.T) {
+	fake := newFakeDockerClient()
+	fake.add("old000000000a", "app", true, noHealth())
+	fake.failStop["old000000000a"] = errors.New("context deadline exceeded")
+	fake.stopReallyStops = true
+	service := newTestUpdater(fake, make(chan containerSrv.Event))
+
+	err := service.ContainerRecreateWithOptions(t.Context(), "app:v2", testSummary("old000000000a", "app"), true)
+	require.ErrorContains(t, err, "failed to stop container app")
+	require.True(t, fake.isRunning("old000000000a"), "the service must not be left down")
+	require.False(t, fake.exists("new000000000b"), "no replacement is created after a failed stop")
+}
+
+// A stop that genuinely did not take effect leaves the container running; the
+// restore attempt must be harmless there too.
+func TestRecreateLeavesARunningContainerAloneWhenStopHadNoEffect(t *testing.T) {
+	fake := newFakeDockerClient()
+	fake.add("old000000000a", "app", true, noHealth())
+	fake.failStop["old000000000a"] = errors.New("permission denied")
+	service := newTestUpdater(fake, make(chan containerSrv.Event))
+
+	err := service.ContainerRecreateWithOptions(t.Context(), "app:v2", testSummary("old000000000a", "app"), true)
+	require.ErrorContains(t, err, "left running")
+	require.True(t, fake.isRunning("old000000000a"))
 }

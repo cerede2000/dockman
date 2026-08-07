@@ -561,7 +561,18 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 	}
 
 	if _, err := u.cli().ContainerStop(ctx, oldContainer.ID, client.ContainerStopOptions{}); err != nil {
-		return fmt.Errorf("failed to stop container %s: %w", containerName, err)
+		// The only step of the sequence that used to give up without trying to
+		// put the service back. A stop that reports an error may still have
+		// taken effect - a deadline reached while the daemon was already
+		// killing the container, for instance - and the service then stayed
+		// down until somebody noticed. Starting a container that is still
+		// running is a no-op, so this is safe either way.
+		restoreCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		if _, startErr := u.cli().ContainerStart(restoreCtx, oldContainer.ID, client.ContainerStartOptions{}); startErr != nil {
+			return fmt.Errorf("failed to stop container %s and could not bring it back up: %v (stop error: %w)", containerName, startErr, err)
+		}
+		return fmt.Errorf("failed to stop container %s; it was left running: %w", containerName, err)
 	}
 
 	newContainer, err := u.containerCreate(ctx, imageTag, containerName+"_updated", inspectedData)

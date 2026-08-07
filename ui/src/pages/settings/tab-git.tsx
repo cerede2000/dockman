@@ -407,14 +407,21 @@ export default function TabGit() {
 
     useEffect(() => { void load(); }, [load]);
 
+    // busy is read through a ref rather than a dependency: having it in the
+    // dependency list tore down and rebuilt the interval on every action, so an
+    // operator working steadily reset the thirty-second countdown each time and
+    // the refresh never fired once. The timer now lives as long as the tab.
+    const busyRef = useRef(busy);
+    useEffect(() => { busyRef.current = busy; }, [busy]);
+
     useEffect(() => {
         if (!feature?.enabled) return;
         const timer = window.setInterval(() => {
-            if (document.visibilityState !== "visible" || busy !== null) return;
+            if (document.visibilityState !== "visible" || busyRef.current !== null) return;
             void api<Binding[]>("/bindings").then(setBindings).catch(() => undefined);
         }, 30_000);
         return () => window.clearInterval(timer);
-    }, [busy, feature?.enabled]);
+    }, [feature?.enabled]);
 
     const credentialNames = useMemo(() => Object.fromEntries(credentials.map((item) => [item.id, item.name])), [credentials]);
     const bindingStackTarget = useMemo(() => stackTargets.find((target) => target.host === bindingForm.host && target.path === bindingForm.stackPath), [bindingForm.host, bindingForm.stackPath, stackTargets]);

@@ -31,6 +31,19 @@ type protectedUpdateTarget struct {
 // the target is being replaced. This is intended for infrastructure on which
 // Dockman itself depends, such as a Docker socket proxy.
 func ProtectedContainerUpdate(ctx context.Context, dkSrv *Service, containerID string) error {
+	// Every other Compose action serializes on the stack lock; this one did
+	// not, so a `compose down` running at the same moment left orphans behind.
+	//
+	// The lock covers the launch, not the helper's own run: the helper is
+	// deliberately detached because Dockman may lose its daemon connection
+	// while the socket proxy is being replaced, and an in-process lock cannot
+	// reach into another container. It closes the window Dockman controls.
+	return withContainerUpdateLocks(ctx, dkSrv, []string{containerID}, func() error {
+		return launchProtectedContainerUpdate(ctx, dkSrv, containerID)
+	})
+}
+
+func launchProtectedContainerUpdate(ctx context.Context, dkSrv *Service, containerID string) error {
 	cli := dkSrv.Container.Cli()
 	target, err := resolveProtectedUpdateTarget(ctx, cli, containerID)
 	if err != nil {

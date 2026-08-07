@@ -200,11 +200,25 @@ func (p *SOPSProvider) AssignEncrypted(parent context.Context, host, name string
 			err = p.writeValues(parent, stackFS, root, current.values)
 		}
 		if err != nil {
+			// The compensation used to swallow both the resolve error and the
+			// write error while the message asserted the rollback had happened.
+			// A partially applied global assignment reported as fully undone is
+			// the worst of both: the user believes nothing changed and does not
+			// go looking.
+			var stranded []string
 			for rollback := written - 1; rollback >= 0; rollback-- {
 				rollbackFS, rollbackRoot, resolveErr := p.resolveStack(host, targets[rollback].path)
-				if resolveErr == nil {
-					_ = p.writeValues(context.Background(), rollbackFS, rollbackRoot, targets[rollback].before)
+				if resolveErr != nil {
+					stranded = append(stranded, targets[rollback].path)
+					continue
 				}
+				if writeErr := p.writeValues(context.Background(), rollbackFS, rollbackRoot, targets[rollback].before); writeErr != nil {
+					stranded = append(stranded, targets[rollback].path)
+				}
+			}
+			if len(stranded) > 0 {
+				sort.Strings(stranded)
+				return nil, fmt.Errorf("assign encrypted secret to %s: %w; the new value could NOT be rolled back from %d stack(s) and is still in place there: %s", current.path, err, len(stranded), strings.Join(stranded, ", "))
 			}
 			return nil, fmt.Errorf("assign encrypted secret to %s: %w; completed assignments were rolled back", current.path, err)
 		}
