@@ -175,8 +175,8 @@ func ensureComposeSecret(states map[string]*composeSecretState, name string) *co
 		return state
 	}
 	state := &composeSecretState{
-		ComposeSecret:     ComposeSecret{Name: name, Services: []string{}, ReadOnlyServices: []string{}},
-		services:          map[string]struct{}{},
+		ComposeSecret:    ComposeSecret{Name: name, Services: []string{}, ReadOnlyServices: []string{}},
+		services:         map[string]struct{}{},
 		readOnlyServices: map[string]struct{}{},
 	}
 	states[name] = state

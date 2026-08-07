@@ -51,7 +51,10 @@ func CheckAuth(w http.ResponseWriter, r *http.Request, srv *Service) (*http.Requ
 		return r, false
 	}
 
-	http.Error(w, err.Error(), http.StatusUnauthorized)
+	// A fixed message: the reason a cookie failed to verify is Dockman's
+	// business, not that of a caller who has not authenticated.
+	log.Debug().Err(err).Msg("rejected an unauthenticated request")
+	http.Error(w, "authentication required", http.StatusUnauthorized)
 	return r, false
 }
 

@@ -14,6 +14,9 @@ import (
 )
 
 type Service struct {
+	// tlsServed records that Dockman itself terminates TLS, so every cookie it
+	// issues can carry Secure regardless of what a proxy header claims.
+	tlsServed    bool
 	userStore    UserStore
 	sessionStore SessionStore
 	config       *Config
@@ -27,11 +30,13 @@ func NewService(
 	config *Config,
 	userStore UserStore,
 	sessionStore SessionStore,
+	tlsServed bool,
 ) *Service {
 	s := &Service{
 		userStore:    userStore,
 		sessionStore: sessionStore,
 		config:       config,
+		tlsServed:    tlsServed,
 	}
 
 	if config.OIDCEnable {

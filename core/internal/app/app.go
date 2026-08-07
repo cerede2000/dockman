@@ -105,6 +105,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		&conf.Auth,
 		authDB,
 		sessionsDB,
+		conf.Certs.IsSet(),
 	)
 
 	setupComposeRoot(conf.ComposeRoot)

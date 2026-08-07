@@ -32,7 +32,7 @@ func (h *HandlerHttp) OIDCLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   300,
 		HttpOnly: true,
-		Secure:   h.srv.config.OIDCHttp,
+		Secure:   h.srv.config.OIDCCookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -76,7 +76,7 @@ func (h *HandlerHttp) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookies := createAuthCookies(token, session.ID, session.Expires)
+	cookies := createAuthCookies(token, session.ID, session.Expires, requestIsHTTPS(h.srv.tlsServed, r.Header))
 	for _, cookie := range cookies {
 		http.SetCookie(w, &cookie)
 	}
