@@ -220,7 +220,13 @@ secrets:
 	require.Error(t, readErr, "persistent plaintext runtime source must be removed")
 	script, readErr := os.ReadFile(filepath.Join(roots["local"], "apps", "demo", SOPSRecoveryScriptFile))
 	require.NoError(t, readErr)
-	require.Contains(t, string(script), "dockman-secrets-reconcile.service")
+	// This assertion used to require the opposite: that the script tell the
+	// reader to start dockman-secrets-reconcile.service. That is the one thing
+	// recovery must never need. A host carrying only Docker and SOPS has to
+	// bring the stack up from this directory alone, so the script materializes
+	// the file secrets itself from the ciphertext.
+	require.NotContains(t, string(script), "systemctl")
+	require.Contains(t, string(script), "sops -d --extract")
 }
 
 func TestComposeEnvironmentRequiresHostRuntimeOnlyForRealManagedFileReference(t *testing.T) {
