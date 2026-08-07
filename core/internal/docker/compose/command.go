@@ -3,7 +3,6 @@ package compose
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -61,7 +60,7 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag, ne
 	if err != nil {
 		return err
 	}
-	driver := c.dockmanBuildxDriver(ctx, wd)
+	driver, currentBuilder := c.dockmanBuildxBuilder(ctx, wd)
 	if stream != nil {
 		_, _ = fmt.Fprintf(stream, "*** Buildx driver: %s ***\n", driver)
 		_, _ = fmt.Fprintf(stream, "*** Build network: %s ***\n", networkMode)
@@ -85,6 +84,10 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag, ne
 		if networkMode == "host" {
 			args = append(args[:5], append([]string{"--allow=network.host"}, args[5:]...)...)
 		}
+	} else if currentBuilder != "" {
+		// Name the daemon-integrated builder rather than letting Buildx resolve
+		// it implicitly from its state directory.
+		args = append(args[:3], append([]string{"--builder", currentBuilder}, args[3:]...)...)
 	}
 	args = dockmanNativeBuildxArgs(args)
 	buildErr := c.runDockerCLI(ctx, args, wd, stream)
@@ -124,14 +127,20 @@ func dockmanNativeBuildxArgs(args []string) []string {
 	return append([]string{"env", "BUILDX_CONFIG=" + dockmanNativeBuildxConfig, "BUILDX_BUILDER="}, args...)
 }
 
-// dockmanBuildxDriver reports the builder selected from Dockman's isolated
-// Buildx state. The first builder row is the current Docker context builder;
-// node rows use the context endpoint rather than a driver name.
-func (c *Service) dockmanBuildxDriver(ctx context.Context, wd string) string {
+// dockmanBuildxBuilder reports the builder selected from Dockman's isolated
+// Buildx state, by driver and by name. The first builder row is the current
+// Docker context builder; node rows use the context endpoint rather than a
+// driver name.
+//
+// The name matters as much as the driver: naming the builder on the command
+// line means Buildx never has to pick the current instance out of its state
+// directory, which lives at a predictable path and could therefore be
+// pre-created by another local user to point the implicit builder elsewhere.
+func (c *Service) dockmanBuildxBuilder(ctx context.Context, wd string) (string, string) {
 	var output bytes.Buffer
 	args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"})
 	if err := c.runner.Run(ctx, args, wd, nil, &output, io.Discard); err != nil {
-		return "unknown"
+		return "unknown", ""
 	}
 	for _, line := range strings.Split(output.String(), "\n") {
 		parts := strings.SplitN(strings.TrimSpace(line), "|", 2)
@@ -140,33 +149,32 @@ func (c *Service) dockmanBuildxDriver(ctx context.Context, wd string) string {
 		}
 		driver := strings.TrimSpace(parts[1])
 		if driver == "docker" || driver == "docker-container" || driver == "kubernetes" || driver == "remote" {
-			return driver
+			return driver, strings.TrimSpace(parts[0])
 		}
 	}
-	return "unknown"
+	return "unknown", ""
 }
 
-// cleanupDockmanBuildxHelper removes Dockman's named ephemeral builder and
-// the exact legacy `default` helper left by older Dockman builds. Reserved
-// Docker-context builders are never passed to buildx rm.
+// cleanupDockmanBuildxHelper removes the ephemeral builder this job created,
+// and nothing else.
+//
+// It used to also run `docker rm --force buildx_buildkit_default` on every
+// build. Dockman cannot create that container: its Buildx state is isolated,
+// BUILDX_BUILDER is empty and the builder is now always named explicitly, so
+// a container by that name belongs to the user's own docker-container builder
+// called `default`. Force-removing it destroyed their builder, and did so once
+// per build. A leftover from a Dockman old enough to have created one has to be
+// removed by hand — once — rather than by guessing at a name forever.
 func (c *Service) cleanupDockmanBuildxHelper(ctx context.Context, wd, builderName string) error {
-	var cleanupErrors []error
-	if builderName != "" {
-		var output bytes.Buffer
-		args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "rm", "--force", builderName})
-		if err := c.runner.Run(ctx, args, wd, nil, nil, &output); err != nil {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove isolated builder %s: %s", builderName, strings.TrimSpace(output.String())))
-		}
+	if builderName == "" {
+		return nil
 	}
-
 	var output bytes.Buffer
-	if err := c.runner.Run(ctx, []string{"docker", "rm", "--force", "buildx_buildkit_default"}, wd, nil, nil, &output); err != nil {
-		message := strings.TrimSpace(output.String())
-		if !strings.Contains(strings.ToLower(message), "no such container") {
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove legacy helper container: %s", message))
-		}
+	args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "rm", "--force", builderName})
+	if err := c.runner.Run(ctx, args, wd, nil, nil, &output); err != nil {
+		return fmt.Errorf("remove isolated builder %s: %s", builderName, strings.TrimSpace(output.String()))
 	}
-	return errors.Join(cleanupErrors...)
+	return nil
 }
 
 func (c *Service) runDockerCLI(ctx context.Context, args []string, wd string, stream io.Writer) error {

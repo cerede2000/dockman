@@ -304,6 +304,19 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 // NotifyExecution sends one bounded summary for a scheduled automatic update
 // batch. Failed digests are circuit-broken, so this does not repeat on every
 // cron tick unless the operator explicitly retries or a new digest appears.
+// maxNotificationDetail bounds the per-container reason carried out of the
+// machine. Update failures can wrap a docker CLI's whole stderr, which is both
+// unbounded and a plausible place for a registry credential to appear.
+const maxNotificationDetail = 300
+
+func boundedNotificationDetail(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxNotificationDetail {
+		return value
+	}
+	return value[:maxNotificationDetail] + "… (truncated, see Dockman for the full reason)"
+}
+
 func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecutionRun, outcomes []updater.UpdateExecutionOutcome) error {
 	destinations, err := s.enabledDestinations(run.Host)
 	if err != nil {
@@ -319,7 +332,7 @@ func (s *Service) NotifyExecution(ctx context.Context, run updater.UpdateExecuti
 		case updater.ExecutionUpdated, updater.ExecutionCurrent:
 			allSuccesses = append(allSuccesses, item)
 		case updater.ExecutionFailed, updater.ExecutionRolledBack:
-			allFailures = append(allFailures, item+" | "+outcome.Message)
+			allFailures = append(allFailures, item+" | "+boundedNotificationDetail(outcome.Message))
 		}
 	}
 	slices.Sort(allSuccesses)

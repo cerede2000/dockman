@@ -2293,9 +2293,18 @@ func collectStackFiles(targetFS filesystem.FileSystem, root string, includeSensi
 			if len(result)+1 > maxBindingFiles {
 				return 0, stackInventoryLimitError(policy, childRel, maxBindingFiles)
 			}
-			sensitive := isSensitiveTransferPath(childRel, info.Size(), func() (io.ReadCloser, error) {
+			openChild := func() (io.ReadCloser, error) {
 				return targetFS.OpenFile(child, os.O_RDONLY, 0)
-			})
+			}
+			// Unconditional, ahead of the sensitive gate: an age identity that
+			// reaches a remote decrypts every SOPS source in the repository, and
+			// there is no reason to push one. The typed confirmation must not be
+			// able to let it through either.
+			if isAgeIdentity(info.Size(), openChild) {
+				result[childRel] = transferFile{path: childRel, size: info.Size(), sensitive: true, skipReason: "age_identity"}
+				continue
+			}
+			sensitive := isSensitiveTransferPath(childRel, info.Size(), openChild)
 			if sensitive && !includeSensitive {
 				result[childRel] = transferFile{path: childRel, size: info.Size(), sensitive: true, skipReason: "sensitive"}
 				continue
@@ -3131,6 +3140,32 @@ func shouldSkipPath(path string, directory bool) bool {
 		return true
 	}
 	return directory && (base == ".git" || base == ".secrets" || base == ".dockman-backups" || strings.HasPrefix(base, ".dockman-provision-staging-"))
+}
+
+// An age identity is recognised by content rather than by name: the
+// conventional names (age-key.txt, keys.txt) carry no telling extension and
+// contain neither "secret" nor "credential", so isSensitivePath does not see
+// them and such a file would be transferred as ordinary text. Identities are
+// small, so the read is bounded and cheap.
+const (
+	ageIdentityMarker  = "AGE-SECRET-KEY-1"
+	maxAgeIdentityScan = 8 << 10
+)
+
+func isAgeIdentity(size int64, open func() (io.ReadCloser, error)) bool {
+	if size <= 0 || size > maxAgeIdentityScan || open == nil {
+		return false
+	}
+	reader, err := open()
+	if err != nil {
+		return false
+	}
+	defer reader.Close()
+	contents, err := io.ReadAll(io.LimitReader(reader, maxAgeIdentityScan))
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(bytes.ToUpper(contents), []byte(ageIdentityMarker))
 }
 
 func isSensitivePath(path string) bool {
