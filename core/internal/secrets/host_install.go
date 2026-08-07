@@ -88,19 +88,26 @@ WantedBy=multi-user.target
 Wants=dockman-secrets-host.service
 After=dockman-secrets-host.service
 `
+	// StartLimitIntervalSec=10 with StartLimitBurst=5 was reachable by simply
+	// encrypting six stacks in a row: the unit entered a failed state and took
+	// the .path watch down with it, permanently. Dockman now coalesces its
+	// requests to one per operation, and the remaining allowance is wide enough
+	// that a legitimate burst cannot exhaust it.
 	reconcileUnit := `[Unit]
 Description=Reconcile encrypted Compose secrets into volatile memory
 Documentation=https://github.com/cerede2000/dockman
 Requires=dockman-secrets-host.service
 After=local-fs.target dockman-secrets-host.service
-StartLimitIntervalSec=10
-StartLimitBurst=5
+StartLimitIntervalSec=60
+StartLimitBurst=30
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/dockman-secrets-host materialize --config /etc/dockman-secrets-host.json
 NoNewPrivileges=yes
 `
+	// The rate limit belongs on the watch, where systemd throttles triggers
+	// instead of failing the unit outright: a burst is delayed, never fatal.
 	reconcilePath := fmt.Sprintf(`[Unit]
 Description=Watch for explicit Dockman secret reconciliation requests
 Documentation=https://github.com/cerede2000/dockman
@@ -109,6 +116,8 @@ After=local-fs.target
 [Path]
 PathChanged=%q
 Unit=%s
+TriggerLimitIntervalSec=60
+TriggerLimitBurst=30
 
 [Install]
 WantedBy=multi-user.target

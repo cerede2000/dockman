@@ -118,16 +118,24 @@ func MaterializeHostRuntime(parent context.Context, config HostRuntimeConfig) (H
 	if err = cleanupRuntimeMounts(config.StackRoot, desired); err != nil {
 		return HostRuntimeResult{}, err
 	}
+	// One malformed stack must not deprive every other stack of its secrets at
+	// boot. Returning on the first error did exactly that, which contradicts
+	// the Wants= coupling on the Docker unit: the whole point of letting the
+	// daemon start after a failed materialization is that the damage stays
+	// local to the stacks actually affected. The exit status still reflects the
+	// failure, so systemctl status and the logs stay honest.
 	result := HostRuntimeResult{}
+	var failures []error
 	for _, stackRoot := range markers {
 		count, materializeErr := materializeEncryptedStack(parent, config, stackRoot)
 		if materializeErr != nil {
-			return result, fmt.Errorf("materialize %s: %w", stackRoot, materializeErr)
+			failures = append(failures, fmt.Errorf("materialize %s: %w", stackRoot, materializeErr))
+			continue
 		}
 		result.Stacks++
 		result.Secrets += count
 	}
-	return result, nil
+	return result, errors.Join(failures...)
 }
 
 func CleanupHostRuntime(config HostRuntimeConfig) error {
@@ -159,16 +167,40 @@ func validateHostRuntimeInputs(config HostRuntimeConfig) error {
 	return nil
 }
 
+// This walk runs at boot, before the Docker daemon. A stack root that happens
+// to contain a deep or enormous tree — a media library, a restored backup —
+// must not be able to hold the host hostage, so the traversal is bounded in
+// both depth and entry count.
+//
+// The depth deliberately matches maxStackDiscoveryDepth used by ListStacks: a
+// stack the user can reach and encrypt from the interface must be a stack the
+// host runtime mounts at boot, otherwise it would come up with no secrets and
+// no explanation.
+const (
+	maxHostDiscoveryDepth   = maxStackDiscoveryDepth
+	maxHostDiscoveryEntries = 200_000
+)
+
 func discoverEncryptedStacks(stackRoot string) ([]string, error) {
 	stacks := []string{}
+	visited := 0
 	err := filepath.WalkDir(stackRoot, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		visited++
+		if visited > maxHostDiscoveryEntries {
+			return fmt.Errorf("stack root holds more than %d entries; narrow the configured root", maxHostDiscoveryEntries)
 		}
 		if entry.IsDir() {
 			base := entry.Name()
 			if current != stackRoot && (base == ".git" || base == RuntimeDirectory || base == ".dockman-backups" || base == "node_modules") {
 				return filepath.SkipDir
+			}
+			if relative, relErr := filepath.Rel(stackRoot, current); relErr == nil && relative != "." {
+				if len(strings.Split(relative, string(filepath.Separator))) >= maxHostDiscoveryDepth {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
