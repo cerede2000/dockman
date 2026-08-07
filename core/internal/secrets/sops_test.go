@@ -7,10 +7,52 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
 	"github.com/stretchr/testify/require"
 )
+
+// Each probe is an Lstat, a ReadFile and a mount check, and on a remote host
+// every one of them is a round trip. A fixed 100ms tick therefore burned about
+// ten of them over this window; the doubling backoff keeps the early probes,
+// where the runtime normally appears, and drops the rest.
+func TestWaitForVolatileRuntimeBacksOffInsteadOfBusyPolling(t *testing.T) {
+	root := t.TempDir()
+	runtimeDirectory := filepath.Join(root, "app", RuntimeDirectory)
+	require.NoError(t, os.MkdirAll(runtimeDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(runtimeDirectory, HostRuntimeMarkerFile), []byte("version=1\n"), 0o400))
+
+	probes := 0
+	provider := &SOPSProvider{verifyRuntime: func(context.Context, string, string) (bool, error) {
+		probes++
+		return false, nil
+	}}
+
+	ready, err := provider.waitForVolatileRuntime(context.Background(), "local", filesystem.NewLocal(root), "app", time.Second)
+	require.NoError(t, err)
+	require.False(t, ready)
+	require.LessOrEqual(t, probes, 6)
+	require.GreaterOrEqual(t, probes, 3, "the fast path must still be probed early")
+}
+
+// A runtime that appears just before the deadline must still be reported as
+// ready: the window belongs to the caller, not to the probe schedule.
+func TestWaitForVolatileRuntimeProbesOnceMoreOnTheDeadline(t *testing.T) {
+	root := t.TempDir()
+	runtimeDirectory := filepath.Join(root, "app", RuntimeDirectory)
+	require.NoError(t, os.MkdirAll(runtimeDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(runtimeDirectory, HostRuntimeMarkerFile), []byte("version=1\n"), 0o400))
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	provider := &SOPSProvider{verifyRuntime: func(context.Context, string, string) (bool, error) {
+		return time.Now().After(deadline.Add(-20 * time.Millisecond)), nil
+	}}
+
+	ready, err := provider.waitForVolatileRuntime(context.Background(), "local", filesystem.NewLocal(root), "app", 500*time.Millisecond)
+	require.NoError(t, err)
+	require.True(t, ready)
+}
 
 type memorySOPSRunner struct{ plain []byte }
 

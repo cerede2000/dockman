@@ -567,22 +567,20 @@ export default function TabGit() {
 
 	const openRepositoryWebhook = async (repository: Repository) => {
 		setBusy(`repository-webhook-${repository.id}`);
-		try {
+		await (async () => { try {
 			const view = await api<RepositoryWebhook>(`/repositories/${repository.id}/webhook`);
 			setWebhookRepository(repository);
 			setRepositoryWebhook(view);
 			setWebhookEnabled(view.enabled);
 		} catch (error) {
 			showError(error instanceof Error ? error.message : String(error));
-		} finally {
-			setBusy(null);
-		}
+		} })().finally(() => setBusy(null));
 	};
 
 	const saveRepositoryWebhook = async (rotateSecret = false) => {
 		if (!webhookRepository) return;
 		setBusy(`repository-webhook-save-${webhookRepository.id}`);
-		try {
+		await (async () => { try {
 			const view = await api<RepositoryWebhook>(`/repositories/${webhookRepository.id}/webhook`, {
 				method: "PUT", body: JSON.stringify({enabled: webhookEnabled, rotateSecret}),
 			});
@@ -591,9 +589,7 @@ export default function TabGit() {
 			showSuccess(rotateSecret ? "Webhook secret rotated. Update it in GitHub before closing this dialog." : "Git webhook configuration saved.");
 		} catch (error) {
 			showError(error instanceof Error ? error.message : String(error));
-		} finally {
-			setBusy(null);
-		}
+		} })().finally(() => setBusy(null));
 	};
 
     const confirmDeleteRepository = async () => {

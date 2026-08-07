@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/RA341/dockman/internal/host/filesystem"
 	"gopkg.in/yaml.v3"
 )
 
@@ -210,6 +211,13 @@ func (p *SOPSProvider) AssignEncrypted(parent context.Context, host, name string
 		written = index + 1
 	}
 	assignments := make([]CatalogAssignment, 0, len(targets))
+	// One reconciliation request for the whole operation, not one per stack.
+	// Every stack of a host writes the same request file, so a bulk assignment
+	// used to emit one inotify event per target: the host unit was started
+	// dozens of times over, each run re-materializing every stack, and the
+	// systemd start limit turned that burst into a lasting failure of the
+	// watch. A single request converges to the same state.
+	var reconcile filesystem.FileSystem
 	for _, current := range targets {
 		stackFS, root, err := p.resolveStack(host, current.path)
 		if err != nil {
@@ -217,10 +225,13 @@ func (p *SOPSProvider) AssignEncrypted(parent context.Context, host, name string
 		}
 		if volatile, checkErr := p.volatileRuntimeAvailable(parent, host, stackFS, root); checkErr == nil && volatile {
 			_ = syncVolatileRuntime(stackFS, root, current.values)
-		} else {
-			_ = requestHostRuntimeReconcile(stackFS)
+		} else if reconcile == nil {
+			reconcile = stackFS
 		}
 		assignments = append(assignments, CatalogAssignment{StackPath: current.path, Mode: "encrypted"})
+	}
+	if reconcile != nil {
+		_ = requestHostRuntimeReconcile(reconcile)
 	}
 	return assignments, nil
 }
