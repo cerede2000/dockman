@@ -23,11 +23,33 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// dockerClient is the slice of the Docker client this package drives. It
+// exists so that ContainerRecreateWithOptions — the code that stops, rebuilds
+// and destroys production containers, and the only place where a mistake is
+// unrecoverable — can be exercised without a daemon. *client.Client satisfies
+// it as written.
+type dockerClient interface {
+	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error)
+	ContainerStart(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
+	ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
+	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
+	ContainerRename(ctx context.Context, containerID string, options client.ContainerRenameOptions) (client.ContainerRenameResult, error)
+	ImageList(ctx context.Context, options client.ImageListOptions) (client.ImageListResult, error)
+	ImageInspect(ctx context.Context, imageID string, inspectOpts ...client.ImageInspectOption) (client.ImageInspectResult, error)
+}
+
 type Service struct {
 	srv            *containerSrv.Service
 	hostname       string
 	dockmanUpdater string
 	Store          Store
+
+	// Test seams. Both are nil in production, where the real Docker client and
+	// the process-wide events hub are used.
+	client    dockerClient
+	subscribe func() (<-chan containerSrv.Event, func())
 }
 
 func New(
@@ -45,8 +67,19 @@ func New(
 }
 
 // access to the raw docker client
-func (u *Service) cli() *client.Client {
+func (u *Service) cli() dockerClient {
+	if u.client != nil {
+		return u.client
+	}
 	return u.srv.Client
+}
+
+// events subscribes to this host's container events through the shared hub.
+func (u *Service) events() (<-chan containerSrv.Event, func()) {
+	if u.subscribe != nil {
+		return u.subscribe()
+	}
+	return u.srv.SubscribeEvents()
 }
 
 func (u *Service) ContainersUpdateAll(ctx context.Context, opts ...UpdateOption) error {
@@ -697,7 +730,7 @@ const (
 func (u *Service) containerHealthCheckRuntime(ctx context.Context, containerID string) error {
 	// Subscribed before inspecting, so nothing that happens after the state is
 	// read can slip between the two.
-	events, unsubscribe := u.srv.SubscribeEvents()
+	events, unsubscribe := u.events()
 	defer unsubscribe()
 
 	inspect, err := u.cli().ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
