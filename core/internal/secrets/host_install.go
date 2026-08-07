@@ -63,6 +63,12 @@ func InstallHostRuntime(options HostInstallOptions) error {
 	if err = writeHostFileAtomic(configTarget, encoded, 0o600); err != nil {
 		return fmt.Errorf("write host runtime configuration: %w", err)
 	}
+	// No ExecStop. With RemainAfterExit=yes it runs on `systemctl restart` too,
+	// so restarting the unit unmounted every stack's tmpfs out from under the
+	// running containers before remounting it - and any container restarting in
+	// that window came up with no secrets at all. Nothing is gained in exchange:
+	// at shutdown the tmpfs goes with the machine. An administrator who really
+	// wants to tear the mounts down still has `dockman-secrets-host cleanup`.
 	unit := `[Unit]
 Description=Materialize encrypted Compose secrets into volatile memory
 Documentation=https://github.com/cerede2000/dockman
@@ -72,7 +78,6 @@ Before=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/dockman-secrets-host materialize --config /etc/dockman-secrets-host.json
-ExecStop=/usr/local/libexec/dockman-secrets-host cleanup --config /etc/dockman-secrets-host.json
 RemainAfterExit=yes
 NoNewPrivileges=yes
 

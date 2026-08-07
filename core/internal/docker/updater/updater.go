@@ -396,7 +396,11 @@ func (u *Service) containersUpdateLoop(
 
 	var dockmanUpdate = func() {}
 	for _, cur := range containers {
-		if hasDockmanLabel(&cur) && u.hostname == containerSrv.LocalClient && !updateConfig.AllowSelfUpdate {
+		// The host condition that used to sit here made the loop disagree with
+		// the inventory, which marks a Dockman container protected wherever it
+		// runs. Recreating one through the API it is itself serving cannot end
+		// well on any host, and WithSelfUpdate remains the one deliberate way in.
+		if hasDockmanLabel(&cur) && !updateConfig.AllowSelfUpdate {
 			// Store the update for later
 			//id := cur.ID
 			dockmanUpdate = func() {
