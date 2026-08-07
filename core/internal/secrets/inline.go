@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RA341/dockman/internal/host/filesystem"
+	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -248,23 +249,80 @@ func (p *SOPSProvider) EnableInline(parent context.Context, host, stackPath, com
 	return result, nil
 }
 
+// volatileReleaseTimeout bounds the wait for the host to unmount a stack's
+// tmpfs. The reconciliation is a systemd oneshot triggered through inotify, so
+// it normally completes in a second or two; the margin covers a busy host. A
+// variable so tests do not have to spend the whole window.
+var volatileReleaseTimeout = 15 * time.Second
+
 func (p *SOPSProvider) DisableInline(parent context.Context, host, stackPath string) (SOPSResult, error) {
-	result, err := p.Materialize(parent, host, stackPath)
-	if err != nil {
-		return SOPSResult{}, err
-	}
-	p.operation.Lock()
-	defer p.operation.Unlock()
 	stackFS, root, err := p.resolveStack(host, stackPath)
 	if err != nil {
 		return SOPSResult{}, err
 	}
+	// Materializing first would write the plaintext straight into the tmpfs
+	// when the volatile runtime is mounted. Removing the marker afterwards then
+	// makes the host unmount that tmpfs on its next reconciliation, and every
+	// secret the user asked to keep in the clear disappears with it. The mount
+	// has to be released before anything is written to that directory.
+	volatile, err := p.volatileRuntimeAvailable(parent, host, stackFS, root)
+	if err != nil {
+		return SOPSResult{}, err
+	}
+	if volatile {
+		if err = p.releaseVolatileRuntime(parent, host, stackFS, root); err != nil {
+			return SOPSResult{}, err
+		}
+	}
+	result, err := p.Materialize(parent, host, stackPath)
+	if err != nil {
+		if volatile {
+			// The marker was removed to release the mount; restoring it leaves
+			// the stack coherently encrypted instead of half converted.
+			p.restoreInlineMarker(stackFS, root)
+		}
+		return SOPSResult{}, err
+	}
+	p.operation.Lock()
+	defer p.operation.Unlock()
 	for _, name := range []string{SOPSInlineMarkerFile, SOPSRecoveryScriptFile} {
 		if removeErr := stackFS.RemoveAll(stackFS.Join(root, name)); removeErr != nil {
 			return SOPSResult{}, fmt.Errorf("disable inline SOPS policy: %w", removeErr)
 		}
 	}
 	return result, nil
+}
+
+// releaseVolatileRuntime takes the stack out of the host's encrypted set and
+// waits for the tmpfs to actually go away. It either succeeds or leaves the
+// stack exactly as it found it: nothing is written to the runtime directory
+// while it may still be volatile.
+func (p *SOPSProvider) releaseVolatileRuntime(parent context.Context, host string, stackFS filesystem.FileSystem, root string) error {
+	// The marker is what makes the host runtime consider this stack encrypted,
+	// so removing it is what causes the unmount.
+	if err := stackFS.RemoveAll(stackFS.Join(root, SOPSInlineMarkerFile)); err != nil {
+		return fmt.Errorf("release volatile secret runtime: %w", err)
+	}
+	if err := requestHostRuntimeReconcile(stackFS); err != nil {
+		p.restoreInlineMarker(stackFS, root)
+		return fmt.Errorf("the volatile secret runtime is mounted and host reconciliation could not be requested; nothing was changed: %w", err)
+	}
+	released, err := p.waitForVolatileRuntimeRelease(parent, host, stackFS, root, volatileReleaseTimeout)
+	if err != nil {
+		p.restoreInlineMarker(stackFS, root)
+		return fmt.Errorf("verify volatile secret runtime release: %w", err)
+	}
+	if !released {
+		p.restoreInlineMarker(stackFS, root)
+		return errors.New("the volatile secret runtime is still mounted after reconciliation; decrypting now would write the secrets into memory that is about to be discarded. Nothing was changed: check that dockman-secrets-reconcile.path is active, then retry")
+	}
+	return nil
+}
+
+func (p *SOPSProvider) restoreInlineMarker(stackFS filesystem.FileSystem, root string) {
+	if err := writeAtomic(stackFS, stackFS.Join(root, SOPSInlineMarkerFile), []byte("version=1\n"), 0o600); err != nil {
+		log.Error().Err(err).Msg("could not restore the encrypted runtime marker after an aborted decryption; the stack is encrypted at rest but no longer marked as such")
+	}
 }
 
 func (p *SOPSProvider) ListInline(parent context.Context, host, stackPath string) ([]Metadata, error) {
@@ -422,13 +480,11 @@ const (
 	probeGrace      = 250 * time.Millisecond
 )
 
-// waitForVolatileRuntime reports whether the host materialized this stack's
-// secrets within the window, probing on a doubling backoff and ending on a
-// probe scheduled at the deadline itself.
-func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host string, stackFS filesystem.FileSystem, root string, timeout time.Duration) (bool, error) {
-	// The waiting window is enforced here rather than by the probe context, so
-	// that the probe scheduled on the deadline itself still runs under a live
-	// context instead of racing the cancellation.
+// pollUntil probes on a doubling backoff until the condition holds or the
+// window elapses. The window is enforced here rather than by the probe
+// context, so the probe scheduled on the deadline itself still runs under a
+// live context instead of racing the cancellation.
+func pollUntil(parent context.Context, timeout time.Duration, probe func(context.Context) (bool, error)) (bool, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout+probeGrace)
 	defer cancel()
 	deadline := time.Now().Add(timeout)
@@ -436,11 +492,11 @@ func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host strin
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	for {
-		ready, err := p.volatileRuntimeAvailable(ctx, host, stackFS, root)
+		done, err := probe(ctx)
 		if err != nil {
 			return false, err
 		}
-		if ready {
+		if done {
 			return true, nil
 		}
 		remaining := time.Until(deadline)
@@ -458,6 +514,23 @@ func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host strin
 		}
 		delay = min(delay*2, maxProbeDelay)
 	}
+}
+
+// waitForVolatileRuntime reports whether the host materialized this stack's
+// secrets within the window.
+func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host string, stackFS filesystem.FileSystem, root string, timeout time.Duration) (bool, error) {
+	return pollUntil(parent, timeout, func(ctx context.Context) (bool, error) {
+		return p.volatileRuntimeAvailable(ctx, host, stackFS, root)
+	})
+}
+
+// waitForVolatileRuntimeRelease reports whether the host has finished
+// unmounting this stack's tmpfs.
+func (p *SOPSProvider) waitForVolatileRuntimeRelease(parent context.Context, host string, stackFS filesystem.FileSystem, root string, timeout time.Duration) (bool, error) {
+	return pollUntil(parent, timeout, func(ctx context.Context) (bool, error) {
+		volatile, err := p.volatileRuntimeAvailable(ctx, host, stackFS, root)
+		return !volatile, err
+	})
 }
 
 func syncVolatileRuntime(stackFS filesystem.FileSystem, root string, values map[string]string) error {

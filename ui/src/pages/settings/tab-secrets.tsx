@@ -92,14 +92,20 @@ chmod 0600 "$workdir/age-key.txt"
 chmod 0755 "$workdir/dockman-secrets-host" "$workdir/sops"`;
         if (host !== "local") {
             const target = hostSshTarget.trim() || "USER@REMOTE_HOST";
+            // The remote staging directory holds a copy of the age private key.
+            // Cleaning it up on the happy path only was not enough: an
+            // interrupted install, a dropped connection or a failing step left
+            // the identity sitting in a temporary directory on the remote host.
+            // It goes in the trap, next to the local one.
             return `${prepare}
-remote_tmp="$(ssh ${shellQuote(target)} mktemp -d)"
-scp "$workdir/dockman-secrets-host" "$workdir/sops" "$workdir/age-key.txt" ${shellQuote(target)}:"$remote_tmp/"
-ssh -t ${shellQuote(target)} sudo install -d -m 0700 ${shellQuote(ageDirectory)}
-ssh -t ${shellQuote(target)} sudo install -m 0600 "$remote_tmp/age-key.txt" ${shellQuote(agePath)}
+remote_target=${shellQuote(target)}
+remote_tmp="$(ssh "$remote_target" mktemp -d)"
+trap 'rm -rf "$workdir"; [ -n "$remote_tmp" ] && ssh "$remote_target" rm -rf -- "$remote_tmp"' EXIT INT TERM
+scp "$workdir/dockman-secrets-host" "$workdir/sops" "$workdir/age-key.txt" "$remote_target":"$remote_tmp/"
+ssh -t "$remote_target" sudo install -d -m 0700 ${shellQuote(ageDirectory)}
+ssh -t "$remote_target" sudo install -m 0600 "$remote_tmp/age-key.txt" ${shellQuote(agePath)}
 status=0
-ssh -t ${shellQuote(target)} sudo "$remote_tmp/dockman-secrets-host" install --stack-root ${shellQuote(hostStackRoot.trim())} --age-key ${shellQuote(agePath)} --sops-source "$remote_tmp/sops" --file-mode ${shellQuote(hostFileMode)} --activate || status=$?
-ssh ${shellQuote(target)} rm -rf "$remote_tmp"
+ssh -t "$remote_target" sudo "$remote_tmp/dockman-secrets-host" install --stack-root ${shellQuote(hostStackRoot.trim())} --age-key ${shellQuote(agePath)} --sops-source "$remote_tmp/sops" --file-mode ${shellQuote(hostFileMode)} --activate || status=$?
 exit "$status"`;
         }
         return `${prepare}
