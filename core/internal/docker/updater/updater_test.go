@@ -66,3 +66,25 @@ func TestManualUpdateRefusesAContainerCarryingTheDockerSocket(t *testing.T) {
 	// An ordinary container is untouched.
 	require.NoError(t, guardProtectedInfrastructure(&container.Summary{ID: "app", Names: []string{"/app"}}))
 }
+
+// The manual update path had no self-update guard at all: the loop-based path
+// checks the label, the automatic path re-checks it at execution time, but the
+// button in the Monitor goes through ContainersForceUpdate, which checked
+// neither. Recreating Dockman through the Docker API kills the process on its
+// own ContainerStop - no replacement, no rollback, a stopped container and a
+// host needing a manual docker start.
+func TestManualUpdateRefusesDockmanItself(t *testing.T) {
+	dockman := container.Summary{ID: "self", Names: []string{"/dockman"},
+		Labels: map[string]string{DockmanContainerLabel: "true"}}
+	err := guardProtectedInfrastructure(&dockman)
+	require.ErrorContains(t, err, "dockman")
+	require.ErrorContains(t, err, "Dockman update action")
+
+	// It holds without the socket mounted, which is the case that the socket
+	// check misses: a Dockman reaching its daemon through a proxy.
+	require.NotContains(t, dockman.Mounts, container.MountPoint{Source: "/var/run/docker.sock"})
+
+	// And the opt-in label must NOT open this one: there is no safe way to do it.
+	dockman.Labels[DockmanOptInUpdateLabel] = "true"
+	require.Error(t, guardProtectedInfrastructure(&dockman), "no label may authorise Dockman to destroy itself")
+}

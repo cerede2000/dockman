@@ -532,6 +532,19 @@ var dockerSocketPaths = []string{"/var/run/docker.sock", "/run/docker.sock"}
 // that carries the daemon socket. The explicit opt-in label remains the way to
 // say "I know what this is, do it anyway".
 func guardProtectedInfrastructure(cont *container.Summary) error {
+	// Dockman recreating itself through the Docker API cannot work: the process
+	// dies on its own ContainerStop, before the replacement is created, so
+	// there is no rollback and no replacement - just a stopped container and a
+	// host that needs a manual `docker start`. The dedicated self-update action
+	// exists precisely because this sequence has to survive the process ending,
+	// and the label is how Dockman recognises itself.
+	//
+	// The socket check below does not cover this: it only catches a container
+	// that bind-mounts the daemon socket, and a Dockman reaching its daemon
+	// through a socket proxy mounts nothing.
+	if hasDockmanLabel(cont) {
+		return fmt.Errorf("%s is Dockman itself and cannot recreate its own container through the Docker API: use the Dockman update action, which hands the work to a detached helper", summaryName(*cont))
+	}
 	if !ExposesDockerSocket(cont) {
 		return nil
 	}
