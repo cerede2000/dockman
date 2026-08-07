@@ -6,6 +6,7 @@ import TabDockman from "./tab-dockman.tsx";
 import TabGit from "./tab-git.tsx";
 import TabViews from './tab-views.tsx';
 import TabSecrets from './tab-secrets.tsx';
+import TabRescue from './tab-rescue.tsx';
 
 interface TabConfig {
     label: string;
@@ -28,6 +29,10 @@ const tabConfigurations: TabConfig[] = [
     {
         label: "Secrets",
         component: <TabSecrets/>
+    },
+    {
+        label: "Rescue kit",
+        component: <TabRescue/>
     },
     {
         label: "Views",
