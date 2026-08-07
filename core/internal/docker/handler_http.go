@@ -77,9 +77,14 @@ func newHandlerHttp(srv ServiceProvider, allowSelfExec bool, policies *updater.P
 			if job.Status != buildJobSucceeded {
 				kind, severity, title = notifications.EventBuildFailure, "error", "Docker image build failed"
 			}
+			// job.Error carries the build's stderr in full: BuildKit runs with
+			// --progress=plain, and that output routinely contains a private
+			// registry token, an npm _authToken or a build argument. A
+			// notification leaves the machine, so it names the job and stops
+			// there. The log stays where it already is, in the interface.
 			message := fmt.Sprintf("Host: %s\nImage: %s\nDockerfile: %s\nStatus: %s", job.Host, job.ImageTag, job.Filename, job.Status)
-			if job.Error != "" {
-				message += "\nError: " + job.Error
+			if job.Status != buildJobSucceeded {
+				message += "\nOpen build " + job.ID + " in Dockman for the full log."
 			}
 			notificationService.Enqueue(notifications.ChannelEvent{Kind: kind, Host: job.Host, Title: title, Message: message, Severity: severity, Time: time.Now().UTC()})
 		})

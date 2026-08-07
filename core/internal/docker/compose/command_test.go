@@ -128,10 +128,11 @@ func TestDockmanDockerfileBuildUsesItsRealDirectory(t *testing.T) {
 	err := service.RunDockerfileBuild(context.Background(), "compose/apple music/Dockerfile", "apple-music-rip:local", "default", &output)
 	require.NoError(t, err)
 	require.Equal(t, directory, runner.wd)
+	// The builder is named explicitly rather than resolved from the Buildx
+	// state directory, and no container is removed by guessed name.
 	require.Equal(t, [][]string{
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"},
-		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."},
-		{"docker", "rm", "--force", "buildx_buildkit_default"},
+		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--builder", "default", "--load", "--progress=plain", "--tag", "apple-music-rip:local", "--file", "Dockerfile", "."},
 	}, runner.calls)
 	require.NotContains(t, output.String(), dockmanDockerfilePrefix, "internal browser paths must not be exposed to the Docker CLI or logs")
 	require.Contains(t, output.String(), "Buildx driver: docker")
@@ -150,7 +151,7 @@ func TestDockmanDockerfileBuildCanUseHostNetworkExplicitly(t *testing.T) {
 	}
 
 	require.NoError(t, service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:host", "host", io.Discard))
-	require.Len(t, runner.calls, 5)
+	require.Len(t, runner.calls, 4)
 	builderName := runner.calls[1][7]
 	require.Regexp(t, `^dockman-[0-9]+-[0-9]+$`, builderName)
 	require.Equal(t, []string{
@@ -170,8 +171,22 @@ func TestDockerContainerDriverIsRemovedAfterBuild(t *testing.T) {
 	require.NoError(t, service.cleanupDockmanBuildxHelper(context.Background(), ".", "dockman-test-builder"))
 	require.Equal(t, [][]string{
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", "dockman-test-builder"},
-		{"docker", "rm", "--force", "buildx_buildkit_default"},
 	}, runner.calls)
+}
+
+// Dockman cannot create buildx_buildkit_default: its Buildx state is isolated,
+// BUILDX_BUILDER is empty and every build names its builder. A container by
+// that name is the user's own, and removing it by force on every build
+// destroyed their builder.
+func TestCleanupNeverTouchesAContainerDockmanDidNotCreate(t *testing.T) {
+	runner := &commandCaptureRunner{}
+	service := &Service{runner: runner}
+	require.NoError(t, service.cleanupDockmanBuildxHelper(context.Background(), ".", ""))
+	require.Empty(t, runner.calls)
+	require.NoError(t, service.cleanupDockmanBuildxHelper(context.Background(), ".", "dockman-test-builder"))
+	for _, call := range runner.calls {
+		require.NotContains(t, strings.Join(call, " "), "buildx_buildkit_default")
+	}
 }
 
 func TestDockerfileBuildCleansHelperAfterFailure(t *testing.T) {
@@ -188,14 +203,13 @@ func TestDockerfileBuildCleansHelperAfterFailure(t *testing.T) {
 
 	err := service.RunDockerfileBuild(context.Background(), "Dockerfile", "demo:broken", "default", io.Discard)
 	require.ErrorContains(t, err, "build failed")
-	require.Len(t, runner.calls, 5)
+	require.Len(t, runner.calls, 4)
 	builderName := runner.calls[1][7]
 	require.Equal(t, [][]string{
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"},
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "create", "--name", builderName, "--driver", "docker-container"},
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "build", "--builder", builderName, "--load", "--progress=plain", "--tag", "demo:broken", "--file", "Dockerfile", "."},
 		{"env", "BUILDX_CONFIG=/tmp/dockman-buildx-native", "BUILDX_BUILDER=", "docker", "buildx", "rm", "--force", builderName},
-		{"docker", "rm", "--force", "buildx_buildkit_default"},
 	}, runner.calls)
 }
 

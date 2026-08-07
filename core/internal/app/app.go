@@ -217,7 +217,11 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	}
 	notificationSrv := notifications.NewService(gormDB, notificationVault)
 	if err := notificationSrv.MigrateLegacySMTPConfigs(); err != nil {
-		log.Fatal().Err(err).Msg("unable to migrate legacy SMTP notification configuration")
+		// One malformed legacy row must not keep the whole server down: every
+		// other feature is unaffected, and an operator locked out of Dockman
+		// cannot repair the row either. Notifications simply keep their
+		// pre-migration configuration until it is fixed.
+		log.Error().Err(err).Msg("legacy SMTP notification configuration was not migrated; existing notification channels are unaffected")
 	}
 	notificationSrv.StartDispatcher(conf.ServerContext)
 	cleanerSrv.SetNotifier(func(_ context.Context, result cleaner.PruneResult, automated bool) {
