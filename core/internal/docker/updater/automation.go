@@ -129,18 +129,33 @@ func (s *ScanStore) State(host string) ([]UpdateScanResult, []UpdateScanRun, err
 	return results, runs, nil
 }
 
-func (s *ScanStore) PruneResults(host string, activeContainerIDs []string) error {
+// PruneResults drops scan rows for containers no longer enrolled, and
+// execution blocks for containers that no longer exist on the host.
+//
+// The two sets are deliberately different. A block records that updating this
+// container broke it, so it has to outlive an enrollment toggle: pruning
+// blocks against the enrolled set meant disabling a policy after a failure and
+// re-enabling it cleared the breaker, and the next run cheerfully retried the
+// digest already known to break. Worse, with nothing enrolled at all the
+// length guard skipped the filter entirely and the statement deleted every
+// block on the host.
+func (s *ScanStore) PruneResults(host string, activeContainerIDs, knownContainerIDs []string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		results := tx.Where("host = ?", host)
-		blocks := tx.Where("host = ?", host)
 		if len(activeContainerIDs) > 0 {
 			results = results.Where("container_id NOT IN ?", activeContainerIDs)
-			blocks = blocks.Where("container_id NOT IN ?", activeContainerIDs)
 		}
 		if err := results.Delete(&UpdateScanResult{}).Error; err != nil {
 			return err
 		}
-		return blocks.Delete(&UpdateExecutionBlock{}).Error
+		// An empty inventory is far more likely to be a listing that came back
+		// short than a host that genuinely lost every container, and a stale
+		// block is harmless where a missing one is not.
+		if len(knownContainerIDs) == 0 {
+			return nil
+		}
+		return tx.Where("host = ?", host).Where("container_id NOT IN ?", knownContainerIDs).
+			Delete(&UpdateExecutionBlock{}).Error
 	})
 }
 
@@ -358,7 +373,11 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 	if err == nil {
 		ids := make([]string, 0, len(rows))
 		activeIDs := make([]string, 0, len(rows))
+		// Every container the host reports, enrolled or not: breakers are
+		// pruned against existence, not against enrollment.
+		knownIDs := make([]string, 0, len(rows))
 		for _, row := range rows {
+			knownIDs = append(knownIDs, row.ContainerID)
 			if !row.Enrolled {
 				continue
 			}
@@ -371,7 +390,7 @@ func (s *AutomationService) run(ctx context.Context, host, requestedSchedule, tr
 			}
 			ids = append(ids, row.ContainerID)
 		}
-		if pruneErr := s.store.PruneResults(host, activeIDs); pruneErr != nil {
+		if pruneErr := s.store.PruneResults(host, activeIDs, knownIDs); pruneErr != nil {
 			err = fmt.Errorf("prune stale image scan results: %w", pruneErr)
 		}
 		run.Targets = len(ids)

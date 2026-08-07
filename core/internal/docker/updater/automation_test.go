@@ -486,3 +486,53 @@ func TestRefreshHostCoalescesConcurrentRequests(t *testing.T) {
 		t.Fatalf("refresh burst ran inventory %d times, want exactly 2", got)
 	}
 }
+
+// A block records that updating this container broke it. Pruning blocks
+// against the enrolled set meant disabling a policy after a failure and
+// re-enabling it cleared the breaker, and the next run retried the digest
+// already known to break. With nothing enrolled at all, the length guard
+// skipped the filter and the statement wiped every block on the host.
+func TestPruningKeepsBreakersForContainersThatStillExist(t *testing.T) {
+	store := testScanStore(t)
+	for _, id := range []string{"kept", "removed"} {
+		block := UpdateExecutionBlock{Host: "local", ContainerID: id, ContainerName: id, Reason: "healthcheck failed"}
+		if err := store.db.Create(&block).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// "kept" exists on the host but is no longer enrolled; "removed" is gone.
+	if err := store.PruneResults("local", []string{}, []string{"kept"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var blocks []UpdateExecutionBlock
+	if err := store.db.Where("host = ?", "local").Find(&blocks).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].ContainerID != "kept" {
+		t.Fatalf("the breaker of a container that still exists must survive an enrollment toggle, got %#v", blocks)
+	}
+}
+
+// An inventory that came back empty is far more likely to be a short listing
+// than a host that lost every container, so nothing is wiped on that basis.
+func TestPruningKeepsEveryBreakerWhenTheInventoryIsEmpty(t *testing.T) {
+	store := testScanStore(t)
+	block := UpdateExecutionBlock{Host: "local", ContainerID: "app", ContainerName: "app", Reason: "rolled back"}
+	if err := store.db.Create(&block).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.PruneResults("local", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var blocks []UpdateExecutionBlock
+	if err := store.db.Where("host = ?", "local").Find(&blocks).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("an empty inventory must not wipe breakers, got %d", len(blocks))
+	}
+}
