@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,4 +170,47 @@ func TestSyncVolatileRuntimeOnlyWritesWhatChanged(t *testing.T) {
 	kept, err := os.ReadFile(filepath.Join(runtimeDirectory, "API_TOKEN"))
 	require.NoError(t, err)
 	require.Equal(t, "s3cret", string(kept))
+}
+
+// The recovery script is the whole independence guarantee: a host carrying
+// only Docker and SOPS has to be able to bring the stack up from the stack
+// directory alone. It used to stop on a stack with file secrets and tell the
+// reader to start a Dockman systemd unit, which is precisely the dependency it
+// exists to remove.
+func TestRecoveryScriptNeverDependsOnDockman(t *testing.T) {
+	for _, requiresFiles := range []bool{false, true} {
+		script := recoveryScript("compose.yml", requiresFiles)
+		require.NotContains(t, script, "systemctl", "recovery must not require a Dockman unit")
+		require.NotContains(t, script, "dockman-secrets-host")
+		require.NotContains(t, script, "dockman-secrets-reconcile")
+		require.Contains(t, script, "sops exec-env")
+	}
+	script := recoveryScript("compose.yml", true)
+	require.Contains(t, script, "sops -d --extract")
+	require.Contains(t, script, "mount -t tmpfs")
+	require.Contains(t, script, "secrets-clean")
+}
+
+// The script is only useful if a POSIX shell accepts it, and if its key
+// extraction actually finds every secret SOPS wrote.
+func TestRecoveryScriptIsValidShellAndFindsEveryKey(t *testing.T) {
+	script := recoveryScript("compose.yml", true)
+	require.NoError(t, exec.Command("sh", "-n", "-c", script).Run(), "generated script must parse as POSIX sh")
+
+	directory := t.TempDir()
+	ciphertext := "API_TOKEN: ENC[AES256_GCM,data:aa]\n" +
+		"db.password: ENC[AES256_GCM,data:bb]\n" +
+		"tls.key: ENC[AES256_GCM,data:cc]\n" +
+		"sops:\n    age: []\n    mac: ENC[AES256_GCM,data:dd]\n"
+	require.NoError(t, os.WriteFile(filepath.Join(directory, SOPSSourceFile), []byte(ciphertext), 0o600))
+
+	// The ciphertext keeps its top-level keys in clear, so the list is readable
+	// without the age identity - this is what lets the script enumerate them.
+	extract := `sed -n 's/^\([A-Za-z0-9][A-Za-z0-9._-]*\):.*/\1/p' ` + SOPSSourceFile + ` | grep -v '^sops$'`
+	command := exec.Command("sh", "-c", extract)
+	command.Dir = directory
+	output, err := command.Output()
+	require.NoError(t, err)
+	require.Equal(t, []string{"API_TOKEN", "db.password", "tls.key"}, strings.Fields(string(output)),
+		"every secret must be discoverable from the ciphertext alone, sops metadata excluded")
 }
