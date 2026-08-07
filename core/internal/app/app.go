@@ -337,7 +337,17 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("unable to initialize compact Git stack status index")
 	}
 	fileSrv.ConfigureChangeNotifier(gitSyncSrv.MarkLocalChange)
-	fileSrv.ConfigureDeleteGuard(gitSyncSrv.GuardFileDeletion)
+	// Two guards, both refusing rather than half-deleting. Git first: it may
+	// veto the deletion outright, and there is no point releasing a tmpfs for a
+	// deletion that will not happen. Secrets second: it releases the volatile
+	// runtime so RemoveAll does not walk into a live mount, delete the
+	// ciphertext on the way and then fail on the mount point.
+	fileSrv.ConfigureDeleteGuard(func(host, path string) error {
+		if err := gitSyncSrv.GuardFileDeletion(host, path); err != nil {
+			return err
+		}
+		return secretSrv.GuardFileDeletion(host, path)
+	})
 	gitSyncSrv.ConfigureEditorCoherence(fileSrv.DirtyEditorPaths, fileSrv.NotifyExternalChange)
 	gitSyncSrv.ConfigureStackAccess(
 		func(hostname, stackPath string) (filesystem.FileSystem, string, error) {
