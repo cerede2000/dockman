@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -558,13 +559,43 @@ func syncVolatileRuntime(stackFS filesystem.FileSystem, root string, values map[
 	}
 	for _, name := range sortedValueNames(values) {
 		value := []byte(values[name])
-		err = writeAtomic(stackFS, stackFS.Join(directory, name), value, 0o444)
+		path := stackFS.Join(directory, name)
+		unchanged := volatileSecretMatches(stackFS, path, value)
+		if unchanged {
+			clear(value)
+			continue
+		}
+		err = writeAtomic(stackFS, path, value, 0o444)
 		clear(value)
 		if err != nil {
 			return fmt.Errorf("refresh volatile secret %q: %w", name, err)
 		}
 	}
 	return nil
+}
+
+// volatileSecretMatches reports whether the materialized file already holds
+// this exact value.
+//
+// This runs on every Compose action, including the read-only ones - ps, status
+// and config all pass through the same environment provider - and the rewrite
+// was unconditional. Two consequences, both fixed by not rewriting what has not
+// changed. Every one of those actions spent a create-write-rename per secret
+// for nothing. And writeAtomic renames into place, so each rewrite produced a
+// new inode: a container bind-mounting .secrets/<name> keeps the inode it was
+// started with and therefore never saw a single update, while Dockman churned
+// the file constantly.
+func volatileSecretMatches(stackFS filesystem.FileSystem, path string, value []byte) bool {
+	info, err := stackFS.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(value)) {
+		return false
+	}
+	current, err := stackFS.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	defer clear(current)
+	return bytes.Equal(current, value)
 }
 
 func composeUsesManagedFileSecrets(stackFS filesystem.FileSystem, composeRelpath string) bool {

@@ -203,6 +203,16 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 
 	var errs []error
 	for _, cur := range list {
+		// This is the manual update path behind the Monitor and container
+		// views. It drives the Docker API through whatever connection Dockman
+		// holds - which, for a socket proxy, is the container being replaced:
+		// after ContainerStop the connection is gone and not even the rollback
+		// can be reached. Refusing here rather than in the interface means no
+		// caller can reach that state by mistake.
+		if err := guardProtectedInfrastructure(&cur); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		if _, err := u.forceUpdateContainer(ctx, pull, out, cur, ForceUpdateOptions{VerifyHealth: true}); err != nil {
 			errs = append(errs, err)
 		}
@@ -459,6 +469,12 @@ func hasDockmanLabel(cont *container.Summary) bool {
 	return value == "true"
 }
 
+// SourceProtectedInfrastructure marks a container that carries the daemon
+// socket. Kept distinct from Dockman's own "protected" classification: Dockman
+// has a dedicated self-update action, while these are precisely the containers
+// the detached protected update exists for.
+const SourceProtectedInfrastructure = "protected-infra"
+
 // dockerSocketPaths are the daemon socket locations a container must not be
 // able to take away from Dockman in the middle of an update.
 var dockerSocketPaths = []string{"/var/run/docker.sock", "/run/docker.sock"}
@@ -472,6 +488,19 @@ var dockerSocketPaths = []string{"/var/run/docker.sock", "/run/docker.sock"}
 // The answer comes from the summary already in hand, so the classification
 // costs no Docker call. It is deliberately placed after the explicit update
 // labels, so an operator who knows what they are doing keeps the final say.
+// guardProtectedInfrastructure refuses an API-driven update of a container
+// that carries the daemon socket. The explicit opt-in label remains the way to
+// say "I know what this is, do it anyway".
+func guardProtectedInfrastructure(cont *container.Summary) error {
+	if !ExposesDockerSocket(cont) {
+		return nil
+	}
+	if _, optIn := cont.Labels[DockmanOptInUpdateLabel]; optIn {
+		return nil
+	}
+	return fmt.Errorf("%s exposes the Docker socket and cannot be updated through it: use the protected update on the Updates page, which runs from a detached helper that survives Dockman losing its Docker connection, or set %s=true to override", summaryName(*cont), DockmanOptInUpdateLabel)
+}
+
 func ExposesDockerSocket(cont *container.Summary) bool {
 	for _, mountPoint := range cont.Mounts {
 		for _, socket := range dockerSocketPaths {

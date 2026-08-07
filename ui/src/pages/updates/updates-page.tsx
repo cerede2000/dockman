@@ -60,7 +60,10 @@ type UpdateEnrollment = {
     stackName?: string;
     stackKey?: string;
     enrolled: boolean;
-    source: 'none' | 'interface' | 'label' | 'disabled-label' | 'protected';
+    // 'protected' is Dockman itself, which has its own self-update action.
+    // 'protected-infra' is a container carrying the daemon socket: it cannot be
+    // updated through that socket, but the detached protected update handles it.
+    source: 'none' | 'interface' | 'label' | 'disabled-label' | 'protected' | 'protected-infra';
     reason?: string;
     schedule?: string;
 	scheduleError?: string;
@@ -144,6 +147,7 @@ const sourceLabels: Record<UpdateEnrollment['source'], string> = {
     label: 'Compose label',
     'disabled-label': 'Disabled by label',
     protected: 'Protected',
+    'protected-infra': 'Protected (socket)',
 };
 
 function targetFor(row: UpdateEnrollment, type: TargetType): {key: string; name: string} {
@@ -195,7 +199,7 @@ export default function UpdatesPage() {
             if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
             const payload = await response.json() as {results: UpdateEnrollment[]};
             setRows(payload.results ?? []);
-			setSelected(current => new Set([...current].filter(id => (payload.results ?? []).some(row => row.containerId === id && row.source !== 'label' && row.source !== 'disabled-label' && row.source !== 'protected'))));
+			setSelected(current => new Set([...current].filter(id => (payload.results ?? []).some(row => row.containerId === id && row.source !== 'label' && row.source !== 'disabled-label' && row.source !== 'protected' && row.source !== 'protected-infra'))));
 			if (!stateResponse.ok) throw new Error((await stateResponse.text()).trim() || `HTTP ${stateResponse.status}`);
 			const state = await stateResponse.json() as {results: ScanResult[]; runs: ScanRun[]; schedules: ScheduledScan[]; executionRuns: ExecutionRun[]; executionResults: ExecutionResult[]; blocks: ExecutionBlock[]; control?: AutomationControl; cleanups?: ImageCleanup[]};
 			setScanResults(Object.fromEntries((state.results ?? []).map(result => [result.containerId, result])));
@@ -225,8 +229,8 @@ export default function UpdatesPage() {
     const labelCount = rows.filter(row => row.source === 'label' || row.source === 'disabled-label').length;
 	const availableCount = rows.filter(row => scanResults[row.containerId]?.status === 'available').length;
 	const newerVersionCount = rows.filter(row => scanResults[row.containerId]?.versionAvailable).length;
-	const selectableVisibleRows = visibleRows.filter(row => row.source !== 'label' && row.source !== 'disabled-label' && row.source !== 'protected');
-	const selectedRows = rows.filter(row => selected.has(row.containerId) && row.source !== 'label' && row.source !== 'disabled-label' && row.source !== 'protected');
+	const selectableVisibleRows = visibleRows.filter(row => row.source !== 'label' && row.source !== 'disabled-label' && row.source !== 'protected' && row.source !== 'protected-infra');
+	const selectedRows = rows.filter(row => selected.has(row.containerId) && row.source !== 'label' && row.source !== 'disabled-label' && row.source !== 'protected' && row.source !== 'protected-infra');
 	const allVisibleSelected = selectableVisibleRows.length > 0 && selectableVisibleRows.every(row => selected.has(row.containerId));
 	const someVisibleSelected = selectableVisibleRows.some(row => selected.has(row.containerId));
 	const toggleVisibleSelection = () => setSelected(current => {
@@ -511,7 +515,7 @@ export default function UpdatesPage() {
                         </TableRow></TableHead>
                         <TableBody>
                             {visibleRows.map(row => <TableRow key={row.containerId} hover>
-								<TableCell padding="checkbox"><Checkbox size="small" checked={selected.has(row.containerId)} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onChange={() => setSelected(current => { const next = new Set(current); if (next.has(row.containerId)) next.delete(row.containerId); else next.add(row.containerId); return next; })}/></TableCell>
+								<TableCell padding="checkbox"><Checkbox size="small" checked={selected.has(row.containerId)} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected' || row.source === 'protected-infra'} onChange={() => setSelected(current => { const next = new Set(current); if (next.has(row.containerId)) next.delete(row.containerId); else next.add(row.containerId); return next; })}/></TableCell>
                                 <TableCell><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}>
                                     {row.enrolled && <CheckCircleOutlined color="success" fontSize="small"/>}
                                     <Box><Typography sx={{fontWeight: 600}}>{row.containerName}</Typography><Typography variant="caption" color="text.secondary">{row.state}</Typography></Box>
@@ -523,7 +527,7 @@ export default function UpdatesPage() {
 								<TableCell>{blocksByContainer[row.containerId] ? <Tooltip title={blocksByContainer[row.containerId].reason}><Chip size="small" icon={<ErrorOutlined/>} label="retry blocked" color="error" variant="outlined"/></Tooltip> : row.enrolled && scanResults[row.containerId]?.image === row.image ? <Stack spacing={.5} sx={{alignItems: 'flex-start'}}><Tooltip title={scanResults[row.containerId].reason ?? new Date(scanResults[row.containerId].checkedAt).toLocaleString()}>
 					<Chip size="small" label={scanResults[row.containerId].status} color={scanResults[row.containerId].status === 'available' ? 'warning' : scanResults[row.containerId].status === 'error' ? 'error' : scanResults[row.containerId].status === 'current' ? 'success' : 'default'} variant="outlined"/>
 				</Tooltip>{scanResults[row.containerId].versionAvailable && <Tooltip title={scanResults[row.containerId].versionReason ?? ''}><Chip size="small" color="info" label={`${scanResults[row.containerId].currentTag} → ${scanResults[row.containerId].latestTag}`}/></Tooltip>}</Stack> : '—'}</TableCell>
-				<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title={blocksByContainer[row.containerId].targetType === 'stack' ? 'Allow one retry of this digest for the whole stack transaction' : 'Allow one retry of this same image digest'}><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}{host === 'local' && row.stackKey && row.source !== 'protected' && <Tooltip title="Update this sensitive Compose service through a detached helper with health verification and rollback"><Button size="small" color="warning" startIcon={<ShieldOutlined/>} onClick={() => setProtectedTarget(row)}>Protected update</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
+				<TableCell align="right"><Stack direction="row" spacing={.5} sx={{justifyContent: 'flex-end'}}>{blocksByContainer[row.containerId] && <Tooltip title={blocksByContainer[row.containerId].targetType === 'stack' ? 'Allow one retry of this digest for the whole stack transaction' : 'Allow one retry of this same image digest'}><Button size="small" color="warning" startIcon={<ReplayOutlined/>} onClick={() => void allowRetry(row.containerId)}>Retry</Button></Tooltip>}{host === 'local' && row.stackKey && row.source !== 'protected' && <Tooltip title="Update this sensitive Compose service through a detached helper with health verification and rollback"><Button size="small" color="warning" startIcon={<ShieldOutlined/>} onClick={() => setProtectedTarget(row)}>Protected update</Button></Tooltip>}<Button size="small" startIcon={<EditOutlined/>} disabled={row.source === 'label' || row.source === 'disabled-label' || row.source === 'protected' || row.source === 'protected-infra'} onClick={() => openPolicy(row)}>Configure</Button></Stack></TableCell>
                             </TableRow>)}
 							{!loading && visibleRows.length === 0 && <TableRow><TableCell colSpan={8} align="center" sx={{py: 6, color: 'text.secondary'}}>No container matches this view.</TableCell></TableRow>}
                         </TableBody>

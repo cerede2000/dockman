@@ -297,8 +297,12 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 		// final say. Without such a label, a container holding the daemon
 		// socket is protected, because updating it would cut the connection
 		// carrying the update itself.
+		// A distinct source from Dockman's own "protected": that one has a
+		// dedicated self-update action, whereas these are exactly the
+		// containers the detached protected update was written for. Collapsing
+		// the two hid the button that makes them updatable at all.
 		if ExposesDockerSocket(&item) {
-			row.Source, row.Reason = "protected", "exposes the Docker socket; an automatic update would sever the daemon connection mid-operation. Set "+DockmanOptInUpdateLabel+"=true to override"
+			row.Source, row.Reason = SourceProtectedInfrastructure, "exposes the Docker socket; updating it through that socket would sever the connection mid-operation. Use the protected update, or set "+DockmanOptInUpdateLabel+"=true to override"
 			rows = append(rows, row)
 			continue
 		}

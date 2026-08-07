@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,4 +121,52 @@ func TestDisableInlineWithoutVolatileRuntimeIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "s3cret", string(value))
 	require.NoFileExists(t, filepath.Join(stack, SOPSInlineMarkerFile))
+}
+
+// countingWriteFS counts the atomic renames that publish a materialized
+// secret, which is what creates a new inode for that path.
+type countingWriteFS struct {
+	filesystem.FileSystem
+	writes int
+}
+
+func (f *countingWriteFS) Rename(oldPath, newPath string) error {
+	if strings.Contains(newPath, RuntimeDirectory) {
+		f.writes++
+	}
+	return f.FileSystem.Rename(oldPath, newPath)
+}
+
+// syncVolatileRuntime runs on every Compose action, read-only ones included:
+// ps, status and config all pass through the same environment provider. The
+// rewrite was unconditional, so each of them spent a create-write-rename per
+// secret for nothing - and since the rename replaces the inode, a container
+// bind-mounting .secrets/<name> kept the inode it started with and never saw
+// an update while Dockman churned the file underneath it.
+func TestSyncVolatileRuntimeOnlyWritesWhatChanged(t *testing.T) {
+	root := t.TempDir()
+	runtimeDirectory := filepath.Join(root, "app", RuntimeDirectory)
+	require.NoError(t, os.MkdirAll(runtimeDirectory, 0o700))
+	counting := &countingWriteFS{FileSystem: filesystem.NewLocal(root)}
+	values := map[string]string{"API_TOKEN": "s3cret", "DB_PASSWORD": "hunter2"}
+
+	// First materialization writes both.
+	require.NoError(t, syncVolatileRuntime(counting, "app", values))
+	require.Equal(t, 2, counting.writes)
+
+	// Replaying the same values writes nothing at all.
+	counting.writes = 0
+	require.NoError(t, syncVolatileRuntime(counting, "app", values))
+	require.Equal(t, 0, counting.writes, "an unchanged secret must keep its inode")
+
+	// A real change is still applied, and only that one.
+	values["DB_PASSWORD"] = "hunter3"
+	require.NoError(t, syncVolatileRuntime(counting, "app", values))
+	require.Equal(t, 1, counting.writes)
+	updated, err := os.ReadFile(filepath.Join(runtimeDirectory, "DB_PASSWORD"))
+	require.NoError(t, err)
+	require.Equal(t, "hunter3", string(updated))
+	kept, err := os.ReadFile(filepath.Join(runtimeDirectory, "API_TOKEN"))
+	require.NoError(t, err)
+	require.Equal(t, "s3cret", string(kept))
 }
