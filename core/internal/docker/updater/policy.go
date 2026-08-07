@@ -247,12 +247,23 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 			rows = append(rows, row)
 			continue
 		}
-		if hasDisableUpdateLabel(&item) {
-			row.Source, row.Reason = "disabled-label", DockmanUpdateDisableLabel+"=true"
+		if disabled, present, valid := parseBoolLabel(item.Labels, DockmanUpdateDisableLabel); present && (!valid || disabled) {
+			row.Source = "disabled-label"
+			// An unreadable disable label must not be read as "not disabled":
+			// the operator was clearly trying to hold this container back.
+			row.Reason = DockmanUpdateDisableLabel + "=true"
+			if !valid {
+				row.Reason = invalidLabelReason(item.Labels, DockmanUpdateDisableLabel) + "; treated as disabled"
+			}
 			rows = append(rows, row)
 			continue
 		}
-		if enabled, present := boolLabel(item.Labels, DockmanOptInUpdateLabel); present {
+		if enabled, present, valid := parseBoolLabel(item.Labels, DockmanOptInUpdateLabel); present {
+			if !valid {
+				row.Source, row.Reason = "disabled-label", invalidLabelReason(item.Labels, DockmanOptInUpdateLabel)
+				rows = append(rows, row)
+				continue
+			}
 			if !enabled {
 				row.Source, row.Reason = "disabled-label", DockmanOptInUpdateLabel+"=false"
 				rows = append(rows, row)
@@ -263,11 +274,21 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 			if _, err := NormalizeUpdateSchedule(row.Schedule); err != nil {
 				row.ScheduleError = err.Error()
 			}
-			if rollback, ok := boolLabel(item.Labels, UpdateRollbackLabel); ok {
-				row.Rollback = rollback
+			// On an unreadable value each of these keeps its own default -
+			// rollback stays on, cleanup stays off - and says so.
+			if rollback, present, valid := parseBoolLabel(item.Labels, UpdateRollbackLabel); present {
+				if valid {
+					row.Rollback = rollback
+				} else {
+					row.Reason = invalidLabelReason(item.Labels, UpdateRollbackLabel) + "; rollback stays enabled"
+				}
 			}
-			if cleanup, ok := boolLabel(item.Labels, UpdateCleanupLabel); ok {
-				row.CleanupEnabled = cleanup
+			if cleanup, present, valid := parseBoolLabel(item.Labels, UpdateCleanupLabel); present {
+				if valid {
+					row.CleanupEnabled = cleanup
+				} else {
+					row.Reason = invalidLabelReason(item.Labels, UpdateCleanupLabel) + "; safe cleanup stays disabled"
+				}
 			}
 			if keep := strings.TrimSpace(item.Labels[UpdateCleanupKeepLabel]); row.CleanupEnabled && keep != "" {
 				parsed, parseErr := strconv.Atoi(keep)
@@ -285,7 +306,7 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 					row.Reason = "version discovery disabled: invalid " + UpdateVersionLabel
 				}
 			}
-			if prerelease, ok := boolLabel(item.Labels, UpdatePrereleaseLabel); ok {
+			if prerelease, present, valid := parseBoolLabel(item.Labels, UpdatePrereleaseLabel); present && valid {
 				row.VersionPrerelease = prerelease
 			}
 			rows = append(rows, row)
@@ -357,17 +378,36 @@ func stackIdentity(labels map[string]string) (string, string) {
 	return name, name
 }
 
-func boolLabel(labels map[string]string, key string) (bool, bool) {
-	value, ok := labels[key]
+// parseBoolLabel reads a Dockman boolean label and reports whether it was
+// present and whether it could be understood.
+//
+// strconv.ParseBool alone was a trap here: it rejects yes/no/on/off, and the
+// caller turned that rejection into a plain false. So dockman.update=yes
+// disabled the container while the interface claimed the label said false, and
+// dockman.update.rollback=yes switched the rollback OFF - the exact opposite of
+// what was written. An unrecognised value is now reported as unrecognised, and
+// the caller keeps its own default rather than inventing one.
+func parseBoolLabel(labels map[string]string, key string) (value bool, present bool, valid bool) {
+	raw, ok := labels[key]
 	if !ok {
-		return false, false
+		return false, false, true
 	}
-	if strings.TrimSpace(value) == "" {
-		return true, true
+	trimmed := strings.TrimSpace(raw)
+	// A bare label carries an empty value; Compose's own shorthand for "on".
+	if trimmed == "" {
+		return true, true, true
 	}
-	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
-	if err != nil {
-		return false, true
+	switch strings.ToLower(trimmed) {
+	case "1", "t", "true", "y", "yes", "on", "enable", "enabled":
+		return true, true, true
+	case "0", "f", "false", "n", "no", "off", "disable", "disabled":
+		return false, true, true
 	}
-	return parsed, true
+	return false, true, false
+}
+
+// invalidLabelReason describes a label Dockman could not understand, quoting
+// what was actually written rather than what it was mistaken for.
+func invalidLabelReason(labels map[string]string, key string) string {
+	return fmt.Sprintf("%s=%q is not a recognised boolean; use true or false", key, strings.TrimSpace(labels[key]))
 }

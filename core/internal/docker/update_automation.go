@@ -281,7 +281,7 @@ func validateAutomaticTarget(ctx context.Context, dkSrv *Service, target updater
 	if labels[updater.DockmanContainerLabel] == "true" {
 		return "Dockman self-update is protected and requires its dedicated action", nil
 	}
-	if labels[updater.DockmanUpdateDisableLabel] == "true" {
+	if updater.HasDisableUpdateLabel(&containers[0]) {
 		return "automatic update was disabled after the scan", nil
 	}
 	// Re-checked at execution time and not only at inventory time: the socket

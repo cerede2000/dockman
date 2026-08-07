@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -180,5 +181,68 @@ func TestExplicitOptInOverridesTheSocketProtection(t *testing.T) {
 	}
 	if len(rows) != 1 || !rows[0].Enrolled || rows[0].Source != "label" {
 		t.Fatalf("the explicit label must win over the socket protection, got %#v", rows)
+	}
+}
+
+// strconv.ParseBool rejects yes/no/on/off, and the old caller turned that
+// rejection into a plain false. So dockman.update=yes disabled the container
+// while the interface claimed the label read false, and
+// dockman.update.rollback=yes switched the rollback off - the opposite of what
+// was written.
+func TestBooleanLabelsAcceptCommonSpellings(t *testing.T) {
+	for _, value := range []string{"true", "TRUE", "1", "t", "y", "yes", "on", "enabled", ""} {
+		got, present, valid := parseBoolLabel(map[string]string{"k": value}, "k")
+		if !present || !valid || !got {
+			t.Fatalf("%q should read as true, got value=%v present=%v valid=%v", value, got, present, valid)
+		}
+	}
+	for _, value := range []string{"false", "FALSE", "0", "f", "n", "no", "off", "disabled"} {
+		got, present, valid := parseBoolLabel(map[string]string{"k": value}, "k")
+		if !present || !valid || got {
+			t.Fatalf("%q should read as false, got value=%v present=%v valid=%v", value, got, present, valid)
+		}
+	}
+	for _, value := range []string{"maybe", "2", "oui"} {
+		_, present, valid := parseBoolLabel(map[string]string{"k": value}, "k")
+		if !present || valid {
+			t.Fatalf("%q should be reported as unreadable, got present=%v valid=%v", value, present, valid)
+		}
+	}
+	if _, present, valid := parseBoolLabel(map[string]string{}, "k"); present || !valid {
+		t.Fatal("an absent label is neither present nor invalid")
+	}
+}
+
+// An unreadable label must never be resolved into the dangerous direction: a
+// disable that cannot be read still disables, and a rollback that cannot be
+// read stays on.
+func TestUnreadableLabelsFallToTheSafeSide(t *testing.T) {
+	service := testPolicyService(t)
+	rows, err := service.Inventory(t.Context(), "local", []container.Summary{
+		{ID: "a", Names: []string{"/held-back"}, Labels: map[string]string{DockmanUpdateDisableLabel: "yes"}},
+		{ID: "b", Names: []string{"/opted-in"}, Labels: map[string]string{DockmanOptInUpdateLabel: "yes"}},
+		{ID: "c", Names: []string{"/nonsense"}, Labels: map[string]string{DockmanOptInUpdateLabel: "maybe"}},
+		{ID: "d", Names: []string{"/kept-rollback"}, Labels: map[string]string{
+			DockmanOptInUpdateLabel: "true", UpdateRollbackLabel: "oui",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]UpdateEnrollment{}
+	for _, row := range rows {
+		byName[row.ContainerName] = row
+	}
+	if byName["held-back"].Enrolled || byName["held-back"].Source != "disabled-label" {
+		t.Fatalf("dockman.update.disable=yes must hold the container back, got %#v", byName["held-back"])
+	}
+	if !byName["opted-in"].Enrolled {
+		t.Fatalf("dockman.update=yes must enroll, got %#v", byName["opted-in"])
+	}
+	if byName["nonsense"].Enrolled || !strings.Contains(byName["nonsense"].Reason, `"maybe"`) {
+		t.Fatalf("an unreadable value must be reported as written, got %#v", byName["nonsense"])
+	}
+	if !byName["kept-rollback"].Rollback {
+		t.Fatalf("an unreadable rollback label must leave rollback enabled, got %#v", byName["kept-rollback"])
 	}
 }
