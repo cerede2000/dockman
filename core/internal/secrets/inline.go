@@ -410,11 +410,31 @@ func requestHostRuntimeReconcile(stackFS filesystem.FileSystem) error {
 	return writeAtomic(stackFS, HostRuntimeReconcileRequestFile, request, 0o600)
 }
 
+// Probing for the volatile runtime costs an Lstat, a ReadFile and a mount
+// check, and on a remote host each of those is a round trip. A fixed 100ms
+// tick therefore spent up to fifty probes waiting for an event that normally
+// lands within a few hundred milliseconds. Doubling the interval keeps the
+// fast path exactly as quick while capping the number of probes, and the
+// ceiling bounds how late a slow reconciliation is noticed.
+const (
+	firstProbeDelay = 100 * time.Millisecond
+	maxProbeDelay   = time.Second
+	probeGrace      = 250 * time.Millisecond
+)
+
+// waitForVolatileRuntime reports whether the host materialized this stack's
+// secrets within the window, probing on a doubling backoff and ending on a
+// probe scheduled at the deadline itself.
 func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host string, stackFS filesystem.FileSystem, root string, timeout time.Duration) (bool, error) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	// The waiting window is enforced here rather than by the probe context, so
+	// that the probe scheduled on the deadline itself still runs under a live
+	// context instead of racing the cancellation.
+	ctx, cancel := context.WithTimeout(parent, timeout+probeGrace)
 	defer cancel()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	deadline := time.Now().Add(timeout)
+	delay := firstProbeDelay
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 	for {
 		ready, err := p.volatileRuntimeAvailable(ctx, host, stackFS, root)
 		if err != nil {
@@ -423,14 +443,20 @@ func (p *SOPSProvider) waitForVolatileRuntime(parent context.Context, host strin
 		if ready {
 			return true, nil
 		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, nil
+		}
+		timer.Reset(min(delay, remaining))
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return false, nil
 			}
 			return false, ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		delay = min(delay*2, maxProbeDelay)
 	}
 }
 

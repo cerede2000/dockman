@@ -135,7 +135,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
 
     const loadStackOptions = useCallback(async () => {
         setCatalogLoading(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/catalog`);
             if (!response.ok) throw new Error(await responseError(response));
             const result = await response.json() as SecretCatalog;
@@ -145,9 +145,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             setStackOptions([]);
             setCatalog({secrets: [], stacks: []});
             showError(`Unable to discover Compose stacks: ${(error as Error).message}`);
-        } finally {
-            setCatalogLoading(false);
-        }
+        } })().finally(() => setCatalogLoading(false));
     }, [base, showError]);
 
     const load = useCallback(async (requestedPath = stackPath.trim()) => {
@@ -156,7 +154,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             return;
         }
         setLoading(true);
-        try {
+        await (async () => { try {
             const [response, composeResponse, archivedResponse, sopsResponse] = await Promise.all([
                 fetch(`${base}/?stack=${encodeURIComponent(requestedPath)}`),
                 fetch(`${base}/compose?stack=${encodeURIComponent(requestedPath)}`),
@@ -182,9 +180,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             setArchived([]);
             setSopsStatus(null);
             showError(`Unable to load secrets: ${(error as Error).message}`);
-        } finally {
-            setLoading(false);
-        }
+        } })().finally(() => setLoading(false));
     }, [base, showError, stackPath]);
 
     useEffect(() => {
@@ -209,7 +205,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
     const openEdit = async (item: RuntimeSecret) => {
         if (!loadedPath) return;
         setSaving(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/${encodeURIComponent(item.name)}?stack=${encodeURIComponent(loadedPath)}`);
             if (!response.ok) throw new Error(await responseError(response));
             const result = await response.json() as {value: string; encoding: string};
@@ -221,9 +217,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             setFormOpen(true);
         } catch (error) {
             showError(`Unable to reveal secret: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const closeForm = () => {
@@ -240,22 +234,20 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
 
     const openHistory = async (item: RuntimeSecret) => {
         setSaving(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/${encodeURIComponent(item.name)}/history?stack=${encodeURIComponent(loadedPath)}`);
             if (!response.ok) throw new Error(await responseError(response));
             setVersions(await response.json() as SecretVersion[]);
             setHistoryItem(item);
         } catch (error) {
             showError(`Unable to load secret history: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const restoreVersion = async (version: SecretVersion) => {
         if (!historyItem) return;
         setSaving(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/${encodeURIComponent(historyItem.name)}/history/${encodeURIComponent(version.id)}/restore?stack=${encodeURIComponent(loadedPath)}`, {method: "POST"});
             if (!response.ok) throw new Error(await responseError(response));
             setHistoryItem(null);
@@ -264,15 +256,13 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             showSuccess("Previous runtime secret version restored securely.");
         } catch (error) {
             showError(`Unable to restore secret: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const save = async () => {
         if (!loadedPath || !form.name.trim()) return;
         setSaving(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/${encodeURIComponent(form.name.trim())}`, {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
@@ -285,15 +275,13 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             showSuccess("Runtime secret saved securely.");
         } catch (error) {
             showError(`Unable to save secret: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const remove = async () => {
         if (!deleteItem || !loadedPath || confirmation !== TYPED_CONFIRMATION) return;
         setSaving(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/${encodeURIComponent(deleteItem.name)}?stack=${encodeURIComponent(loadedPath)}`, {method: "DELETE"});
             if (!response.ok) throw new Error(await responseError(response));
             setDeleteItem(null);
@@ -303,16 +291,14 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             showSuccess("Runtime secret deleted.");
         } catch (error) {
             showError(`Unable to delete secret: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const runSOPS = async () => {
         if (!sopsAction || !loadedPath || confirmation !== TYPED_CONFIRMATION) return;
         const action = sopsAction;
         setSaving(true);
-        try {
+        await (async () => { try {
             const endpoint = action === "inline-enable" ? "sops/inline/enable" : `sops/${action}`;
             const response = await fetch(`${base}/${endpoint}`, {
                 method: "POST",
@@ -332,9 +318,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                             : `${result.names.length} secret(s) now stay encrypted at rest. Host reconciliation was requested automatically.`);
         } catch (error) {
             showError(`Unable to ${action} SOPS secrets: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const openGlobal = (item?: CatalogSecret) => {
@@ -354,7 +338,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         const name = globalForm.name.trim();
         const assignedPaths = [...globalForm.stackPaths];
         setSaving(true);
-        try {
+        await (async () => { try {
             const response = await fetch(`${base}/assign`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -368,9 +352,7 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             showSuccess(`${name} encrypted for ${assignments.length} stack(s).`);
         } catch (error) {
             showError(`Unable to assign global secret: ${(error as Error).message}`);
-        } finally {
-            setSaving(false);
-        }
+        } })().finally(() => setSaving(false));
     };
 
     const encryptedStacks = catalog.stacks.filter(stack => stack.mode === "encrypted");
