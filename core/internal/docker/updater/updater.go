@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -22,11 +23,33 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// dockerClient is the slice of the Docker client this package drives. It
+// exists so that ContainerRecreateWithOptions — the code that stops, rebuilds
+// and destroys production containers, and the only place where a mistake is
+// unrecoverable — can be exercised without a daemon. *client.Client satisfies
+// it as written.
+type dockerClient interface {
+	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error)
+	ContainerStart(ctx context.Context, containerID string, options client.ContainerStartOptions) (client.ContainerStartResult, error)
+	ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
+	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
+	ContainerRename(ctx context.Context, containerID string, options client.ContainerRenameOptions) (client.ContainerRenameResult, error)
+	ImageList(ctx context.Context, options client.ImageListOptions) (client.ImageListResult, error)
+	ImageInspect(ctx context.Context, imageID string, inspectOpts ...client.ImageInspectOption) (client.ImageInspectResult, error)
+}
+
 type Service struct {
 	srv            *containerSrv.Service
 	hostname       string
 	dockmanUpdater string
 	Store          Store
+
+	// Test seams. Both are nil in production, where the real Docker client and
+	// the process-wide events hub are used.
+	client    dockerClient
+	subscribe func() (<-chan containerSrv.Event, func())
 }
 
 func New(
@@ -44,8 +67,19 @@ func New(
 }
 
 // access to the raw docker client
-func (u *Service) cli() *client.Client {
+func (u *Service) cli() dockerClient {
+	if u.client != nil {
+		return u.client
+	}
 	return u.srv.Client
+}
+
+// events subscribes to this host's container events through the shared hub.
+func (u *Service) events() (<-chan containerSrv.Event, func()) {
+	if u.subscribe != nil {
+		return u.subscribe()
+	}
+	return u.srv.SubscribeEvents()
 }
 
 func (u *Service) ContainersUpdateAll(ctx context.Context, opts ...UpdateOption) error {
@@ -274,8 +308,6 @@ func parseOpts(opts ...UpdateOption) *containersUpdateConfig {
 type containersUpdateConfig struct {
 	AllowSelfUpdate bool
 	ForceUpdate     bool
-	// enable this to only notify on new images instead of updating containers
-	NotifyOnlyMode bool
 
 	// change update mode to opt in only, only containers with DockmanOptInUpdateLabel will be updated
 	optInUpdates bool
@@ -296,12 +328,6 @@ func WithForceUpdate() UpdateOption {
 // WithOptInUpdate makes dockman update containers only with DockmanOptInUpdateLabel label present
 func WithOptInUpdate() UpdateOption {
 	return func(c *containersUpdateConfig) { c.optInUpdates = true }
-}
-
-// WithNotifyOnly updates the new img id in db
-// and notifies user that an update is available
-func WithNotifyOnly() UpdateOption {
-	return func(c *containersUpdateConfig) { c.NotifyOnlyMode = true }
 }
 
 func WithConfig(conf *containersUpdateConfig) UpdateOption {
@@ -403,21 +429,6 @@ func (u *Service) containerUpdate(
 		return
 	}
 
-	if updateConfig.NotifyOnlyMode {
-		//err := s.imageUpdateStore.Save(&ImageUpdate{
-		//	Host:      s.hostname,
-		//	ImageID:   cur.ImageID,
-		//	UpdateRef: newImgID,
-		//})
-		//if err != nil {
-		//	log.Warn().Err(err).Str("img", imgTag).
-		//		Msg("Failed to update image metadata")
-		//}
-		//
-		//// todo notify
-		//return
-	}
-
 	err = u.srv.ImagePull(ctx, imgTag, os.Stdout)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to pull image, skipping...")
@@ -446,6 +457,30 @@ const DockmanContainerLabel = "dockman.container"
 func hasDockmanLabel(cont *container.Summary) bool {
 	value := cont.Labels[DockmanContainerLabel]
 	return value == "true"
+}
+
+// dockerSocketPaths are the daemon socket locations a container must not be
+// able to take away from Dockman in the middle of an update.
+var dockerSocketPaths = []string{"/var/run/docker.sock", "/run/docker.sock"}
+
+// ExposesDockerSocket reports whether the daemon socket is bound into this
+// container. Recreating one of those through Dockman means severing the very
+// connection Dockman is driving the update with: once ContainerStop has run,
+// not even the rollback path can be reached, and the host is left with the
+// socket proxy down and the old container stopped.
+//
+// The answer comes from the summary already in hand, so the classification
+// costs no Docker call. It is deliberately placed after the explicit update
+// labels, so an operator who knows what they are doing keeps the final say.
+func ExposesDockerSocket(cont *container.Summary) bool {
+	for _, mountPoint := range cont.Mounts {
+		for _, socket := range dockerSocketPaths {
+			if path.Clean(mountPoint.Source) == socket || path.Clean(mountPoint.Destination) == socket {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func summaryName(cont container.Summary) string {
@@ -535,7 +570,13 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 	}
 
 	if _, err = u.cli().ContainerStart(ctx, newContainer.ID, client.ContainerStartOptions{}); err != nil {
-		if _, rmErr := u.cli().ContainerRemove(ctx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
+		// Compensation runs on rollbackContext, not on ctx: the usual reason to
+		// be here is that ctx itself expired or was cancelled, and cleaning up
+		// through a dead context leaves the replacement container behind next
+		// to the old one.
+		cleanupCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		if _, rmErr := u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
 			log.Warn().Err(rmErr).Msg("failed to clean up the replacement container")
 		}
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
@@ -545,7 +586,11 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 		err = u.ContainerHealthCheck(ctx, newContainer.ID, &inspectedData)
 	}
 	if err != nil {
-		if _, rmErr := u.cli().ContainerRemove(ctx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
+		// A healthcheck that timed out cancels ctx, which is precisely when this
+		// cleanup matters most.
+		cleanupCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		if _, rmErr := u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
 			log.Warn().Err(rmErr).Msg("failed to clean up the replacement container")
 		}
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
@@ -629,6 +674,14 @@ func (u *Service) ContainerHealthCheck(ctx context.Context, containerID string, 
 
 	eg, healthCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
+		err := u.containerHealthCheckRuntime(healthCtx, containerID)
+		if err != nil {
+			return fmt.Errorf("runtime healthcheck failed\n%w", err)
+		}
+		return nil
+	})
+
+	eg.Go(func() error {
 		err := u.containerHealthCheckUptime(healthCtx, containerID, c)
 		if err != nil {
 			return fmt.Errorf("uptime healthcheck failed\n%w", err)
@@ -649,6 +702,151 @@ func (u *Service) ContainerHealthCheck(ctx context.Context, containerID string, 
 	}
 
 	return nil
+}
+
+const (
+	// An image without a HEALTHCHECK offers no evidence of readiness beyond
+	// staying up, so require it to stay up for a while. Same window as the
+	// protected update helper's wait_ready.
+	updateStabilityWindow = 10 * time.Second
+	// Floor for reaching `healthy`. Raised per container from the image's own
+	// start period, because that is exactly how long the image declares it
+	// needs before its check means anything.
+	updateHealthFloor = 2 * time.Minute
+	updateHealthCap   = 10 * time.Minute
+)
+
+// containerHealthCheckRuntime is the check that always runs. The two label
+// driven checks below are opt-in and return nil when their label is absent,
+// which left the overwhelming majority of updates verifying nothing at all:
+// ContainerStart returning success was taken as proof of health, the previous
+// container was force removed, and its image was queued for cleanup. An image
+// that crashed on boot passed as a success and the rollback never fired.
+//
+// The verdict comes from the daemon's own event stream rather than a poll
+// loop. The events hub already multiplexes one daemon subscription per host
+// and is shared with the UI, so this costs one inspect, one subscription and
+// one timer for the duration of a single update, and nothing at all at rest.
+func (u *Service) containerHealthCheckRuntime(ctx context.Context, containerID string) error {
+	// Subscribed before inspecting, so nothing that happens after the state is
+	// read can slip between the two.
+	events, unsubscribe := u.events()
+	defer unsubscribe()
+
+	inspect, err := u.cli().ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("inspect replacement container: %w", err)
+	}
+	state := inspect.Container.State
+	if state == nil {
+		return errors.New("replacement container reports no state")
+	}
+	if !state.Running {
+		return fmt.Errorf("replacement container is %s instead of running", state.Status)
+	}
+	if state.Health == nil || state.Health.Status == container.NoHealthcheck {
+		return u.waitForContainerStability(ctx, events, containerID)
+	}
+	switch state.Health.Status {
+	case container.Healthy:
+		return nil
+	case container.Unhealthy:
+		return errors.New("replacement container reported unhealthy")
+	}
+	return u.waitForContainerHealthy(ctx, events, containerID, healthDeadline(inspect.Container.Config))
+}
+
+// healthDeadline derives the wait from the image's declared start period, so a
+// slow booting container is not failed for being slow in the way it said it
+// would be.
+func healthDeadline(config *container.Config) time.Duration {
+	deadline := updateHealthFloor
+	if config != nil && config.Healthcheck != nil && config.Healthcheck.StartPeriod > 0 {
+		if candidate := config.Healthcheck.StartPeriod + time.Minute; candidate > deadline {
+			deadline = candidate
+		}
+	}
+	return min(deadline, updateHealthCap)
+}
+
+// sameContainer matches the hub's short ids against a full container id.
+func sameContainer(eventID, containerID string) bool {
+	if eventID == "" || len(containerID) < len(eventID) {
+		return false
+	}
+	return containerID[:len(eventID)] == eventID
+}
+
+// waitForContainerStability accepts a container that simply survives the
+// window. Only the process actually going away is a failure; a stop or kill
+// is followed by its own die event.
+func (u *Service) waitForContainerStability(ctx context.Context, events <-chan containerSrv.Event, containerID string) error {
+	timer := time.NewTimer(updateStabilityWindow)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case event, open := <-events:
+			if !open {
+				return errors.New("container event stream closed before the stability window elapsed")
+			}
+			if !sameContainer(event.ID, containerID) {
+				continue
+			}
+			if event.Action == "die" || event.Action == "destroy" {
+				return fmt.Errorf("replacement container %s within %s of starting", event.Action, updateStabilityWindow)
+			}
+		}
+	}
+}
+
+func (u *Service) waitForContainerHealthy(ctx context.Context, events <-chan containerSrv.Event, containerID string, deadline time.Duration) error {
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			// The hub drops events for a slow consumer rather than blocking the
+			// other listeners, so confirm against the daemon before condemning
+			// a container that may well have reported healthy.
+			return u.confirmHealthyOnDeadline(ctx, containerID, deadline)
+		case event, open := <-events:
+			if !open {
+				return errors.New("container event stream closed before the container became healthy")
+			}
+			if !sameContainer(event.ID, containerID) {
+				continue
+			}
+			switch event.Action {
+			case "health_status":
+				switch container.HealthStatus(event.Status) {
+				case container.Healthy:
+					return nil
+				case container.Unhealthy:
+					return errors.New("replacement container reported unhealthy")
+				}
+			case "die", "destroy":
+				return fmt.Errorf("replacement container %s before reporting healthy", event.Action)
+			}
+		}
+	}
+}
+
+func (u *Service) confirmHealthyOnDeadline(ctx context.Context, containerID string, deadline time.Duration) error {
+	inspect, err := u.cli().ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("replacement container did not report healthy within %s: %w", deadline, err)
+	}
+	state := inspect.Container.State
+	if state != nil && state.Running && state.Health != nil && state.Health.Status == container.Healthy {
+		return nil
+	}
+	return fmt.Errorf("replacement container did not report healthy within %s", deadline)
 }
 
 const DockmanHealthCheckUptimeLabel = "dockman.update.healthcheck.uptime"
