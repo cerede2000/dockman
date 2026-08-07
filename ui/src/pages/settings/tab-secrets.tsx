@@ -36,6 +36,15 @@ interface SecretCatalog { secrets: CatalogSecret[]; stacks: CatalogStack[] }
 interface SOPSStatus { available: boolean; sourcePath: string; sourceExists: boolean; mode: "materialized" | "inline"; recoveryScript?: string; recipient?: string; issue?: string }
 
 const initialForm: SecretForm = {name: "", value: ""};
+// Dockman exports a secret to the Compose process environment only when its
+// name is a valid environment variable name; anything with a dot or a dash, or
+// starting with a digit, stays a file in .secrets/ and reaches only the
+// services that declare it. Mirrors inlineEnvironmentNamePattern in
+// core/internal/secrets/inline.go. The rule is worth showing, because it is
+// the only lever over a secret's blast radius and it is chosen by the name.
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const exportedToEnvironment = (name: string) => ENVIRONMENT_NAME.test(name);
+
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 async function responseError(response: Response): Promise<string> {
@@ -479,10 +488,15 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         </Paper>
         <TableContainer component={Paper} variant="outlined">
             <Table size="small">
-                <TableHead><TableRow><TableCell>Name</TableCell><TableCell>Size</TableCell><TableCell>Modified</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
+                <TableHead><TableRow><TableCell>Name</TableCell><TableCell>Scope</TableCell><TableCell>Size</TableCell><TableCell>Modified</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead>
                 <TableBody>
                     {items.map(item => <TableRow key={item.name} hover>
                         <TableCell sx={{fontFamily: "monospace", fontWeight: 650}}>{item.name}</TableCell>
+                        <TableCell>
+                            {exportedToEnvironment(item.name)
+                                ? <Tooltip title={`Its name is a valid environment variable name, so Compose can interpolate \${${item.name}} anywhere in this stack: every service of the stack can read it. Rename it with a dot or a dash to make it file-only.`}><Chip size="small" variant="outlined" color="warning" label="environment · whole stack"/></Tooltip>
+                                : <Tooltip title="Its name is not a valid environment variable name, so it is never exported. It exists only as a file in .secrets/ and reaches only the services that declare it."><Chip size="small" variant="outlined" color="success" label="file · declared services"/></Tooltip>}
+                        </TableCell>
                         <TableCell>{item.size} B</TableCell>
                         <TableCell>{new Date(item.modifiedAt).toLocaleString()}</TableCell>
                         <TableCell align="right">
@@ -565,7 +579,9 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                 <Alert severity="info">One action applies the value to every selected stack. Each stack keeps its own independently encrypted <code>secrets.sops.yaml</code>; unselecting a stack does not delete its existing value.</Alert>
                 <TextField label="Secret name" value={globalForm.name} disabled={saving}
                            onChange={event => setGlobalForm(current => ({...current, name: event.target.value}))}
-                           helperText="Use an environment-compatible name such as DATABASE_PASSWORD when inline delivery may be needed."/>
+                           helperText={globalForm.name.trim() === "" ? "The name decides the scope: DATABASE_PASSWORD is exported to the whole stack's Compose environment, db.password stays a file for the services that declare it."
+                               : exportedToEnvironment(globalForm.name.trim()) ? "Exported to the Compose environment: every service of every assigned stack can interpolate it."
+                                   : "File only: never exported to the environment, reaches only the services that declare it."}/>
                 <TextField label="Value" multiline minRows={4} value={globalForm.value}
                            onChange={event => setGlobalForm(current => ({...current, value: event.target.value}))}
                            sx={{"& .MuiInputBase-input": {WebkitTextSecurity: globalVisible ? "none" : "disc"}}}
@@ -592,7 +608,10 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             <DialogTitle>{items.some(item => item.name === form.name) ? "Edit runtime secret" : "Create runtime secret"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
                 <TextField label="Name" value={form.name} disabled={saving || items.some(item => item.name === form.name)}
-                           helperText={sopsStatus?.mode === "inline" ? "File names may use dots or hyphens. Inline environment consumers require a name such as API_TOKEN." : "Letters, numbers, dots, underscores and hyphens; maximum 128 characters."}
+                           helperText={sopsStatus?.mode !== "inline" ? "Letters, numbers, dots, underscores and hyphens; maximum 128 characters."
+                               : form.name.trim() === "" ? "The name decides the scope: API_TOKEN is exported to the whole stack's Compose environment, api.token stays a file for the services that declare it."
+                                   : exportedToEnvironment(form.name.trim()) ? "Exported to the Compose environment: every service of this stack can interpolate it."
+                                       : "File only: never exported to the environment, reaches only the services that declare it in secrets:."}
                            onChange={event => setForm(current => ({...current, name: event.target.value}))}/>
                 <TextField label="Value" multiline minRows={5} value={form.value}
                            onChange={event => setForm(current => ({...current, value: event.target.value}))}

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/RA341/dockman/pkg/fileutil"
 
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"github.com/rs/zerolog/log"
@@ -151,7 +153,9 @@ func (u *Service) RestoreContainerImage(ctx context.Context, containerName, prev
 		return "", errors.New("container name and previous image id are required for rollback")
 	}
 	filters := client.Filters{}
-	filters.Add("name", "^/"+containerName+"$")
+	// The daemon treats the name filter as a regular expression, so a dot or
+	// a plus in a container name would silently match its neighbours.
+	filters.Add("name", "^/"+regexp.QuoteMeta(containerName)+"$")
 	list, err := u.cli().ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
 	if err != nil {
 		return "", fmt.Errorf("locate container %s for rollback: %w", containerName, err)
@@ -170,6 +174,30 @@ func (u *Service) RestoreContainerImage(ctx context.Context, containerName, prev
 		return "", fmt.Errorf("verify restored container %s: %w", containerName, err)
 	}
 	return list.Items[0].ID, nil
+}
+
+func newestImage(items []image.Summary) string {
+	best := ""
+	var bestCreated int64
+	for _, item := range items {
+		if item.ID == "" {
+			continue
+		}
+		if best == "" || item.Created > bestCreated || (item.Created == bestCreated && item.ID > best) {
+			best, bestCreated = item.ID, item.Created
+		}
+	}
+	return best
+}
+
+// shortContainerID is the display form used in logs. Slicing to twelve
+// characters outright panics on anything shorter, which a malformed or
+// truncated id from an intermediary would be.
+func shortContainerID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 // RolledBackError marks a failed replacement for which Dockman successfully
@@ -255,8 +283,13 @@ func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, ou
 	if err != nil {
 		return result, fmt.Errorf("%s: inspect %s: %w", name, imgTag, err)
 	}
-	if len(localImages.Items) > 0 {
-		result.NewImage = localImages.Items[0].ID
+	// A reference filter can match several images - an untagged digest
+	// reference in particular - and the daemon guarantees no ordering. Taking
+	// the first item made NewImage, and therefore PreviousImage and the image
+	// cleanup that follows it, depend on which row the daemon happened to
+	// return first. Newest wins, with the id as a deterministic tie-break.
+	if newest := newestImage(localImages.Items); newest != "" {
+		result.NewImage = newest
 	}
 	if result.NewImage == "" || result.NewImage == cur.ImageID {
 		report("%s: image already up to date, container kept as is", name)
@@ -407,8 +440,8 @@ func (u *Service) containersUpdateLoop(
 const DockmanOptInUpdateLabel = "dockman.update"
 
 func hasUpdateLabel(c *container.Summary) bool {
-	enabled, present := boolLabel(c.Labels, DockmanOptInUpdateLabel)
-	return present && enabled
+	enabled, present, valid := parseBoolLabel(c.Labels, DockmanOptInUpdateLabel)
+	return present && valid && enabled
 }
 
 func (u *Service) containerUpdate(
@@ -458,8 +491,15 @@ func (u *Service) containerUpdate(
 
 const DockmanUpdateDisableLabel = "dockman.update.disable"
 
+// hasDisableUpdateLabel treats anything Dockman cannot read as "disabled".
+// An exact "true" comparison silently ignored dockman.update.disable=yes, so
+// the operator who wrote it watched the container get updated anyway.
+// HasDisableUpdateLabel is the exported form used by the execution path.
+func HasDisableUpdateLabel(c *container.Summary) bool { return hasDisableUpdateLabel(c) }
+
 func hasDisableUpdateLabel(c *container.Summary) bool {
-	return c.Labels[DockmanUpdateDisableLabel] == "true"
+	disabled, present, valid := parseBoolLabel(c.Labels, DockmanUpdateDisableLabel)
+	return present && (!valid || disabled)
 }
 
 const DockmanContainerLabel = "dockman.container"
@@ -555,7 +595,7 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 	if len(oldContainer.Names) > 0 {
 		containerName = strings.TrimPrefix(oldContainer.Names[0], "/")
 	}
-	log.Debug().Msgf("Recreating container %s (%s) on image %s", containerName, oldContainer.ID[:12], imageTag)
+	log.Debug().Msgf("Recreating container %s (%s) on image %s", containerName, shortContainerID(oldContainer.ID), imageTag)
 
 	inspected, err := u.cli().ContainerInspect(ctx, oldContainer.ID, client.ContainerInspectOptions{})
 	if err != nil {
