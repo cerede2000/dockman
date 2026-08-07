@@ -90,9 +90,9 @@ func TestInstallHostRuntimeWritesIndependentSystemdKit(t *testing.T) {
 	// Docker start job: the host boots with no daemon at all.
 	require.Contains(t, string(unit), "Before=docker.service\n")
 	require.NotContains(t, string(unit), "docker.socket")
-	// No ExecStop: with RemainAfterExit=yes it fires on restart too, tearing
-	// every stack's tmpfs away from the running containers.
-	require.NotContains(t, string(unit), "ExecStop=")
+	// ExecStop stays: a deliberate stop must take the plaintext out of memory.
+	// The reinstall hazard is handled by never activating with restart.
+	require.Contains(t, string(unit), "ExecStop=")
 	dropIn, err := os.ReadFile(rooted(root, "/etc/systemd/system/docker.service.d/20-dockman-secrets.conf"))
 	require.NoError(t, err)
 	// A failed materialization must never keep the Docker daemon down.

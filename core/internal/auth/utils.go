@@ -90,9 +90,10 @@ func CreateAuthToken(length int) string {
 func checkPassword(inputPassword string, hashedPassword string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(inputPassword))
 	if err != nil {
-		// Debug, not Error: a wrong password is an expected event, and logging
-		// it at error level lets anyone fill the log by guessing.
-		log.Debug().Err(err).Msg("password check failed")
+		// Warn, not Error: a wrong password is not a system malfunction. Not
+		// Debug either - hiding it at default level would conceal brute-force
+		// attempts, trading a log-noise problem for a blind spot.
+		log.Warn().Msg("password check failed")
 		return false
 	}
 	return true

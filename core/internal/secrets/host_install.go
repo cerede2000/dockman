@@ -63,12 +63,12 @@ func InstallHostRuntime(options HostInstallOptions) error {
 	if err = writeHostFileAtomic(configTarget, encoded, 0o600); err != nil {
 		return fmt.Errorf("write host runtime configuration: %w", err)
 	}
-	// No ExecStop. With RemainAfterExit=yes it runs on `systemctl restart` too,
-	// so restarting the unit unmounted every stack's tmpfs out from under the
-	// running containers before remounting it - and any container restarting in
-	// that window came up with no secrets at all. Nothing is gained in exchange:
-	// at shutdown the tmpfs goes with the machine. An administrator who really
-	// wants to tear the mounts down still has `dockman-secrets-host cleanup`.
+	// ExecStop stays: stopping this unit deliberately must take the plaintext
+	// out of memory, and dropping it would leave every stack's tmpfs mounted
+	// until the next reboot. The hazard was never the cleanup itself, it was
+	// that installation activated the unit with `restart` - which runs ExecStop
+	// first and therefore unmounted the secrets of running containers on every
+	// reinstall. The activation below uses the reconcile unit instead.
 	unit := `[Unit]
 Description=Materialize encrypted Compose secrets into volatile memory
 Documentation=https://github.com/cerede2000/dockman
@@ -78,6 +78,7 @@ Before=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/dockman-secrets-host materialize --config /etc/dockman-secrets-host.json
+ExecStop=/usr/local/libexec/dockman-secrets-host cleanup --config /etc/dockman-secrets-host.json
 RemainAfterExit=yes
 NoNewPrivileges=yes
 
@@ -146,7 +147,12 @@ WantedBy=multi-user.target
 		return fmt.Errorf("remove obsolete Docker socket systemd dependency: %w", err)
 	}
 	if options.Activate && root == "/" {
-		for _, args := range [][]string{{"daemon-reload"}, {"enable", HostRuntimeUnitName}, {"enable", "--now", HostReconcilePathName}, {"restart", HostRuntimeUnitName}} {
+		// Never `restart` the main unit here. RemainAfterExit=yes makes restart
+		// run ExecStop first, which unmounts every stack's tmpfs - so each
+		// reinstall pulled the secrets out from under the containers that were
+		// running. `start` brings it up the first time and is a no-op after,
+		// and the reconcile unit re-materializes without ever tearing down.
+		for _, args := range [][]string{{"daemon-reload"}, {"enable", HostRuntimeUnitName}, {"enable", "--now", HostReconcilePathName}, {"start", HostRuntimeUnitName}, {"start", HostReconcileUnitName}} {
 			if output, runErr := exec.Command("systemctl", args...).CombinedOutput(); runErr != nil {
 				return fmt.Errorf("systemctl %v: %s", args, string(output))
 			}
