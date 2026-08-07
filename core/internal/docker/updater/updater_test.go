@@ -47,3 +47,22 @@ func TestAbsentOptionalHealthcheckLabelsAreNoOps(t *testing.T) {
 	require.NoError(t, service.containerHealthCheckUptime(t.Context(), "unused", nil))
 	require.NoError(t, service.containerHealthCheckPing(t.Context(), nil))
 }
+
+// The manual update path drives the Docker API through whatever connection
+// Dockman holds. For a socket proxy that connection is the container being
+// replaced, so the update severs its own means of finishing or rolling back.
+func TestManualUpdateRefusesAContainerCarryingTheDockerSocket(t *testing.T) {
+	proxy := container.Summary{ID: "proxy", Names: []string{"/socket-proxy"}, Mounts: []container.MountPoint{
+		{Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"},
+	}}
+	err := guardProtectedInfrastructure(&proxy)
+	require.ErrorContains(t, err, "socket-proxy")
+	require.ErrorContains(t, err, "protected update")
+
+	// The explicit opt-in remains the way through.
+	proxy.Labels = map[string]string{DockmanOptInUpdateLabel: "true"}
+	require.NoError(t, guardProtectedInfrastructure(&proxy))
+
+	// An ordinary container is untouched.
+	require.NoError(t, guardProtectedInfrastructure(&container.Summary{ID: "app", Names: []string{"/app"}}))
+}

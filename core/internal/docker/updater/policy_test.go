@@ -132,3 +132,53 @@ func TestDeletePolicy(t *testing.T) {
 		t.Fatalf("policy was not deleted: rows=%#v err=%v", rows, err)
 	}
 }
+
+// The socket proxy keeps a source of its own. Collapsing it into Dockman's
+// "protected" hid the very button that makes it updatable, because the
+// interface hides the protected update for rows Dockman self-updates.
+func TestSocketExposingContainerGetsItsOwnProtectedSource(t *testing.T) {
+	service := testPolicyService(t)
+	rows, err := service.Inventory(t.Context(), "local", []container.Summary{
+		{ID: "proxy", Names: []string{"/socket-proxy"}, Mounts: []container.MountPoint{
+			{Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"},
+		}},
+		{ID: "dockman", Names: []string{"/dockman"}, Labels: map[string]string{DockmanContainerLabel: "true"}},
+		{ID: "app", Names: []string{"/app"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bySource := map[string]string{}
+	for _, row := range rows {
+		bySource[row.ContainerName] = row.Source
+		if row.Enrolled {
+			t.Fatalf("%s must not be enrolled", row.ContainerName)
+		}
+	}
+	if bySource["socket-proxy"] != SourceProtectedInfrastructure {
+		t.Fatalf("socket proxy source = %q, want %q", bySource["socket-proxy"], SourceProtectedInfrastructure)
+	}
+	if bySource["dockman"] != "protected" {
+		t.Fatalf("Dockman must keep its own classification, got %q", bySource["dockman"])
+	}
+	if bySource["app"] != "none" {
+		t.Fatalf("ordinary container source = %q, want none", bySource["app"])
+	}
+}
+
+// The explicit label stays the last word, above the socket protection.
+func TestExplicitOptInOverridesTheSocketProtection(t *testing.T) {
+	service := testPolicyService(t)
+	rows, err := service.Inventory(t.Context(), "local", []container.Summary{
+		{ID: "proxy", Names: []string{"/socket-proxy"},
+			Labels: map[string]string{DockmanOptInUpdateLabel: "true"},
+			Mounts: []container.MountPoint{{Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].Enrolled || rows[0].Source != "label" {
+		t.Fatalf("the explicit label must win over the socket protection, got %#v", rows)
+	}
+}
