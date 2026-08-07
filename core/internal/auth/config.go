@@ -20,7 +20,12 @@ type Config struct {
 	OIDCClientID     string `config:"flag=oicd,env=AUTH_OIDC_CLIENT_ID,default=,usage=client id for OIDC,hide=true"`
 	OIDCClientSecret string `config:"flag=oics,env=AUTH_OIDC_CLIENT_SECRET,default=,usage=client secret for OIDC,hide=true"`
 	OIDCRedirectURL  string `config:"flag=oiurl,env=AUTH_OIDC_REDIRECT_URL,default=,usage=redirect url for OIDC"`
-	OIDCHttp         bool   `config:"flag=oicook,env=AUTH_OIDC_SECURE,default=true,usage=disable https only for OIDC"`
+	// OIDCCookieSecure was named OIDCHttp with the usage "disable https only for
+	// OIDC", which read as the exact opposite of what the code does: true sets
+	// Secure. Anyone following the old wording to allow OIDC over plain HTTP got
+	// a state cookie the browser never returned, and a login that failed for no
+	// visible reason.
+	OIDCCookieSecure bool `config:"flag=oicook,env=AUTH_OIDC_SECURE,default=true,usage=require HTTPS for the OIDC state cookie; set false only to allow OIDC over plain HTTP"`
 }
 
 const defaultCookieExpiry = time.Hour * 24

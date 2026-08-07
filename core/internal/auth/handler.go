@@ -38,6 +38,7 @@ func (a *Handler) Login(_ context.Context, c *connect.Request[v1.User]) (*connec
 		authToken,
 		session.ID,
 		session.Expires,
+		requestIsHTTPS(a.srv.tlsServed, c.Header()),
 	)
 	for _, cook := range cookies {
 		response.Header().Add("Set-Cookie", cook.String())
