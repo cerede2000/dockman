@@ -72,7 +72,7 @@
     "wait-on": "^9.0.3"
   },
   "overrides": {
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.13",
     "@electron/asar": "4.2.1",
     "@electron/universal": "3.0.6",
     "dir-compare": "5.0.0",
