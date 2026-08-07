@@ -39,8 +39,12 @@ func InstallHostRuntime(options HostInstallOptions) error {
 	reconcileUnitTarget := rooted(root, "/etc/systemd/system/"+HostReconcileUnitName)
 	reconcilePathTarget := rooted(root, "/etc/systemd/system/"+HostReconcilePathName)
 	dropInTarget := rooted(root, "/etc/systemd/system/docker.service.d/20-dockman-secrets.conf")
-	socketDropInTarget := rooted(root, "/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf")
-	for _, destination := range []string{helperTarget, sopsTarget, configTarget, unitTarget, reconcileUnitTarget, reconcilePathTarget, dropInTarget, socketDropInTarget} {
+	// Installed by earlier revisions. Ordering this unit before docker.socket
+	// closed a systemd cycle (docker.socket -> sockets.target -> basic.target ->
+	// this service -> docker.socket), and systemd broke it by dropping the
+	// Docker start job entirely: the host booted without a Docker daemon.
+	staleSocketDropInTarget := rooted(root, "/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf")
+	for _, destination := range []string{helperTarget, sopsTarget, configTarget, unitTarget, reconcileUnitTarget, reconcilePathTarget, dropInTarget} {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 			return err
 		}
@@ -63,7 +67,7 @@ func InstallHostRuntime(options HostInstallOptions) error {
 Description=Materialize encrypted Compose secrets into volatile memory
 Documentation=https://github.com/cerede2000/dockman
 After=local-fs.target
-Before=docker.service docker.socket
+Before=docker.service
 
 [Service]
 Type=oneshot
@@ -75,8 +79,13 @@ NoNewPrivileges=yes
 [Install]
 WantedBy=multi-user.target
 `
+	// Wants, not Requires: a failed secret materialization must not keep the
+	// whole Docker daemon down. After= still holds, so dockerd only starts once
+	// this unit has finished activating — successfully or not. When it succeeds
+	// every container therefore sees its secrets; when it fails the host stays
+	// administrable and only the stacks that need secrets are affected.
 	dropIn := `[Unit]
-Requires=dockman-secrets-host.service
+Wants=dockman-secrets-host.service
 After=dockman-secrets-host.service
 `
 	reconcileUnit := `[Unit]
@@ -116,8 +125,11 @@ WantedBy=multi-user.target
 	if err = writeHostFileAtomic(dropInTarget, []byte(dropIn), 0o644); err != nil {
 		return fmt.Errorf("write Docker systemd dependency: %w", err)
 	}
-	if err = writeHostFileAtomic(socketDropInTarget, []byte(dropIn), 0o644); err != nil {
-		return fmt.Errorf("write Docker socket systemd dependency: %w", err)
+	// Hosts provisioned by an earlier revision still carry the cycle-inducing
+	// socket drop-in. Removing it here is what actually repairs them, since the
+	// unit file alone no longer references docker.socket.
+	if err = os.Remove(staleSocketDropInTarget); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove obsolete Docker socket systemd dependency: %w", err)
 	}
 	if options.Activate && root == "/" {
 		for _, args := range [][]string{{"daemon-reload"}, {"enable", HostRuntimeUnitName}, {"enable", "--now", HostReconcilePathName}, {"restart", HostRuntimeUnitName}} {

@@ -79,15 +79,26 @@ func TestInstallHostRuntimeWritesIndependentSystemdKit(t *testing.T) {
 		"/etc/systemd/system/" + HostReconcileUnitName,
 		"/etc/systemd/system/" + HostReconcilePathName,
 		"/etc/systemd/system/docker.service.d/20-dockman-secrets.conf",
-		"/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf",
 	} {
 		_, err := os.Stat(rooted(root, path))
 		require.NoError(t, err, path)
 	}
 	unit, err := os.ReadFile(rooted(root, "/etc/systemd/system/"+HostRuntimeUnitName))
 	require.NoError(t, err)
-	require.Contains(t, string(unit), "Before=docker.service docker.socket")
+	// Ordering before docker.socket closes a systemd cycle through
+	// sockets.target and basic.target, and systemd resolves it by dropping the
+	// Docker start job: the host boots with no daemon at all.
+	require.Contains(t, string(unit), "Before=docker.service\n")
+	require.NotContains(t, string(unit), "docker.socket")
 	require.Contains(t, string(unit), "ExecStop=")
+	dropIn, err := os.ReadFile(rooted(root, "/etc/systemd/system/docker.service.d/20-dockman-secrets.conf"))
+	require.NoError(t, err)
+	// A failed materialization must never keep the Docker daemon down.
+	require.Contains(t, string(dropIn), "Wants=dockman-secrets-host.service")
+	require.NotContains(t, string(dropIn), "Requires=")
+	require.Contains(t, string(dropIn), "After=dockman-secrets-host.service")
+	_, err = os.Stat(rooted(root, "/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf"))
+	require.ErrorIs(t, err, os.ErrNotExist)
 	pathUnit, err := os.ReadFile(rooted(root, "/etc/systemd/system/"+HostReconcilePathName))
 	require.NoError(t, err)
 	require.Contains(t, string(pathUnit), `PathChanged="/server/stacks/.dockman-secrets-reconcile"`)
@@ -95,4 +106,31 @@ func TestInstallHostRuntimeWritesIndependentSystemdKit(t *testing.T) {
 	info, err := os.Stat(rooted(root, HostRuntimeConfigPath))
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+// A host provisioned by an earlier revision keeps the cycle-inducing socket
+// drop-in until an install removes it; the unit file alone no longer mentions
+// docker.socket, so nothing else would repair such a host.
+func TestInstallHostRuntimeRemovesObsoleteSocketDropIn(t *testing.T) {
+	root := t.TempDir()
+	source := t.TempDir()
+	helper := filepath.Join(source, "helper")
+	sops := filepath.Join(source, "sops")
+	require.NoError(t, os.WriteFile(helper, []byte("helper"), 0o755))
+	require.NoError(t, os.WriteFile(sops, []byte("sops"), 0o755))
+
+	stale := rooted(root, "/etc/systemd/system/docker.socket.d/20-dockman-secrets.conf")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("[Unit]\nRequires=dockman-secrets-host.service\n"), 0o644))
+
+	require.NoError(t, InstallHostRuntime(HostInstallOptions{
+		Config: HostRuntimeConfig{
+			StackRoot: "/server/stacks", AgeKeyFile: "/etc/dockman-secrets/age-key.txt",
+			TmpfsSizeMiB: 16, FileMode: 0o444,
+		},
+		HelperFrom: helper, SOPSFrom: sops, SystemRoot: root, Activate: false,
+	}))
+
+	_, err := os.Stat(stale)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
