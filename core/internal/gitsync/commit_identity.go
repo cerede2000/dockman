@@ -24,13 +24,17 @@ func (s *Service) bindingCommitOptions(repository Repository, binding *StackBind
 }
 
 func (s *Service) commitMessageWithProvenance(message string, binding *StackBinding) string {
+	// host= and stack= published the machine's name and its local directory
+	// layout into every commit, permanently and with no way to opt out - on a
+	// public repository that is infrastructure disclosure, written by an
+	// automation the user did not choose to have describe their network.
+	//
+	// The binding UUID is kept and loses nothing: it resolves to the host and
+	// the stack path inside Dockman, where that information belongs, and means
+	// nothing to anyone reading the repository.
 	parts := []string{"instance=" + provenanceValue(s.commitInstance)}
 	if binding != nil {
-		parts = append(parts,
-			"host="+provenanceValue(binding.Host),
-			"binding="+provenanceValue(binding.UUID),
-			"stack="+provenanceValue(binding.StackPath),
-		)
+		parts = append(parts, "binding="+provenanceValue(binding.UUID))
 	}
 	return strings.TrimSpace(message) + "\n\nDockman-Origin: " + strings.Join(parts, "; ")
 }

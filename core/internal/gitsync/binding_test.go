@@ -457,9 +457,12 @@ func TestManualExportRecordsConfiguredIdentityAndOrigin(t *testing.T) {
 	require.Equal(t, "Dockman Production", commit.Author.Name)
 	require.Equal(t, "dockman@example.test", commit.Author.Email)
 	require.Contains(t, commit.Message, `Dockman-Origin: instance="homelab-primary"`)
-	require.Contains(t, commit.Message, `host="local"`)
+	// host= and stack= used to be published here. They named the machine and
+	// its local directory layout in every commit of what may be a public
+	// repository; the binding UUID resolves both inside Dockman instead.
+	require.NotContains(t, commit.Message, `host=`)
 	require.Contains(t, commit.Message, `binding="`+binding.ID+`"`)
-	require.Contains(t, commit.Message, `stack="compose/app"`)
+	require.NotContains(t, commit.Message, `stack=`)
 }
 
 func TestComposeOnlyDoesNotOpenUnselectedDirectories(t *testing.T) {
