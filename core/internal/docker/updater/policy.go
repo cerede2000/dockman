@@ -292,6 +292,17 @@ func (s *PolicyService) Inventory(ctx context.Context, host string, containers [
 			continue
 		}
 
+		// Deliberately below every explicit label: an operator who set
+		// dockman.update on this container has already decided, and keeps the
+		// final say. Without such a label, a container holding the daemon
+		// socket is protected, because updating it would cut the connection
+		// carrying the update itself.
+		if ExposesDockerSocket(&item) {
+			row.Source, row.Reason = "protected", "exposes the Docker socket; an automatic update would sever the daemon connection mid-operation. Set "+DockmanOptInUpdateLabel+"=true to override"
+			rows = append(rows, row)
+			continue
+		}
+
 		if policy, ok := byTarget[UpdateTargetContainer+"\x00"+name]; ok {
 			applyPolicy(&row, policy)
 		} else if stackKey != "" {

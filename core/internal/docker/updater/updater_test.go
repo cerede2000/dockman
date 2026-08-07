@@ -21,7 +21,7 @@ func TestValidateHealthcheckHostAllowsOnlyContainerAndLoopbackAddresses(t *testi
 }
 
 func TestWithConfigCopiesProvidedConfiguration(t *testing.T) {
-	expected := &containersUpdateConfig{AllowSelfUpdate: true, ForceUpdate: true, NotifyOnlyMode: true, optInUpdates: true}
+	expected := &containersUpdateConfig{AllowSelfUpdate: true, ForceUpdate: true, optInUpdates: true}
 	actual := parseOpts(WithConfig(expected))
 	require.Equal(t, expected, actual)
 }

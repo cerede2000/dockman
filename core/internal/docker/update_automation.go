@@ -108,6 +108,13 @@ func RemovePreviousImageIfUnused(ctx context.Context, dkSrv *Service, imageID st
 func executeAutomaticContainerUnit(ctx context.Context, dkSrv *Service, target updater.UpdateExecutionTarget) updater.UpdateExecutionOutcome {
 	outcome := updater.UpdateExecutionOutcome{UpdateExecutionTarget: target, State: updater.ExecutionFailed}
 	logs := &boundedUpdateWriter{}
+	// A failure that happened before the container was touched is transient by
+	// nature: an unreachable registry, a busy action lock, a listing that timed
+	// out. Reporting those as failures armed the permanent execution block, so
+	// a thirty-second network hiccup took a healthy container out of automatic
+	// updates for good. Only a failure that reached the container itself is
+	// worth blocking on.
+	mutationAttempted := false
 	err := withContainerUpdateLocks(ctx, dkSrv, []string{target.ContainerID}, func() error {
 		if reason, err := validateAutomaticTarget(ctx, dkSrv, target); err != nil {
 			return err
@@ -115,6 +122,7 @@ func executeAutomaticContainerUnit(ctx context.Context, dkSrv *Service, target u
 			outcome.State, outcome.Message = updater.ExecutionSkipped, reason
 			return nil
 		}
+		mutationAttempted = true
 		result, updateErr := dkSrv.Updater.ForceUpdateContainer(ctx, func(pullCtx context.Context, imageTag string) error {
 			return dkSrv.Compose.PullImage(pullCtx, imageTag, logs)
 		}, logs, target.ContainerID, updater.ForceUpdateOptions{VerifyHealth: target.RollbackEnabled})
@@ -130,8 +138,12 @@ func executeAutomaticContainerUnit(ctx context.Context, dkSrv *Service, target u
 	})
 	if err != nil {
 		outcome.Message = err.Error()
-		if updater.IsRolledBack(err) {
+		switch {
+		case updater.IsRolledBack(err):
 			outcome.State = updater.ExecutionRolledBack
+		case !mutationAttempted:
+			outcome.State = updater.ExecutionSkipped
+			outcome.Message = "update not attempted, will be retried: " + outcome.Message
 		}
 	}
 	outcome.Logs = logs.String()
@@ -157,7 +169,9 @@ func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automat
 		for index, target := range targets {
 			reason, validateErr := validateAutomaticTarget(ctx, dkSrv, target)
 			if validateErr != nil {
-				outcomes[index].State, outcomes[index].Message = updater.ExecutionFailed, validateErr.Error()
+				// Preflight: nothing has been changed yet, so this is retryable
+				// rather than a reason to block the stack for good.
+				outcomes[index].State, outcomes[index].Message = updater.ExecutionSkipped, "stack preflight validation failed, will be retried: "+validateErr.Error()
 				markUnprocessedStackTargets(outcomes, 0, "stack transaction cancelled during preflight validation")
 				return nil
 			}
@@ -175,10 +189,11 @@ func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automat
 			}
 			_, _ = fmt.Fprintf(logs, "Preloading %s...\n", target.Image)
 			if pullErr := dkSrv.Compose.PullImage(ctx, target.Image, logs); pullErr != nil {
-				outcomes[index].State = updater.ExecutionFailed
-				outcomes[index].Message = fmt.Sprintf("stack image preflight failed for %s: %v", target.Image, pullErr)
+				// The pull runs before any container is touched, so a registry
+				// outage must leave the stack retryable rather than blocked.
+				outcomes[index].State = updater.ExecutionSkipped
+				outcomes[index].Message = fmt.Sprintf("stack image preflight failed for %s, will be retried: %v", target.Image, pullErr)
 				markUnprocessedStackTargets(outcomes, 0, "stack transaction cancelled before changing any container")
-				outcomes[index].State = updater.ExecutionFailed
 				return nil
 			}
 			pulled[target.Image] = struct{}{}
@@ -224,7 +239,8 @@ func executeAutomaticStackUnit(ctx context.Context, dkSrv *Service, unit automat
 	if err != nil {
 		markUnprocessedStackTargets(outcomes, 0, "stack transaction could not acquire its action lock: "+err.Error())
 		if len(outcomes) > 0 {
-			outcomes[0].State, outcomes[0].Message = updater.ExecutionFailed, err.Error()
+			// No container was touched: another action simply held the lock.
+			outcomes[0].State, outcomes[0].Message = updater.ExecutionSkipped, "stack action lock unavailable, will be retried: "+err.Error()
 		}
 	}
 	sharedLogs := logs.String()
@@ -267,6 +283,12 @@ func validateAutomaticTarget(ctx context.Context, dkSrv *Service, target updater
 	}
 	if labels[updater.DockmanUpdateDisableLabel] == "true" {
 		return "automatic update was disabled after the scan", nil
+	}
+	// Re-checked at execution time and not only at inventory time: the socket
+	// may have been bound in since the scan, and this is the one target whose
+	// update would take away the connection needed to roll it back.
+	if _, optIn := labels[updater.DockmanOptInUpdateLabel]; !optIn && updater.ExposesDockerSocket(&containers[0]) {
+		return "container exposes the Docker socket and is protected from automatic updates", nil
 	}
 	state := strings.ToLower(string(containers[0].State))
 	if state == "paused" || state == "restarting" || state == "removing" || state == "dead" {
