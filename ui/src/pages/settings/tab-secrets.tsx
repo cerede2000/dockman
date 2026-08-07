@@ -1,11 +1,12 @@
 import {useCallback, useEffect, useMemo, useState} from "react";
 import {
     Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
-    IconButton, InputAdornment, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
+    IconButton, InputAdornment, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
     TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
 import {Add, ContentCopy, DeleteOutlined, Download, History, KeyOutlined, LockOutlined, Refresh, Restore, SettingsSuggest, Upload, Visibility, VisibilityOff} from "@mui/icons-material";
 import {getBaseUrl} from "../../lib/api.ts";
+import {useHostManager} from "../../context/host-context.tsx";
 import {useHostStore} from "../compose/state/files.ts";
 import {useSnackbar} from "../../hooks/snackbar.ts";
 import TypedConfirmationField, {TYPED_CONFIRMATION} from "../../components/typed-confirmation-field.tsx";
@@ -43,8 +44,15 @@ async function responseError(response: Response): Promise<string> {
 }
 
 export default function TabSecrets() {
-    const host = useHostStore(state => state.host) || "local";
-    const {showError, showSuccess} = useSnackbar();
+    // /settings is a sibling of :host in the router, so nothing here guarantees
+    // the store holds the host the user thinks they are looking at. Falling back
+    // to "local" silently meant this panel could read and write the secrets of
+    // another machine entirely, so the host is picked explicitly instead.
+    const selectedHost = useHostStore(state => state.host);
+    const setHost = useHostStore(state => state.setHost);
+    const {availableHosts} = useHostManager();
+    const host = selectedHost || "local";
+    const {showError, showSuccess, showWarning} = useSnackbar();
     const [stackPath, setStackPath] = useState("");
     const [loadedPath, setLoadedPath] = useState("");
     const [items, setItems] = useState<RuntimeSecret[]>([]);
@@ -64,6 +72,7 @@ export default function TabSecrets() {
     const [catalog, setCatalog] = useState<SecretCatalog>({secrets: [], stacks: []});
     const [globalOpen, setGlobalOpen] = useState(false);
     const [globalForm, setGlobalForm] = useState<{name: string; value: string; stackPaths: string[]}>({name: "", value: "", stackPaths: []});
+    const [globalConfirmation, setGlobalConfirmation] = useState("");
     const [globalVisible, setGlobalVisible] = useState(false);
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [sopsStatus, setSopsStatus] = useState<SOPSStatus | null>(null);
@@ -317,11 +326,18 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
             setConfirmation("");
             await load(loadedPath);
             await loadStackOptions();
-            showSuccess(action === "export" ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
-                : action === "materialize" ? `${result.names.length} encrypted secret(s) materialized securely.`
-                    : result.runtimeState === "ready" ? `${result.names.length} secret(s) encrypted and volatile file runtime ready.`
-                        : result.runtimeIssue ? `${result.names.length} secret(s) encrypted. ${result.runtimeIssue}`
+            // A runtime issue means the stack is encrypted but its file secrets
+            // are not mounted, so its containers will start without them.
+            // Announcing that in a green success toast buried the one line the
+            // user had to act on.
+            if (result.runtimeIssue) {
+                showWarning(`${result.names.length} secret(s) encrypted, but the volatile file runtime is not ready: ${result.runtimeIssue}`);
+            } else {
+                showSuccess(action === "export" ? `${result.names.length} runtime secret(s) encrypted into secrets.sops.yaml.`
+                    : action === "materialize" ? `${result.names.length} encrypted secret(s) materialized securely.`
+                        : result.runtimeState === "ready" ? `${result.names.length} secret(s) encrypted and volatile file runtime ready.`
                             : `${result.names.length} secret(s) now stay encrypted at rest. Host reconciliation was requested automatically.`);
+            }
         } catch (error) {
             showError(`Unable to ${action} SOPS secrets: ${(error as Error).message}`);
         } })().finally(() => setSaving(false));
@@ -330,17 +346,20 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
     const openGlobal = (item?: CatalogSecret) => {
         setGlobalForm({name: item?.name || "", value: "", stackPaths: item?.assignments.map(assignment => assignment.stackPath) || []});
         setGlobalVisible(false);
+        setGlobalConfirmation("");
         setGlobalOpen(true);
     };
 
     const closeGlobal = () => {
         setGlobalForm({name: "", value: "", stackPaths: []});
         setGlobalVisible(false);
+        setGlobalConfirmation("");
         setGlobalOpen(false);
     };
 
     const saveGlobal = async () => {
         if (!globalForm.name.trim() || !globalForm.value || globalForm.stackPaths.length === 0) return;
+        if (overwrittenStacks.length > 0 && globalConfirmation !== TYPED_CONFIRMATION) return;
         const name = globalForm.name.trim();
         const assignedPaths = [...globalForm.stackPaths];
         setSaving(true);
@@ -363,25 +382,50 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
 
     const encryptedStacks = catalog.stacks.filter(stack => stack.mode === "encrypted");
 
+    // One action can replace this secret in up to fifty stacks at once, and a
+    // stack that already holds a value has it overwritten without any prompt.
+    // Creating a new assignment stays friction-free; replacing existing values
+    // is what has to be typed out.
+    const overwrittenStacks = useMemo(() => {
+        const name = globalForm.name.trim();
+        if (!name) return [];
+        const existing = catalog.secrets.find(secret => secret.name === name);
+        if (!existing) return [];
+        const assigned = new Set(existing.assignments.map(assignment => assignment.stackPath));
+        return globalForm.stackPaths.filter(path => assigned.has(path));
+    }, [catalog.secrets, globalForm.name, globalForm.stackPaths]);
+
     return <Box sx={{p: 3, maxWidth: 1400, mx: "auto"}}>
         <Stack direction={{xs: "column", md: "row"}} spacing={2} sx={{justifyContent: "space-between", mb: 2}}>
             <Box>
                 <Typography variant="h5" sx={{fontWeight: 800}}>Compose secrets</Typography>
                 <Typography variant="body2" color="text.secondary">
-                    Portable Compose secrets for <strong>{host}</strong>. Values stay with the selected host and are never stored in Dockman&apos;s database.
+                    Values stay with the selected host and are never stored in Dockman&apos;s database.
                 </Typography>
             </Box>
-            <Stack direction="row" spacing={1}>
-                <Chip icon={sopsStatus?.mode === "inline" ? <LockOutlined/> : <KeyOutlined/>} color={sopsStatus?.mode === "inline" ? "success" : "warning"} variant="outlined"
-                      label={sopsStatus?.mode === "inline" ? "Encrypted runtime · active" : "Migration mode · plaintext files"}/>
+            <Stack direction="row" spacing={1} sx={{alignItems: "center"}}>
+                <TextField select size="small" label="Host" value={host} sx={{minWidth: 180}}
+                           onChange={event => setHost(event.target.value)}>
+                    {(availableHosts.length > 0 ? availableHosts : [host]).map(name =>
+                        <MenuItem key={name} value={name}>{name}</MenuItem>)}
+                </TextField>
+                {/* Both chips used to state a property of a stack that was not
+                    loaded: with sopsStatus still null they read "Migration mode ·
+                    plaintext files", which is a claim about someone's secrets
+                    made without having looked at them. */}
+                <Chip icon={!loadedPath ? <KeyOutlined/> : sopsStatus?.mode === "inline" ? <LockOutlined/> : <KeyOutlined/>}
+                      color={!loadedPath ? "default" : sopsStatus?.mode === "inline" ? "success" : "warning"} variant="outlined"
+                      label={!loadedPath ? "Runtime mode · select a stack" : sopsStatus?.mode === "inline" ? "Encrypted runtime · active" : "Migration mode · plaintext files"}/>
                 <Chip icon={<LockOutlined/>}
-                      color={sopsStatus?.available ? "success" : "default"}
+                      color={!loadedPath ? "default" : sopsStatus?.available ? "success" : "default"}
                       variant="outlined"
                       label={!loadedPath ? "SOPS/age · select a stack" : sopsStatus?.available ? "SOPS/age · ready" : "SOPS/age · not configured"}/>
             </Stack>
         </Stack>
         <Alert severity="info" sx={{mb: 2}}>
-            {sopsStatus?.mode === "inline" ? <><code>secrets.sops.yaml</code> is the only persistent store. File delivery uses host tmpfs and inline delivery decrypts only for an explicit Compose action.</> : <>Migration mode still writes runtime values to persistent <code>.secrets/</code>. Encrypt and enable the autonomous runtime to reach the ciphertext-only target.</>}
+            {!loadedPath ? <>Select a Compose stack on <strong>{host}</strong> to see how its secrets are stored.</>
+                : sopsStatus?.mode === "inline" ? <><code>secrets.sops.yaml</code> is the only persistent store. File delivery uses host tmpfs and inline delivery decrypts only for an explicit Compose action.</>
+                    : <>Migration mode still writes runtime values to persistent <code>.secrets/</code>. Encrypt and enable the autonomous runtime to reach the ciphertext-only target.</>}
         </Alert>
         <Paper variant="outlined" sx={{p: 2, mb: 2}}>
             <Stack direction={{xs: "column", sm: "row"}} spacing={1} sx={{alignItems: {sm: "center"}, mb: 1.5}}>
@@ -534,8 +578,14 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                               renderOption={(props, option, {selected}) => <li {...props} key={option.path}><Checkbox size="small" checked={selected}/><Box><Typography variant="body2" sx={{fontFamily: "monospace"}}>{option.path}</Typography><Typography variant="caption" color="text.secondary">{option.manifests.join(", ")}</Typography></Box></li>}
                               renderInput={params => <TextField {...params} label="Assigned encrypted stacks" placeholder="Select one or more stacks"/>}/>
                 <Alert severity="warning">The value is sent only for this explicit action, never stored in Dockman&apos;s database, and each ciphertext is verified before replacement.</Alert>
+                {overwrittenStacks.length > 0 && <>
+                    <Alert severity="error">
+                        This replaces the existing value of <code>{globalForm.name.trim()}</code> in {overwrittenStacks.length} stack(s): {overwrittenStacks.join(", ")}. The previous values cannot be recovered from here.
+                    </Alert>
+                    <TypedConfirmationField value={globalConfirmation} onChange={setGlobalConfirmation}/>
+                </>}
             </Stack></DialogContent>
-            <DialogActions><Button onClick={closeGlobal} disabled={saving}>Cancel</Button><Button variant="contained" onClick={() => void saveGlobal()} disabled={saving || !globalForm.name.trim() || !globalForm.value || globalForm.stackPaths.length === 0}>{saving ? <CircularProgress size={18}/> : "Encrypt and apply"}</Button></DialogActions>
+            <DialogActions><Button onClick={closeGlobal} disabled={saving}>Cancel</Button><Button variant="contained" onClick={() => void saveGlobal()} disabled={saving || !globalForm.name.trim() || !globalForm.value || globalForm.stackPaths.length === 0 || (overwrittenStacks.length > 0 && globalConfirmation !== TYPED_CONFIRMATION)}>{saving ? <CircularProgress size={18}/> : "Encrypt and apply"}</Button></DialogActions>
         </Dialog>
 
         <Dialog open={formOpen} onClose={saving ? undefined : closeForm} fullWidth maxWidth="sm">
