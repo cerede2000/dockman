@@ -7,6 +7,9 @@ import (
 
 type Store interface {
 	Get(Host string) (Config, error)
+	// GetByID looks a host up by its primary key, which is the only handle
+	// that survives a rename.
+	GetByID(id uint) (Config, error)
 	GetLocal() (Config, error)
 	Add(conf *Config) error
 	Delete(conf *Config) error

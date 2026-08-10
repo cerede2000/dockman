@@ -512,3 +512,33 @@ func (s *Store) MarkInterruptedDeployments() (int64, error) {
 }
 
 func isNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }
+
+// RenameBindingHost re-points every folder link of one host at a new name.
+//
+// This deliberately bypasses SaveBinding's immutability guard, and it is the
+// only thing allowed to. That guard exists because changing an endpoint turns
+// a link into a different synchronization contract - it could silently move a
+// repository-root link into a generated folder. A host rename changes none of
+// that: the same machine, the same directory, the same Git destination, under
+// a new label. Refusing it is what left links pointing at a name nothing
+// answered to, with unlink-and-relink and a full baseline rebuild as the only
+// way out.
+//
+// Both names are required and must differ, so this can never be used to blank
+// a host out. It returns how many links were rewritten.
+func (s *Store) RenameBindingHost(previousName, newName string) (int, error) {
+	previousName, newName = strings.TrimSpace(previousName), strings.TrimSpace(newName)
+	if previousName == "" || newName == "" {
+		return 0, errors.New("both the previous and the new host name are required")
+	}
+	if previousName == newName {
+		return 0, nil
+	}
+	result := s.db.Model(&StackBinding{}).
+		Where("host = ?", previousName).
+		Update("host", newName)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return int(result.RowsAffected), nil
+}

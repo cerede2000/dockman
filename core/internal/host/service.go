@@ -31,7 +31,21 @@ type Service struct {
 	activeClients syncmap.Map[string, *ActiveHost]
 	aliasStore    AliasStore
 	composeEnv    compose.EnvironmentProvider
+	renameHost    HostRenameHook
 }
+
+// HostRenameHook re-points everything that stores a host by name rather than
+// by id. Git folder links are the case that matters: renaming a host used to
+// leave them pointing at a name nothing answered to, and the immutability
+// guard on their endpoints made unlinking and relinking - with a full baseline
+// rebuild - the only way out.
+//
+// It returns how many records it rewrote, so a caller can undo exactly what it
+// did if the rename itself then fails.
+type HostRenameHook func(previousName, newName string) (int, error)
+
+// ConfigureHostRename wires the rewrite performed when a host is renamed.
+func (s *Service) ConfigureHostRename(hook HostRenameHook) { s.renameHost = hook }
 
 // ConfigureComposeEnvironment wires an event-driven secret provider into every
 // short-lived Docker service created for local or SSH hosts.
@@ -500,7 +514,36 @@ func (s *Service) Delete(hostname string) error {
 func (s *Service) Edit(config *Config) error {
 	// do not update aliases we do that separately
 	config.FolderAliases = nil
-	return s.store.Update(config)
+	previous, err := s.store.GetByID(config.ID)
+	if err != nil {
+		return fmt.Errorf("load the host being edited: %w", err)
+	}
+	if previous.Name == config.Name || s.renameHost == nil {
+		return s.store.Update(config)
+	}
+	// The dependents are rewritten first: if that fails nothing has moved yet,
+	// and the host keeps the name its links still refer to.
+	rewritten, err := s.renameHost(previous.Name, config.Name)
+	if err != nil {
+		return fmt.Errorf("re-point what refers to host %q: %w", previous.Name, err)
+	}
+	if err = s.store.Update(config); err != nil {
+		// The rename failed after the links moved. Putting them back is the
+		// only outcome that leaves the installation consistent; saying so
+		// matters more than the original error if it does not work.
+		if _, undoErr := s.renameHost(config.Name, previous.Name); undoErr != nil {
+			return fmt.Errorf("host %q could not be renamed (%w) and %d folder link(s) are now pointing at %q; restore them by renaming the host to %q: %v",
+				previous.Name, err, rewritten, config.Name, config.Name, undoErr)
+		}
+		return err
+	}
+	// The client registry is keyed by name, so the entry opened under the old
+	// name would never be found again - and never closed either.
+	if active, ok := s.activeClients.Load(previous.Name); ok {
+		s.activeClients.Delete(previous.Name)
+		s.activeClients.Store(config.Name, active)
+	}
+	return nil
 }
 
 // GetSSH will return nil,nil for ActiveHost.Kind != SSH
