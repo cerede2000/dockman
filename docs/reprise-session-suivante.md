@@ -286,6 +286,14 @@ fallu remonter l'épingle à la main.
 permettent. Un `Fork Checks` rouge sans changement de code, c'est ce réflexe-là
 qu'il faut avoir.
 
+**Deuxième cas, vu le 2026-08-10** : `Fork Integration Build` a échoué sur le
+seul job **arm64**, à l'étape de scan Trivy — `unable to find the specified
+image ...:integration-arm64` avec un `DENIED` sur le jeton GHCR, alors que le
+build et le push du même job venaient de réussir et que l'amd64 passait. C'était
+transitoire : `gh run rerun <id> --failed` a suffi. Réflexe à avoir avant de
+chercher une cause dans le code — un refus de jeton registre sur un push qui
+vient d'aboutir ne vient jamais du contenu de l'image.
+
 ---
 
 ## 5. À ne pas faire
