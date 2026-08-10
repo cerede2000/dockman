@@ -558,6 +558,14 @@ func guardProtectedInfrastructure(cont *container.Summary) error {
 	return fmt.Errorf("%s exposes the Docker socket and cannot be updated through it: use the protected update on the Updates page, which runs from a detached helper that survives Dockman losing its Docker connection, or set %s=true to override", summaryName(*cont), DockmanOptInUpdateLabel)
 }
 
+// ProtectedFromAPIReplacement reports a container Dockman must not replace
+// through its own Docker connection: itself, or infrastructure that connection
+// runs on. Callers that can hand the work to Compose instead should route it
+// there rather than fail, which is what the Deploy tab does.
+func ProtectedFromAPIReplacement(cont *container.Summary) bool {
+	return guardProtectedInfrastructure(cont) != nil
+}
+
 func ExposesDockerSocket(cont *container.Summary) bool {
 	for _, mountPoint := range cont.Mounts {
 		for _, socket := range dockerSocketPaths {

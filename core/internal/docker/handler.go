@@ -389,7 +389,9 @@ func (h *Handler) ComposeRedeploy(ctx context.Context, req *connect.Request[v1.C
 
 func (h *Handler) ComposeUpdate(ctx context.Context, req *connect.Request[v1.ComposeFile], responseStream *connect.ServerStream[v1.LogsMessage]) error {
 	return h.WithClientAndStream(ctx, responseStream, func(dkSrv *Service, writer io.Writer) error {
-		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error { return dkSrv.Compose.Update(ctx, req.Msg.Filename, writer, req.Msg.SelectedServices...) })
+		return withComposeActionLock(dkSrv, req.Msg.Filename, func() error {
+			return ComposeSelectiveUpdate(ctx, dkSrv, req.Msg.Filename, writer, req.Msg.SelectedServices...)
+		})
 	})
 
 	// todo

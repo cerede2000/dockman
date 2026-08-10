@@ -136,6 +136,36 @@ func (c *Service) withCmdProgress(
 	addCmd WithCmd,
 	services []string,
 ) error {
+	return c.runCompose(ctx, filename, stream, progress, true, addCmd, services)
+}
+
+// captureCmd runs a Compose command and returns its standard output. Unlike
+// withCmd it does not echo the command line into the stream, so callers that
+// parse the result do not have to strip that first line back out - which
+// Status and listIds both have to do, and which silently corrupts any output
+// format that is not line-oriented.
+func (c *Service) captureCmd(
+	ctx context.Context,
+	filename string,
+	addCmd WithCmd,
+	services []string,
+) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	if err := c.runCompose(ctx, filename, buf, "--progress=plain", false, addCmd, services); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (c *Service) runCompose(
+	ctx context.Context,
+	filename string,
+	stream io.Writer,
+	progress string,
+	echoCommand bool,
+	addCmd WithCmd,
+	services []string,
+) error {
 	fileParts, err := c.parser(filename, c.hostname)
 	if err != nil {
 		return err
@@ -182,7 +212,7 @@ func (c *Service) withCmdProgress(
 		sb.WriteString(cl + " ")
 	}
 
-	if stream != nil {
+	if stream != nil && echoCommand {
 		_, err = stream.Write([]byte(green(sb.String())))
 		if err != nil {
 			return fmt.Errorf("could not write to stream: %w", err)
