@@ -133,6 +133,25 @@ func runComposeImageUpdates(
 	// One pull for the whole group: Compose resolves the host's registry
 	// credentials once, and --ignore-pull-failures keeps a single unreachable
 	// registry from cancelling the services that are reachable.
+	// Announce the whole group before the shared pull starts, so the Monitor
+	// shows these services waiting rather than nothing at all while a pull
+	// that covers all of them runs.
+	progress := updateProgressReporter(out)
+	if progress != nil {
+		for _, target := range targets {
+			name := target.service
+			if len(target.container.Names) > 0 {
+				name = strings.TrimPrefix(target.container.Names[0], "/")
+			}
+			progress(updater.Progress{
+				ContainerID:   target.container.ID,
+				ContainerName: name,
+				Stack:         target.container.Labels[api.ProjectLabel],
+				Stage:         updater.StagePulling,
+				Detail:        target.image,
+			})
+		}
+	}
 	if err := dkSrv.Compose.Pull(ctx, filename, out, services...); err != nil {
 		return fmt.Errorf("pull images for %s: %w", strings.Join(services, ", "), err)
 	}
@@ -149,6 +168,7 @@ func runComposeImageUpdates(
 			// which reference to resolve the new image from.
 			ImagePrepared:  true,
 			ImageReference: target.image,
+			Report:         progress,
 		})
 		switch {
 		case err != nil:

@@ -132,6 +132,9 @@ type ForceUpdateOptions struct {
 	VerifyHealth   bool
 	ImagePrepared  bool
 	ImageReference string
+	// Report receives structured per-container progress. Nil on every path
+	// that has no stream to report to, which is most of them.
+	Report ProgressReporter
 }
 
 type ForceUpdateResult struct {
@@ -220,8 +223,10 @@ func IsRolledBack(err error) bool {
 // container when the pull brought down a different image. Unlike the
 // metadata-driven update loop it needs no registry digest lookup, and it
 // reports failures instead of skipping silently — this backs the explicit
-// per-container Update action in the UI. Progress lines go to out.
-func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, out io.Writer, containerID ...string) error {
+// per-container Update action in the UI. Progress lines go to out, and
+// report - when the caller has a stream for it - receives the same progress
+// as structured per-container states.
+func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, out io.Writer, report ProgressReporter, containerID ...string) error {
 	list, err := u.srv.ContainerListByIDs(ctx, containerID...)
 	if err != nil {
 		return err
@@ -234,8 +239,15 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 	// One stack keeps the original path untouched: same order, same output,
 	// no prefix, no goroutine. Only a batch that actually spans several stacks
 	// pays for the parallel machinery.
+	// Everything accepted is announced before any work starts, so a view can
+	// show the whole batch as pending instead of filling in one row at a time.
+	for _, group := range groups {
+		for _, cur := range group.containers {
+			reportStage(report, cur, StageQueued, "")
+		}
+	}
 	if len(groups) == 1 {
-		return u.forceUpdateStack(ctx, pull, out, groups[0].containers)
+		return u.forceUpdateStack(ctx, pull, out, report, groups[0].containers)
 	}
 
 	var (
@@ -248,7 +260,7 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 		workers.Go(func() error {
 			writer := newStackLogWriter(&mu, out, group.key)
 			defer writer.Flush()
-			errs[index] = u.forceUpdateStack(ctx, pull, writer, group.containers)
+			errs[index] = u.forceUpdateStack(ctx, pull, writer, report, group.containers)
 			// Errors are collected per stack rather than returned here: one
 			// stack failing must not cancel the others, which are independent
 			// and may already be half-way through a replacement.
@@ -263,7 +275,7 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 // order is the caller's, which is the order Compose reported them in, and it
 // matters: recreating a database under the application that depends on it is
 // exactly what running a stack in parallel with itself would do.
-func (u *Service) forceUpdateStack(ctx context.Context, pull ImagePuller, out io.Writer, containers []container.Summary) error {
+func (u *Service) forceUpdateStack(ctx context.Context, pull ImagePuller, out io.Writer, report ProgressReporter, containers []container.Summary) error {
 	var errs []error
 	for _, cur := range containers {
 		// This is the manual update path behind the Monitor and container
@@ -273,10 +285,11 @@ func (u *Service) forceUpdateStack(ctx context.Context, pull ImagePuller, out io
 		// can be reached. Refusing here rather than in the interface means no
 		// caller can reach that state by mistake.
 		if err := guardProtectedInfrastructure(&cur); err != nil {
+			reportStage(report, cur, StageFailed, err.Error())
 			errs = append(errs, err)
 			continue
 		}
-		if _, err := u.forceUpdateContainer(ctx, pull, out, cur, ForceUpdateOptions{VerifyHealth: true}); err != nil {
+		if _, err := u.forceUpdateContainer(ctx, pull, out, cur, ForceUpdateOptions{VerifyHealth: true, Report: report}); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -303,19 +316,23 @@ func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, ou
 	if imgTag == "" || strings.HasPrefix(imgTag, "sha256:") {
 		err := fmt.Errorf("%s: image %q has no pullable tag", name, imgTag)
 		report("%s: image %q has no pullable tag (locally built?), skipping", name, imgTag)
+		reportStage(options.Report, cur, StageFailed, err.Error())
 		return result, err
 	}
 	if options.ImagePrepared {
 		report("Using preloaded image %s for %s...", imgTag, name)
 	} else {
+		reportStage(options.Report, cur, StagePulling, imgTag)
 		report("Pulling %s for %s...", imgTag, name)
 		if err := pull(ctx, imgTag); err != nil {
 			report("%s: pull failed: %v", name, err)
+			reportStage(options.Report, cur, StageFailed, err.Error())
 			return result, fmt.Errorf("%s: pull %s: %w", name, imgTag, err)
 		}
 	}
 	localImages, err := u.cli().ImageList(ctx, client.ImageListOptions{Filters: client.Filters{}.Add("reference", imgTag)})
 	if err != nil {
+		reportStage(options.Report, cur, StageFailed, err.Error())
 		return result, fmt.Errorf("%s: inspect %s: %w", name, imgTag, err)
 	}
 	// A reference filter can match several images - an untagged digest
@@ -328,15 +345,27 @@ func (u *Service) forceUpdateContainer(ctx context.Context, pull ImagePuller, ou
 	}
 	if result.NewImage == "" || result.NewImage == cur.ImageID {
 		report("%s: image already up to date, container kept as is", name)
+		reportStage(options.Report, cur, StageUpToDate, "")
 		return result, nil
 	}
+	reportStage(options.Report, cur, StageRecreating, imgTag)
 	report("Recreating %s on the new image...", name)
-	if err := u.ContainerRecreateWithOptions(ctx, imgTag, cur, options.VerifyHealth); err != nil {
+	onVerify := func() { reportStage(options.Report, cur, StageVerifying, "") }
+	if err := u.ContainerRecreateWithOptions(ctx, imgTag, cur, options.VerifyHealth, onVerify); err != nil {
 		report("%s: recreate failed: %v", name, err)
+		// A rollback that worked is a different outcome from a container left
+		// needing manual recovery, and the view has to be able to tell them
+		// apart at a glance.
+		stage := StageFailed
+		if IsRolledBack(err) {
+			stage = StageRolledBack
+		}
+		reportStage(options.Report, cur, stage, err.Error())
 		return result, fmt.Errorf("%s: recreate: %w", name, err)
 	}
 	result.Updated = true
 	report("%s updated successfully", name)
+	reportStage(options.Report, cur, StageUpdated, result.NewImage)
 	return result, nil
 }
 
@@ -650,7 +679,10 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 	return u.ContainerRecreateWithOptions(ctx, imageTag, oldContainer, true)
 }
 
-func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag string, oldContainer container.Summary, verifyHealth bool) error {
+// onVerify is variadic so the existing call sites - stack rollback, the
+// transaction path - stay exactly as they are; only the callers that report
+// progress pass one.
+func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag string, oldContainer container.Summary, verifyHealth bool, onVerify ...func()) error {
 	containerName := "untagged"
 	if len(oldContainer.Names) > 0 {
 		containerName = strings.TrimPrefix(oldContainer.Names[0], "/")
@@ -723,6 +755,12 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 	}
 
 	if verifyHealth {
+		// The replacement exists and is started; what follows is the wait for
+		// it to hold or turn healthy, which is the long part. Callers that
+		// report progress announce it here rather than guessing at a duration.
+		for _, announce := range onVerify {
+			announce()
+		}
 		err = u.ContainerHealthCheck(ctx, newContainer.ID, &inspectedData)
 	}
 	if err != nil {

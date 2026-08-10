@@ -1,0 +1,19 @@
+# Dockman applies this manifest after the Git files have been synchronized
+# and before Compose validation and deployment.
+version: 1
+
+# Missing directories are created from the stack directory.
+directories:
+  - path: data
+    mode: "0750"
+
+  - path: data/cache
+    mode: "0770"
+
+# These paths must already exist after Git synchronization.
+permissions:
+  - path: config/app.yml
+    mode: "0640"
+
+  - path: compose.yml
+    mode: "0644"

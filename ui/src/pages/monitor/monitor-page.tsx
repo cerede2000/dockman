@@ -282,6 +282,8 @@ function MonitorPage() {
     const execContainer = useContainerExec(state => state.execParams);
     const openLogs = useLogsPanel(state => state.openLogs);
     const runAction = useComposeAction(state => state.runAction);
+    // per-container update stage, fed by the update stream
+    const updateProgress = useComposeAction(state => state.updateProgress);
     const openOutput = useComposeAction(state => state.openOutput);
     // string-valued selector: output appends leave it unchanged, so the page
     // only re-renders when a stack action starts, finishes or flips outcome
@@ -1110,6 +1112,7 @@ function MonitorPage() {
                                             : `update:${row.info.name}`)}
                                     onRowAction={handleRowAction}
                                     rowBusy={rowBusy}
+                                    updateProgress={updateProgress}
                                     onRowLogs={handleRowLogs}
                                     onRowExec={handleRowExec}
                                     onRowDetails={(row) => setDetailsContainerID(row.info.id)}

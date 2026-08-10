@@ -1,17 +1,17 @@
 # Reprise — points à traiter
 
-État au 2026-08-07 en fin de session. Ce document est fait pour être lu **en premier**
-par la session suivante.
+Ce document est fait pour être lu **en premier** par la session suivante.
 
 ---
 
 ## Où en est le dépôt
 
-`integration` = `2de4c2d`, **Fork Checks et Fork Integration Build verts**.
-Image `ghcr.io/cerede2000/dockman:integration` à jour.
+État au **2026-08-10**. `integration` porte les quatre sujets « mises à jour »
+(voir §3ter) plus la remontée `go-git` 5.19.2 (CVE-2026-71556) qui bloquait le
+gate Trivy du build d'image.
 
-Treize branches livrées et mergées dans la journée, chacune passée par sa CI avant
-merge, `integration` revalidée après chaque merge. Elles restent poussées sur `origin`
+Vingt branches livrées et mergées, chacune passée par sa CI avant merge,
+`integration` revalidée après chaque merge. Elles restent poussées sur `origin`
 (modèle de lots de PR upstream, voir [[dockman-pr-batching]]).
 
 **Contraintes permanentes, non négociables** — les relire avant d'écrire du code :
@@ -113,7 +113,90 @@ alignées si l'une des deux évolue. Voir
 
 ---
 
-## 3ter. Mises à jour — trois demandes de l'utilisateur (2026-08-07, fin de session)
+## 3ter. Mises à jour — **traité le 2026-08-10**
+
+Les quatre demandes sont livrées et mergées sur `integration`. Ce qui suit décrit
+l'état final ; l'énoncé d'origine est conservé plus bas pour mémoire.
+
+| Sujet | Branche | État |
+|---|---|---|
+| Trou de verrou (repli projet) | `fix/update-lock-stack-fallback` | mergé |
+| Bouton Update de Deploy | `feat/deploy-selective-update` | mergé |
+| Parallélisation par stack | `feat/parallel-stack-updates` | mergé |
+| Progression par conteneur | `feat/update-progress` | mergé |
+
+**Bouton Update de Deploy** — chaque service est classé avant qu'on touche à quoi
+que ce soit. Compose garde tout le structurel (manifeste modifié via
+`config-hash`, service créé/supprimé, service construit localement, conteneur
+arrêté, jeu de réplicas, conteneur que Dockman ne doit pas remplacer par sa
+propre connexion Docker). Le reste — un service conforme dont seule l'image
+bouge — passe par le remplacement vérifié du Monitor. Un service qui n'a besoin
+de rien n'est pas touché.
+
+Deux faits que `ServiceHash` **efface volontairement** avant de hacher sont lus
+à part, sinon ils seraient invisibles : la section `build` et le nombre de
+réplicas (`scale` / `deploy.replicas`). Sans ça un service construit cesserait
+d'être reconstruit et une stack passée de 1 à 3 réplicas ne grandirait jamais.
+
+Le modèle est lu avec `--no-interpolate --no-env-resolution` : il ne porte donc
+jamais les valeurs des secrets SOPS inline, et le tampon est remis à zéro.
+
+La planification est **consultative** : Compose trop ancien, modèle illisible,
+listing en échec → repli sur l'ancien `pull` + `up` complet plutôt que refus.
+
+**Parallélisation** — regroupement par projet Compose, quatre stacks à la fois,
+séquentiel à l'intérieur d'une stack (l'ordre vient du graphe de dépendances).
+Le regroupement par projet n'est jamais plus fin que le verrou de stack déjà
+tenu : il ne peut que sérialiser davantage. Un lot ne touchant qu'une stack
+garde exactement l'ancien chemin (même ordre, même sortie, aucun préfixe).
+
+**Progression** — états `queued / pulling / recreating / verifying` puis
+`up-to-date / updated / rolled-back / failed`, sur le `LogsMessage` existant via
+un champ `progress` optionnel. `verifying` est annoncé depuis l'intérieur du
+recreate par un callback variadique, pour ne pas toucher aux appelants existants
+de `ContainerRecreateWithOptions`.
+
+**`LogStreamWriter` a désormais un mutex.** Il en avait besoin dès la
+parallélisation : plusieurs goroutines y écrivent du texte pendant qu'une autre
+rapporte la progression, et un flux Connect n'a pas de verrou propre.
+
+### Reste à faire sur ce sujet
+
+- La vue Monitor n'affiche l'étape que dans la puce « Updating » de la ligne.
+  Les états terminaux (`updated`, `rolled-back`, `failed`) disparaissent avec la
+  puce quand le flux se referme : ils ne survivent pas à la fin de l'action.
+  Les garder visibles quelques secondes demanderait de découpler la puce de
+  `updateRunning`.
+
+### Piège CI à connaître
+
+`Fork Checks` prend un `test_path`. **Ne pas y mettre `./internal/docker/...`** :
+ça embarque `internal/docker/compose` et `internal/docker/container`, dont
+`TestVersion`, `TestUp` et `TestImageDive` échouent en CI comme en local pour des
+raisons préexistantes (`TestVersion` compare `[]string{"docker","compose"}` à la
+chaîne `"docker compose"` — il ne peut pas passer). Utiliser :
+
+```
+./internal/docker ./internal/docker/updater/... ./internal/auth/... ./internal/gitsync/...
+```
+
+Conséquence : les tests de `internal/docker/compose/plan_test.go` ne tournent
+**qu'en local**. Les lancer avant de pousser.
+
+### Régénération des stubs proto
+
+`buf` n'est pas installé localement. Le fork a un workflow dédié :
+
+```bash
+gh workflow run fork-proto-gen.yml --repo cerede2000/dockman --ref integration -f ref=<branche> -f pkg=docker
+```
+
+Il commite les stubs sur la branche ; faire ensuite
+`git pull --rebase --autostash`.
+
+---
+
+## 3quater. Énoncé d'origine des demandes (2026-08-07)
 
 ### a) Exclusion concurrente — **déjà en place, un trou identifié**
 
