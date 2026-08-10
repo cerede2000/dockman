@@ -107,15 +107,8 @@ func MaterializeHostRuntime(parent context.Context, config HostRuntimeConfig) (H
 	if err := validateHostRuntimeInputs(config); err != nil {
 		return HostRuntimeResult{}, err
 	}
-	markers, err := discoverEncryptedStacks(config.StackRoot)
+	discovery, err := discoverEncryptedStacks(config.StackRoot)
 	if err != nil {
-		return HostRuntimeResult{}, err
-	}
-	desired := make(map[string]struct{}, len(markers))
-	for _, stackRoot := range markers {
-		desired[filepath.Join(stackRoot, RuntimeDirectory)] = struct{}{}
-	}
-	if err = cleanupRuntimeMounts(config.StackRoot, desired); err != nil {
 		return HostRuntimeResult{}, err
 	}
 	// One malformed stack must not deprive every other stack of its secrets at
@@ -124,9 +117,25 @@ func MaterializeHostRuntime(parent context.Context, config HostRuntimeConfig) (H
 	// daemon start after a failed materialization is that the damage stays
 	// local to the stacks actually affected. The exit status still reflects the
 	// failure, so systemctl status and the logs stay honest.
+	//
+	// That has to hold for every phase, not just the decryption loop. Discovery
+	// and cleanup both used to abort the whole pass, so a single stack the walk
+	// could not validate, or a single tmpfs a running container still held,
+	// left the entire host without secrets.
 	result := HostRuntimeResult{}
-	var failures []error
-	for _, stackRoot := range markers {
+	failures := discovery.Problems
+	// Claimed, not Ready: a stack the user marked encrypted keeps its runtime
+	// directory even when this pass cannot refresh it. Unmounting on a problem
+	// that may be transient would pull the secrets out from under containers
+	// that are running right now.
+	desired := make(map[string]struct{}, len(discovery.Claimed))
+	for _, stackRoot := range discovery.Claimed {
+		desired[filepath.Join(stackRoot, RuntimeDirectory)] = struct{}{}
+	}
+	if err = cleanupRuntimeMounts(config.StackRoot, desired); err != nil {
+		failures = append(failures, err)
+	}
+	for _, stackRoot := range discovery.Ready {
 		count, materializeErr := materializeEncryptedStack(parent, config, stackRoot)
 		if materializeErr != nil {
 			failures = append(failures, fmt.Errorf("materialize %s: %w", stackRoot, materializeErr))
@@ -181,12 +190,34 @@ const (
 	maxHostDiscoveryEntries = 200_000
 )
 
-func discoverEncryptedStacks(stackRoot string) ([]string, error) {
-	stacks := []string{}
+// stackDiscovery separates what this pass can act on from what it merely knows
+// about, so a problem confined to one stack stays confined to it.
+type stackDiscovery struct {
+	// Ready lists the stacks whose marker and encrypted source are both usable.
+	// Only these are materialized.
+	Ready []string
+	// Claimed lists every stack carrying a marker file, whether or not it could
+	// be validated. Their runtime directories are kept out of the cleanup: a
+	// stack the user marked encrypted must not lose a mounted tmpfs over a
+	// problem this pass may simply be unable to read right now.
+	Claimed []string
+	// Problems carries one error per stack that could not be validated. They
+	// are reported, never fatal.
+	Problems []error
+}
+
+func discoverEncryptedStacks(stackRoot string) (stackDiscovery, error) {
+	discovery := stackDiscovery{Ready: []string{}, Claimed: []string{}}
 	visited := 0
 	err := filepath.WalkDir(stackRoot, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			// An unreadable stack root is a host problem and stays fatal;
+			// anything below it is one stack's problem.
+			if current == stackRoot {
+				return walkErr
+			}
+			discovery.Problems = append(discovery.Problems, walkErr)
+			return filepath.SkipDir
 		}
 		visited++
 		if visited > maxHostDiscoveryEntries {
@@ -207,30 +238,41 @@ func discoverEncryptedStacks(stackRoot string) ([]string, error) {
 		if entry.Name() != SOPSInlineMarkerFile {
 			return nil
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return errors.New("encrypted runtime marker cannot be a symlink")
-		}
 		stack := filepath.Dir(current)
 		relative, err := filepath.Rel(stackRoot, stack)
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return errors.New("encrypted stack is outside the configured root")
+			discovery.Problems = append(discovery.Problems, errors.New("encrypted stack is outside the configured root"))
+			return nil
+		}
+		// From here the stack has claimed encryption, so its runtime directory
+		// is protected from cleanup whatever else turns out to be wrong.
+		discovery.Claimed = append(discovery.Claimed, stack)
+		if entry.Type()&os.ModeSymlink != 0 {
+			discovery.Problems = append(discovery.Problems,
+				fmt.Errorf("%s: encrypted runtime marker cannot be a symlink", relative))
+			return nil
 		}
 		marker, err := os.ReadFile(current)
 		if err != nil || strings.TrimSpace(string(marker)) != "version=1" {
-			return fmt.Errorf("%s has an invalid encrypted runtime marker", relative)
+			discovery.Problems = append(discovery.Problems,
+				fmt.Errorf("%s has an invalid encrypted runtime marker", relative))
+			return nil
 		}
 		sourceInfo, err := os.Lstat(filepath.Join(stack, SOPSSourceFile))
 		if err != nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Size() <= 0 || sourceInfo.Size() > maxSOPSSourceBytes {
-			return fmt.Errorf("%s has no valid bounded %s", relative, SOPSSourceFile)
+			discovery.Problems = append(discovery.Problems,
+				fmt.Errorf("%s has no valid bounded %s", relative, SOPSSourceFile))
+			return nil
 		}
-		stacks = append(stacks, stack)
+		discovery.Ready = append(discovery.Ready, stack)
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("discover encrypted stacks: %w", err)
+		return stackDiscovery{}, fmt.Errorf("discover encrypted stacks: %w", err)
 	}
-	sort.Strings(stacks)
-	return stacks, nil
+	sort.Strings(discovery.Ready)
+	sort.Strings(discovery.Claimed)
+	return discovery, nil
 }
 
 func materializeEncryptedStack(parent context.Context, config HostRuntimeConfig, stackRoot string) (int, error) {
@@ -431,18 +473,35 @@ func cleanupRuntimeMounts(stackRoot string, desired map[string]struct{}) error {
 	if err != nil {
 		return err
 	}
-	for _, mount := range mounts {
-		if _, keep := desired[mount]; keep {
-			continue
-		}
+	return releaseObsoleteMounts(mounts, desired, func(mount string) error {
 		if output, unmountErr := exec.Command("umount", mount).CombinedOutput(); unmountErr != nil {
 			return fmt.Errorf("unmount obsolete volatile secret runtime %s: %s", mount, strings.TrimSpace(string(output)))
 		}
 		if removeErr := os.Remove(mount); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 			return fmt.Errorf("remove obsolete volatile secret directory %s: %w", mount, removeErr)
 		}
+		return nil
+	})
+}
+
+// releaseObsoleteMounts drops every managed mount that is no longer wanted.
+//
+// One mount refusing to go is the ordinary case, not an exceptional one: a
+// container still holding a bind into it makes umount return EBUSY. Stopping
+// there left every remaining stack unreconciled because of a single busy
+// directory somewhere else on the host, so each mount is attempted on its own
+// and the failures are reported together.
+func releaseObsoleteMounts(mounts []string, desired map[string]struct{}, release func(string) error) error {
+	var failures []error
+	for _, mount := range mounts {
+		if _, keep := desired[mount]; keep {
+			continue
+		}
+		if err := release(mount); err != nil {
+			failures = append(failures, err)
+		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func unescapeMountInfoPath(value string) string {
