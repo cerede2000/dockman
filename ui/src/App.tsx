@@ -15,6 +15,7 @@ import {
 } from '@mui/material';
 import {SnackbarProvider} from "./context/snackbar-context.tsx";
 import {UploadProgressToast} from "./components/upload-progress-toast.tsx";
+import ServerUpdateBanner from './components/server-update-banner.tsx';
 import {BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams} from "react-router";
 import {AuthProvider} from "./context/auth-context.tsx";
 import React, {useEffect, useState} from 'react';
@@ -54,6 +55,7 @@ export function App() {
             <CssBaseline/>
             <SnackbarProvider>
                 <UploadProgressToast/>
+                <ServerUpdateBanner/>
                 <AuthProvider>
                     <BrowserRouter>
                         <Routes>

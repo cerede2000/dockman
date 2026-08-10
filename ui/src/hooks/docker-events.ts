@@ -1,7 +1,9 @@
 import {useEffect, useSyncExternalStore} from 'react';
 import {DockerService} from '../gen/docker/v1/docker_pb.ts';
-import {useHostClient} from '../lib/api.ts';
+import {InfoService} from '../gen/info/v1/info_pb.ts';
+import {useClient, useHostClient} from '../lib/api.ts';
 import {useHostStore} from '../pages/compose/state/files.ts';
+import {type BuildIdentity, checkServerBuild} from './app-build.ts';
 
 // Minimal structural view of the connect client so the module-level stream
 // runner doesn't depend on generated client types.
@@ -20,6 +22,8 @@ const listeners = new Set<() => void>();
 let currentHost: string | null = null;
 let abort: AbortController | null = null;
 let notifyTimer: ReturnType<typeof setTimeout> | null = null;
+// Set by the hook below; module scope so the stream runner can reach it.
+let readBuild: (() => Promise<BuildIdentity>) | null = null;
 
 // coalesce bursts (a compose up emits one event per container) into a single
 // refresh tick
@@ -71,6 +75,11 @@ async function run(client: EventsClient, host: string, signal: AbortSignal) {
         // lifecycle event. Invalidate projections as soon as the stream drops
         // so stale running states are not retained until the safety poll.
         notify();
+        // The stream only drops when the server or the daemon went away. A
+        // Dockman restart is the one case where the page is now running an
+        // older bundle than the server serves, so this is the cheapest honest
+        // place to look - no timer, no polling.
+        if (readBuild) void checkServerBuild(readBuild);
         await new Promise(resolve => setTimeout(resolve, backoff));
         backoff = Math.min(backoff * 2, 30000);
     }
@@ -104,9 +113,17 @@ function subscribe(callback: () => void): () => void {
  */
 export function useDockerEvents(): number {
     const client = useHostClient(DockerService);
+    const info = useClient(InfoService);
     const host = useHostStore(state => state.host);
 
     const bump = useSyncExternalStore(subscribe, () => seq);
+
+    useEffect(() => {
+        readBuild = () => info.getAppInfo({});
+        // Records the build this page was loaded with; the first call never
+        // reports a change, it only establishes the reference.
+        void checkServerBuild(readBuild);
+    }, [info]);
 
     useEffect(() => {
         ensureStream(client, host);
