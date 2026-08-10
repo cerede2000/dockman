@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,6 +21,7 @@ func (f *fakeSessionStore) NewSession(*Session) error                 { return n
 func (f *fakeSessionStore) DeleteSession(uint) error                  { return nil }
 func (f *fakeSessionStore) GetSession(uint) (Session, error)          { return f.session, f.err }
 func (f *fakeSessionStore) GetSessionByToken(string) (Session, error) { return f.session, f.err }
+func (f *fakeSessionStore) CleanupExpiredSessions() error             { return nil }
 
 // TestMiddleware_PropagatesUserToContext guards against a regression where
 // CheckAuth discarded the *http.Request returned by WithContext, so the
@@ -122,4 +124,18 @@ func TestForwardedProtoIsReadTheWayProxiesWriteIt(t *testing.T) {
 			t.Fatalf("X-Forwarded-Proto %q: got %v, want %v", value, got, want)
 		}
 	}
+}
+
+// verifyCookie logged the failure at Error and then replaced it with a fixed
+// string. The level made an expired cookie look like a malfunction, and the
+// flattening left CheckAuth's deliberate Debug line with nothing to report.
+// The reason has to reach the caller instead.
+func TestVerifyCookieCarriesTheReasonToTheCaller(t *testing.T) {
+	srv := &Service{
+		config:       &Config{},
+		sessionStore: &fakeSessionStore{err: errors.New("session not found")},
+	}
+
+	_, err := verifyCookie([]*http.Cookie{{Name: CookieHeaderAuth, Value: "whatever"}}, srv)
+	require.ErrorContains(t, err, "session not found")
 }

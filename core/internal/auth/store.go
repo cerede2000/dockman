@@ -31,4 +31,5 @@ type SessionStore interface {
 	DeleteSession(sessionID uint) error
 	GetSession(sessionID uint) (Session, error)
 	GetSessionByToken(token string) (Session, error)
+	CleanupExpiredSessions() error
 }
