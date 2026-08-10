@@ -103,7 +103,9 @@ func TestInstallHostRuntimeWritesIndependentSystemdKit(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 	pathUnit, err := os.ReadFile(rooted(root, "/etc/systemd/system/"+HostReconcilePathName))
 	require.NoError(t, err)
-	require.Contains(t, string(pathUnit), `PathChanged="/server/stacks/.dockman-secrets-reconcile"`)
+	// Unquoted: systemd reads this setting verbatim, so a leading double
+	// quote makes the path non-absolute and takes the whole unit down with it.
+	require.Contains(t, string(pathUnit), "PathChanged=/server/stacks/.dockman-secrets-reconcile\n")
 	require.Contains(t, string(pathUnit), "Unit="+HostReconcileUnitName)
 	info, err := os.Stat(rooted(root, HostRuntimeConfigPath))
 	require.NoError(t, err)
