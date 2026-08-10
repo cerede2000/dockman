@@ -164,12 +164,23 @@ func (s *Store) SaveBinding(row *StackBinding) error {
 		return errors.New("folder link UUID is required")
 	}
 	var existing StackBinding
-	err := s.db.Unscoped().Select("id", "uuid", "repository_uuid", "host", "stack_path", "sub_path").
+	err := s.db.Unscoped().Select("id", "uuid", "repository_uuid", "host", "stack_path", "sub_path", "deleted_at").
 		Where("uuid = ?", row.UUID).Take(&existing).Error
 	if err == nil {
 		if existing.RepositoryUUID != row.RepositoryUUID || existing.Host != row.Host ||
 			existing.StackPath != row.StackPath || existing.SubPath != row.SubPath {
 			return fmt.Errorf("folder link target is immutable; unlink and create a new link to change repository, host, source folder, or Git destination")
+		}
+		// Unlinking without "forget" only soft-deletes the row. Anything that
+		// held the binding in memory - an auto-sync run, a deployment, a
+		// status reconciliation - still saves its state afterwards, and Save
+		// writes the zero DeletedAt of that in-memory copy straight over the
+		// deletion. The link came back to life, re-enrolled in whatever
+		// automation it carried, pointing at a repository the user had just
+		// disconnected. Refusing is the only safe answer: the caller is
+		// writing to something that no longer exists.
+		if existing.DeletedAt.Valid {
+			return fmt.Errorf("folder link %s was unlinked; its state can no longer be saved: %w", row.UUID, gorm.ErrRecordNotFound)
 		}
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
