@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -29,6 +30,12 @@ func (a *Handler) Login(_ context.Context, c *connect.Request[v1.User]) (*connec
 
 	session, authToken, err := a.srv.Login(username, password)
 	if err != nil {
+		// A throttled attempt is not a wrong password, and the interface has to
+		// be able to tell them apart to say "wait" rather than "try again".
+		var throttled ErrTooManyLoginAttempts
+		if errors.As(err, &throttled) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
 		return nil, err
 	}
 
