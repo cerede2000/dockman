@@ -12,6 +12,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	containerSrv "github.com/RA341/dockman/internal/docker/container"
@@ -229,8 +230,42 @@ func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, o
 		return fmt.Errorf("no containers found for the given ids")
 	}
 
+	groups := groupContainersByStack(list)
+	// One stack keeps the original path untouched: same order, same output,
+	// no prefix, no goroutine. Only a batch that actually spans several stacks
+	// pays for the parallel machinery.
+	if len(groups) == 1 {
+		return u.forceUpdateStack(ctx, pull, out, groups[0].containers)
+	}
+
+	var (
+		mu      sync.Mutex
+		workers errgroup.Group
+	)
+	workers.SetLimit(maxParallelStackUpdates)
+	errs := make([]error, len(groups))
+	for index, group := range groups {
+		workers.Go(func() error {
+			writer := newStackLogWriter(&mu, out, group.key)
+			defer writer.Flush()
+			errs[index] = u.forceUpdateStack(ctx, pull, writer, group.containers)
+			// Errors are collected per stack rather than returned here: one
+			// stack failing must not cancel the others, which are independent
+			// and may already be half-way through a replacement.
+			return nil
+		})
+	}
+	_ = workers.Wait()
+	return errors.Join(errs...)
+}
+
+// forceUpdateStack replaces one stack's containers one after another. The
+// order is the caller's, which is the order Compose reported them in, and it
+// matters: recreating a database under the application that depends on it is
+// exactly what running a stack in parallel with itself would do.
+func (u *Service) forceUpdateStack(ctx context.Context, pull ImagePuller, out io.Writer, containers []container.Summary) error {
 	var errs []error
-	for _, cur := range list {
+	for _, cur := range containers {
 		// This is the manual update path behind the Monitor and container
 		// views. It drives the Docker API through whatever connection Dockman
 		// holds - which, for a socket proxy, is the container being replaced:
