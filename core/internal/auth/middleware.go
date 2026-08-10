@@ -81,8 +81,13 @@ func verifyCookie(cookies []*http.Cookie, srv *Service) (*User, error) {
 	token := cookie.Value
 	userInfo, err := srv.VerifyToken(token)
 	if err != nil {
-		log.Error().Err(err).Msg("Unable to verify token")
-		return nil, fmt.Errorf("unable to verify token")
+		// No log here, and the reason is propagated rather than flattened.
+		// Logging at Error made an expired cookie or an unauthenticated scan -
+		// neither of which is a malfunction - fill the log at the level
+		// reserved for things that are, and it did so one frame above the
+		// caller that deliberately reports this at Debug. Flattening the error
+		// on top of that left that Debug line with nothing to say.
+		return nil, fmt.Errorf("unable to verify token: %w", err)
 	}
 
 	return userInfo, nil
