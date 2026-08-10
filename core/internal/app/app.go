@@ -183,12 +183,17 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 			return false, fmt.Errorf("verify remote volatile secret runtime: %w", sessionErr)
 		}
 		defer session.Close()
-		quotedPath := "'" + strings.ReplaceAll(absolutePath, "'", "'\"'\"'") + "'"
-		command := "test \"$(findmnt -rn -o FSTYPE,SOURCE --target " + quotedPath + " 2>/dev/null)\" = \"tmpfs dockman-secrets\""
-		if runErr := session.Run(command); runErr != nil {
+		// The verdict is reached in the secrets package, next to the local
+		// check it has to agree with. Testing the answer on the remote side
+		// collapsed "somebody else's mount" into "no mount", so a foreign
+		// filesystem on .secrets read as an empty directory over SSH.
+		output, runErr := session.Output(secrets.RemoteRuntimeMountCommand(absolutePath))
+		if runErr != nil {
+			// findmnt exits non-zero when nothing matches, which is the
+			// ordinary "not mounted" answer rather than a failure.
 			return false, nil
 		}
-		return true, nil
+		return secrets.ClassifyRemoteRuntimeMount(absolutePath, string(output))
 	})
 	secretSrv.ConfigureSOPS(sopsProvider)
 	hostManager.ConfigureComposeEnvironment(secretSrv.ComposeEnvironment)
