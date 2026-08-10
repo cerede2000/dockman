@@ -252,6 +252,28 @@ func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.C
 	})
 }
 
+// containerUpdateLockKey picks the coarsest identity this container can be
+// serialized on, so that an update and a Compose action on the same stack keep
+// excluding each other.
+//
+// The Dockman path is the same key withComposeActionLock uses, which is what
+// makes the two mutually exclusive. When it cannot be resolved - a container
+// deployed outside Dockman's aliases, a missing config-files label - falling
+// straight to the container id lost that: a stack-level action and an update of
+// one of its containers took two different locks and ran side by side. The
+// Compose project name still names the stack in that case.
+func containerUpdateLockKey(dkSrv *Service, row container.Summary) string {
+	if dkSrv.Compose != nil {
+		if key := dkSrv.Compose.DockmanPath(row.Labels[api.ConfigFilesLabel]); key != "" {
+			return key
+		}
+	}
+	if project := strings.TrimSpace(row.Labels[api.ProjectLabel]); project != "" {
+		return "project:" + project
+	}
+	return "container:" + row.ID
+}
+
 func withContainerUpdateLocks(ctx context.Context, dkSrv *Service, ids []string, action func() error) error {
 	containers, err := dkSrv.Container.ContainerListByIDs(ctx, ids...)
 	if err != nil {
@@ -259,11 +281,7 @@ func withContainerUpdateLocks(ctx context.Context, dkSrv *Service, ids []string,
 	}
 	keys := make(map[string]struct{}, len(containers))
 	for _, row := range containers {
-		key := dkSrv.Compose.DockmanPath(row.Labels[api.ConfigFilesLabel])
-		if key == "" {
-			key = "container:" + row.ID
-		}
-		keys[key] = struct{}{}
+		keys[containerUpdateLockKey(dkSrv, row)] = struct{}{}
 	}
 	ordered := make([]string, 0, len(keys))
 	for key := range keys {
