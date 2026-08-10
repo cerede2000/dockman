@@ -183,6 +183,13 @@ func (c *Service) runCompose(
 		if err != nil {
 			return fmt.Errorf("load inline SOPS environment: %w", err)
 		}
+		// This drops the references so the values become collectable as soon as
+		// the command returns, instead of living as long as the slice does. It
+		// is not a wipe and cannot be one: Go strings are immutable, so the
+		// bytes stay in the heap until the collector reuses that memory. The
+		// scrubbing that does happen is on the decrypted buffers the secrets
+		// package clears; what survives here are copies it had to make to build
+		// KEY=value pairs for exec.
 		defer func() {
 			for index := range secretEnvironment {
 				secretEnvironment[index] = ""

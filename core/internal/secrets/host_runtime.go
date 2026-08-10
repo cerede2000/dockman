@@ -28,6 +28,10 @@ const (
 	// never carries a secret or an arbitrary command.
 	HostRuntimeReconcileRequestFile = ".dockman-secrets-reconcile"
 	HostRuntimeMarkerFile           = ".dockman-runtime-tmpfs"
+	// RuntimeMountSource is what tells a tmpfs Dockman mounted from any other
+	// tmpfs someone happened to put on the same directory. Every check that
+	// decides whether plaintext may be written there compares against it.
+	RuntimeMountSource = "dockman-secrets"
 )
 
 // HostRuntimeConfig is intentionally independent from Dockman's database.
@@ -398,7 +402,7 @@ func ensureRuntimeTmpfs(directory string, sizeMiB int) (bool, error) {
 		return false, errors.New("refusing to cover a non-empty persistent .secrets directory with tmpfs")
 	}
 	options := "nodev,nosuid,noexec,mode=0700,size=" + strconv.Itoa(sizeMiB) + "m"
-	command := exec.Command("mount", "-t", "tmpfs", "-o", options, "dockman-secrets", directory)
+	command := exec.Command("mount", "-t", "tmpfs", "-o", options, RuntimeMountSource, directory)
 	if output, err := command.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("mount volatile secret tmpfs: %s", strings.TrimSpace(string(output)))
 	}
@@ -423,7 +427,7 @@ func pathIsMounted(path string) (bool, error) {
 		if len(fields) <= 4 || separator < 0 || len(fields) <= separator+2 || filepath.Clean(unescapeMountInfoPath(fields[4])) != clean {
 			continue
 		}
-		if fields[separator+1] == "tmpfs" && fields[separator+2] == "dockman-secrets" {
+		if fields[separator+1] == "tmpfs" && fields[separator+2] == RuntimeMountSource {
 			return true, nil
 		}
 		return false, errors.New("runtime secret directory is occupied by an unmanaged mount")
@@ -456,7 +460,7 @@ func managedRuntimeMounts(stackRoot string) ([]string, error) {
 			continue
 		}
 		mount := filepath.Clean(unescapeMountInfoPath(fields[4]))
-		if fields[separator+1] != "tmpfs" || fields[separator+2] != "dockman-secrets" {
+		if fields[separator+1] != "tmpfs" || fields[separator+2] != RuntimeMountSource {
 			continue
 		}
 		if root != "/" && mount != root && !strings.HasPrefix(mount, root+string(filepath.Separator)) {

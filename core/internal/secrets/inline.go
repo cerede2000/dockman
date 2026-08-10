@@ -818,8 +818,24 @@ command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 127; 
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
+# True only when .secrets carries the tmpfs Dockman mounts, not merely some
+# mount. Matching any mount meant a foreign filesystem on that directory made
+# the script skip materialization and start the stack with no secrets at all.
+# The mount point is compared in the escaped form the kernel prints, so a stack
+# path containing a space is recognised rather than silently missed.
 mounted_secrets() {
-  awk -v path="$PWD/.secrets" '$5 == path { found=1 } END { exit !found }' /proc/self/mountinfo 2>/dev/null
+  awk -v path="$PWD/.secrets" '
+    BEGIN {
+      gsub(/\\/, "\\134", path); gsub(/ /, "\\040", path)
+      gsub(/\t/, "\\011", path); gsub(/\n/, "\\012", path)
+    }
+    {
+      fstype = ""; source = ""
+      for (i = 7; i < NF; i++) if ($i == "-") { fstype = $(i+1); source = $(i+2); break }
+      if ($5 == path && fstype == "tmpfs" && source == "` + RuntimeMountSource + `") found = 1
+    }
+    END { exit !found }
+  ' /proc/self/mountinfo 2>/dev/null
 }
 
 action="${1:-up}"
