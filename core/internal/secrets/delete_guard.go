@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"strings"
 )
 
@@ -24,6 +25,16 @@ import (
 func (s *Service) GuardFileDeletion(host, filename string) error {
 	if s.encrypted == nil {
 		return nil
+	}
+	// Deleting the runtime directory itself is not a deletion at all: it is a
+	// live mount point the host daemon owns, and it puts it straight back as
+	// long as the stack is marked encrypted. RemoveAll would first wipe the
+	// materialized plaintext of a running stack, then fail on the mount with
+	// EBUSY - destructive and pointless in the same move. Say why instead.
+	if stack, isRuntime := runtimeDirectoryOwner(filename); isRuntime {
+		if enabled, enabledErr := s.encrypted.InlineEnabled(host, stack); enabledErr == nil && enabled {
+			return fmt.Errorf("%s is the mounted secret runtime of an encrypted stack, not an ordinary folder: the host daemon owns it and recreates it. Leave encrypted mode for %s first, which unmounts it", filename, stack)
+		}
 	}
 	stackPath, err := s.encryptedStackUnder(host, filename)
 	if err != nil || stackPath == "" {
@@ -75,4 +86,18 @@ func (s *Service) encryptedStackUnder(host, filename string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// runtimeDirectoryOwner reports the stack a path belongs to when that path is
+// the stack's runtime directory.
+func runtimeDirectoryOwner(filename string) (string, bool) {
+	filename = strings.Trim(strings.TrimSpace(filename), "/")
+	if filename == "" {
+		return "", false
+	}
+	parent, last := path.Split(filename)
+	if last != RuntimeDirectory {
+		return "", false
+	}
+	return strings.Trim(parent, "/"), true
 }

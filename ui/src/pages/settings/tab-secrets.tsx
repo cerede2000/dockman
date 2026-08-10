@@ -85,7 +85,7 @@ export default function TabSecrets() {
     const [globalVisible, setGlobalVisible] = useState(false);
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [sopsStatus, setSopsStatus] = useState<SOPSStatus | null>(null);
-    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | "inline-enable" | null>(null);
+    const [sopsAction, setSopsAction] = useState<"export" | "materialize" | "inline-enable" | "inline-disable" | null>(null);
     const [hostWizardOpen, setHostWizardOpen] = useState(false);
     const [hostContainer, setHostContainer] = useState("dockman");
     const [hostStackRoot, setHostStackRoot] = useState("/server/stacks");
@@ -334,7 +334,9 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         const action = sopsAction;
         setSaving(true);
         await (async () => { try {
-            const endpoint = action === "inline-enable" ? "sops/inline/enable" : `sops/${action}`;
+            const endpoint = action === "inline-enable" ? "sops/inline/enable"
+                : action === "inline-disable" ? "sops/inline/disable"
+                    : `sops/${action}`;
             const response = await fetch(`${base}/${endpoint}`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -538,6 +540,9 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                             onClick={() => {setSopsAction("export"); setConfirmation("");}}>Encrypt runtime</Button>}
                     {sopsStatus?.mode !== "inline" && <Button variant="contained" startIcon={<Download/>} disabled={saving || !sopsStatus?.available || !sopsStatus.sourceExists}
                             onClick={() => {setSopsAction("materialize"); setConfirmation("");}}>Materialize source</Button>}
+                    {sopsStatus?.mode === "inline" && <Button color="warning" variant="outlined" startIcon={<Download/>}
+                            disabled={saving || !sopsStatus?.available}
+                            onClick={() => {setSopsAction("inline-disable"); setConfirmation("");}}>Leave encrypted runtime</Button>}
                     {sopsStatus?.mode !== "inline" && <Button color="success" variant="contained" startIcon={<LockOutlined/>}
                             disabled={saving || !sopsStatus?.available || !analysis?.manifests.length || analysis.secrets.some(reference => Boolean(reference.file && reference.services.length > 0 && !reference.managed) || Boolean(reference.environment && reference.issue))}
                             onClick={() => {setSopsAction("inline-enable"); setConfirmation("");}}>{items.length === 0 ? "Initialize encrypted runtime" : "Enable encrypted runtime"}</Button>}
@@ -656,10 +661,12 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
         </Dialog>
 
         <Dialog open={sopsAction !== null} onClose={saving ? undefined : () => setSopsAction(null)} fullWidth maxWidth="xs">
-            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : sopsAction === "materialize" ? "Materialize encrypted secrets?" : "Enable encrypted runtime?"}</DialogTitle>
+            <DialogTitle>{sopsAction === "export" ? "Encrypt runtime secrets?" : sopsAction === "materialize" ? "Materialize encrypted secrets?" : sopsAction === "inline-disable" ? "Leave encrypted runtime?" : "Enable encrypted runtime?"}</DialogTitle>
             <DialogContent><Stack spacing={2} sx={{mt: 1}}>
-                <Alert severity={sopsAction === "export" || sopsAction === "inline-enable" ? "warning" : "info"}>
-                    {sopsAction === "export"
+                <Alert severity={sopsAction === "materialize" ? "info" : "warning"}>
+                    {sopsAction === "inline-disable"
+                        ? "This unmounts the stack's volatile runtime and writes its secrets back as plaintext files under .secrets, on disk. secrets.sops.yaml is kept, so you can encrypt again later. Containers already running keep their current values until recreated."
+                        : sopsAction === "export"
                         ? "This replaces secrets.sops.yaml with every current runtime secret after encrypting and verifying it with the configured age identity."
                         : sopsAction === "materialize" ? "This decrypts secrets.sops.yaml in memory and replaces matching files under .secrets. Values absent from the source are preserved."
                             : `Dockman encrypts and verifies every value, supports both file: ./.secrets/name and inline environment references, creates compose-sops.sh for independent recovery, then removes persistent .secrets and its plaintext history. The host boot runtime must be installed before file-secret services are recreated. Compose manifest: ${analysis?.manifests[0] || "compose.yml"}.`}
