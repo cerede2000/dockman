@@ -36,10 +36,24 @@ func (s *Service) GuardFileDeletion(host, filename string) error {
 			return fmt.Errorf("%s is the mounted secret runtime of an encrypted stack, not an ordinary folder: the host daemon owns it and recreates it. Leave encrypted mode for %s first, which unmounts it", filename, stack)
 		}
 	}
-	stackPath, err := s.encryptedStackUnder(host, filename)
-	if err != nil || stackPath == "" {
+	stackPaths, err := s.encryptedStacksUnder(host, filename)
+	if err != nil || len(stackPaths) == 0 {
 		return err
 	}
+	// Every one of them, not just the first. Releasing one and leaving the next
+	// mounted produces exactly the half-removed directory this guard exists to
+	// prevent, only reached through the guard itself: RemoveAll wipes the
+	// released stack, walks on, and hits EBUSY on the one still mounted.
+	var failures []error
+	for _, stackPath := range stackPaths {
+		if releaseErr := s.releaseStackRuntime(host, stackPath); releaseErr != nil {
+			failures = append(failures, releaseErr)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (s *Service) releaseStackRuntime(host, stackPath string) error {
 	stackFS, root, err := s.encrypted.resolveStack(host, stackPath)
 	if err != nil {
 		// The stack cannot be resolved, so nothing here can be mounted either.
@@ -55,37 +69,38 @@ func (s *Service) GuardFileDeletion(host, filename string) error {
 	return nil
 }
 
-// encryptedStackUnder reports the encrypted stack the deletion targets, whether
-// the path is the stack directory itself or an ancestor of it. It returns an
-// empty path when nothing encrypted is involved.
-func (s *Service) encryptedStackUnder(host, filename string) (string, error) {
+// encryptedStacksUnder reports every encrypted stack the deletion targets,
+// whether the path is a stack directory itself or an ancestor of several. It
+// returns nothing when no encrypted stack is involved.
+func (s *Service) encryptedStacksUnder(host, filename string) ([]string, error) {
 	filename = strings.Trim(strings.TrimSpace(filename), "/")
 	if filename == "" {
-		return "", nil
+		return nil, nil
 	}
 	// The common case: the path is the stack directory.
 	if enabled, err := s.encrypted.InlineEnabled(host, filename); err == nil && enabled {
-		return filename, nil
+		return []string{filename}, nil
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	// Deleting an ancestor takes its encrypted stacks with it. Only one level
 	// of children is examined: a deeper tree is caught by the mount check on
 	// the way, and an unbounded walk here would cost more than it saves.
 	stacks, err := s.ListStacks(host)
 	if err != nil {
-		return "", nil
+		return nil, nil
 	}
 	prefix := filename + "/"
+	var encrypted []string
 	for _, stack := range stacks {
 		if stack.Path != filename && !strings.HasPrefix(stack.Path, prefix) {
 			continue
 		}
 		if enabled, enabledErr := s.encrypted.InlineEnabled(host, stack.Path); enabledErr == nil && enabled {
-			return stack.Path, nil
+			encrypted = append(encrypted, stack.Path)
 		}
 	}
-	return "", nil
+	return encrypted, nil
 }
 
 // runtimeDirectoryOwner reports the stack a path belongs to when that path is

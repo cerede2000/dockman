@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,19 +23,25 @@ func TestDiscoverEncryptedStacksIsExplicitBoundedAndSorted(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(ignored, SOPSInlineMarkerFile), []byte("version=1\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(ignored, SOPSSourceFile), []byte("ciphertext"), 0o600))
 
-	stacks, err := discoverEncryptedStacks(root)
+	discovery, err := discoverEncryptedStacks(root)
 	require.NoError(t, err)
-	require.Equal(t, []string{filepath.Join(root, "apps/first"), filepath.Join(root, "z-last")}, stacks)
+	require.Equal(t, []string{filepath.Join(root, "apps/first"), filepath.Join(root, "z-last")}, discovery.Ready)
 }
 
+// An unsupported marker version still disqualifies the stack from being
+// materialized. It is reported as that stack's problem rather than as a failure
+// of the whole pass - see TestDiscoverEncryptedStacksKeepsHealthyStacksWhenOneIsBroken.
 func TestDiscoverEncryptedStacksRejectsInvalidMarker(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "app")
 	require.NoError(t, os.MkdirAll(directory, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(directory, SOPSInlineMarkerFile), []byte("version=99\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(directory, SOPSSourceFile), []byte("ciphertext"), 0o600))
-	_, err := discoverEncryptedStacks(root)
-	require.ErrorContains(t, err, "invalid encrypted runtime marker")
+
+	discovery, err := discoverEncryptedStacks(root)
+	require.NoError(t, err)
+	require.Empty(t, discovery.Ready, "an unsupported marker version is never materialized")
+	require.ErrorContains(t, errors.Join(discovery.Problems...), "invalid encrypted runtime marker")
 }
 
 func TestLoadHostRuntimeConfigAppliesSafeDefaults(t *testing.T) {
