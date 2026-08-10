@@ -23,6 +23,16 @@ func (s *gormStore) Get(name string) (Config, error) {
 	return conf, err
 }
 
+func (s *gormStore) GetByID(id uint) (Config, error) {
+	var conf Config
+	err := s.db.
+		Preload("SSHOptions").
+		Preload("FolderAliases").
+		Where("id = ?", id).
+		First(&conf).Error
+	return conf, err
+}
+
 // GetLocal retrieves the local host by its (immutable) Type rather than its
 // user-editable Name, so a renamed local host is still found instead of being
 // treated as missing. If several exist (e.g. duplicates from a previous bug),

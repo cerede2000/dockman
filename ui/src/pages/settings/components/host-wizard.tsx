@@ -23,6 +23,7 @@ import {DnsOutlined, InfoOutlined, LanguageOutlined, SaveOutlined} from '@mui/ic
 import {ClientType, type Host, HostManagerService} from "../../../gen/host/v1/host_pb.ts";
 import {callRPC, useClient} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
+import {gitAPI} from "../../../lib/git-api.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
 import HostAliasManager from "./alias-manager.tsx";
 
@@ -54,6 +55,8 @@ const createDefaultHost = (existing?: Partial<CleanHost>): CleanHost => ({
     }
 });
 
+interface RenameTarget { stackPath: string; repositoryName: string }
+
 function HostWizardDialog({open, onClose, host, onSuccess}: {
     open: boolean, onClose: () => void, host?: CleanHost, onSuccess: () => void
 }) {
@@ -63,16 +66,21 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
     const [tabValue, setTabValue] = useState(0);
     const [connecting, setConnecting] = useState(false);
     const [form, setForm] = useState<CleanHost>(createDefaultHost(host));
+    // Folder links key on the host name, so a rename rewrites them. The list
+    // is shown before anything is written: this is not a side effect the user
+    // should discover afterwards.
+    const [renameTargets, setRenameTargets] = useState<RenameTarget[] | null>(null);
     const isEditMode = !!host?.id;
 
     useEffect(() => {
         if (open) {
             setTabValue(0);
             setForm(createDefaultHost(host));
+            setRenameTargets(null);
         }
     }, [open, host]);
 
-    const handleSaveHost = async () => {
+    const saveHost = async () => {
         setConnecting(true);
 
         let err: string | undefined;
@@ -91,10 +99,40 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
             if (!isEditMode) onClose();
         }
 
+        setRenameTargets(null);
         setConnecting(false);
     };
 
+    const handleSaveHost = async () => {
+        const previousName = host?.name ?? "";
+        if (!isEditMode || form.name === previousName) {
+            await saveHost();
+            return;
+        }
+        setConnecting(true);
+        let attached: RenameTarget[];
+        try {
+            const bindings = await gitAPI<{host: string; stackPath: string; repositoryName: string}[]>("/bindings");
+            attached = bindings
+                .filter(binding => binding.host === previousName)
+                .map(binding => ({stackPath: binding.stackPath, repositoryName: binding.repositoryName}));
+        } catch {
+            // Git sync may be disabled or unreachable. That is not a reason to
+            // block a rename: the backend rewrites whatever is there anyway,
+            // and refusing here would make an unrelated outage look like a
+            // host problem.
+            attached = [];
+        }
+        setConnecting(false);
+        if (attached.length === 0) {
+            await saveHost();
+            return;
+        }
+        setRenameTargets(attached);
+    };
+
     return (
+        <>
         <Dialog
             open={open}
             onClose={onClose}
@@ -253,6 +291,36 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
                 )}
             </DialogActions>
         </Dialog>
+        {renameTargets !== null && (
+            <Dialog open fullWidth maxWidth="sm" onClose={() => setRenameTargets(null)}
+                    slotProps={{paper: {sx: {borderRadius: 3, backgroundImage: 'none'}}}}>
+                <DialogTitle sx={{pb: 1}}>Rename &laquo; {host?.name} &raquo; to &laquo; {form.name} &raquo;</DialogTitle>
+                <DialogContent sx={{...scrollbarStyles}}>
+                    <Typography variant="body2" sx={{mb: 1.5}}>
+                        This rename will re-point {renameTargets.length} Git folder link
+                        {renameTargets.length > 1 ? 's' : ''}:
+                    </Typography>
+                    <Stack component="ul" spacing={0.5} sx={{pl: 2.5, m: 0}}>
+                        {renameTargets.map(target => (
+                            <Typography key={target.stackPath} component="li" variant="body2" sx={{fontFamily: 'monospace'}}>
+                                {target.stackPath} &rarr; {target.repositoryName}
+                            </Typography>
+                        ))}
+                    </Stack>
+                    <Typography variant="body2" sx={{mt: 2, opacity: 0.75}}>
+                        Baselines are kept and no remote branch is renamed. Only the host
+                        name each link refers to changes.
+                    </Typography>
+                </DialogContent>
+                <DialogActions sx={{p: 2.5}}>
+                    <Button onClick={() => setRenameTargets(null)} disabled={connecting}>Cancel</Button>
+                    <Button variant="contained" onClick={() => void saveHost()} disabled={connecting}>
+                        Rename and re-point
+                    </Button>
+                </DialogActions>
+            </Dialog>
+        )}
+        </>
     );
 }
 

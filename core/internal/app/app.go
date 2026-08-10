@@ -337,6 +337,11 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		log.Fatal().Err(err).Msg("unable to initialize compact Git stack status index")
 	}
 	fileSrv.ConfigureChangeNotifier(gitSyncSrv.MarkLocalChange)
+	// Folder links store their host by name. Without this, renaming a host left
+	// every one of them pointing at a name nothing answered to, and the
+	// immutability guard on their endpoints made unlink-and-relink - with a
+	// full baseline rebuild - the only way back.
+	hostManager.ConfigureHostRename(gitSyncSrv.RenameHostBindings)
 	// Two guards, both refusing rather than half-deleting. Git first: it may
 	// veto the deletion outright, and there is no point releasing a tmpfs for a
 	// deletion that will not happen. Secrets second: it releases the volatile

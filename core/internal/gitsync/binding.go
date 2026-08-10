@@ -3893,3 +3893,16 @@ func (s *Service) removeBindingBackups(bindingID string) error {
 	}
 	return s.store.DeleteBindingBackups(bindingID)
 }
+
+// RenameHostBindings re-points this host's folder links after a rename. It is
+// wired into the host service, which calls it before renaming so that a
+// failure leaves everything as it was.
+func (s *Service) RenameHostBindings(previousName, newName string) (int, error) {
+	return s.store.RenameBindingHost(previousName, newName)
+}
+
+// BindingsForHost lists the folder links a host rename would rewrite, so the
+// interface can show exactly what is about to move before asking.
+func (s *Service) BindingsForHost(hostname string) ([]StackBinding, error) {
+	return s.store.ListBindingsForHost(hostname)
+}
