@@ -236,7 +236,15 @@ func reconcileWatchDirectives(options HostInstallOptions) string {
 			continue
 		}
 		seen[root] = struct{}{}
-		lines = append(lines, fmt.Sprintf("PathChanged=%q", filepath.Join(root, HostRuntimeReconcileRequestFile)))
+		// Bare, not %q. systemd does not unquote this setting: it reads the
+		// leading double quote as the first character of the path, decides the
+		// path is not absolute, drops the directive - and then refuses the
+		// whole unit for having no path at all. The watch has been dead since
+		// it was first written this way, so nothing ever reconciled
+		// automatically; only an explicit `systemctl start
+		// dockman-secrets-host.service` did. A path with a space is fine
+		// unquoted here, since systemd takes the rest of the line.
+		lines = append(lines, "PathChanged="+filepath.Join(root, HostRuntimeReconcileRequestFile))
 	}
 	return strings.Join(lines, "\n")
 }
