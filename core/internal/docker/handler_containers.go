@@ -246,6 +246,7 @@ func (h *Handler) ContainerUpdate(ctx context.Context, req *connect.Request[v1.C
 					return dkSrv.Compose.PullImage(pullCtx, imageTag, writer)
 				},
 				writer,
+				updateProgressReporter(writer),
 				req.Msg.ContainerIds...,
 			)
 		})

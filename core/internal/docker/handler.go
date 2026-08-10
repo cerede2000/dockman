@@ -485,18 +485,34 @@ func (h *Handler) WithClientAndStream(
 // 				Utils 			  		  //
 ////////////////////////////////////////////
 
+// LogStreamWriter turns an action's text output into stream messages.
+//
+// The mutex is not decoration: since stacks update in parallel, several
+// goroutines write text here while a third reports structured progress, and a
+// Connect stream has no lock of its own - concurrent Send calls corrupt it.
 type LogStreamWriter struct {
+	mu             sync.Mutex
 	responseStream *connect.ServerStream[v1.LogsMessage]
 }
 
 func (l *LogStreamWriter) Write(p []byte) (n int, err error) {
-	err = l.responseStream.Send(&v1.LogsMessage{
-		Message: string(p),
-	})
-	if err != nil {
+	if err = l.send(&v1.LogsMessage{Message: string(p)}); err != nil {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// SendProgress reports one container's update state alongside the text. A
+// failure to send is dropped: progress is an accessory to the update, and
+// losing a state must never abort a replacement already under way.
+func (l *LogStreamWriter) SendProgress(progress *v1.UpdateProgress) {
+	_ = l.send(&v1.LogsMessage{Progress: progress})
+}
+
+func (l *LogStreamWriter) send(message *v1.LogsMessage) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.responseStream.Send(message)
 }
 
 func ToRPCStat(cont contSrv.Stats) *v1.ContainerStats {

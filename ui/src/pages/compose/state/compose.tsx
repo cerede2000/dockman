@@ -1,6 +1,6 @@
 import {ArrowDownward, ArrowUpward, PlayArrow, RestartAlt, Stop, Update} from "@mui/icons-material";
 import {create} from 'zustand'
-import type {ComposeFile, LogsMessage} from "../../../gen/docker/v1/docker_pb.ts";
+import type {ComposeFile, LogsMessage, UpdateProgress} from "../../../gen/docker/v1/docker_pb.ts";
 import type {CallOptions} from "@connectrpc/connect";
 import {makeID, type TabTerminal, useTerminalAction, useTerminalTabs} from "./terminal.tsx";
 import {refreshDockerStateNow} from "../../../hooks/docker-events.ts";
@@ -54,6 +54,10 @@ export const useComposeAction = create<{
     activeAction: ActiveAction | null
     // last (or current) run per compose file
     runs: Record<string, ActionRun>
+    // live per-container update state, keyed by container id. Several
+    // containers report on one stream, so the text alone cannot say which is
+    // where; this is what lets each row show its own stage.
+    updateProgress: Record<string, UpdateProgress>
     runAction: (
         composeFile: string,
         streamFn: ComposeActionStreamFn,
@@ -66,6 +70,7 @@ export const useComposeAction = create<{
 }>((set, get) => ({
     activeAction: null,
     runs: {},
+    updateProgress: {},
 
     runAction: (
         composeFile: string,
@@ -76,6 +81,9 @@ export const useComposeAction = create<{
     ) => {
         set(state => ({
             activeAction: action,
+            // A new update starts from a blank slate; other actions leave the
+            // last update's states alone.
+            updateProgress: action === 'update' ? {} : state.updateProgress,
             runs: {
                 ...state.runs,
                 [composeFile]: {file: composeFile, action, output: '', running: true, failed: false},
@@ -90,6 +98,16 @@ export const useComposeAction = create<{
                 if (output.length > OUTPUT_CAP) output = output.slice(-OUTPUT_CAP);
                 return {runs: {...state.runs, [composeFile]: {...run, output}}};
             })
+        }
+
+        // A fresh object per container id: the table is memoised by reference,
+        // so mutating the stored entry would leave the row showing the stage
+        // it had when it last re-rendered.
+        const recordProgress = (progress: UpdateProgress) => {
+            if (!progress.containerId) return;
+            set(state => ({
+                updateProgress: {...state.updateProgress, [progress.containerId]: progress},
+            }))
         }
 
         const finish = (failed: boolean) => {
@@ -114,7 +132,8 @@ export const useComposeAction = create<{
         const consume = async () => {
             try {
                 for await (const item of stream) {
-                    append(item.message);
+                    if (item.message) append(item.message);
+                    if (item.progress) recordProgress(item.progress);
                 }
                 finish(false);
                 onDone?.();

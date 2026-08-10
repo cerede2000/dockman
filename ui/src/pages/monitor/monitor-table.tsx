@@ -48,8 +48,27 @@ import {
     WarningAmber,
 } from '@mui/icons-material';
 import {Fragment, type MouseEvent, type ReactNode, type Ref, useState} from 'react';
-import type {ContainerList, ContainerStats} from '../../gen/docker/v1/docker_pb.ts';
+import type {ContainerList, ContainerStats, UpdateProgress} from '../../gen/docker/v1/docker_pb.ts';
+import {UpdateStage} from '../../gen/docker/v1/docker_pb.ts';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
+
+// updateStageLabel names the phase a container is in. Several containers
+// report on one stream, so without it a row can only say "something is
+// happening" - which is exactly what the plain spinner already said.
+const updateStageLabels: Partial<Record<UpdateStage, string>> = {
+    [UpdateStage.QUEUED]: 'Queued',
+    [UpdateStage.PULLING]: 'Pulling',
+    [UpdateStage.RECREATING]: 'Recreating',
+    [UpdateStage.VERIFYING]: 'Verifying',
+    [UpdateStage.UP_TO_DATE]: 'Up to date',
+    [UpdateStage.UPDATED]: 'Updated',
+    [UpdateStage.ROLLED_BACK]: 'Rolled back',
+    [UpdateStage.FAILED]: 'Failed',
+};
+
+function updateStageLabel(stage: UpdateStage | undefined): string {
+    return (stage !== undefined && updateStageLabels[stage]) || 'Updating';
+}
 import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes, getUsageColor} from '../../lib/editor.ts';
 import {ContainerInfoPort} from '../compose/components/container-info-port.tsx';
@@ -136,6 +155,9 @@ interface MonitorTableProps {
     onStackOutput: (group: StackGroup) => void;
     // per-container update runs (keyed by name): busy indicator + output
     updateRuns: Record<string, 'running' | 'failed' | 'done'>;
+    // live per-container update stage, keyed by container id; empty until the
+    // update stream reports one
+    updateProgress: Record<string, UpdateProgress>;
     batchUpdateRunning: boolean;
     batchUpdateIDs: string[];
     updateScanIssues: Record<string, string>;
@@ -571,6 +593,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
     const stackSelected = c.stackName !== '' && selectedStacks.includes(row.stackKey);
     const isChecked = stackSelected || selectedContainers.includes(c.id);
     const updRun = updateRuns[c.name];
+    const updStage = props.updateProgress[c.id]?.stage;
     const batchUpdating = props.batchUpdateRunning && props.batchUpdateIDs.includes(c.id);
     const updateRunning = updRun === 'running' || batchUpdating;
 
@@ -625,7 +648,7 @@ function ContainerRow(props: MonitorTableProps & { row: MonitorRow, boundaryColo
                             size="small"
                             color="info"
                             icon={<CircularProgress size={11} color="inherit"/>}
-                            label="Updating · View progress"
+                            label={`${updateStageLabel(updStage)} · View progress`}
                             onClick={() => onUpdateOutput(row)}
                             sx={{height: 21, fontSize: '0.62rem', fontWeight: 800, cursor: 'pointer'}}
                         />
