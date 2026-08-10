@@ -424,6 +424,38 @@ message ContainerLogsRequest {
 
 message LogsMessage {
   string message = 1;
+  // structured per-container progress, set only on the update stream; every
+  // other action leaves it unset and carries text alone
+  optional UpdateProgress progress = 2;
+}
+
+// UpdateProgress says where one container is in its update, so a view can show
+// a state per row instead of parsing the text stream. Several containers
+// report on the same stream, interleaved, so each message names its container.
+message UpdateProgress {
+  string containerId = 1;
+  string containerName = 2;
+  // compose stack the container belongs to; empty for a container deployed
+  // outside compose
+  string stack = 3;
+  UpdateStage stage = 4;
+  // failure or rollback detail; empty on the ordinary stages
+  string detail = 5;
+}
+
+enum UpdateStage {
+  UPDATE_STAGE_UNSPECIFIED = 0;
+  // accepted, waiting for its stack's turn
+  UPDATE_STAGE_QUEUED = 1;
+  UPDATE_STAGE_PULLING = 2;
+  UPDATE_STAGE_RECREATING = 3;
+  // replaced, waiting for the container to hold or turn healthy
+  UPDATE_STAGE_VERIFYING = 4;
+  // terminal states
+  UPDATE_STAGE_UP_TO_DATE = 5;
+  UPDATE_STAGE_UPDATED = 6;
+  UPDATE_STAGE_ROLLED_BACK = 7;
+  UPDATE_STAGE_FAILED = 8;
 }
 
 message LogsStreamRequest {
