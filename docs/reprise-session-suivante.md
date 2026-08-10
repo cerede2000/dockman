@@ -30,72 +30,70 @@ Vingt branches livrées et mergées, chacune passée par sa CI avant merge,
 
 ---
 
-## 1. §2.2 — la racine de stacks n'est pas mémorisée par hôte
+## 1. Les trois sujets de la file — **traités le 2026-08-10**
 
-**Le plus important : il débloque trois choses d'un coup.**
+| Sujet | Branche | État |
+|---|---|---|
+| Requête de reconciliation ignorée pour un alias imbriqué | `fix/reconcile-watch-nested-alias` | mergé |
+| `SaveBinding` : lecture `Unscoped`, écriture scopée | `fix/save-binding-resurrection` | mergé |
+| Renommage d'hôte orphelinant les folder links | `feat/host-rename-repoints-links` | livré |
 
-### Le défaut
+### a) L'alias imbriqué — le plan initial était faux
 
-`requestHostRuntimeReconcile` ([`inline.go`](../core/internal/secrets/inline.go)) écrit
-le fichier de requête à la racine du `stackFS` de l'alias. L'unité systemd `.path`
-surveille `config.StackRoot/.dockman-secrets-reconcile`.
+Le plan disait : persister la racine de stacks par hôte. **Ça n'aurait rien
+corrigé.** Connaître la racine ne donne pas à Dockman un système de fichiers
+capable d'y écrire : il écrit sa requête à travers le système de fichiers de
+l'alias, qui ne peut pas remonter au-dessus de sa propre racine.
 
-Le cas qui casse : un alias **imbriqué** sous la racine configurée —
-`StackRoot=/server/stacks`, alias `media` → `/server/stacks/media`. La stack est bien
-découverte par le parcours de l'hôte, mais sa requête atterrit dans un fichier que
-personne ne surveille. L'utilisateur voit un « en attente » qui ne se résout jamais.
+C'est la surveillance qui doit venir à la requête, pas l'inverse. L'unité
+`.path` accepte plusieurs `PathChanged=` : elle en porte maintenant un par
+racine — la racine de stacks d'abord, puis chaque racine d'alias fournie à
+l'installation (`--watch-root`, répétable ; champ dédié dans l'assistant).
 
-En configuration mono-alias (le cas de l'utilisateur aujourd'hui), le comportement est
-correct — d'où le report.
+Surveiller un fichier qui n'apparaît jamais ne coûte rien ; ne pas en
+surveiller un coûte toute la reconciliation. Les racines relatives, vides ou
+malformées sont écartées : systemd rejette une unité entière sur une seule
+directive fautive, ce qui aurait emporté la surveillance de la racine de
+stacks avec elle.
 
-### Ce qu'il faut faire
+**Limite assumée** : un alias créé *après* l'installation n'est pas surveillé
+tant que le runtime hôte n'est pas réinstallé. Les unités sont écrites une
+fois, à partir de ce qu'on savait alors.
 
-La conception est arrêtée, **aucune décision à demander** :
+**Ce qui reste ouvert** : la persistance des champs du Host boot wizard et du
+Rescue kit (ressaisis à chaque fois). C'était le bénéfice annexe attendu du
+plan initial ; il demande toujours une table des hôtes enrichie, mais ce n'est
+plus urgent puisque le défaut de reconciliation est corrigé sans elle.
 
-1. Persister la racine de stacks sur l'enregistrement de l'hôte (table des hôtes,
-   `internal/host`). Migration Gorm.
-2. L'alimenter depuis **Réglages → Secrets → Host boot wizard**, qui la fait déjà
-   saisir mais ne la garde pas.
-3. L'exposer au résolveur pour que `requestHostRuntimeReconcile` écrive à la bonne
-   place, avec repli sur le comportement actuel si elle n'a jamais été renseignée —
-   **c'est ce repli qui garantit l'absence de régression**.
+### b) `SaveBinding` — reproduit, et pire que le soupçon
 
-### Ce que ça débloque en plus
+Le soupçon était un succès silencieux sans écriture. La réalité est une
+**résurrection** : `Save` réécrit `deleted_at = NULL` à partir de la copie en
+mémoire, et le folder link délié revient à la vie avec son automatisation,
+pointant vers un dépôt que l'utilisateur venait de déconnecter.
 
-- La persistance des champs du **Host boot wizard** (aujourd'hui ressaisis à chaque
-  fois).
-- La persistance des champs du **Rescue kit**
-  ([`tab-rescue.tsx`](../ui/src/pages/settings/tab-rescue.tsx)), même symptôme.
+La garde lit désormais `deleted_at` et refuse, en enveloppant
+`gorm.ErrRecordNotFound`. Le contrôle des extrémités continue de lire les
+lignes supprimées, volontairement : un UUID retiré garde ses extrémités.
 
----
+### c) Renommage d'hôte — flux explicite avec confirmation
 
-## 2. `SaveBinding` — lecture `Unscoped()`, écriture normale
+**Décision prise par l'utilisateur le 2026-08-10.** L'assistant liste les liens
+qui vont être réécrits et demande confirmation avant d'écrire. Annuler n'écrit
+rien. Les baselines sont conservées, aucune branche distante n'est renommée.
 
-[`gitsync/store.go:162`](../core/internal/gitsync/store.go#L162)
+`RenameBindingHost` est la seule chose autorisée à contourner la garde
+d'immutabilité de `SaveBinding`, et c'est délibéré : un renommage ne change ni
+la machine, ni le dossier, ni la destination Git — seulement l'étiquette. Les
+deux noms sont obligatoires et doivent différer.
 
-La lecture de contrôle utilise `s.db.Unscoped()`, donc elle voit les lignes en
-suppression douce ; l'écriture qui suit est en portée normale. Soupçon : un lien
-supprimé puis recréé avec le même UUID ferait passer le contrôle d'immutabilité
-contre la ligne effacée, pendant que la mise à jour ne correspond à rien — succès
-silencieux sans écriture.
+Les liens sont réécrits **avant** la ligne d'hôte : un échec là laisse tout en
+l'état. Si le renommage échoue ensuite, les liens sont remis en place, et
+l'erreur dit quoi faire si même ça échoue.
 
-**Non vérifié.** Commencer par écrire le test qui reproduit, avant de corriger. Si la
-reproduction échoue, le constat tombe et il faut le dire.
-
----
-
-## 3. Le renommage d'un hôte orpheline ses folder links
-
-Le nom d'hôte est stocké comme clé dans les liens gitsync, sans propagation. Depuis la
-garde d'immutabilité (`81b44ed`), la seule issue est de délier et relier — avec
-reconstruction complète de la baseline.
-
-**Une vraie décision produit à poser à l'utilisateur** avant de coder :
-
-- propagation automatique du renommage vers les liens, ou
-- flux de renommage explicite qui liste ce qui va être réécrit et demande confirmation.
-
-La seconde est plus sûre mais plus lourde. Ne pas trancher seul.
+Au passage : le registre de clients actives est lui aussi indexé par nom. Son
+entrée suit maintenant le renommage au lieu de rester orpheline sous un nom
+que plus personne n'irait chercher.
 
 ---
 
