@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type HostInstallOptions struct {
@@ -15,6 +16,14 @@ type HostInstallOptions struct {
 	SOPSFrom   string
 	SystemRoot string
 	Activate   bool
+	// WatchRoots are extra directories in which Dockman may drop a
+	// reconciliation request. Dockman writes that request through the
+	// filesystem of the alias the stack belongs to, and an alias rooted below
+	// the stack root cannot write above itself - so a request for a nested
+	// alias lands somewhere nothing was watching, and the user waits on a
+	// reconciliation that never comes. The stack root is always watched; these
+	// are the alias roots on top of it.
+	WatchRoots []string
 }
 
 func InstallHostRuntime(options HostInstallOptions) error {
@@ -120,14 +129,14 @@ Documentation=https://github.com/cerede2000/dockman
 After=local-fs.target
 
 [Path]
-PathChanged=%q
+%s
 Unit=%s
 TriggerLimitIntervalSec=60
 TriggerLimitBurst=30
 
 [Install]
 WantedBy=multi-user.target
-`, filepath.Join(options.Config.StackRoot, HostRuntimeReconcileRequestFile), HostReconcileUnitName)
+`, reconcileWatchDirectives(options), HostReconcileUnitName)
 	if err = writeHostFileAtomic(unitTarget, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
@@ -198,4 +207,36 @@ func writeHostFileAtomic(destination string, value []byte, mode os.FileMode) err
 		return err
 	}
 	return os.Rename(temporaryPath, destination)
+}
+
+// reconcileWatchDirectives lists every request file the reconcile watch must
+// react to, one PathChanged= per line.
+//
+// The stack root always comes first: it is the directory the daemon walks, and
+// on a single-alias host it is the only one that matters. Alias roots follow,
+// because Dockman writes its request through the alias filesystem of the stack
+// concerned, which cannot reach above its own root. Watching a request file
+// that never appears costs nothing; not watching one costs a reconciliation
+// that never happens.
+//
+// An alias created after installation is not watched until the host runtime is
+// installed again - the units are written once, from what was known then.
+func reconcileWatchDirectives(options HostInstallOptions) string {
+	roots := append([]string{options.Config.StackRoot}, options.WatchRoots...)
+	seen := make(map[string]struct{}, len(roots))
+	lines := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(strings.TrimSpace(root))
+		// A relative or empty root would make systemd reject the whole unit,
+		// taking the stack root down with it.
+		if !filepath.IsAbs(root) || root == string(filepath.Separator) || strings.ContainsAny(root, "\r\n") {
+			continue
+		}
+		if _, duplicate := seen[root]; duplicate {
+			continue
+		}
+		seen[root] = struct{}{}
+		lines = append(lines, fmt.Sprintf("PathChanged=%q", filepath.Join(root, HostRuntimeReconcileRequestFile)))
+	}
+	return strings.Join(lines, "\n")
 }

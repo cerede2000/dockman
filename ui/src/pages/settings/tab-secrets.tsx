@@ -89,6 +89,12 @@ export default function TabSecrets() {
     const [hostWizardOpen, setHostWizardOpen] = useState(false);
     const [hostContainer, setHostContainer] = useState("dockman");
     const [hostStackRoot, setHostStackRoot] = useState("/server/stacks");
+    // Extra directories the reconcile watch must cover. Dockman writes its
+    // request through the filesystem of the alias a stack belongs to, and that
+    // filesystem cannot reach above its own root: a stack under an alias nested
+    // below the stack root would otherwise wait on a reconciliation nothing was
+    // watching for.
+    const [hostWatchRoots, setHostWatchRoots] = useState("");
     const [containerAgeKey, setContainerAgeKey] = useState("/config/secrets/dockman-sops-age-key.txt");
     const [hostAgeKey, setHostAgeKey] = useState("/etc/dockman-secrets/age-key.txt");
     const [hostSshTarget, setHostSshTarget] = useState("");
@@ -98,6 +104,11 @@ export default function TabSecrets() {
     const hostInstallCommand = useMemo(() => {
         const container = hostContainer.trim() || "dockman";
         const agePath = hostAgeKey.trim();
+        const watchRootArgs = hostWatchRoots
+            .split("\n")
+            .map(line => line.trim())
+            .filter(line => line !== "" && line !== hostStackRoot.trim())
+            .map(line => `--watch-root ${shellQuote(line)}`);
         const ageDirectory = agePath.includes("/") ? agePath.slice(0, agePath.lastIndexOf("/")) || "/" : ".";
         const prepare = `set -eu
 umask 077
@@ -123,7 +134,7 @@ scp "$workdir/dockman-secrets-host" "$workdir/sops" "$workdir/age-key.txt" "$rem
 ssh -t "$remote_target" sudo install -d -m 0700 ${shellQuote(ageDirectory)}
 ssh -t "$remote_target" sudo install -m 0600 "$remote_tmp/age-key.txt" ${shellQuote(agePath)}
 status=0
-ssh -t "$remote_target" sudo "$remote_tmp/dockman-secrets-host" install --stack-root ${shellQuote(hostStackRoot.trim())} --age-key ${shellQuote(agePath)} --sops-source "$remote_tmp/sops" --file-mode ${shellQuote(hostFileMode)} --activate || status=$?
+ssh -t "$remote_target" sudo "$remote_tmp/dockman-secrets-host" install --stack-root ${shellQuote(hostStackRoot.trim())} --age-key ${shellQuote(agePath)} --sops-source "$remote_tmp/sops" --file-mode ${shellQuote(hostFileMode)} ${watchRootArgs.join(" ")} --activate || status=$?
 exit "$status"`;
         }
         return `${prepare}
@@ -136,7 +147,7 @@ sudo "$workdir/dockman-secrets-host" install \
   --file-mode ${shellQuote(hostFileMode)} \
   --activate
 sudo systemctl --no-pager status dockman-secrets-host.service`;
-    }, [containerAgeKey, host, hostAgeKey, hostContainer, hostFileMode, hostSshTarget, hostStackRoot]);
+    }, [containerAgeKey, host, hostAgeKey, hostContainer, hostFileMode, hostSshTarget, hostStackRoot, hostWatchRoots]);
 
     const copyHostCommand = async () => {
         try {
@@ -665,6 +676,14 @@ sudo systemctl --no-pager status dockman-secrets-host.service`;
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
                     <TextField fullWidth size="small" label="Dockman container name" value={hostContainer} onChange={event => setHostContainer(event.target.value)}/>
                     <TextField fullWidth size="small" label="Host stack root" value={hostStackRoot} onChange={event => setHostStackRoot(event.target.value)}/>
+                    <TextField
+                        fullWidth size="small" multiline minRows={2}
+                        label="Additional alias roots to watch (one absolute path per line)"
+                        placeholder={`${hostStackRoot}/media`}
+                        helperText="Only needed when a Dockman alias points below the stack root. Dockman drops its reconciliation request inside the alias, which cannot write above itself, so that alias needs its own watch. Leave empty when your aliases are the stack root itself."
+                        value={hostWatchRoots}
+                        onChange={event => setHostWatchRoots(event.target.value)}
+                    />
                 </Stack>
                 <Stack direction={{xs: "column", sm: "row"}} spacing={1}>
                     <TextField fullWidth size="small" label="Age key inside Dockman" value={containerAgeKey} onChange={event => setContainerAgeKey(event.target.value)}/>
