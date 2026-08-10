@@ -162,12 +162,11 @@ rapporte la progression, et un flux Connect n'a pas de verrou propre.
 
 ### Reste à faire sur ce sujet
 
-- `ComposeSelectiveUpdate` (onglet Deploy) **ne rapporte pas** de progression
-  structurée : il écrit du texte. `ForceUpdateOptions.Report` existe et attend
-  juste d'être renseigné depuis `runComposeImageUpdates`, avec le pont
-  `updateProgressReporter(writer)` déjà écrit. Petit, isolé.
 - La vue Monitor n'affiche l'étape que dans la puce « Updating » de la ligne.
-  Les états terminaux disparaissent avec la puce quand le flux se referme.
+  Les états terminaux (`updated`, `rolled-back`, `failed`) disparaissent avec la
+  puce quand le flux se referme : ils ne survivent pas à la fin de l'action.
+  Les garder visibles quelques secondes demanderait de découpler la puce de
+  `updateRunning`.
 
 ### Piège CI à connaître
 
