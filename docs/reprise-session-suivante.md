@@ -113,6 +113,61 @@ alignées si l'une des deux évolue. Voir
 
 ---
 
+## 3ter. Mises à jour — trois demandes de l'utilisateur (2026-08-07, fin de session)
+
+### a) Exclusion concurrente — **déjà en place, un trou identifié**
+
+Vérifié : `withComposeActionLock` (onglet Deploy) et `withContainerUpdateLocks`
+(bouton Update du Monitor) utilisent **le même espace de verrous**,
+`compose.TryLockStack(host, filename)`. Deux mises à jour concurrentes sur la même
+stack s'excluent donc déjà, quelle que soit la vue d'où elles partent, et le lot du
+Monitor prend tous ses verrous d'avance.
+
+**Le trou** : dans `withContainerUpdateLocks`, quand
+`dkSrv.Compose.DockmanPath(labels[ConfigFilesLabel])` renvoie `""` — conteneur
+déployé hors des alias Dockman, label absent — la clé devient `"container:"+ID`. Ce
+conteneur n'est alors **pas** exclu par une action au niveau de sa stack. À corriger :
+se rabattre sur le nom de projet Compose (`com.docker.compose.project`) avant de
+tomber sur l'identifiant.
+
+### b) Paralléliser les mises à jour
+
+`ContainersForceUpdate` boucle séquentiellement. La forme juste :
+**parallèle entre stacks, séquentiel à l'intérieur d'une stack** — l'ordre y est
+nécessaire, c'est ce que fait déjà la transaction de pile avec son tri topologique et
+son rollback groupé. Prévoir une limite de concurrence, sinon dix `docker pull`
+simultanés saturent la liaison. Grouper par la même clé que les verrous.
+
+### c) Progression par conteneur
+
+Demandé par l'utilisateur. **Ne pas aller lire le dépôt Dockhand** : il porte une
+interdiction explicite de scraping et une licence BSL 1.1, et transposer des détails
+d'implémentation depuis une base BSL contaminerait les PR vers l'upstream. La
+documentation publique (dockhand.pro/manual) est la seule source approuvée — et de
+toute façon la fonctionnalité se conçoit sans elle.
+
+Le flux existe déjà : `ContainerUpdate` est un `ServerStream[LogsMessage]`. Il manque
+un état structuré par conteneur (en attente / pull / recréation / vérification /
+terminé / rollback) plutôt qu'un flot de texte. La vue Monitor a déjà `rowBusy` par
+ligne pour l'afficher.
+
+### d) Bouton Update de l'onglet Deploy
+
+Aujourd'hui : `compose pull` + `compose up -d`. Prend en compte un changement de
+compose, mais **sans vérification de santé ni rollback**.
+
+Demandé : ne traiter que les conteneurs qui en ont besoin, et selon le cas —
+- **image seule modifiée** → recreate vérifié façon Monitor (healthcheck + rollback) ;
+- **compose modifié** → `up -d` (ou down/up), obligatoire puisqu'un conteneur ne peut
+  pas être reconstruit depuis une configuration qui a bougé sans repasser par le
+  manifeste.
+
+Signal de détection : Compose pose `com.docker.compose.config-hash` sur chaque
+conteneur. Comparer celui du conteneur en place à celui que produirait le manifeste
+courant dit exactement quels services ont changé.
+
+---
+
 ## 4. En attente de l'utilisateur
 
 **Le cahier de validation** —
