@@ -23,6 +23,10 @@ type Service struct {
 
 	oidcProvider *oidc.Provider
 	oauth2Config *oauth2.Config
+
+	// throttle costs nothing until a sign-in fails: no timer, no goroutine,
+	// entries pruned on the way through.
+	throttle *loginThrottle
 }
 
 func NewService(
@@ -37,6 +41,7 @@ func NewService(
 		sessionStore: sessionStore,
 		config:       config,
 		tlsServed:    tlsServed,
+		throttle:     newLoginThrottle(),
 	}
 
 	if config.OIDCEnable {
@@ -99,16 +104,27 @@ func (auth *Service) create(username, plainTextPassword string) (*User, error) {
 }
 
 func (auth *Service) Login(username, plainTextPassword string) (*Session, string, error) {
+	if wait := auth.throttle.retryAfter(username); wait > 0 {
+		return nil, "", ErrTooManyLoginAttempts{RetryAfter: wait}
+	}
+
 	user, err := auth.userStore.GetUser(username)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed retrive user: %w", err)
+		// An unknown user used to be reported differently from a wrong
+		// password, and it skipped the bcrypt comparison entirely, so it also
+		// answered noticeably faster. Either one tells a caller which usernames
+		// exist. Same answer, same counter, both ways.
+		auth.throttle.recordFailure(username)
+		return nil, "", fmt.Errorf("invalid user/password")
 	}
 
 	ok := checkPassword(plainTextPassword, user.EncryptedPassword)
 	if !ok {
+		auth.throttle.recordFailure(username)
 		return nil, "", fmt.Errorf("invalid user/password")
 	}
 
+	auth.throttle.recordSuccess(username)
 	return auth.CreateSession(user)
 }
 
