@@ -28,8 +28,14 @@ const (
 	FlavourDesktop FlavourType = "desktop"
 )
 
+// defaultFlavour is what a binary that never called app.InitMeta runs as.
+// It has to be the strictest one: the development flavour turns on
+// relaxations - an OIDC client that skips certificate verification, chiefly -
+// that must be opted into explicitly and never inherited by omission.
+const defaultFlavour = FlavourServer
+
 var (
-	Flavour    = FlavourDevelop
+	Flavour    = defaultFlavour
 	Version    = VersionDev
 	CommitInfo = Unknown
 	BuildDate  = Unknown
