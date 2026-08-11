@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -87,43 +86,14 @@ func (u *Service) events() (<-chan containerSrv.Event, func()) {
 	return u.srv.SubscribeEvents()
 }
 
-func (u *Service) ContainersUpdateAll(ctx context.Context, opts ...UpdateOption) error {
-	containers, err := u.cli().ContainerList(ctx,
-		client.ContainerListOptions{
-			All: true,
-		},
-	)
-	if err != nil {
-		return err
-	}
-
-	return u.containersUpdateLoop(
-		ctx,
-		containers.Items,
-		opts...,
-	)
-}
-
-// ContainersUpdateDockman contID is expected to be a dockman container
-//
-// this will bypass the self update check
-func (u *Service) ContainersUpdateDockman(ctx context.Context, contID string) error {
-	list, err := u.srv.ContainerListByIDs(ctx, contID)
-	if err != nil {
-		return err
-	}
-
-	return u.containersUpdateLoop(ctx, list, WithSelfUpdate())
-}
-
-func (u *Service) ContainersUpdateByContainerID(ctx context.Context, containerID ...string) error {
-	list, err := u.srv.ContainerListByIDs(ctx, containerID...)
-	if err != nil {
-		return err
-	}
-
-	return u.containersUpdateLoop(ctx, list)
-}
+// The update engine is ForceUpdateContainer / ContainersForceUpdate over
+// ContainerRecreateWithOptions. A second, older loop used to sit here -
+// containersUpdateLoop and four entry points into it - with no caller anywhere
+// and three behaviours this one was written to avoid: it pruned every dangling
+// image on each pass, which is exactly where a retagged :latest leaves the
+// rollback image the retention policy is meant to keep; it swallowed pull and
+// recreate failures and returned success; and its Dockman self-update branch
+// was an empty closure. It has been removed rather than left looking supported.
 
 // ImagePuller pulls an image tag; injected so the caller decides HOW to
 // pull (the compose CLI runner carries the host's registry credentials,
@@ -385,179 +355,12 @@ func forceUpdateImageReference(cur container.Summary, options ForceUpdateOptions
 	return strings.TrimSpace(cur.Image)
 }
 
-// ContainersUpdateByImage finds all containers using the specified image,
-// pulls the latest version of the image, and recreates the containers
-// with the new image while preserving their configuration.
-func (u *Service) ContainersUpdateByImage(ctx context.Context, imageTag string) error {
-	// Find all containers using this image
-	containerFilters := client.Filters{}
-	containerFilters.Add("ancestor", imageTag)
-
-	containers, err := u.cli().ContainerList(ctx, client.ContainerListOptions{
-		All:     true, // Consider both running and stopped containers
-		Filters: containerFilters,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to list containers for image %s: %w", imageTag, err)
-	}
-
-	return u.containersUpdateLoop(ctx, containers.Items, WithForceUpdate())
-}
-
-type UpdateOption func(*containersUpdateConfig)
-
-func parseOpts(opts ...UpdateOption) *containersUpdateConfig {
-	var conf containersUpdateConfig
-	for _, opt := range opts {
-		opt(&conf)
-	}
-	return &conf
-}
-
-type containersUpdateConfig struct {
-	AllowSelfUpdate bool
-	ForceUpdate     bool
-
-	// change update mode to opt in only, only containers with DockmanOptInUpdateLabel will be updated
-	optInUpdates bool
-}
-
-// WithSelfUpdate allows, if a container is detected as being dockman,
-// it will let it update instead of skipping
-func WithSelfUpdate() UpdateOption {
-	return func(c *containersUpdateConfig) { c.AllowSelfUpdate = true }
-}
-
-// WithForceUpdate bypasses the image update false label in a container,
-// and updates it anyways
-func WithForceUpdate() UpdateOption {
-	return func(c *containersUpdateConfig) { c.ForceUpdate = true }
-}
-
-// WithOptInUpdate makes dockman update containers only with DockmanOptInUpdateLabel label present
-func WithOptInUpdate() UpdateOption {
-	return func(c *containersUpdateConfig) { c.optInUpdates = true }
-}
-
-func WithConfig(conf *containersUpdateConfig) UpdateOption {
-	return func(c *containersUpdateConfig) {
-		if conf != nil {
-			*c = *conf
-		}
-	}
-}
-
-// containersUpdateLoop Core updater,
-// uses the image name in the containers to pull/update/healthcheck containers
-func (u *Service) containersUpdateLoop(
-	ctx context.Context,
-	containers []container.Summary,
-	opts ...UpdateOption,
-) error {
-	updateConfig := parseOpts(opts...)
-	if len(containers) == 0 {
-		log.Info().Msgf("No containers to update. Nothing to do")
-		return nil
-	}
-
-	var dockmanUpdate = func() {}
-	for _, cur := range containers {
-		// The host condition that used to sit here made the loop disagree with
-		// the inventory, which marks a Dockman container protected wherever it
-		// runs. Recreating one through the API it is itself serving cannot end
-		// well on any host, and WithSelfUpdate remains the one deliberate way in.
-		if hasDockmanLabel(&cur) && !updateConfig.AllowSelfUpdate {
-			// Store the update for later
-			//id := cur.ID
-			dockmanUpdate = func() {
-				// todo
-				//log.Info().Msg("Starting dockman update")
-				//err := UpdateDockman(id, s.updaterUrl)
-				//if err != nil {
-				//	log.Warn().Err(err).Msg("Failed to update Dockman container")
-				//}
-			}
-			// defer dockman update until all other containers are done
-			continue
-		}
-
-		if updateConfig.optInUpdates && !hasUpdateLabel(&cur) {
-			// opt in mode and container does not have DockmanOptInUpdateLabel
-			continue
-		}
-
-		u.containerUpdate(ctx, cur, updateConfig)
-	}
-
-	log.Info().Msg("Cleaning up untagged dangling images...")
-
-	pruneReport, err := u.srv.ImagePruneUntagged(ctx)
-	if err != nil {
-		log.Warn().Err(err).Msg("failed to prune images")
-	}
-
-	if len(pruneReport.ImagesDeleted) > 0 {
-		log.Info().Msgf("Pruned %d images, reclaimed %d bytes", len(pruneReport.ImagesDeleted), pruneReport.SpaceReclaimed)
-	} else {
-		log.Info().Msg("No images to prune")
-	}
-
-	dockmanUpdate()
-
-	return nil
-}
-
-const DockmanOptInUpdateLabel = "dockman.update"
-
-func hasUpdateLabel(c *container.Summary) bool {
-	enabled, present, valid := parseBoolLabel(c.Labels, DockmanOptInUpdateLabel)
-	return present && valid && enabled
-}
-
-func (u *Service) containerUpdate(
-	ctx context.Context,
-	cur container.Summary,
-	updateConfig *containersUpdateConfig,
-) {
-	if hasDisableUpdateLabel(&cur) && !updateConfig.ForceUpdate {
-		log.Warn().
-			Str("id", cur.ID).Str("name", summaryName(cur)).
-			Msg("updates are disabled for this container")
-		return
-	}
-
-	imgTag := cur.Image
-
-	updateAvailable, _, err := u.ImageUpdateAvailable(ctx, imgTag)
-	if err != nil {
-		log.Warn().Str("cont", summaryName(cur)).
-			Err(err).Msg("Failed to get image metadata, skipping...")
-		return
-	}
-
-	if !updateAvailable {
-		log.Info().
-			Str("container", summaryName(cur)).Str("img", imgTag).
-			Msgf("Image already up to date, skipping")
-		return
-	}
-
-	err = u.srv.ImagePull(ctx, imgTag, os.Stdout)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to pull image, skipping...")
-		return
-	}
-
-	err = u.ContainerRecreate(ctx, imgTag, cur)
-	if err != nil {
-		// todo do not fail notify or save reason
-		log.Error().Err(err).Msg("Failed to recreate container")
-		return
-	}
-}
-
 //////////////////////////////////////////////
 // update guards and utils
+
+// DockmanOptInUpdateLabel lets a container that exposes the Docker socket opt
+// into being updated through it anyway.
+const DockmanOptInUpdateLabel = "dockman.update"
 
 const DockmanUpdateDisableLabel = "dockman.update.disable"
 

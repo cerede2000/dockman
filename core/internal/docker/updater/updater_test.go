@@ -20,12 +20,6 @@ func TestValidateHealthcheckHostAllowsOnlyContainerAndLoopbackAddresses(t *testi
 	require.Error(t, validateHealthcheckHost("internal.example", inspect))
 }
 
-func TestWithConfigCopiesProvidedConfiguration(t *testing.T) {
-	expected := &containersUpdateConfig{AllowSelfUpdate: true, ForceUpdate: true, optInUpdates: true}
-	actual := parseOpts(WithConfig(expected))
-	require.Equal(t, expected, actual)
-}
-
 func TestSummaryNameFallsBackToShortID(t *testing.T) {
 	require.Equal(t, "0123456789ab", summaryName(container.Summary{ID: "0123456789abcdef"}))
 	require.Equal(t, "named", summaryName(container.Summary{ID: "0123456789abcdef", Names: []string{"/named"}}))
