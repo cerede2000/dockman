@@ -697,7 +697,7 @@ func (s *AutomationService) ImageCleanupState(host string) ([]UpdateImageCleanup
 }
 
 func (s *AutomationService) RetryImageCleanup(ctx context.Context, host string) error {
-	return s.processImageCleanup(ctx, host)
+	return s.processImageCleanup(ctx, host, true)
 }
 
 func (s *AutomationService) Control(host string) (AutomationControlView, error) {

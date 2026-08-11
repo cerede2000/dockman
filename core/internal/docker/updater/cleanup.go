@@ -8,10 +8,23 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 const maxImageCleanupHistory = 250
+
+// maxAutomaticCleanupAttempts bounds how often an automatic run will ask the
+// daemon to remove an image it has already refused.
+//
+// Docker refuses when the image is still referenced. That is often temporary -
+// the container holding it is being replaced by the very update that queued
+// this candidate - so retrying is right. But it is just as often permanent,
+// and a permanent case used to be retried on every single automation cycle,
+// forever, each time issuing an ImageRemove that could only fail again. A few
+// attempts cover the temporary case; past them the row stays visible and
+// actionable, and RetryImageCleanup gives the operator a fresh budget.
+const maxAutomaticCleanupAttempts = 3
 
 type UpdateImageCleanup struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
@@ -24,6 +37,9 @@ type UpdateImageCleanup struct {
 	Retention     int       `gorm:"not null" json:"retention"`
 	Status        string    `gorm:"not null;default:'pending'" json:"status"`
 	Reason        string    `gorm:"not null;default:''" json:"reason,omitempty"`
+	// Attempts counts the removals the daemon has refused. It is what stops an
+	// automatic run from reissuing a doomed ImageRemove on every cycle.
+	Attempts int `gorm:"not null;default:0" json:"attempts"`
 }
 
 type ImageCleanupProvider func(context.Context, string, string) (removed bool, reason string, err error)
@@ -49,8 +65,13 @@ func (s *ScanStore) QueueImageCleanup(host string, outcome UpdateExecutionOutcom
 		Reason: fmt.Sprintf("retained as one of %d configured rollback image(s)", outcome.CleanupKeep),
 	}
 	return s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "host"}, {Name: "target_key"}, {Name: "image_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"container_name", "retention", "status", "reason", "updated_at"}),
+		Columns: []clause.Column{{Name: "host"}, {Name: "target_key"}, {Name: "image_id"}},
+		// A re-queued candidate is a fresh chance, so its attempt budget starts
+		// over with it.
+		DoUpdates: clause.Assignments(map[string]any{
+			"container_name": row.ContainerName, "retention": row.Retention,
+			"status": row.Status, "reason": row.Reason, "attempts": 0, "updated_at": time.Now(),
+		}),
 	}).Create(&row).Error
 }
 
@@ -60,25 +81,54 @@ func (s *ScanStore) ImageCleanupState(host string) ([]UpdateImageCleanup, error)
 	return rows, err
 }
 
-func (s *ScanStore) pendingImageCleanup(host string) ([]UpdateImageCleanup, error) {
+// pendingImageCleanup lists the candidates an automatic run should try.
+// maxAttempts bounds it to those the daemon has not already refused too often;
+// zero means no bound, which is what an explicit retry asks for.
+func (s *ScanStore) pendingImageCleanup(host string, maxAttempts int) ([]UpdateImageCleanup, error) {
+	query := s.db.Where("host = ? AND status = 'pending'", host)
+	if maxAttempts > 0 {
+		query = query.Where("attempts < ?", maxAttempts)
+	}
 	var rows []UpdateImageCleanup
-	err := s.db.Where("host = ? AND status = 'pending'", host).Order("created_at DESC").Find(&rows).Error
+	err := query.Order("created_at DESC").Find(&rows).Error
 	return rows, err
 }
 
-func (s *ScanStore) markImageCleanup(id uint, removed bool, reason string) error {
-	status := "pending"
-	if removed {
-		status = "removed"
-	}
-	return s.db.Model(&UpdateImageCleanup{}).Where("id = ?", id).Updates(map[string]any{
-		"status": status, "reason": boundedExecutionText(reason),
-	}).Error
+// resetImageCleanupAttempts gives every pending candidate of a host a fresh
+// budget. An operator asking for a retry has usually just removed whatever was
+// holding the image.
+func (s *ScanStore) resetImageCleanupAttempts(host string) error {
+	return s.db.Model(&UpdateImageCleanup{}).
+		Where("host = ? AND status = 'pending'", host).
+		Update("attempts", 0).Error
 }
 
+func (s *ScanStore) markImageCleanup(id uint, removed bool, reason string) error {
+	updates := map[string]any{"status": "pending", "reason": boundedExecutionText(reason)}
+	if removed {
+		updates["status"] = "removed"
+	}
+	query := s.db.Model(&UpdateImageCleanup{}).Where("id = ?", id)
+	if !removed {
+		// The refusal is what the budget counts; a success ends the row anyway.
+		query = query.Update("attempts", gorm.Expr("attempts + 1"))
+		if query.Error != nil {
+			return query.Error
+		}
+		query = s.db.Model(&UpdateImageCleanup{}).Where("id = ?", id)
+	}
+	return query.Updates(updates).Error
+}
+
+// pruneImageCleanupHistory keeps the newest rows of a host and drops the rest,
+// whatever their status. Capping only the removed ones left the pending rows -
+// the ones that actually accumulate, since a candidate Docker will not remove
+// stays pending - growing without any limit at all.
 func (s *ScanStore) pruneImageCleanupHistory(host string) error {
 	var stale []UpdateImageCleanup
-	if err := s.db.Where("host = ? AND status = 'removed'", host).Order("created_at DESC").Offset(maxImageCleanupHistory).Find(&stale).Error; err != nil {
+	if err := s.db.Where("host = ?", host).
+		Order("CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC").
+		Offset(maxImageCleanupHistory).Find(&stale).Error; err != nil {
 		return err
 	}
 	if len(stale) == 0 {
@@ -91,11 +141,26 @@ func (s *ScanStore) pruneImageCleanupHistory(host string) error {
 	return s.db.Delete(&UpdateImageCleanup{}, ids).Error
 }
 
-func (s *AutomationService) processImageCleanup(ctx context.Context, host string) error {
+// processImageCleanup removes the rollback images a host no longer needs to
+// keep. onDemand marks the operator's explicit retry: it ignores the automatic
+// attempt budget and starts it over.
+func (s *AutomationService) processImageCleanup(ctx context.Context, host string, onDemand bool) error {
 	if s.cleanupImage == nil {
 		return errors.New("safe image cleanup is unavailable")
 	}
-	rows, err := s.store.pendingImageCleanup(host)
+	budget := maxAutomaticCleanupAttempts
+	if onDemand {
+		if err := s.store.resetImageCleanupAttempts(host); err != nil {
+			return err
+		}
+		budget = 0
+	}
+	// Every pending candidate is loaded, budget or not: retention is decided by
+	// rank inside its target, so hiding the exhausted ones would shift what
+	// counts as "one of the newest N" and could retire an image that should
+	// have been kept. The budget only decides whether the daemon is asked
+	// again, never what the retention window is.
+	rows, err := s.store.pendingImageCleanup(host, 0)
 	if err != nil {
 		return err
 	}
@@ -111,6 +176,11 @@ func (s *AutomationService) processImageCleanup(ctx context.Context, host string
 			keep = 0
 		}
 		for _, candidate := range candidates[min(keep, len(candidates)):] {
+			if budget > 0 && candidate.Attempts >= budget {
+				// Docker has refused this one often enough. The row stays
+				// pending and visible; an explicit retry can pick it up.
+				continue
+			}
 			removed, reason, removeErr := s.cleanupImage(ctx, host, candidate.ImageID)
 			if removeErr != nil {
 				reason = "safe removal failed: " + removeErr.Error()
@@ -163,5 +233,5 @@ func (s *AutomationService) queueAndProcessImageCleanup(ctx context.Context, hos
 			return err
 		}
 	}
-	return s.processImageCleanup(ctx, host)
+	return s.processImageCleanup(ctx, host, false)
 }
