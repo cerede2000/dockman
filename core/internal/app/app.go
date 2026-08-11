@@ -452,15 +452,30 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("error occurred while verifying services")
 	}
-	for _, hostname := range hostManager.ListConnected() {
-		updateAutomationSrv.RefreshHost(hostname)
+	// One watcher per connected host, mounted whenever a host's Docker
+	// connection appears and released when it goes away. Doing this from the
+	// host service rather than from a boot-time loop is what covers the two
+	// cases the loop missed entirely: a host added from the interface, and a
+	// host reconnected in the background once its daemon was finally up.
+	watchers := newHostWatchers(conf.ServerContext, func(ctx context.Context, hostname string) {
 		dkSrv, getErr := hostManager.GetDockerService(hostname)
 		if getErr != nil {
 			log.Warn().Err(getErr).Str("host", hostname).Msg("unable to watch container policy changes")
-			continue
+			return
 		}
 		events, unsubscribe := dkSrv.Container.SubscribeEvents()
-		go watchUpdatePolicyEvents(conf.ServerContext, hostname, events, unsubscribe, updateAutomationSrv, notificationSrv, dkSrv.Container)
+		watchUpdatePolicyEvents(ctx, hostname, events, unsubscribe, updateAutomationSrv, notificationSrv, dkSrv.Container)
+	})
+	hostManager.ConfigureHostConnection(
+		func(hostname string) {
+			updateAutomationSrv.RefreshHost(hostname)
+			watchers.watch(hostname)
+		},
+		watchers.release,
+	)
+	for _, hostname := range hostManager.ListConnected() {
+		updateAutomationSrv.RefreshHost(hostname)
+		watchers.watch(hostname)
 	}
 
 	log.Info().Msg("Dockman initialized successfully")

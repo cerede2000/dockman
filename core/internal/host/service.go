@@ -32,6 +32,34 @@ type Service struct {
 	aliasStore    AliasStore
 	composeEnv    compose.EnvironmentProvider
 	renameHost    HostRenameHook
+	onConnected   HostConnectionHook
+	onDisconnect  HostConnectionHook
+}
+
+// HostConnectionHook is called when a host's Docker connection becomes
+// available and when it goes away. It exists because everything that has to
+// follow a host for its whole life - the container event watcher above all -
+// used to be wired once at startup, over the hosts that happened to be
+// connected at that moment. A host added from the interface afterwards, or one
+// reconnected in the background once its daemon came up, was silently left
+// without any of it.
+type HostConnectionHook func(hostname string)
+
+// ConfigureHostConnection wires what follows a host's Docker connection.
+func (s *Service) ConfigureHostConnection(connected, disconnected HostConnectionHook) {
+	s.onConnected, s.onDisconnect = connected, disconnected
+}
+
+func (s *Service) notifyConnected(hostname string) {
+	if s.onConnected != nil {
+		s.onConnected(hostname)
+	}
+}
+
+func (s *Service) notifyDisconnected(hostname string) {
+	if s.onDisconnect != nil {
+		s.onDisconnect(hostname)
+	}
 }
 
 // HostRenameHook re-points everything that stores a host by name rather than
@@ -287,6 +315,7 @@ func (s *Service) Toggle(hostname string, enabled bool) error {
 		if ok {
 			fileutil.Close(val)
 		}
+		s.notifyDisconnected(hostname)
 	}
 
 	return s.Add(&conf, false)
@@ -379,6 +408,7 @@ func (s *Service) Add(config *Config, create bool) (err error) {
 
 	if !config.Enable {
 		fileutil.Close(&ah)
+		s.notifyDisconnected(config.Name)
 		return nil
 	}
 
@@ -400,6 +430,11 @@ func (s *Service) Add(config *Config, create bool) (err error) {
 		config.Name,
 		&ah,
 	)
+	// The connection is live and reachable through the registry: whatever
+	// follows this host for its lifetime can start now. This runs on every
+	// connection, not only the first, so a reconnected host is watched again -
+	// the old Docker client it was watching through has just been closed.
+	s.notifyConnected(config.Name)
 
 	return err
 }
@@ -500,6 +535,7 @@ func (s *Service) Delete(hostname string) error {
 	if ok {
 		fileutil.Close(val)
 	}
+	s.notifyDisconnected(config.Name)
 
 	if config.Type == SSH {
 		err := s.ssh.Delete(config.SSHOptions)
@@ -542,6 +578,10 @@ func (s *Service) Edit(config *Config) error {
 	if active, ok := s.activeClients.Load(previous.Name); ok {
 		s.activeClients.Delete(previous.Name)
 		s.activeClients.Store(config.Name, active)
+		// Everything following this host is keyed by name too, so it has to
+		// move with it rather than keep watching a name nothing answers to.
+		s.notifyDisconnected(previous.Name)
+		s.notifyConnected(config.Name)
 	}
 	return nil
 }
