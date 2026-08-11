@@ -4,6 +4,7 @@ import {type ContainerList, DockerService} from '../gen/docker/v1/docker_pb.ts'
 import {useSnackbar} from "./snackbar.ts"
 import {useDockerEvents} from "./docker-events.ts";
 import {FAST_POLL_MS, IDLE_POLL_MS, isSettling} from "./container-freshness.ts";
+import {pollWhileVisible} from "./visibility.ts";
 
 export function useDockerCompose(composeFile: string) {
     const dockerService = useHostClient(DockerService);
@@ -47,12 +48,11 @@ export function useDockerCompose(composeFile: string) {
         setRefreshInterval(fast ? FAST_POLL_MS : IDLE_POLL_MS);
     }, [containers])
 
-    // fetch without setting load
-    useEffect(() => {
-        fetchContainers().then()
-        const intervalId = setInterval(fetchContainers, refreshInterval)
-        return () => clearInterval(intervalId)
-    }, [fetchContainers, refreshInterval, eventBump])
+    // fetch without setting load — the container events stream is the primary
+    // refresh, this interval is the safety net behind it and only runs while
+    // the tab is visible
+    useEffect(() => pollWhileVisible(() => void fetchContainers(), refreshInterval),
+        [fetchContainers, refreshInterval, eventBump])
 
     return {containers, loading, fetchContainers, refreshInterval, setRefreshInterval}
 }

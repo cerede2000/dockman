@@ -1,4 +1,5 @@
 import React, {useCallback, useEffect, useState} from "react";
+import {pollWhileVisible} from "../../hooks/visibility.ts";
 import {
     Alert,
     AlertTitle,
@@ -68,11 +69,7 @@ const CleanerHistory = () => {
         else if (val) setHistory(val.history);
     }, [cleaner]);
 
-    useEffect(() => {
-        fetchHistory().then();
-        const intervalId = setInterval(fetchHistory, 5000);
-        return () => clearInterval(intervalId);
-    }, [fetchHistory]);
+    useEffect(() => pollWhileVisible(() => void fetchHistory(), 5000), [fetchHistory]);
 
     const tableConfig: TableInfo<PruneHistory> = {
         "Time": {
