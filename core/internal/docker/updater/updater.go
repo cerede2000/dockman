@@ -18,6 +18,8 @@ import (
 	containerSrv "github.com/RA341/dockman/internal/docker/container"
 	"github.com/RA341/dockman/pkg/fileutil"
 
+	"github.com/google/uuid"
+
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/network"
@@ -708,11 +710,25 @@ func (u *Service) ContainerRecreate(ctx context.Context, imageTag string, oldCon
 // onVerify is variadic so the existing call sites - stack rollback, the
 // transaction path - stay exactly as they are; only the callers that report
 // progress pass one.
+// temporaryReplacementName is the name the replacement is built under before
+// it takes the real one.
+//
+// It used to be the container's name plus "_updated" - the same string on
+// every attempt. When a compensating removal failed (a busy daemon, a
+// container stuck in Removing), the leftover stayed and every later attempt
+// collided with it on creation, so the service could never be updated again.
+// A suffix unique to the attempt cannot collide with anything; it also names
+// Dockman in plain sight, so an operator finding one knows where it came from.
+func temporaryReplacementName(containerName string) string {
+	return containerName + ".dockman-update-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+}
+
 func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag string, oldContainer container.Summary, verifyHealth bool, onVerify ...func()) error {
 	containerName := "untagged"
 	if len(oldContainer.Names) > 0 {
 		containerName = strings.TrimPrefix(oldContainer.Names[0], "/")
 	}
+	replacementName := temporaryReplacementName(containerName)
 	log.Debug().Msgf("Recreating container %s (%s) on image %s", containerName, shortContainerID(oldContainer.ID), imageTag)
 
 	inspected, err := u.cli().ContainerInspect(ctx, oldContainer.ID, client.ContainerInspectOptions{})
@@ -727,7 +743,7 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 	// replacement under a temporary name validates the image, networks and full
 	// configuration while the original container remains recoverable.
 	if !wasRunning {
-		newContainer, createErr := u.containerCreate(ctx, imageTag, containerName+"_updated", inspectedData)
+		newContainer, createErr := u.containerCreate(ctx, imageTag, replacementName, inspectedData)
 		if createErr != nil {
 			return fmt.Errorf("failed to create replacement for stopped container %s; original container was preserved: %w", containerName, createErr)
 		}
@@ -735,14 +751,15 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 			cleanupCtx, cancel := rollbackContext(ctx)
 			defer cancel()
 			if _, cleanupErr := u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); cleanupErr != nil {
-				log.Warn().Err(cleanupErr).Str("container", newContainer.ID).Msg("failed to clean up replacement after preserving stopped container")
+				log.Warn().Err(cleanupErr).Str("container", replacementName).Msg("failed to clean up replacement after preserving stopped container")
+				return fmt.Errorf("failed to remove old container %s, and the replacement container %s could not be removed and is still on the host: %w", containerName, replacementName, err)
 			}
 			return fmt.Errorf("failed to remove old container %s: %w", containerName, err)
 		}
 		renameCtx, cancel := rollbackContext(ctx)
 		defer cancel()
 		if _, err := u.cli().ContainerRename(renameCtx, newContainer.ID, client.ContainerRenameOptions{NewName: containerName}); err != nil {
-			return fmt.Errorf("replacement container %s was created safely but could not take its final name (currently %s_updated): %w", containerName, containerName, err)
+			return fmt.Errorf("replacement container %s was created safely but could not take its final name (currently %s): %w", containerName, replacementName, err)
 		}
 		return nil
 	}
@@ -762,7 +779,7 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 		return fmt.Errorf("failed to stop container %s; it was left running: %w", containerName, err)
 	}
 
-	newContainer, err := u.containerCreate(ctx, imageTag, containerName+"_updated", inspectedData)
+	newContainer, err := u.containerCreate(ctx, imageTag, replacementName, inspectedData)
 	if err != nil {
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
 	}
@@ -775,7 +792,11 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 		cleanupCtx, cancel := rollbackContext(ctx)
 		defer cancel()
 		if _, rmErr := u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
-			log.Warn().Err(rmErr).Msg("failed to clean up the replacement container")
+			// The replacement is still on the host. Its name is unique to this
+			// attempt so it blocks nothing, but the operator has to be told
+			// which container to delete rather than find it by accident.
+			log.Warn().Err(rmErr).Str("container", replacementName).Msg("failed to clean up the replacement container")
+			err = fmt.Errorf("%w; the replacement container %s could not be removed and is still on the host", err, replacementName)
 		}
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
 	}
@@ -795,7 +816,11 @@ func (u *Service) ContainerRecreateWithOptions(ctx context.Context, imageTag str
 		cleanupCtx, cancel := rollbackContext(ctx)
 		defer cancel()
 		if _, rmErr := u.cli().ContainerRemove(cleanupCtx, newContainer.ID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
-			log.Warn().Err(rmErr).Msg("failed to clean up the replacement container")
+			// The replacement is still on the host. Its name is unique to this
+			// attempt so it blocks nothing, but the operator has to be told
+			// which container to delete rather than find it by accident.
+			log.Warn().Err(rmErr).Str("container", replacementName).Msg("failed to clean up the replacement container")
+			err = fmt.Errorf("%w; the replacement container %s could not be removed and is still on the host", err, replacementName)
 		}
 		return u.containerRollbackToOldContainer(ctx, oldContainer.ID, containerName, err)
 	}

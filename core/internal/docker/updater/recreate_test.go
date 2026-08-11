@@ -3,6 +3,7 @@ package updater
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -131,6 +132,14 @@ func (f *fakeDockerClient) ContainerCreate(_ context.Context, options client.Con
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// The daemon refuses a name already in use, and a leftover from a previous
+	// attempt is exactly how that happens in practice.
+	for _, existing := range f.containers {
+		if existing.name == options.Name {
+			return client.ContainerCreateResult{}, fmt.Errorf(
+				"Conflict. The container name %q is already in use", "/"+options.Name)
+		}
+	}
 	f.nextID++
 	id := "new000000000" + string(rune('a'+f.nextID))
 	f.containers[id] = &fakeContainer{
@@ -400,4 +409,57 @@ func TestRecreateLeavesARunningContainerAloneWhenStopHadNoEffect(t *testing.T) {
 	err := service.ContainerRecreateWithOptions(t.Context(), "app:v2", testSummary("old000000000a", "app"), true)
 	require.ErrorContains(t, err, "left running")
 	require.True(t, fake.isRunning("old000000000a"))
+}
+
+// The replacement is built under a temporary name before it takes the real
+// one. That name used to be the container's name plus "_updated", the same
+// string on every attempt: when a compensating removal failed - a daemon that
+// is busy, a container stuck in Removing - the leftover sat there and every
+// later attempt collided with it on creation. The service could then never be
+// updated again, and nothing in the error pointed at the container to delete.
+func TestARemovalThatFailedDoesNotBlockTheNextUpdate(t *testing.T) {
+	fake := newFakeDockerClient()
+	fake.add("old000000001", "web", true, noHealth())
+	fake.createdHealth = noHealth()
+	// The replacement will not start, and the cleanup that follows fails too,
+	// so its container is left behind next to the original.
+	fake.failStart["new000000000b"] = errors.New("no such image")
+	fake.failRemove["new000000000b"] = errors.New("removal already in progress")
+
+	events := make(chan containerSrv.Event, 4)
+	updater := newTestUpdater(fake, events)
+
+	firstErr := updater.ContainerRecreateWithOptions(t.Context(), "nginx:latest", testSummary("old000000001", "web"), false)
+	require.Error(t, firstErr)
+	require.True(t, fake.exists("new000000000b"), "this test needs the leftover the failure produces")
+	require.True(t, fake.isRunning("old000000001"), "the original must have been brought back")
+
+	// Second attempt, on the very same host state.
+	secondErr := updater.ContainerRecreateWithOptions(t.Context(), "nginx:latest", testSummary("old000000001", "web"), false)
+
+	require.NotContains(t, fmt.Sprint(secondErr), "already in use",
+		"a leftover from the previous attempt blocked the retry")
+	require.Equal(t, "web", fake.nameOf("new000000000c"),
+		"the retry must have produced the replacement and given it the real name")
+	require.False(t, fake.exists("old000000001"), "the original must have been swapped out")
+}
+
+// And the leftover has to be nameable: an operator reading the failure needs
+// to know which container to delete.
+func TestAFailedCleanupNamesTheContainerItLeftBehind(t *testing.T) {
+	fake := newFakeDockerClient()
+	fake.add("old000000001", "web", true, noHealth())
+	fake.createdHealth = noHealth()
+	fake.failStart["new000000000b"] = errors.New("no such image")
+	fake.failRemove["new000000000b"] = errors.New("removal already in progress")
+
+	events := make(chan containerSrv.Event, 4)
+	err := newTestUpdater(fake, events).ContainerRecreateWithOptions(
+		t.Context(), "nginx:latest", testSummary("old000000001", "web"), false)
+
+	require.Error(t, err)
+	leftover := fake.nameOf("new000000000b")
+	require.NotEmpty(t, leftover)
+	require.Contains(t, fmt.Sprint(err), leftover,
+		"the error must name the container left behind so it can be removed")
 }
