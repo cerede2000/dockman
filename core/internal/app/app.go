@@ -486,8 +486,7 @@ func watchUpdatePolicyEvents(ctx context.Context, hostname string, events <-chan
 	defer unsubscribe()
 	var timer *time.Timer
 	var timerC <-chan time.Time
-	restartCounts := make(map[string]int)
-	lastRestartNotification := make(map[string]time.Time)
+	restarts := newRestartTracker(nil)
 	notify := func(event container.Event, kind, title, severity, detail string) {
 		message := fmt.Sprintf("Host: %s\nContainer: %s\nImage: %s", hostname, event.Name, event.Image)
 		if detail != "" {
@@ -540,24 +539,20 @@ func watchUpdatePolicyEvents(ctx context.Context, hostname string, events <-chan
 					notify(event, notifications.EventContainerUnhealthy, "Container became unhealthy", "error", "Health status: unhealthy")
 				}
 			case "restart":
-				lastRestartNotification[event.ID] = time.Now()
+				restarts.notified(event.ID)
 				notify(event, notifications.EventContainerRestart, "Container restarted", "warning", "Docker reported a restart action.")
 			case "die":
 				if count, found := inspectRestartCount(event); found {
-					restartCounts[event.ID] = count
+					restarts.observe(event.ID, count)
 				}
 			case "start":
 				if count, found := inspectRestartCount(event); found {
-					previous, known := restartCounts[event.ID]
-					restartCounts[event.ID] = count
-					if known && count > previous && time.Since(lastRestartNotification[event.ID]) > 10*time.Second {
-						lastRestartNotification[event.ID] = time.Now()
+					if restarts.restarted(event.ID, count) {
 						notify(event, notifications.EventContainerRestart, "Container restarted automatically", "warning", fmt.Sprintf("Restart count: %d", count))
 					}
 				}
 			case "destroy":
-				delete(restartCounts, event.ID)
-				delete(lastRestartNotification, event.ID)
+				restarts.forget(event.ID)
 			}
 		case <-timerC:
 			timerC = nil
