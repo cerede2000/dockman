@@ -278,7 +278,7 @@ func validateAutomaticTarget(ctx context.Context, dkSrv *Service, target updater
 		return "", fmt.Errorf("container %q no longer exists", target.ContainerName)
 	}
 	labels := containers[0].Labels
-	if labels[updater.DockmanContainerLabel] == "true" {
+	if updater.MarksDockmanContainer(&containers[0]) {
 		return "Dockman self-update is protected and requires its dedicated action", nil
 	}
 	if updater.HasDisableUpdateLabel(&containers[0]) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RA341/dockman/internal/docker/updater"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -152,7 +153,9 @@ func findSelfContainer(ctx context.Context, cli *client.Client) (container.Summa
 	var candidates []container.Summary
 	for i := range list.Items {
 		c := list.Items[i]
-		if c.Labels[dockmanContainerLabel] != "true" {
+		// Only an unambiguous label selects a container to recreate: this
+		// decides which container gets stopped and replaced.
+		if !updater.IdentifiesDockmanContainer(c.Labels) {
 			continue
 		}
 		if hostname != "" && strings.HasPrefix(c.ID, hostname) {
