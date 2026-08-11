@@ -146,5 +146,13 @@ jobs:
       - name: Lint frontend
         run: npm run lint
 
+      # Vitest under jsdom, with the React Compiler preset applied exactly as
+      # the app build applies it: the compiler memoizes by reference, so a hook
+      # tested uncompiled would pass on the very bugs it introduces. Runs before
+      # the build - a broken behaviour should be reported as a failed test, not
+      # as a bundle that compiles fine and misbehaves on the homelab.
+      - name: Test frontend
+        run: npm run test
+
       - name: Build frontend
         run: npm run build
