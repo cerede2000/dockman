@@ -2,6 +2,7 @@ import {useHostClient, useRPCRunner} from "../../lib/api.ts";
 import {type ElementType, type ReactElement, type ReactNode, useEffect} from "react";
 
 import {DockerService} from "../../gen/docker/v1/docker_pb.ts";
+import {pollWhileVisible} from "../../hooks/visibility.ts";
 import {
     Alert,
     Box,
@@ -43,11 +44,10 @@ function ContainerProcessList({containerId}: { containerId: string }) {
     } = useRPCRunner(() => dockerClient.containerTop({containerId}));
 
 
-    useEffect(() => {
-        fetchTop().then();
-        const intervalId = setInterval(fetchTop, 2000)
-        return () => clearInterval(intervalId)
-    }, [containerId, fetchTop])
+    // `docker top` is an exec against the daemon for every poll, and this is
+    // the fastest cadence in the interface. It runs only while the tab is
+    // visible, and catches up as soon as it comes back.
+    useEffect(() => pollWhileVisible(() => void fetchTop(), 2000), [containerId, fetchTop])
 
     return (
         <Paper variant="outlined"

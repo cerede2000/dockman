@@ -16,6 +16,7 @@ import {DockerService, type ContainerList, type Network} from '../../gen/docker/
 import {callRPC, useContainerExecOptionsUrl, useContainerExecWsUrl, useHostClient} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
 import {useCopyButton} from '../../hooks/copy.ts';
+import {pollWhileVisible} from '../../hooks/visibility.ts';
 import LogsViewer from '../../components/log-viewer/logs-viewer.tsx';
 import Sparkline from '../../components/sparkline.tsx';
 import {formatBytes} from '../../lib/editor.ts';
@@ -282,7 +283,7 @@ function Processes({active, containerID, onCount}: {active: boolean, containerID
         const top = val?.top; const next = top?.proc.map(p => p.Processes) ?? [];
         setTitles(top?.Titles ?? []); setRows(next); onCount(err ? null : next.length);
     }, [client, containerID, onCount]);
-    useEffect(() => { if (!active) return; void refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id); }, [active, refresh]);
+    useEffect(() => { if (!active) return; return pollWhileVisible(() => void refresh(), 5000); }, [active, refresh]);
     return <Section title="Running processes" fill>
         <Box sx={{display: 'flex', justifyContent: 'space-between', mb: 1, flexShrink: 0}}><Chip size="small" label={`${rows.length} active`}/>
             <Button size="small" startIcon={loading ? <CircularProgress size={14}/> : <Refresh/>} onClick={refresh} disabled={loading}>Refresh</Button></Box>

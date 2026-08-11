@@ -5,6 +5,7 @@ import {type ContainerStats, ContainerStatsSchema, DockerService, ORDER, SORT_FI
 import {useSnackbar} from "./snackbar.ts";
 import {useHostStore} from "../pages/compose/state/files.ts";
 import {useConfig} from "./config.ts";
+import {documentIsVisible, pollWhileVisible, whenVisible} from "./visibility.ts";
 
 // cpuUsage sentinel marking a row seeded from the container list whose
 // one-shot metrics response has not arrived yet; the list is immediate.
@@ -271,6 +272,11 @@ export function useDockerStats(selectedPage?: string) {
     useEffect(() => {
         let isCancelled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        // Set when a cycle was skipped because the tab is hidden. The cycle
+        // does not reschedule itself in that case - it stops entirely - so
+        // this is what tells the visibility listener there is a loop to
+        // restart rather than one already running.
+        let waitingForVisibility = false;
         // sort settings are read through a ref so a sort change doesn't tear
         // down the streaming cycle
         // Coalesced paints: the stream delivers one message per container
@@ -281,6 +287,15 @@ export function useDockerStats(selectedPage?: string) {
         let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
         const tick = async () => {
+            // One cycle is one ContainerStats call per container against the
+            // daemon. Nobody is reading them while the tab is hidden, so the
+            // loop stops rather than keeps paying for them - and it stops
+            // completely: no timer is left armed. The listener below starts it
+            // again, with a fresh reading, the moment the tab comes back.
+            if (!documentIsVisible()) {
+                waitingForVisibility = true;
+                return;
+            }
             const cycleStart = Date.now();
 
             const merged = new Map<string, ContainerStats>();
@@ -374,8 +389,19 @@ export function useDockerStats(selectedPage?: string) {
 
         tick();
 
+        const stopWatchingVisibility = whenVisible(() => {
+            if (isCancelled || !waitingForVisibility) return;
+            waitingForVisibility = false;
+            if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            void tick();
+        });
+
         return () => {
             isCancelled = true;
+            stopWatchingVisibility();
             if (timer !== null) clearTimeout(timer);
             if (flushTimer !== null) clearTimeout(flushTimer);
         };
@@ -504,7 +530,6 @@ export function useHostStats(enabled: boolean): HostStatsView | null {
 
         let cancelled = false;
         const fetchStats = async () => {
-            if (document.visibilityState === 'hidden') return;
             const {val} = await callRPC(() => dockerService.hostStats({}));
             if (cancelled || !val || val.memTotal === 0n) return;
 
@@ -527,16 +552,10 @@ export function useHostStats(enabled: boolean): HostStatsView | null {
             });
         };
 
-        void fetchStats();
-        const id = setInterval(fetchStats, DEFAULT_REFRESH);
-        const onVisibility = () => {
-            if (document.visibilityState === 'visible') void fetchStats();
-        };
-        document.addEventListener('visibilitychange', onVisibility);
+        const stopPolling = pollWhileVisible(() => void fetchStats(), DEFAULT_REFRESH);
         return () => {
             cancelled = true;
-            clearInterval(id);
-            document.removeEventListener('visibilitychange', onVisibility);
+            stopPolling();
         };
     }, [enabled, dockerService, selectedHost]);
 
