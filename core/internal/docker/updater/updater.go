@@ -572,9 +572,35 @@ func hasDisableUpdateLabel(c *container.Summary) bool {
 
 const DockmanContainerLabel = "dockman.container"
 
+// The label is set on the Dockman image, so it normally reads "true". It can
+// still be overridden in a Compose file or in a modified image, and the two
+// questions asked of it want opposite treatment of a value that cannot be
+// read - which is why they are two functions.
+//
+// MarksDockmanContainer answers "must this be kept away from an ordinary
+// update?". Getting that wrong means recreating Dockman through the API it is
+// itself serving, so anything unreadable counts as yes. An exact "true"
+// comparison silently failed open on dockman.container=1, the opposite of how
+// dockman.update.disable has always been read.
+func MarksDockmanContainer(cont *container.Summary) bool {
+	if cont == nil {
+		return false
+	}
+	marked, present, valid := parseBoolLabel(cont.Labels, DockmanContainerLabel)
+	return present && (!valid || marked)
+}
+
+// IdentifiesDockmanContainer answers "is this the container to restart?".
+// Getting that wrong means recreating somebody else's container, so only an
+// unambiguous value counts and anything unreadable is refused. The self-update
+// helper labels itself false precisely so this never picks it.
+func IdentifiesDockmanContainer(labels map[string]string) bool {
+	marked, present, valid := parseBoolLabel(labels, DockmanContainerLabel)
+	return present && valid && marked
+}
+
 func hasDockmanLabel(cont *container.Summary) bool {
-	value := cont.Labels[DockmanContainerLabel]
-	return value == "true"
+	return MarksDockmanContainer(cont)
 }
 
 // SourceProtectedInfrastructure marks a container that carries the daemon
