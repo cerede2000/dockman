@@ -3168,16 +3168,130 @@ func isAgeIdentity(size int64, open func() (io.ReadCloser, error)) bool {
 	return bytes.Contains(bytes.ToUpper(contents), []byte(ageIdentityMarker))
 }
 
+// Private key material announces itself in its first bytes whatever the file
+// is called, which is the same lesson isAgeIdentity applies to age identities:
+// a name list only ever covers the names somebody thought of. The enumeration
+// below did cover id_rsa and id_ed25519 and stopped there, so an ECDSA or DSA
+// key was collected as ordinary text.
+const maxKeyMaterialScan = 4 << 10
+
+// A PEM private key opens with "-----BEGIN <something> PRIVATE KEY[ BLOCK]-----",
+// which covers OPENSSH, RSA, DSA, EC, ENCRYPTED, PGP and the bare PKCS#8 form,
+// and excludes CERTIFICATE and PUBLIC KEY. PuTTY keeps its own format.
+var (
+	pemOpening      = []byte("-----BEGIN ")
+	pemPrivateKey   = []byte("PRIVATE KEY")
+	puttyKeyOpening = []byte("PUTTY-USER-KEY-FILE-")
+)
+
+// isPrivateKeyMaterial reads the head of a file and reports whether it opens
+// with a private key header. The read is bounded and only the beginning is
+// examined: a document quoting a header in prose is not a key file.
+func isPrivateKeyMaterial(size int64, open func() (io.ReadCloser, error)) bool {
+	if size <= 0 || size > maxKeyMaterialScan || open == nil {
+		return false
+	}
+	reader, err := open()
+	if err != nil {
+		return false
+	}
+	defer reader.Close()
+	head, err := io.ReadAll(io.LimitReader(reader, maxKeyMaterialScan))
+	if err != nil {
+		return false
+	}
+	// Only the first line can open a key file; anything further in is content,
+	// so a document quoting a header in prose is not mistaken for a key.
+	line := bytes.ToUpper(head)
+	if first, _, found := bytes.Cut(line, []byte("\n")); found {
+		line = first
+	}
+	line = bytes.TrimSpace(line)
+	if bytes.HasPrefix(line, puttyKeyOpening) {
+		return true
+	}
+	return bytes.HasPrefix(line, pemOpening) && bytes.Contains(line, pemPrivateKey)
+}
+
+// sensitiveNames are files whose whole purpose is to hold a credential. None
+// of them carries a telling extension or the words the substring rules look
+// for, so every one of them used to transfer as ordinary text.
+var sensitiveNames = map[string]struct{}{
+	"id_rsa": {}, "id_dsa": {}, "id_ecdsa": {}, "id_ed25519": {},
+	"id_ecdsa_sk": {}, "id_ed25519_sk": {},
+	".envrc": {}, ".netrc": {}, "_netrc": {}, ".pgpass": {}, ".npmrc": {},
+	".htpasswd": {}, ".dockercfg": {}, "kubeconfig": {},
+}
+
+// sensitiveExtensions are the private key and keystore containers.
+var sensitiveExtensions = map[string]struct{}{
+	".pem": {}, ".key": {}, ".p12": {}, ".pfx": {},
+	".ppk": {}, ".jks": {}, ".keystore": {}, ".asc": {}, ".gpg": {},
+	".tfstate": {},
+}
+
+// sensitiveWords are matched as whole components of the file name rather than
+// as substrings, so api_token and auth-token.json are held back while
+// tokenizer.py and passwordless-setup.md are not. "secret" and "credential"
+// keep their historic substring behaviour: narrowing them would let through
+// names that are refused today.
+var sensitiveWords = []string{"token", "password", "passwords", "passwd", "apikey", "api_key"}
+
 func isSensitivePath(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	ext := strings.ToLower(filepath.Ext(base))
-	if ((base == ".env" || strings.HasPrefix(base, ".env.")) && !isEnvironmentTemplate(base)) || base == "id_rsa" || base == "id_ed25519" {
+	if (base == ".env" || strings.HasPrefix(base, ".env.")) && !isEnvironmentTemplate(base) {
 		return true
 	}
-	if ext == ".pem" || ext == ".key" || ext == ".p12" || ext == ".pfx" {
+	if _, ok := sensitiveNames[base]; ok {
 		return true
 	}
-	return strings.Contains(base, "secret") || strings.Contains(base, "credential")
+	// An SSH key kept as id_rsa.old is the same key.
+	if root, _, found := strings.Cut(base, "."); found {
+		if _, ok := sensitiveNames[root]; ok {
+			return true
+		}
+	}
+	for name := range sensitiveExtensions {
+		// terraform.tfstate.backup is state all the same.
+		if strings.HasSuffix(base, name) || strings.Contains(base, name+".") {
+			return true
+		}
+	}
+	if strings.Contains(base, "secret") || strings.Contains(base, "credential") {
+		return true
+	}
+	for _, word := range sensitiveWords {
+		if containsNameComponent(base, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsNameComponent reports whether word appears in base delimited by
+// something other than a letter or a digit, so it matches a name and not a
+// longer word that merely starts with it.
+func containsNameComponent(base, word string) bool {
+	for offset := 0; ; {
+		index := strings.Index(base[offset:], word)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(word)
+		if !isNameLetter(base, start-1) && !isNameLetter(base, end) {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+func isNameLetter(value string, index int) bool {
+	if index < 0 || index >= len(value) {
+		return false
+	}
+	char := value[index]
+	return (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')
 }
 
 // isSensitiveTransferPath makes the conventional SOPS source transferable
@@ -3186,7 +3300,10 @@ func isSensitivePath(path string) bool {
 // secrets.sops.yaml therefore remains behind the normal sensitive-file gate.
 func isSensitiveTransferPath(relative string, size int64, open func() (io.ReadCloser, error)) bool {
 	if strings.ToLower(filepath.Base(relative)) != "secrets.sops.yaml" {
-		return isSensitivePath(relative)
+		// The name rules first, since they cost nothing; the body only when
+		// they said no, so an ordinary stack pays one bounded read per file
+		// that is small enough to be a key in the first place.
+		return isSensitivePath(relative) || isPrivateKeyMaterial(size, open)
 	}
 	if size <= 0 || size > maxSOPSSourceSize {
 		return true
