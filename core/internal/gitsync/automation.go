@@ -401,7 +401,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		// A folder can contain many thousands of entries. Do not retain the first
 		// inventory while ImportBinding builds and validates its fresh inventory.
 		changedPaths := changedPreviewPaths(preview)
-		newTargets, newTargetErr := newComposeDeploymentTargets(binding, preview)
+		newTargets, newTargetErr := newComposeDeploymentTargets(binding, preview, s.activeAutomationComposePaths(binding))
 		if newTargetErr != nil {
 			return newTargetErr
 		}
@@ -511,6 +511,14 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 				result.Message = fmt.Sprintf("%d file(s) synchronized and %d stack(s) deployed", changed, len(deployment.Deployed))
 			}
 		}
+		// Name what was deliberately left alone. The synchronization state is
+		// not changed by this: leaving a stack out of automatic deployment is a
+		// legitimate choice, and it must not paint a healthy link red. It must
+		// not be silent either.
+		if unauthorized := unauthorizedDeploymentStacks(binding, changedPaths, s.activeAutomationComposePaths(binding)); len(unauthorized) > 0 {
+			result.Message += fmt.Sprintf("; %d changed stack(s) not authorized for automatic deployment, still running their previous version: %s",
+				len(unauthorized), strings.Join(unauthorized, ", "))
+		}
 		return nil
 	})
 	if err != nil {
@@ -593,7 +601,7 @@ func (s *Service) notifyAutomationResult(id string, result AutoSyncResult, syncE
 		emit("git.sync.success", "Git synchronization completed", details, "success")
 	}
 	if len(result.Discovered) > 0 {
-		emit("git.stack.discovered", "New Git stack discovered", details+"\nStacks: "+strings.Join(result.Discovered, ", "), "info")
+		emit("git.stack.discovered", "Git stack authorized for automatic deployment", details+"\nStacks: "+strings.Join(result.Discovered, ", "), "info")
 	}
 	if len(result.Deployed) > 0 {
 		emit("git.deploy.success", "Git stack deployment completed", details+"\nDeployed: "+strings.Join(result.Deployed, ", "), "success")

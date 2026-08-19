@@ -34,7 +34,7 @@ func TestNewComposeDeploymentTargets(t *testing.T) {
 		{Path: "modified/compose.yml", Status: "modify"},
 		{Path: "new/readme.md", Status: "add"},
 	}}
-	got, err := newComposeDeploymentTargets(binding, preview)
+	got, err := newComposeDeploymentTargets(binding, preview, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"new/compose.yml", "other/docker-compose.yaml"}, got)
 }
@@ -45,8 +45,49 @@ func TestNewComposeDeploymentTargetsAreBounded(t *testing.T) {
 	for i := 0; i <= maxNewStacksPerSync; i++ {
 		preview.Entries = append(preview.Entries, PreviewEntry{Path: fmt.Sprintf("stack-%02d/compose.yml", i), Status: "add"})
 	}
-	_, err := newComposeDeploymentTargets(binding, preview)
+	_, err := newComposeDeploymentTargets(binding, preview, nil)
 	require.ErrorContains(t, err, "at most 10")
+}
+
+// A stack the link already tracks but that Dockman was never authorized to
+// deploy is the ordinary outcome of importing a folder by hand and switching
+// automation on afterwards. Its Compose file changing in Git must authorize it
+// under the same controlled path as a brand new stack.
+func TestATrackedStackNeverDeployedIsAuthorizedWhenItsComposeChanges(t *testing.T) {
+	binding := StackBinding{AutoDeployEnabled: true, AutoDeployNewStacks: true, ComposePaths: "web/compose.yml"}
+	preview := TransferPreview{Entries: []PreviewEntry{{Path: "web/compose.yml", Status: "modify"}}}
+	got, err := newComposeDeploymentTargets(binding, preview, []string{"web/compose.yml"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"web/compose.yml"}, got)
+}
+
+func TestAnAuthorizedStackIsNotAuthorizedAgain(t *testing.T) {
+	binding := StackBinding{AutoDeployEnabled: true, AutoDeployNewStacks: true,
+		ComposePaths: "web/compose.yml", AutoDeployComposePaths: "web/compose.yml"}
+	preview := TransferPreview{Entries: []PreviewEntry{{Path: "web/compose.yml", Status: "modify"}}}
+	got, err := newComposeDeploymentTargets(binding, preview, []string{"web/compose.yml"})
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+// Excluded from automatic polling, or paused: automatic deployment must not be
+// the door back in.
+func TestATrackedStackOutsideAutomaticSynchronizationIsNotAuthorized(t *testing.T) {
+	binding := StackBinding{AutoDeployEnabled: true, AutoDeployNewStacks: true, ComposePaths: "web/compose.yml"}
+	preview := TransferPreview{Entries: []PreviewEntry{{Path: "web/compose.yml", Status: "modify"}}}
+	got, err := newComposeDeploymentTargets(binding, preview, nil)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+// A first authorization must follow a change to what the stack RUNS, never a
+// file landing beside it.
+func TestOnlyTheComposeFileAuthorizesATrackedStack(t *testing.T) {
+	binding := StackBinding{AutoDeployEnabled: true, AutoDeployNewStacks: true, ComposePaths: "web/compose.yml"}
+	preview := TransferPreview{Entries: []PreviewEntry{{Path: "web/README.md", Status: "modify"}, {Path: "web/config/app.yml", Status: "add"}}}
+	got, err := newComposeDeploymentTargets(binding, preview, []string{"web/compose.yml"})
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
 
 func TestDeploymentTargetsOnlyIncludeAffectedStacks(t *testing.T) {
