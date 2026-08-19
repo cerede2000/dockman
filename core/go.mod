@@ -2,6 +2,8 @@ module github.com/RA341/dockman
 
 go 1.26
 
+toolchain go1.26.6
+
 require (
 	ariga.io/atlas-provider-gorm v0.6.1
 	connectrpc.com/connect v1.20.0

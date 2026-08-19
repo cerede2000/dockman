@@ -1,6 +1,10 @@
 # Moby server-side advisories currently reported through package init traces.
 # Dockman imports the Docker client through Compose/Dive but does not embed or
 # run a Docker daemon. No fixed github.com/docker/docker module exists yet.
+#
+# GO-2026-5668 ("docker cp" race) was removed once it stopped being reported as
+# reachable: it is now a module-presence finding only, which this gate does not
+# consider. An entry that no longer matches a reachable finding is refused on
+# purpose, so the list can never quietly outlive the risk it covers.
 GO-2026-4883
 GO-2026-4887
-GO-2026-5668
