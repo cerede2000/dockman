@@ -7,6 +7,7 @@ ARG COMPOSE_VERSION=v5.3.1
 ARG COMPOSE_X_CRYPTO_VERSION=v0.54.0
 ARG COMPOSE_X_TEXT_VERSION=v0.40.0
 ARG COMPOSE_GRPC_VERSION=v1.82.1
+ARG COMPOSE_GO_ARCHIVE_VERSION=v0.3.3
 ARG SOPS_VERSION=v3.13.3
 ARG AGE_VERSION=v1.3.1
 ARG AGE_X_CRYPTO_VERSION=v0.52.0
@@ -82,6 +83,7 @@ ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
 ARG COMPOSE_GRPC_VERSION
+ARG COMPOSE_GO_ARCHIVE_VERSION
 
 # Rebuild the upstream Compose release with the patched Go toolchain and
 # explicit compatible security updates. Modules are authenticated by sum.golang.org.
@@ -94,7 +96,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod edit \
       -require="golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
       -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
-      -require="google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" && \
+      -require="google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" \
+      -require="github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build \
       -trimpath \
