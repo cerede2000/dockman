@@ -125,33 +125,92 @@ func changedPreviewPaths(preview TransferPreview) []string {
 	return paths
 }
 
-func newComposeDeploymentTargets(binding StackBinding, preview TransferPreview) ([]string, error) {
+// newComposeDeploymentTargets returns the Compose files this synchronization
+// must authorize for automatic deployment. Two shapes, one rule: a stack
+// Dockman has never deployed itself, whose Compose file this synchronization
+// brings in or changes.
+//
+//   - a Compose file that is not tracked by the link yet: a new Git stack.
+//   - a Compose file the link already tracks but that was never an authorized
+//     deployment target. That is the state of every stack imported by hand
+//     before automation was switched on, which is the ordinary way a link
+//     starts. Discovery only ever saw such a stack as an "add" during that
+//     manual import, so it was never authorized and would synchronize forever
+//     without deploying - a service added to it from Git never came up.
+//
+// Authorizing is driven by the Compose file itself, never by any other changed
+// file in the stack: a FIRST authorization must follow an explicit change to
+// what the stack runs, not a README landing beside it. Once authorized the
+// stack follows the normal rule and redeploys whenever any of its files change.
+//
+// An already-tracked stack is only authorized when automatic synchronization
+// actually covers it: a stack excluded from polling, or paused, stays out.
+func newComposeDeploymentTargets(binding StackBinding, preview TransferPreview, automated []string) ([]string, error) {
 	if !binding.AutoDeployEnabled || !binding.AutoDeployNewStacks {
 		return nil, nil
 	}
-	known := make(map[string]struct{})
+	tracked := make(map[string]struct{})
 	for _, path := range splitPatternLines(binding.ComposePaths) {
-		known[path] = struct{}{}
+		tracked[path] = struct{}{}
+	}
+	covered := make(map[string]struct{}, len(automated))
+	for _, path := range automated {
+		covered[path] = struct{}{}
+	}
+	authorized := make(map[string]struct{})
+	for _, path := range splitPatternLines(binding.AutoDeployComposePaths) {
+		authorized[path] = struct{}{}
 	}
 	targets := make([]string, 0)
 	directories := make(map[string]struct{})
 	for _, entry := range preview.Entries {
 		path := filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Path)))
-		if entry.Status != "add" || entry.Directory || !isComposeDeploymentFile(path) {
+		if entry.Directory || !isComposeDeploymentFile(path) {
 			continue
 		}
-		if _, exists := known[path]; exists {
+		if entry.Status != "add" && entry.Status != "modify" {
 			continue
 		}
-		known[path] = struct{}{}
+		if _, exists := authorized[path]; exists {
+			continue
+		}
+		if _, exists := tracked[path]; exists {
+			if _, inScope := covered[path]; !inScope {
+				continue
+			}
+		} else if entry.Status != "add" {
+			continue
+		}
+		authorized[path] = struct{}{}
 		targets = append(targets, path)
 		directories[filepath.ToSlash(filepath.Dir(filepath.FromSlash(path)))] = struct{}{}
 	}
 	if len(directories) > maxNewStacksPerSync {
-		return nil, fmt.Errorf("automatic deployment refused: one synchronization may add at most %d new stacks", maxNewStacksPerSync)
+		return nil, fmt.Errorf("automatic deployment refused: one synchronization may authorize at most %d stacks", maxNewStacksPerSync)
 	}
 	sort.Strings(targets)
 	return targets, nil
+}
+
+// unauthorizedDeploymentStacks lists the stacks this synchronization changed
+// that automatic synchronization covers but automatic deployment is not
+// authorized to touch. Saying nothing at all is how a link stays green for
+// weeks while the running containers drift away from the files on disk.
+func unauthorizedDeploymentStacks(binding StackBinding, changed, automated []string) []string {
+	if !binding.AutoDeployEnabled {
+		return nil
+	}
+	authorized := make(map[string]struct{})
+	for _, path := range splitPatternLines(binding.AutoDeployComposePaths) {
+		authorized[path] = struct{}{}
+	}
+	result := make([]string, 0)
+	for _, path := range composePathsForFiles(automated, changed) {
+		if _, ok := authorized[path]; !ok {
+			result = append(result, path)
+		}
+	}
+	return uniqueSortedStrings(result)
 }
 
 func isComposeDeploymentFile(path string) bool {
@@ -173,7 +232,7 @@ func (s *Service) registerDiscoveredDeploymentTargets(binding StackBinding, targ
 	}
 	binding.AutoDeployComposePaths = strings.Join(uniqueSortedStrings(append(splitPatternLines(binding.AutoDeployComposePaths), targets...)), "\n")
 	binding.AutoDeployState = "pending"
-	binding.AutoDeployError = "New Git stack discovered; waiting for controlled deployment"
+	binding.AutoDeployError = "Git stack authorized for automatic deployment; waiting for controlled deployment"
 	ownershipLock := s.repositoryLock("binding-ownership:" + binding.Host)
 	ownershipLock.Lock()
 	defer ownershipLock.Unlock()

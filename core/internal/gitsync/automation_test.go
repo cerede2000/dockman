@@ -849,3 +849,139 @@ func remoteChange(t *testing.T, remoteURL, name, contents string) {
 	commitTestFile(t, repo, root, name, contents)
 	require.NoError(t, repo.Push(&gitclient.PushOptions{}))
 }
+
+// The ordinary way a Folder Link starts: import the stack by hand once, then
+// switch automation on. The stack is tracked but was never an authorized
+// deployment target, so a service added to its Compose file from Git used to
+// land on disk while nothing was ever deployed - the synchronization even
+// reported success. It must now be authorized and deployed under the same
+// controlled path as a newly discovered stack.
+func TestAutoSyncDeploysAServiceAddedToAManuallyImportedStack(t *testing.T) {
+	service, _ := testService(t, true)
+	configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "stacks/web/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
+	_, err := service.FetchRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	_, err = service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+
+	var actions []string
+	service.ConfigureDeployment(
+		func(_ context.Context, _, filename string) error { actions = append(actions, "validate:"+filename); return nil },
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "dry-run:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy-wait:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "cleanup:"+filename)
+			return nil
+		},
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+
+	preview, err := service.PreviewBinding(binding.ID, "repository_to_stack", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ImportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken})
+	require.NoError(t, err)
+	require.Empty(t, actions, "a manual import must not deploy anything by itself")
+
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployNewStacks: true,
+	})
+	require.NoError(t, err)
+	imported, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"web/compose.yml"}, splitPatternLines(imported.ComposePaths))
+	require.Empty(t, splitPatternLines(imported.AutoDeployComposePaths), "the stack starts unauthorized, which is the whole point")
+
+	remoteChange(t, repository.RemoteURL, "stacks/web/compose.yml",
+		"services:\n  app:\n    image: alpine:3.23\n  db:\n    image: postgres:18\n")
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{"web/compose.yml"}, result.Discovered)
+	require.Equal(t, []string{"web/compose.yml"}, result.Deployed)
+	require.Equal(t, []string{
+		"validate:compose/web/compose.yml",
+		"dry-run:compose/web/compose.yml",
+		"deploy:compose/web/compose.yml",
+	}, actions)
+
+	authorized, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, splitPatternLines(authorized.AutoDeployComposePaths), "web/compose.yml")
+}
+
+// Leaving a stack out of automatic deployment is a legitimate choice. Doing it
+// silently is not: the link stayed green while the containers drifted away from
+// the files, which is exactly how the gap above went unnoticed.
+func TestAutoSyncNamesTheStacksItWasNotAuthorizedToDeploy(t *testing.T) {
+	service, _ := testService(t, true)
+	configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "stacks/web/compose.yml", "services:\n  app:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "stacks/db/compose.yml", "services:\n  db:\n    image: postgres:18\n")
+	_, err := service.FetchRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	_, err = service.PullRepository(context.Background(), repository.UUID)
+	require.NoError(t, err)
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+
+	var actions []string
+	service.ConfigureDeployment(
+		func(_ context.Context, _, filename string) error { actions = append(actions, "validate:"+filename); return nil },
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "dry-run:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "deploy-wait:"+filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			actions = append(actions, "cleanup:"+filename)
+			return nil
+		},
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	preview, err := service.PreviewBinding(binding.ID, "repository_to_stack", TransferInput{})
+	require.NoError(t, err)
+	_, err = service.ImportBinding(context.Background(), binding.ID, TransferInput{PreviewToken: preview.PreviewToken})
+	require.NoError(t, err)
+
+	// web is authorized by hand; db is deliberately left out, and automatic
+	// authorization of never-deployed stacks is off.
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true,
+		DeployComposePaths: []string{"web/compose.yml"},
+	})
+	require.NoError(t, err)
+
+	actions = nil
+	remoteChange(t, repository.RemoteURL, "stacks/db/compose.yml",
+		"services:\n  db:\n    image: postgres:18\n  cache:\n    image: valkey:9\n")
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Empty(t, actions, "an unauthorized stack must still not be deployed")
+	require.Empty(t, result.Deployed)
+	require.Contains(t, result.Message, "db/compose.yml")
+	require.Contains(t, result.Message, "not authorized for automatic deployment")
+	require.NotContains(t, result.Message, "web/compose.yml")
+}
