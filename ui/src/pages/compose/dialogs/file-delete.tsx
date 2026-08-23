@@ -53,6 +53,12 @@ const FileDelete = () => {
         setFolderState(null)
         setFolderStateError('')
         setGitDeleteConfirmation('')
+        // Reset here, not only in the fetch's finally: cancelling the dialog
+        // while the verification was still in flight flipped `active` false,
+        // the finally skipped its setBusy(false), and busy stayed true for
+        // good - every button disabled and onDelete returning at its guard,
+        // leaving the delete dialog dead until a page reload.
+        setBusy(false)
         if (!linkedFolderRoot || !gitFile?.bindingId) return
         let active = true
         setBusy(true)
@@ -75,6 +81,7 @@ const FileDelete = () => {
     const onDelete = async (deleteFromGit = false) => {
         if (!fileToDelete || busy) return
         if (linkedFolderRoot) return
+        if (deleteFromGit && gitDeleteConfirmation !== TYPED_CONFIRMATION) return
         setBusy(true)
         try {
             if (!await deleteFile(fileToDelete)) return
@@ -85,7 +92,7 @@ const FileDelete = () => {
                 const encodedCompose = gitFile.composePath.split('/').map(encodeURIComponent).join('/')
                 const response = await fetch(withProtectedAPI(`/git/bindings/${gitFile.bindingId}/local-deletion/${encodedCompose}`), {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({action: 'delete_git', path: gitFile.relativePath, confirmation: TYPED_CONFIRMATION}),
+                    body: JSON.stringify({action: 'delete_git', path: gitFile.relativePath, confirmation: gitDeleteConfirmation}),
                 })
                 if (!response.ok) {
                     let message = `Git deletion failed (${response.status})`
@@ -118,13 +125,17 @@ const FileDelete = () => {
 
     const deleteLinkedFolder = async (action: 'preserve_git' | 'sync_git' | 'delete_git') => {
         if (!gitFile?.bindingId || busy) return
+        // The server demands the typed word for all three actions, not just
+        // the last one. Two of the three buttons only worked because the
+        // client answered that demand with a constant of its own.
+        if (gitDeleteConfirmation !== TYPED_CONFIRMATION) return
         setBusy(true)
         try {
             const response = await fetch(withProtectedAPI(`/git/bindings/${gitFile.bindingId}/folder-deletion`), {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     action,
-                    confirmation: TYPED_CONFIRMATION,
+                    confirmation: gitDeleteConfirmation,
                 }),
             })
             if (!response.ok) {
@@ -190,7 +201,15 @@ const FileDelete = () => {
             </Stack>}
 
             {!linkedFolderRoot && gitFile?.tracked && gitFile.mutable && <Alert severity="warning" sx={{mt: 2, maxWidth: 560}}>
-                <Typography variant="body2">This file is synchronized with Git. You can preserve the Git copy, or delete it locally and commit the same deletion to Git in one operation.</Typography>
+                <Stack spacing={1}>
+                    <Typography variant="body2">This file is synchronized with Git. You can preserve the Git copy, or delete it locally and commit the same deletion to Git in one operation.</Typography>
+                    {/* The server has always required this word for delete_git.
+                        Only this dialog answered it with a constant, so the
+                        gate never fired here - while the stack synchronization
+                        popup asked for it on the very same operation. */}
+                    <Typography variant="caption">Deleting from Git commits the deletion to the repository.</Typography>
+                    <TypedConfirmationField value={gitDeleteConfirmation} onChange={setGitDeleteConfirmation}/>
+                </Stack>
             </Alert>}
 
             <DialogActions sx={{pt: 3, flexWrap: 'wrap', gap: 1}}>
@@ -212,8 +231,8 @@ const FileDelete = () => {
                 </Button>
 
                 {linkedFolderRoot ? <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{ml: 'auto'}}>
-                    <Button variant="outlined" color="warning" disabled={busy || !folderState} onClick={() => void deleteLinkedFolder('preserve_git')}>Keep Git · delete local & unlink</Button>
-                    <Button variant="contained" color="primary" disabled={busy || !folderState || folderState.conflicts > 0 || folderState.unreadableLocal > 0} onClick={() => void deleteLinkedFolder('sync_git')}>Update Git · delete local & unlink</Button>
+                    <Button variant="outlined" color="warning" disabled={busy || !folderState || gitDeleteConfirmation !== TYPED_CONFIRMATION} onClick={() => void deleteLinkedFolder('preserve_git')}>Keep Git · delete local & unlink</Button>
+                    <Button variant="contained" color="primary" disabled={busy || !folderState || folderState.conflicts > 0 || folderState.unreadableLocal > 0 || gitDeleteConfirmation !== TYPED_CONFIRMATION} onClick={() => void deleteLinkedFolder('sync_git')}>Update Git · delete local & unlink</Button>
                     <Button variant="contained" color="error" disabled={busy || !folderState || gitDeleteConfirmation !== TYPED_CONFIRMATION} onClick={() => void deleteLinkedFolder('delete_git')}>Delete local, Git & link</Button>
                 </Stack> : <Stack direction="row" spacing={1} sx={{ml: 'auto'}}>
                 <Button
@@ -232,7 +251,7 @@ const FileDelete = () => {
                 >
                     {busy ? <CircularProgress size={16}/> : gitFile?.tracked ? 'Delete locally only' : 'Delete'}
                 </Button>
-                {gitFile?.tracked && gitFile.mutable && <Button onClick={() => void onDelete(true)} variant="contained" color="error" disabled={busy}>
+                {gitFile?.tracked && gitFile.mutable && <Button onClick={() => void onDelete(true)} variant="contained" color="error" disabled={busy || gitDeleteConfirmation !== TYPED_CONFIRMATION}>
                     {busy ? <CircularProgress size={16}/> : 'Delete locally and from Git'}
                 </Button>}
                 </Stack>}
