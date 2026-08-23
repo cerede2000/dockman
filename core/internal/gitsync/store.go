@@ -536,16 +536,18 @@ func (s *Store) MarkInterruptedOperations() (int64, error) {
 // was restored before it stopped, and saying "the deployment failed" would
 // quietly claim it does. That is a state an operator must look at.
 func (s *Store) MarkInterruptedDeployments() (int64, error) {
-	result := s.db.Model(&Deployment{}).Where("state IN ?", []string{"validating", "provisioning", "dry_run", "deploying"}).Updates(map[string]any{
-		"state": "failed", "result": "Dockman stopped before the controlled deployment completed",
-	})
-	if result.Error != nil {
-		return result.RowsAffected, result.Error
-	}
+	// Selected by what is NOT finished, so a stage added later is repaired by
+	// default instead of being silently left out, which is how this drifted.
 	rolledBack := s.db.Model(&Deployment{}).Where("state = ?", "rolling_back").Updates(map[string]any{
 		"state": "rollback_failed", "result": "Dockman stopped while restoring the previous version; verify this stack manually",
 	})
-	return result.RowsAffected + rolledBack.RowsAffected, rolledBack.Error
+	if rolledBack.Error != nil {
+		return rolledBack.RowsAffected, rolledBack.Error
+	}
+	result := s.db.Model(&Deployment{}).Where("state NOT IN ?", terminalStateList(terminalDeploymentStates)).Updates(map[string]any{
+		"state": "failed", "result": "Dockman stopped before the controlled deployment completed",
+	})
+	return result.RowsAffected + rolledBack.RowsAffected, result.Error
 }
 
 // MarkInterruptedInitialSyncs repairs Folder Links stopped while initializing.
@@ -571,7 +573,7 @@ func (s *Store) MarkInterruptedInitialSyncs() (int64, error) {
 // performing any more.
 func (s *Store) ClearInterruptedStackDeployStates() (int64, error) {
 	result := s.db.Model(&GitStackStatus{}).
-		Where("deploy_state IN ?", []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back"}).
+		Where("deploy_state NOT IN ?", terminalStateList(terminalStackDeployStates)).
 		Updates(map[string]any{
 			"deploy_state": "failed",
 			"deploy_error": "Dockman stopped before this controlled deployment completed",
