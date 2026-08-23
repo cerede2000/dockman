@@ -1,3 +1,4 @@
+import {Box} from "@mui/material";
 import {Editor, type Monaco} from "@monaco-editor/react";
 import {getLanguageFromExtension} from "../../../lib/editor";
 import {useCallback, useEffect, useRef, useState} from "react";
@@ -9,6 +10,7 @@ import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {useConfig} from "../../../hooks/config.ts";
 import {buildYamlOutline, type YamlOutlineItem} from "./yaml-outline.ts";
 import {readClipboardText} from "./clipboard.ts";
+import {letBrowserMenuThrough} from "./context-menu.ts";
 
 interface MonacoEditorProps {
     selectedFile: string;
@@ -34,6 +36,14 @@ export function MonacoEditor(
     const saveLineNum = useSaveLineNum()
 
     const [mounted, setMounted] = useState(false);
+    const contextMenuHost = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        const host = contextMenuHost.current;
+        if (!host) return;
+        host.addEventListener('contextmenu', letBrowserMenuThrough, true);
+        return () => host.removeEventListener('contextmenu', letBrowserMenuThrough, true);
+    }, []);
     // bumped on every editor instance creation: the component remounts per
     // file (key={selectedFile}) while `mounted` stays true, so effects that
     // must re-attach to the new instance depend on this counter instead
@@ -222,6 +232,14 @@ export function MonacoEditor(
     }, [editorGen, fileContent, handleEditorChange, mounted, onOutlineChange, selectedFile]);
 
     return (
+        // Shift+right-click is stopped here, in the capture phase, so it never
+        // reaches Monaco: Monaco does not call preventDefault, and the browser
+        // shows its own menu - whose Paste works without any clipboard
+        // permission. A plain right-click is untouched and still opens Monaco's.
+        <Box
+            ref={contextMenuHost}
+            sx={{width: '100%', height: '100%', minWidth: 0, minHeight: 0}}
+        >
         <Editor
             key={selectedFile}
             language={getLanguageFromExtension(selectedFile)}
@@ -243,6 +261,7 @@ export function MonacoEditor(
                 fixedOverflowWidgets: true,
             }}
         />
+        </Box>
     );
 }
 

@@ -16,15 +16,15 @@ export type ClipboardRead =
 export async function readClipboardText(clipboard?: Clipboard): Promise<ClipboardRead> {
     if (!clipboard || typeof clipboard.readText !== 'function') {
         if (typeof window !== 'undefined' && !window.isSecureContext) {
-            return {unavailable: 'Ctrl+V / Cmd+V works as usual. The menu entry needs a secure origin: serve Dockman over HTTPS, or mark this address secure in your browser settings.'}
+            return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. This entry needs a secure origin: serve Dockman over HTTPS.'}
         }
-        return {unavailable: 'Ctrl+V / Cmd+V works as usual. This browser never lets a page read the clipboard by itself.'}
+        return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. This browser never lets a page read the clipboard by itself.'}
     }
     try {
         return {text: await clipboard.readText()}
     } catch {
         // Denied, dismissed, or the document was not focused when the menu
         // action ran. The shortcut is unaffected by any of them.
-        return {unavailable: 'Ctrl+V / Cmd+V works as usual. Dockman was not allowed to read the clipboard this time.'}
+        return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. Dockman was not allowed to read the clipboard this time.'}
     }
 }
