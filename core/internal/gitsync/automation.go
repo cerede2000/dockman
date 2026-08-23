@@ -335,6 +335,8 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 	var synchronizedCommit string
 	skippedStackScan := false
 	localDeletionBlock := false
+	// Set when the block belongs to identified stacks rather than to the link.
+	attributedBlock := false
 	err = s.runBindingOperation(ctx, binding.RepositoryUUID, binding.UUID, "auto_sync", func(ctx context.Context) error {
 		status, fetchErr := s.FetchRepository(ctx, binding.RepositoryUUID)
 		if fetchErr != nil {
@@ -473,7 +475,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		result.Backup = transfer.Backup
 		// A held-back stack keeps its files AND its previous deployment: nothing
 		// of it was imported, so nothing of it may be deployed.
-		changedPaths = excludeComposeStackPaths(changedPaths, transfer.HeldBack)
+		changedPaths = excludeComposeStackPaths(changedPaths, heldBackStacks)
 		readBlockedStacks := composePathsForFiles(activeAutomationPaths, transfer.ReadBlocked)
 		result.SyncFailed = uniqueSortedStrings(append(append([]string(nil), transfer.ComposeBlocked...), readBlockedStacks...))
 		if len(transfer.ComposeBlocked) > 0 {
@@ -491,8 +493,10 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		}
 		if len(transfer.EditorBlocked) > 0 {
 			changedPaths = excludeComposeStackPaths(changedPaths, transfer.EditorBlocked)
+			attributedBlock = true
 			result.State = "blocked"
-			result.Message = fmt.Sprintf("%d stack(s) kept unchanged while edited in Dockman; other safe changes were synchronized", len(transfer.EditorBlocked))
+			result.Message = fmt.Sprintf("%d stack(s) kept unchanged while edited in Dockman (%s); every other stack was synchronized",
+				len(transfer.EditorBlocked), strings.Join(transfer.EditorBlocked, ", "))
 		}
 		if preserved > 0 && len(transfer.EditorBlocked) == 0 {
 			result.State = "blocked"
@@ -557,17 +561,22 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		}
 		// Reported last so the decision the user has to take is the headline,
 		// and named stack by stack: the other stacks are already synchronized.
-		if len(transfer.HeldBack) > 0 {
-			result.HeldBack = append([]string(nil), transfer.HeldBack...)
+		// Driven by what the preview attributed, NOT by what the transfer
+		// filtered out: an unresolved conflict is never selected for transfer,
+		// so its stack would be absent from the transfer's own list and the
+		// decision would vanish from the result entirely.
+		if len(heldBackStacks) > 0 {
+			attributedBlock = true
+			result.HeldBack = append([]string(nil), heldBackStacks...)
 			if conflicts > 0 {
 				result.State = "conflict"
 				result.Message = fmt.Sprintf("%d conflict(s) require a manual decision on %s; every other stack was synchronized",
-					conflicts, strings.Join(transfer.HeldBack, ", "))
+					conflicts, strings.Join(heldBackStacks, ", "))
 			} else {
 				localDeletionBlock = true
 				result.State = "blocked"
 				result.Message = fmt.Sprintf("%d locally deleted synchronized file(s) require an explicit decision on %s; no file was restored and every other stack was synchronized",
-					localDeletions, strings.Join(transfer.HeldBack, ", "))
+					localDeletions, strings.Join(heldBackStacks, ", "))
 			}
 		}
 		return nil
@@ -588,7 +597,11 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		}
 		_ = s.store.UpdateBindingAutoSyncState(id, result.State, result.Message, commit, &attemptedAt, nil)
 		if result.State == "blocked" {
-			if !preservedBlock && !localDeletionBlock {
+			// Only a link-wide block may repaint every stack. A block attributed
+			// to named stacks - an open editor, a held-back decision - already
+			// carries their own state, and painting the rest would report changes
+			// that were in fact applied.
+			if !preservedBlock && !localDeletionBlock && !attributedBlock {
 				s.updateActiveStackStatuses(binding, stackSyncRemoteChanges, result.Message, "", false)
 			}
 		}

@@ -910,7 +910,12 @@ func (s *Service) AddBindingInclusions(id string, paths []string) (BindingView, 
 		if err := validateRelativePath(relative, false); err != nil {
 			return BindingView{}, fmt.Errorf("invalid inclusion path %q: %w", path, err)
 		}
-		pattern := escapeGlobLiteral(relative)
+		// Anchored, exactly like the matching exclusion. An unanchored
+		// single-segment pattern becomes a BASENAME rule: including one file at
+		// the link root would silently include every file of that name in every
+		// stack - and, because an explicit include overrides an exclusion, would
+		// also defeat exclusions the operator set elsewhere.
+		pattern := "/" + escapeGlobLiteral(relative)
 		if _, exists := existingPatterns[pattern]; exists {
 			continue
 		}
@@ -1398,9 +1403,6 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
-		if len(result.HeldBack) > 0 {
-			result.Message = fmt.Sprintf("%d stack(s) kept unchanged until their conflict or local deletion is decided; other stacks were imported with a backup", len(result.HeldBack))
-		}
 		if len(result.ReadBlocked) > 0 {
 			result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 		}
@@ -1705,6 +1707,9 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if len(result.ComposeBlocked) > 0 {
 			result.Message = fmt.Sprintf("%d invalid Compose stack(s) kept unchanged; other safe repository files were imported with a backup", len(result.ComposeBlocked))
 		}
+		if len(result.HeldBack) > 0 {
+			result.Message = fmt.Sprintf("%d stack(s) kept unchanged until their conflict or local deletion is decided; other stacks were imported with a backup", len(result.HeldBack))
+		}
 		if len(result.ReadBlocked) > 0 {
 			result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 		}
@@ -1718,18 +1723,22 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			return result, fmt.Errorf("repository files were imported but the synchronization state could not be refreshed: %w", stateErr)
 		}
 	}
-	statusRefreshSafe := result.Preview.Conflicts == 0 && result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0
+	// EditorBlocked is a per-stack list, so it is excluded from the refresh
+	// below rather than cancelling it: one stack open in the editor must not
+	// keep every other stack of the link reporting changes it already received.
+	statusRefreshSafe := result.Preview.Conflicts == 0 && result.Preview.Preserved == 0
 	// A conflict or a local deletion confined to a held-back stack no longer
 	// speaks for the whole link. The stacks that DID import must be allowed to
 	// go green again, or they keep reporting pending remote changes that have
 	// in fact already been applied.
 	if input.automation && len(input.heldBackComposePaths) > 0 {
-		statusRefreshSafe = result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0 &&
+		statusRefreshSafe = result.Preview.Preserved == 0 &&
 			len(excludeStringValues(heldBackComposeStacks(result.Preview, selectedComposePaths(binding)), input.heldBackComposePaths)) == 0
 	}
 	if len(input.targetComposePaths) > 0 {
 		statusRefreshSafe = targetedPreviewResolved(result.Preview, selectedComposePaths(binding), input.targetComposePaths) &&
-			len(composePathsForFiles(input.targetComposePaths, result.EditorBlocked)) == 0
+			len(composePathsForFiles(input.targetComposePaths, result.EditorBlocked)) == 0 &&
+			len(result.EditorBlocked) == 0
 	}
 	if err == nil && statusRefreshSafe {
 		paths := selectedComposePaths(binding)
@@ -1739,7 +1748,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			paths = input.targetComposePaths
 		}
 		now := time.Now().UTC()
-		safePaths := excludeStringValues(excludeStringValues(paths, result.ComposeBlocked), input.heldBackComposePaths)
+		safePaths := excludeStringValues(excludeStringValues(excludeStringValues(paths, result.ComposeBlocked), input.heldBackComposePaths), result.EditorBlocked)
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, safePaths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now})
 		for _, composePath := range result.ComposeBlocked {
 			message := result.Preview.ComposeErrors[composePath]
@@ -3148,7 +3157,10 @@ func parseIgnoreRules(reader io.ReadCloser) ([]ignoreRule, error) {
 func matchesIgnoreRule(rules []ignoreRule, relative string, directory bool) bool {
 	relative = filepath.ToSlash(strings.TrimPrefix(relative, "./"))
 	for _, rule := range rules {
-		if rule.directory && (relative == rule.pattern || strings.HasPrefix(relative, rule.pattern+"/")) {
+		// A directory rule owns the directory and its subtree. It must not match
+		// a FILE that happens to carry the directory's name, which is also how
+		// gitignore reads a trailing slash.
+		if rule.directory && ((directory && relative == rule.pattern) || strings.HasPrefix(relative, rule.pattern+"/")) {
 			return true
 		}
 		if directory && strings.HasSuffix(rule.pattern, "/**") && relative == strings.TrimSuffix(rule.pattern, "/**") {
@@ -3488,9 +3500,21 @@ func buildPreview(bindingID, direction string, source, target map[string]transfe
 				preview.Conflicts++
 			}
 		} else if direction == "repository_to_stack" {
-			if baseSHA, tracked := baseline[path]; tracked && baseSHA == src.sha {
-				entry.ConflictKind = "destination_deleted"
-				preview.LocalDeletions++
+			if baseSHA, tracked := baseline[path]; tracked {
+				if baseSHA == src.sha {
+					entry.ConflictKind = "destination_deleted"
+					preview.LocalDeletions++
+				} else {
+					// Deleted locally AND changed on Git since. Restoring it
+					// silently would undo a deliberate deletion with content the
+					// operator never saw - and this is the riskiest shape of the
+					// two, not the safest. The export direction already raises a
+					// conflict here; this is its mirror.
+					entry.Status = "conflict"
+					entry.ConflictKind = "destination_deleted_source_changed"
+					preview.Conflicts++
+					preview.LocalDeletions++
+				}
 			}
 		}
 		preview.Entries = append(preview.Entries, entry)

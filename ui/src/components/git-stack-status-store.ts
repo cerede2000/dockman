@@ -1,6 +1,7 @@
 import {useEffect} from 'react';
 import {create} from 'zustand';
 import {withProtectedAPI} from '../lib/api.ts';
+import {pollWhileVisible} from '../hooks/visibility.ts';
 
 export interface GitStackStatus {
     bindingId: string;
@@ -161,7 +162,7 @@ const useGitStatusStore = create<GitStatusStore>((set) => ({
     }})),
 }));
 
-const watchers = new Map<string, {references: number; timer?: ReturnType<typeof setInterval>; onVisible?: () => void}>();
+const watchers = new Map<string, {references: number; stop?: () => void}>();
 const statusRefreshes = new Map<string, Promise<void>>();
 const mutationRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
 const trackedFileRequests = new Map<string, {paths: Set<string>; timer?: ReturnType<typeof setTimeout>}>();
@@ -264,18 +265,18 @@ export function useGitStatusWatcher(host: string) {
         watcher.references++;
         watchers.set(host, watcher);
         if (watcher.references === 1) {
-            void refreshGitStackStatuses(host, false);
-            watcher.timer = setInterval(() => void refreshGitStackStatuses(host, false), 30_000);
-            watcher.onVisible = () => document.visibilityState === 'visible' && void refreshGitStackStatuses(host, false);
-            document.addEventListener('visibilitychange', watcher.onVisible);
+            // Nobody is reading the badges while the tab is hidden, and every
+            // firing is a real status read on the server. pollWhileVisible does
+            // nothing while hidden and refreshes the moment the tab comes back,
+            // so returning to it never shows a stale badge.
+            watcher.stop = pollWhileVisible(() => void refreshGitStackStatuses(host, false), 30_000);
         }
         return () => {
             const current = watchers.get(host);
             if (!current) return;
             current.references = Math.max(0, current.references - 1);
             if (current.references === 0) {
-                if (current.timer) clearInterval(current.timer);
-                if (current.onVisible) document.removeEventListener('visibilitychange', current.onVisible);
+                current.stop?.();
                 watchers.delete(host);
             }
         };
