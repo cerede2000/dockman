@@ -373,3 +373,52 @@ func TestSearchWalkSkipsWhatItCannotRead(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, paths, filepath.Join("readable", "compose.yml"))
 }
+
+// rename(2) replaces the destination without a word. Dragging a file onto a
+// folder that already holds one of that name destroyed it silently - one slip
+// away at all times in a drag-and-drop interface.
+func TestRenameRefusesToReplaceAnExistingFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "dest"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "compose.yml"), []byte("the one being moved\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "dest", "compose.yml"), []byte("the one already there\n"), 0o644))
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+
+	err := srv.Rename("compose/compose.yml", "compose/dest/compose.yml", "local")
+	require.ErrorContains(t, err, "already exists")
+
+	kept, readErr := os.ReadFile(filepath.Join(root, "dest", "compose.yml"))
+	require.NoError(t, readErr)
+	require.Equal(t, "the one already there\n", string(kept), "nothing may be replaced")
+	require.FileExists(t, filepath.Join(root, "compose.yml"), "and the source stays where it was")
+
+	// a free destination still moves normally
+	require.NoError(t, srv.Rename("compose/compose.yml", "compose/dest/other.yml", "local"))
+	require.FileExists(t, filepath.Join(root, "dest", "other.yml"))
+	require.NoFileExists(t, filepath.Join(root, "compose.yml"))
+}
+
+// Each linked folder is opened as its own confined root, so a rename cannot
+// cross two of them. It used to rename inside the SOURCE one and report success.
+func TestRenameRefusesToMoveBetweenTwoLinkedFolders(t *testing.T) {
+	t.Parallel()
+
+	rootA, rootB := t.TempDir(), t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(rootA, "source.yml"), []byte("alias A\n"), 0o644))
+	srv := New(func(_, alias string) (filesystem.FileSystem, error) {
+		switch alias {
+		case "aliasA":
+			return filesystem.NewLocal(rootA), nil
+		case "aliasB":
+			return filesystem.NewLocal(rootB), nil
+		}
+		return nil, os.ErrNotExist
+	}, nil)
+
+	err := srv.Rename("aliasA/source.yml", "aliasB/moved.yml", "local")
+	require.ErrorContains(t, err, "two different linked folders")
+	require.FileExists(t, filepath.Join(rootA, "source.yml"), "the source is untouched")
+	require.NoFileExists(t, filepath.Join(rootA, "moved.yml"), "and nothing is left behind in it")
+}
