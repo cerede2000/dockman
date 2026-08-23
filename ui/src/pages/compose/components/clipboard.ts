@@ -28,3 +28,18 @@ export async function readClipboardText(clipboard?: Clipboard): Promise<Clipboar
         return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. Dockman was not allowed to read the clipboard this time.'}
     }
 }
+
+// canReadClipboard reports whether offering a Paste entry can lead anywhere.
+//
+// Both blocking conditions are structural and known before the click: outside a
+// secure context navigator.clipboard does not exist at all, and Firefox never
+// exposes readText to page scripts. Offering an entry that can only ever answer
+// with an explanation is worse than not offering one - which is exactly what
+// Monaco does by default, and what this editor did before the entry existed.
+//
+// A permission that is granted-then-denied, or a document that is not focused,
+// is NOT covered here: those cannot be known in advance, and readClipboardText
+// reports them when they happen.
+export function canReadClipboard(clipboard?: Clipboard): boolean {
+    return Boolean(clipboard && typeof clipboard.readText === 'function')
+}

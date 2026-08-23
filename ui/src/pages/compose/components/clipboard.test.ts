@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it} from 'vitest'
-import {readClipboardText} from './clipboard.ts'
+import {canReadClipboard, readClipboardText} from './clipboard.ts'
 
 // jsdom does not define isSecureContext at all, which is itself the shape a
 // plain-HTTP page presents.
@@ -36,5 +36,21 @@ describe('readClipboardText', () => {
         const clipboard = {readText: async () => { throw new Error('NotAllowedError') }} as unknown as Clipboard
         const result = await readClipboardText(clipboard)
         expect((result as {unavailable: string}).unavailable).toContain('not allowed')
+    })
+})
+
+describe('canReadClipboard', () => {
+    // Offering an entry that can only ever answer with an explanation is worse
+    // than not offering one, which is what the editor did before it existed.
+    it('says no where no clipboard object exists at all', () => {
+        expect(canReadClipboard(undefined)).toBe(false)
+    })
+
+    it('says no where the object exists without readText', () => {
+        expect(canReadClipboard({} as Clipboard)).toBe(false)
+    })
+
+    it('says yes only when there is something to call', () => {
+        expect(canReadClipboard({readText: async () => ''} as unknown as Clipboard)).toBe(true)
     })
 })
