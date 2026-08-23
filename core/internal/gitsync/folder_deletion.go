@@ -43,6 +43,23 @@ type FolderLinkDeletionResult struct {
 // using the generic Files RPC directly. A Folder Link root must go through the
 // consistency-aware endpoint which also removes the database link.
 func (s *Service) GuardFileDeletion(host, path string) error {
+	return s.guardFolderLinkPath(host, path,
+		"this directory is a Git Folder Link root; use its protected deletion dialog to verify Git and remove the link safely",
+		"this directory contains one or more Git Folder Links; remove each link through its protected deletion dialog before deleting the parent folder")
+}
+
+// GuardFileRename is the same protection for renames. Renaming a link root
+// leaves the link pointing at a path that no longer exists: the local inventory
+// comes back empty, every synchronized file reads as deleted locally, and the
+// link stops on a decision nobody meant to take. Deletion has been guarded for
+// this all along; a rename has exactly the same consequence.
+func (s *Service) GuardFileRename(host, path string) error {
+	return s.guardFolderLinkPath(host, path,
+		"this directory is a Git Folder Link root; renaming it would leave the link pointing at a path that no longer exists. Unlink it first, rename it, then link the new path",
+		"this directory contains one or more Git Folder Links; renaming it would leave them pointing at paths that no longer exist. Unlink them first")
+}
+
+func (s *Service) guardFolderLinkPath(host, path, rootMessage, ancestorMessage string) error {
 	if !s.enabled {
 		return nil
 	}
@@ -55,10 +72,10 @@ func (s *Service) GuardFileDeletion(host, path string) error {
 	for _, binding := range bindings {
 		root := strings.Trim(filepath.ToSlash(filepath.Clean(filepath.FromSlash(binding.StackPath))), "/")
 		if path == root {
-			return errors.New("this directory is a Git Folder Link root; use its protected deletion dialog to verify Git and remove the link safely")
+			return errors.New(rootMessage)
 		}
 		if path != "." && strings.HasPrefix(root, path+"/") {
-			return errors.New("this directory contains one or more Git Folder Links; remove each link through its protected deletion dialog before deleting the parent folder")
+			return errors.New(ancestorMessage)
 		}
 	}
 	return nil

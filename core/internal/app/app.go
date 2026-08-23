@@ -358,6 +358,12 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		}
 		return secretSrv.GuardFileDeletion(host, path)
 	})
+	// Renaming a Folder Link root leaves the link pointing at a path that no
+	// longer exists, which reads downstream as every synchronized file having
+	// been deleted locally. Secrets are deliberately not consulted here: a
+	// directory holding a live tmpfs mount cannot be renamed by the kernel in
+	// the first place.
+	fileSrv.ConfigureRenameGuard(gitSyncSrv.GuardFileRename)
 	gitSyncSrv.ConfigureEditorCoherence(fileSrv.DirtyEditorPaths, fileSrv.NotifyExternalChange)
 	gitSyncSrv.ConfigureStackAccess(
 		func(hostname, stackPath string) (filesystem.FileSystem, string, error) {

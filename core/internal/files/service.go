@@ -30,6 +30,7 @@ type Service struct {
 	templateFolder string
 	changeNotifier func(host, path string)
 	deleteGuard    func(host, path string) error
+	renameGuard    func(host, path string) error
 	editor         *editorState
 }
 
@@ -52,6 +53,13 @@ func (s *Service) ConfigureChangeNotifier(notifier func(host, path string)) {
 
 func (s *Service) ConfigureDeleteGuard(guard func(host, path string) error) {
 	s.deleteGuard = guard
+}
+
+// ConfigureRenameGuard refuses a rename that would break something the rest of
+// Dockman still points at. Deletion has been guarded all along; a rename can
+// have the same consequence and had no protection at all.
+func (s *Service) ConfigureRenameGuard(guard func(host, path string) error) {
+	s.renameGuard = guard
 }
 
 func (s *Service) NotifyChange(host, path string) {
@@ -221,28 +229,44 @@ func (s *Service) Copy(source, dest, hostname string, isDir bool) error {
 		return fmt.Errorf("directory copying is unimplemented")
 	}
 
-	cliFs, sourceFile, _, err := s.LoadFs(source, hostname)
+	sourceFs, sourceFile, _, err := s.LoadFs(source, hostname)
 	if err != nil {
 		return err
 	}
 
-	_, destFile, _, err := s.LoadFs(dest, hostname)
+	// The destination filesystem used to be discarded and the copy written
+	// through the SOURCE one. Copying between two aliases reported success,
+	// created nothing where it was asked to, and left a stray file in the
+	// source root instead.
+	destFs, destFile, _, err := s.LoadFs(dest, hostname)
 	if err != nil {
 		return err
 	}
 
-	sourceReader, err := cliFs.OpenFile(sourceFile, os.O_RDONLY, os.ModePerm)
+	info, err := sourceFs.Stat(sourceFile)
 	if err != nil {
 		return err
 	}
 
-	destWriter, err := cliFs.OpenFile(destFile, os.O_RDWR|os.O_TRUNC|os.O_CREATE, os.ModePerm)
+	sourceReader, err := sourceFs.OpenFile(sourceFile, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer fileutil.Close(sourceReader)
+
+	destWriter, err := destFs.OpenFile(destFile, os.O_RDWR|os.O_TRUNC|os.O_CREATE, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
 
-	_, err = io.Copy(destWriter, sourceReader)
-	return err
+	if _, err = io.Copy(destWriter, sourceReader); err != nil {
+		_ = destWriter.Close()
+		return err
+	}
+	// Closing is what commits the write, and its error is the copy's error:
+	// the SFTP client buffers, so a handle dropped without Close can silently
+	// lose the tail of the file. Neither handle used to be closed at all.
+	return destWriter.Close()
 }
 
 func (s *Service) Exists(filename string, hostname string) error {
@@ -277,6 +301,11 @@ func (s *Service) Delete(filename string, hostname string) error {
 
 // Rename todo refactor this
 func (s *Service) Rename(oldFileName, newFilename, hostname string) error {
+	if s.renameGuard != nil {
+		if err := s.renameGuard(hostname, oldFileName); err != nil {
+			return err
+		}
+	}
 	cliFs, oldFullPath, _, err := s.LoadFs(oldFileName, hostname)
 	if err != nil {
 		return err
