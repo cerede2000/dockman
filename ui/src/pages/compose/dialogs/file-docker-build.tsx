@@ -125,13 +125,19 @@ export default function FileDockerBuild() {
         const refreshWhenVisible = () => {
             if (document.visibilityState === 'visible') void refreshJobs();
         };
-        // Active builds remain responsive. At idle, the server-side job list
-        // changes only when a user starts a build, which updates this store
-        // immediately, so a one-minute cross-tab safety refresh is sufficient.
-        const timer = window.setInterval(refreshWhenVisible, activeBuildCount > 0 ? 2000 : 60000);
+        // A build in flight is the only reason to poll. This component is
+        // mounted by the app shell, so the idle branch was a request a minute,
+        // forever, on every page, for a list that cannot change on its own:
+        // a build started from THIS browser updates the store directly.
+        //
+        // Named trade-off: a build started in another tab or browser is no
+        // longer noticed while this tab stays in the foreground. It shows up
+        // on the next focus, which is also the first moment anyone could look
+        // at the activity badge.
+        const timer = activeBuildCount > 0 ? window.setInterval(refreshWhenVisible, 2000) : undefined;
         document.addEventListener('visibilitychange', refreshWhenVisible);
         return () => {
-            window.clearInterval(timer);
+            if (timer !== undefined) window.clearInterval(timer);
             document.removeEventListener('visibilitychange', refreshWhenVisible);
         };
     }, [activeBuildCount, refreshJobs]);
@@ -144,6 +150,7 @@ export default function FileDockerBuild() {
     useEffect(() => {
         if (!selectedJobId || !historyOpen) return;
         let active = true;
+        let pending: number | undefined;
         let offset = 0;
         setSelectedLog('');
         setSelectedJob(null);
@@ -168,10 +175,15 @@ export default function FileDockerBuild() {
                 if (active) showError(`Unable to read build progress: ${reason instanceof Error ? reason.message : String(reason)}`);
                 return;
             }
-            if (active) window.setTimeout(() => void poll(), 1000);
+            if (active) pending = window.setTimeout(() => void poll(), 1000);
         };
         void poll();
-        return () => { active = false; };
+        // Clearing the handle matters: without it the last scheduled tick still
+        // fired and issued its fetch before finding `active` false.
+        return () => {
+            active = false;
+            if (pending !== undefined) window.clearTimeout(pending);
+        };
     }, [historyOpen, hostUrl, refreshJobs, selectedJobId, showError]);
 
     const build = async () => {
@@ -312,8 +324,13 @@ export default function FileDockerBuild() {
 export function DockerBuildActivityIndicator() {
     const jobs = useDockerBuildJobs((state) => state.jobs);
     const openHistory = useFileDockerBuild((state) => state.openHistory);
+    // zIndex 1400 puts this above MUI's modal layer (1300). On a narrow
+    // viewport the dialog reaches the same corner, so the badge covered its
+    // own Build button - and a click on it cleared the filename, discarding
+    // the tag being typed. The dialog already shows everything it reports.
+    const dialogOpen = useFileDockerBuild((state) => Boolean(state.filename) || state.historyOpen);
     const active = jobs.filter(job => job.status === 'queued' || job.status === 'running');
-    if (active.length === 0) return null;
+    if (active.length === 0 || dialogOpen) return null;
     return <Tooltip title={`${active.length} Docker image build${active.length > 1 ? 's' : ''} in progress`} placement="left">
         <Fab size="small" color="primary" onClick={openHistory} sx={{position: 'fixed', right: 20, bottom: 20, zIndex: 1400}}>
             <Badge badgeContent={active.length} color="warning"><ConstructionOutlined/></Badge>
