@@ -163,14 +163,17 @@ func (s *Service) RestoreBackup(ctx context.Context, bindingID, backupID string,
 	if err != nil {
 		return BackupRestoreResult{}, err
 	}
+	// Restoring a backup is the most urgent explicit action there is: something
+	// went wrong and the operator wants their files back. Refusing it the
+	// instant a scheduled cycle happens to hold the lock is the wrong answer.
 	automationLock := s.repositoryLock("automation:" + bindingID)
-	if !automationLock.TryLock() {
-		return BackupRestoreResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+	if !waitForLock(automationLock, decisionLockBudget) {
+		return BackupRestoreResult{}, errors.New("automatic synchronization is still running for this Folder Link; pause its automation if you need to restore now")
 	}
 	defer automationLock.Unlock()
 	repositoryLock := s.repositoryLock(binding.RepositoryUUID)
-	if !repositoryLock.TryLock() {
-		return BackupRestoreResult{}, errors.New("a Git operation is currently running; retry when it finishes")
+	if !waitForLock(repositoryLock, decisionLockBudget) {
+		return BackupRestoreResult{}, errors.New("a Git operation is still running on this repository; retry in a moment")
 	}
 	defer repositoryLock.Unlock()
 	lockedPreview, err := s.PreviewBackupRestore(bindingID, backupID)

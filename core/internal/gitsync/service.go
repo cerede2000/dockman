@@ -258,6 +258,31 @@ func (s *Service) repositoryLock(id string) *sync.Mutex {
 	return s.locks[id]
 }
 
+// waitForLock is what an explicit human decision uses instead of failing the
+// moment an automatic cycle happens to hold the lock. A cycle holds it for its
+// whole run - scan, import, and the controlled deployment that can wait a
+// minute per stack - so an instant refusal made a decision like "restore this
+// deleted file" impossible to place on a link that keeps rescanning.
+//
+// Bounded on purpose: the caller is a request, and blocking it for the length
+// of a deployment would be worse than telling the operator what to do.
+func waitForLock(lock *sync.Mutex, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for {
+		if lock.TryLock() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// decisionLockBudget is long enough to outlast a scan-only cycle on a large
+// folder link, short enough to answer the request.
+const decisionLockBudget = 20 * time.Second
+
 func (s *Service) ListCredentials() ([]CredentialView, error) {
 	rows, err := s.store.ListCredentials()
 	if err != nil {

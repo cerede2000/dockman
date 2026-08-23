@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -154,4 +156,31 @@ func TestADirectoryRuleDoesNotMatchAFileOfTheSameName(t *testing.T) {
 	require.True(t, policy.excludesPath("data", true, nil), "the directory itself")
 	require.True(t, policy.excludesPath("data/runtime.db", false, nil), "and its subtree")
 	require.False(t, policy.excludesPath("data", false, nil), "but not a file that carries the name")
+}
+
+// An explicit decision used to be refused the instant an automatic cycle held
+// the link's lock. A cycle holds it for its whole run - scan, import, and a
+// controlled deployment that waits up to a minute per stack - so on a link
+// that rescans every interval there was barely a window to decide anything.
+func TestAnExplicitDecisionWaitsForARunningCycle(t *testing.T) {
+	lock := &sync.Mutex{}
+	lock.Lock()
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		lock.Unlock()
+		close(released)
+	}()
+	require.True(t, waitForLock(lock, 2*time.Second), "a decision must outlast a short cycle")
+	<-released
+	lock.Unlock()
+
+	// Bounded on purpose: the caller is a request, and blocking it for the
+	// length of a deployment would be worse than telling the operator what to do.
+	held := &sync.Mutex{}
+	held.Lock()
+	defer held.Unlock()
+	start := time.Now()
+	require.False(t, waitForLock(held, 200*time.Millisecond))
+	require.Less(t, time.Since(start), 2*time.Second, "the wait must stay bounded")
 }
