@@ -1586,13 +1586,18 @@ func TestBindingInclusionsCanBeAddedInOneBatch(t *testing.T) {
 
 	updated, err := service.AddBindingInclusions(binding.ID, []string{"artifacts/run.bin", "settings[1].bin", "artifacts/run.bin"})
 	require.NoError(t, err)
-	require.Equal(t, []string{"artifacts/run.bin", `settings\[1\].bin`}, updated.IncludePatterns)
+	// Anchored, like the matching exclusion: an unanchored single-segment
+	// pattern would become a basename rule.
+	require.Equal(t, []string{"/artifacts/run.bin", `/settings\[1\].bin`}, updated.IncludePatterns)
 
 	policy, err := policyFromBinding(StackBinding{SyncProfile: updated.SyncProfile, IncludePatterns: strings.Join(updated.IncludePatterns, "\n")})
 	require.NoError(t, err)
 	require.True(t, policy.includesFile("artifacts/run.bin"))
 	require.True(t, policy.includesFile("settings[1].bin"))
 	require.False(t, policy.includesFile("settings1.bin"))
+	// Including one file must not include every file of that name elsewhere.
+	require.False(t, policy.includesFile("nested/settings[1].bin"))
+	require.False(t, policy.includesFile("nested/artifacts/run.bin"))
 
 	_, err = service.AddBindingInclusions(binding.ID, nil)
 	require.ErrorContains(t, err, "at least one")

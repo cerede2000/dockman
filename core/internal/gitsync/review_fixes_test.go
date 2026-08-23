@@ -1,0 +1,157 @@
+package gitsync
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func reviewFile(path, contents string) transferFile {
+	sum := sha256.Sum256([]byte(contents))
+	return transferFile{path: path, sha: hex.EncodeToString(sum[:]), size: int64(len(contents)),
+		open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(contents)), nil }}
+}
+
+func reviewLink(t *testing.T) (*Service, string, Repository, BindingView) {
+	t.Helper()
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	remoteChange(t, repository.RemoteURL, "stacks/adguard/compose.yml", "services:\n  a:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "stacks/automation/compose.yml", "services:\n  b:\n    image: alpine:3.23\n")
+	remoteChange(t, repository.RemoteURL, "stacks/whoami/compose.yml", "services:\n  c:\n    image: alpine:3.23\n")
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose", SubPath: "stacks"})
+	require.NoError(t, err)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{Enabled: true, IntervalMinutes: 5})
+	require.NoError(t, err)
+	_, err = service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	return service, stackRoot, repository, binding
+}
+
+// One compose file open with unsaved changes used to repaint EVERY stack of
+// the link as "remote changes" - including the ones that had just been
+// imported successfully - while the message claimed the opposite.
+func TestAnOpenEditorOnlyHoldsBackItsOwnStack(t *testing.T) {
+	service, stackRoot, repository, binding := reviewLink(t)
+	service.ConfigureEditorCoherence(func(string) []string {
+		return []string{"compose/automation/compose.yml"}
+	}, nil)
+	for _, stack := range []string{"adguard", "automation", "whoami"} {
+		remoteChange(t, repository.RemoteURL, "stacks/"+stack+"/compose.yml", "services:\n  s:\n    image: alpine:3.24\n")
+	}
+
+	result, err := service.RunBindingAutoSyncNow(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "blocked", result.State)
+	require.Contains(t, result.Message, "automation/compose.yml")
+
+	states := stackStateByPath(t, service, binding.ID)
+	require.Equal(t, stackSyncUpToDate, states["adguard/compose.yml"])
+	require.Equal(t, stackSyncUpToDate, states["whoami/compose.yml"])
+	require.Equal(t, stackSyncRemoteChanges, states["automation/compose.yml"], "the edited stack keeps its pending change visible")
+
+	for _, stack := range []string{"adguard", "whoami"} {
+		contents, readErr := os.ReadFile(filepath.Join(stackRoot, stack, "compose.yml"))
+		require.NoError(t, readErr)
+		require.Contains(t, string(contents), "alpine:3.24", stack+" must have been imported")
+	}
+	edited, err := os.ReadFile(filepath.Join(stackRoot, "automation", "compose.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(edited), "alpine:3.23", "the edited stack must never be overwritten")
+}
+
+// A conflict is a decision the operator still owes. A cycle that never scanned
+// used to erase it, showing green while two versions genuinely disagreed.
+func TestAPendingConflictSurvivesASkippedScan(t *testing.T) {
+	service, _, _, binding := reviewLink(t)
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.ID, []string{"adguard/compose.yml"},
+		map[string]any{"state": stackSyncConflict, "conflict_count": 2, "error_message": "2 conflicts to decide"}))
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Contains(t, result.Message, "stack scan skipped")
+
+	rows, err := service.store.GitStackStatuses(binding.ID)
+	require.NoError(t, err)
+	for _, row := range rows {
+		if row.ComposePath == "adguard/compose.yml" {
+			require.Equal(t, stackSyncConflict, row.State)
+			require.Equal(t, 2, row.ConflictCount)
+			return
+		}
+	}
+	t.Fatal("adguard/compose.yml status row is missing")
+}
+
+// An unresolved conflict is never selected for transfer, so the stack owning it
+// is absent from the transfer's own filtered list. Reporting from that list
+// made the conflict vanish from the result while every other stack synced.
+func TestAConflictStaysVisibleWhileTheOtherStacksSynchronize(t *testing.T) {
+	service, stackRoot, repository, binding := reviewLink(t)
+	local := filepath.Join(stackRoot, "adguard", "compose.yml")
+	require.NoError(t, os.WriteFile(local, []byte("services:\n  a:\n    image: changed-locally\n"), 0o644))
+	remoteChange(t, repository.RemoteURL, "stacks/whoami/compose.yml", "services:\n  c:\n    image: alpine:3.24\n")
+
+	result, err := service.RunBindingAutoSyncNow(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "conflict", result.State)
+	require.Equal(t, []string{"adguard/compose.yml"}, result.HeldBack)
+
+	states := stackStateByPath(t, service, binding.ID)
+	require.Equal(t, stackSyncConflict, states["adguard/compose.yml"])
+	require.Equal(t, stackSyncUpToDate, states["whoami/compose.yml"])
+
+	kept, err := os.ReadFile(local)
+	require.NoError(t, err)
+	require.Contains(t, string(kept), "changed-locally", "a conflicted file must never be overwritten")
+	synced, err := os.ReadFile(filepath.Join(stackRoot, "whoami", "compose.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(synced), "alpine:3.24")
+}
+
+// Deleted locally AND changed on Git since is the riskiest shape of the two,
+// not the safest: restoring it silently would undo a deliberate deletion with
+// content the operator never saw. The export direction always raised a
+// conflict here; the import direction restored without asking.
+func TestADeletionRacedByAGitChangeRequiresADecision(t *testing.T) {
+	git := reviewFile("web/config.yml", "version from git\n")
+
+	sameOnGit := buildPreview("b", "repository_to_stack",
+		map[string]transferFile{"web/config.yml": git}, map[string]transferFile{},
+		map[string]string{"web/config.yml": git.sha})
+	require.Equal(t, "add", sameOnGit.Entries[0].Status)
+	require.Equal(t, "destination_deleted", sameOnGit.Entries[0].ConflictKind)
+	require.Equal(t, 1, sameOnGit.LocalDeletions)
+	require.Equal(t, 0, sameOnGit.Conflicts)
+
+	changedOnGit := buildPreview("b", "repository_to_stack",
+		map[string]transferFile{"web/config.yml": git}, map[string]transferFile{},
+		map[string]string{"web/config.yml": "the-baseline-git-has-moved-past"})
+	require.Equal(t, "conflict", changedOnGit.Entries[0].Status)
+	require.Equal(t, "destination_deleted_source_changed", changedOnGit.Entries[0].ConflictKind)
+	require.Equal(t, 1, changedOnGit.Conflicts)
+
+	// a file that was never synchronized stays an ordinary add
+	neverSynced := buildPreview("b", "repository_to_stack",
+		map[string]transferFile{"web/config.yml": git}, map[string]transferFile{}, map[string]string{})
+	require.Equal(t, "add", neverSynced.Entries[0].Status)
+	require.Empty(t, neverSynced.Entries[0].ConflictKind)
+	require.Equal(t, 0, neverSynced.Conflicts)
+}
+
+func TestADirectoryRuleDoesNotMatchAFileOfTheSameName(t *testing.T) {
+	rules, err := rulesFromPatterns([]string{"/data/"})
+	require.NoError(t, err)
+	policy := syncPolicy{profile: syncProfileComposeConfig, excludes: rules}
+	require.True(t, policy.excludesPath("data", true, nil), "the directory itself")
+	require.True(t, policy.excludesPath("data/runtime.db", false, nil), "and its subtree")
+	require.False(t, policy.excludesPath("data", false, nil), "but not a file that carries the name")
+}

@@ -116,11 +116,11 @@ interface Binding {
     autoDeployError?: string; lastAutoDeployAt?: string;
     autoReconcileEnabled: boolean; initialSyncState: string; initialSyncError?: string; initialSyncAt?: string;
 }
-interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; deployFailed?: string[]; rolledBack?: string[]; rollbackFailed?: string[]; syncFailed?: string[]; message: string; }
+interface AutoSyncResult { bindingId: string; state: string; changed: number; conflicts: number; backup?: string; deployed?: string[]; deployFailed?: string[]; rolledBack?: string[]; rollbackFailed?: string[]; syncFailed?: string[]; heldBack?: string[]; autoExcluded?: string[]; discovered?: string[]; message: string; }
 interface Deployment { id: string; commitSha: string; composePath: string; state: string; result?: string; logs?: string; createdAt: string; }
 interface PreviewEntry {
-    path: string; status: "add" | "modify" | "remove_control" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable" | "skipped_permission" | "skipped_large_directory"; sourceSha?: string;
-    targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed" | "source_deleted_destination_changed" | "destination_deleted";
+    path: string; status: "add" | "modify" | "remove_control" | "conflict" | "deleted_on_git" | "deleted_locally" | "skipped_sensitive" | "skipped_age_identity" | "skipped_oversized" | "skipped_type" | "skipped_excluded" | "skipped_unavailable" | "skipped_permission" | "skipped_large_directory"; sourceSha?: string;
+    targetSha?: string; size?: number; sensitive?: boolean; directory?: boolean; conflictKind?: "no_baseline" | "destination_changed" | "source_deleted_destination_changed" | "destination_deleted" | "destination_deleted_source_changed";
 }
 interface TransferPreview {
     bindingId: string; direction: TransferDirection; entries: PreviewEntry[]; changed: number;
@@ -172,7 +172,7 @@ function scopedGitImport(destination: string, composePaths: string[]) {
     };
 }
 
-const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_permission", "skipped_large_directory", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_oversized", "skipped_unavailable"];
+const previewStatuses: PreviewStatus[] = ["conflict", "deleted_locally", "deleted_on_git", "add", "modify", "remove_control", "skipped_permission", "skipped_large_directory", "skipped_type", "skipped_excluded", "skipped_sensitive", "skipped_age_identity", "skipped_oversized", "skipped_unavailable"];
 
 const emptyCredential: CredentialForm = {
     name: "", authType: "public", username: "", token: "", privateKey: "", passphrase: "",
@@ -1423,7 +1423,7 @@ export default function TabGit() {
                         return <TableRow key={entry.path} selected={selectedPreviewPaths.has(entry.path)}>
                             <TableCell padding="checkbox"><Checkbox size="small" checked={selectedPreviewPaths.has(entry.path)} disabled={busy !== null || entry.status === "skipped_excluded" || entry.status === "conflict" || entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.status === "remove_control"} onChange={(_, checked) => togglePreviewEntry(entry.path, checked)} slotProps={{input: {"aria-label": `Select ${entry.path}`}}}/></TableCell>
                             <TableCell sx={{fontFamily: "monospace", overflowWrap: "anywhere"}}>{entry.path}</TableCell>
-                            <TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.conflictKind === "destination_deleted" || entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={deletedConflict ? "deleted on Git · local changed" : entry.conflictKind === "destination_deleted" ? "deleted locally · restore available" : entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell>
+                            <TableCell><Chip size="small" variant="outlined" color={entry.status === "conflict" ? "error" : entry.status === "deleted_on_git" || entry.status === "deleted_locally" || entry.conflictKind === "destination_deleted" || entry.status.startsWith("skipped_") ? "warning" : entry.status === "modify" ? "info" : "success"} label={deletedConflict ? "deleted on Git · local changed" : entry.conflictKind === "destination_deleted_source_changed" ? "deleted locally · Git changed since" : entry.conflictKind === "destination_deleted" ? "deleted locally · restore available" : entry.status === "conflict" && entry.conflictKind === "no_baseline" ? "initial conflict" : entry.status.replaceAll("_", " ")}/></TableCell>
                             <TableCell>{entry.size === undefined ? "—" : formatBytes(entry.size)}</TableCell>
                             <TableCell>{entry.status === "deleted_locally" ? <Stack direction="row" spacing={.5} sx={{alignItems: "center", flexWrap: "wrap"}}>
                                 <Button size="small" color="success" variant="outlined" startIcon={<CloudDownloadOutlined/>} disabled={busy !== null} onClick={() => void runLocalDeletionAction(entry, "restore")}>Restore from Git</Button>

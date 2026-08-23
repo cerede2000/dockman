@@ -811,7 +811,11 @@ func (s *Service) updateActiveStackStatusesPreservingLocal(binding StackBinding,
 		updates["last_success_at"] = &now
 		updates["last_commit"] = commit
 	}
-	excludedStates := append([]string{stackSyncLocalChanges, stackSyncLocalDeleted, stackSyncOrphaned}, preservedStates...)
+	// stackSyncConflict is preserved for the same reason as the local states: a
+	// pending conflict is a decision the operator still owes. Overwriting it
+	// with up_to_date on a cycle that never scanned shows green while two
+	// versions genuinely disagree, and the next import would overwrite blind.
+	excludedStates := append([]string{stackSyncLocalChanges, stackSyncLocalDeleted, stackSyncOrphaned, stackSyncConflict}, preservedStates...)
 	_ = s.store.UpdateGitStackStatusesExcept(binding.UUID, paths, excludedStates, updates)
 }
 
