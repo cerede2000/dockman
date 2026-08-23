@@ -151,6 +151,12 @@ type TransferInput struct {
 	// requested Compose owners. It is deliberately not exposed through JSON:
 	// public import requests keep the existing whole-binding semantics.
 	targetComposePaths []string
+	// heldBackComposePaths are the stacks this automatic cycle must leave
+	// exactly as they are - a conflict or a local deletion inside them needs an
+	// explicit human decision. Every OTHER stack of the link still imports.
+	// Unexported for the same reason: a manual transfer keeps its whole-binding
+	// semantics, where the caller already sees and resolves the conflict.
+	heldBackComposePaths []string
 }
 
 type PreviewEntry struct {
@@ -189,6 +195,7 @@ type TransferResult struct {
 	EditorBlocked  []string        `json:"editorBlocked,omitempty"`
 	ComposeBlocked []string        `json:"composeBlocked,omitempty"`
 	ReadBlocked    []string        `json:"readBlocked,omitempty"`
+	HeldBack       []string        `json:"heldBack,omitempty"`
 }
 
 type ComparisonInput struct {
@@ -1378,6 +1385,9 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 			return err
 		}
 		result.CommitSHA, result.Message = hash.String(), "Stack exported, committed, and pushed"
+		if len(result.HeldBack) > 0 {
+			result.Message = fmt.Sprintf("%d stack(s) kept unchanged until their conflict or local deletion is decided; other stacks were imported with a backup", len(result.HeldBack))
+		}
 		if len(result.ReadBlocked) > 0 {
 			result.Message += fmt.Sprintf("; %d protected local item(s) skipped without blocking other stacks", len(result.ReadBlocked))
 		}
@@ -1632,8 +1642,13 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if input.automation && len(composeErrors) > 0 {
 			selected, result.ComposeBlocked = excludeInvalidComposeStacks(selected, source, composeErrors)
 		}
+		if input.automation && len(input.heldBackComposePaths) > 0 {
+			selected, result.HeldBack = excludeHeldBackStacks(selected, selectedComposePaths(binding), input.heldBackComposePaths)
+		}
 		if len(selected) == 0 {
-			if len(result.ComposeBlocked) > 0 {
+			if len(result.HeldBack) > 0 {
+				result.Message = fmt.Sprintf("%d stack(s) kept unchanged until their conflict or local deletion is decided", len(result.HeldBack))
+			} else if len(result.ComposeBlocked) > 0 {
 				result.Message = fmt.Sprintf("%d stack(s) kept unchanged because their Compose file is invalid", len(result.ComposeBlocked))
 			} else {
 				result.Message = "Synchronization paused for the stack currently being edited; no file was overwritten"
@@ -1691,6 +1706,14 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		}
 	}
 	statusRefreshSafe := result.Preview.Conflicts == 0 && result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0
+	// A conflict or a local deletion confined to a held-back stack no longer
+	// speaks for the whole link. The stacks that DID import must be allowed to
+	// go green again, or they keep reporting pending remote changes that have
+	// in fact already been applied.
+	if input.automation && len(input.heldBackComposePaths) > 0 {
+		statusRefreshSafe = result.Preview.Preserved == 0 && len(result.EditorBlocked) == 0 &&
+			len(excludeStringValues(heldBackComposeStacks(result.Preview, selectedComposePaths(binding)), input.heldBackComposePaths)) == 0
+	}
 	if len(input.targetComposePaths) > 0 {
 		statusRefreshSafe = targetedPreviewResolved(result.Preview, selectedComposePaths(binding), input.targetComposePaths) &&
 			len(composePathsForFiles(input.targetComposePaths, result.EditorBlocked)) == 0
@@ -1703,7 +1726,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 			paths = input.targetComposePaths
 		}
 		now := time.Now().UTC()
-		safePaths := excludeStringValues(paths, result.ComposeBlocked)
+		safePaths := excludeStringValues(excludeStringValues(paths, result.ComposeBlocked), input.heldBackComposePaths)
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, safePaths, map[string]any{"state": stackSyncUpToDate, "error_message": "", "conflict_count": 0, "last_checked_at": &now, "last_success_at": &now})
 		for _, composePath := range result.ComposeBlocked {
 			message := result.Preview.ComposeErrors[composePath]
@@ -3944,6 +3967,66 @@ func excludeInvalidComposeStacks(selected, allFiles map[string]transferFile, com
 			}
 		}
 		if !invalidOwners {
+			filtered[path] = file
+		}
+	}
+	blockedPaths := make([]string, 0, len(blocked))
+	for composePath := range blocked {
+		blockedPaths = append(blockedPaths, composePath)
+	}
+	sort.Strings(blockedPaths)
+	return filtered, blockedPaths
+}
+
+// heldBackComposeStacks returns the stacks this preview cannot touch without a
+// human decision: one of their files conflicts, or one was deleted locally
+// while Git still has it.
+//
+// Before this existed, either case aborted the WHOLE Folder Link: one deleted
+// file in one stack froze every other stack of the link, which kept showing
+// pending remote changes that could never arrive. Isolating the decision to the
+// stack that owns it is what lets the rest of the link keep working.
+func heldBackComposeStacks(preview TransferPreview, composePaths []string) []string {
+	result := make([]string, 0)
+	for _, entry := range preview.Entries {
+		if entry.Directory {
+			continue
+		}
+		held := entry.Status == "conflict" ||
+			entry.Status == "deleted_locally" ||
+			entry.ConflictKind == "destination_deleted"
+		if !held {
+			continue
+		}
+		result = append(result, composePathsForFile(composePaths, entry.Path)...)
+	}
+	return uniqueSortedStrings(result)
+}
+
+// excludeHeldBackStacks drops every selected file owned by a held-back stack,
+// mirroring excludeInvalidComposeStacks. Ownership is resolved against the
+// binding's own Compose catalogue, not against the transferred files, so a
+// stack whose Compose file is not part of this change set still shields its
+// other files.
+func excludeHeldBackStacks(selected map[string]transferFile, composePaths, heldBack []string) (map[string]transferFile, []string) {
+	if len(heldBack) == 0 || len(selected) == 0 {
+		return selected, nil
+	}
+	heldSet := make(map[string]struct{}, len(heldBack))
+	for _, composePath := range heldBack {
+		heldSet[composePath] = struct{}{}
+	}
+	blocked := make(map[string]struct{})
+	filtered := make(map[string]transferFile, len(selected))
+	for path, file := range selected {
+		owned := false
+		for _, composePath := range composePathsForFile(composePaths, path) {
+			if _, held := heldSet[composePath]; held {
+				blocked[composePath] = struct{}{}
+				owned = true
+			}
+		}
+		if !owned {
 			filtered[path] = file
 		}
 	}

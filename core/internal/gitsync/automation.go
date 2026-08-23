@@ -53,6 +53,7 @@ type AutoSyncResult struct {
 	RollbackFailed []string `json:"rollbackFailed,omitempty"`
 	SyncFailed     []string `json:"syncFailed,omitempty"`
 	Discovered     []string `json:"discovered,omitempty"`
+	HeldBack       []string `json:"heldBack,omitempty"`
 	Message        string   `json:"message"`
 }
 
@@ -401,7 +402,11 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		// A folder can contain many thousands of entries. Do not retain the first
 		// inventory while ImportBinding builds and validates its fresh inventory.
 		changedPaths := changedPreviewPaths(preview)
-		newTargets, newTargetErr := newComposeDeploymentTargets(binding, preview, s.activeAutomationComposePaths(binding))
+		// Computed here, while the preview still holds its entries: they are
+		// released a few lines below to keep one inventory in memory at a time.
+		activeAutomationPaths := s.activeAutomationComposePaths(binding)
+		heldBackStacks := heldBackComposeStacks(preview, activeAutomationPaths)
+		newTargets, newTargetErr := newComposeDeploymentTargets(binding, preview, activeAutomationPaths)
 		if newTargetErr != nil {
 			return newTargetErr
 		}
@@ -413,16 +418,27 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			newTargets = excludeStringValues(newTargets, invalidComposePaths)
 		}
 		preview.Entries = nil
-		if conflicts > 0 {
-			result.State = "conflict"
-			result.Message = fmt.Sprintf("%d conflict(s) require a manual decision; no file was changed", conflicts)
-			return nil
-		}
-		if localDeletions > 0 {
-			localDeletionBlock = true
-			result.State = "blocked"
-			result.Message = fmt.Sprintf("%d locally deleted synchronized file(s) require an explicit stack decision; no file was restored", localDeletions)
-			return nil
+		// A conflict or a local deletion belongs to the stack that owns the file,
+		// not to the Folder Link. Hold that stack exactly as it is and let every
+		// other stack of the link import normally: before this, one deleted file
+		// in one stack froze the whole link, and the untouched stacks kept
+		// reporting remote changes that could never arrive.
+		if conflicts > 0 || localDeletions > 0 {
+			remaining := excludeStringValues(activeAutomationPaths, heldBackStacks)
+			// Fail closed: if the decision cannot be attributed to a stack, or if
+			// no stack is left to synchronize, keep the historical whole-link
+			// stop rather than guess.
+			if len(heldBackStacks) == 0 || len(remaining) == 0 {
+				if conflicts > 0 {
+					result.State = "conflict"
+					result.Message = fmt.Sprintf("%d conflict(s) require a manual decision; no file was changed", conflicts)
+				} else {
+					localDeletionBlock = true
+					result.State = "blocked"
+					result.Message = fmt.Sprintf("%d locally deleted synchronized file(s) require an explicit stack decision; no file was restored", localDeletions)
+				}
+				return nil
+			}
 		}
 		if len(newTargets) > 0 {
 			result.Discovered = append([]string(nil), newTargets...)
@@ -438,13 +454,16 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			return nil
 		}
 
-		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: previewToken, compactResult: true, automation: true})
+		transfer, importErr := s.ImportBinding(ctx, id, TransferInput{PreviewToken: previewToken, compactResult: true, automation: true, heldBackComposePaths: heldBackStacks})
 		if importErr != nil {
 			return importErr
 		}
 		result.State = "up_to_date"
 		result.Backup = transfer.Backup
-		readBlockedStacks := composePathsForFiles(s.activeAutomationComposePaths(binding), transfer.ReadBlocked)
+		// A held-back stack keeps its files AND its previous deployment: nothing
+		// of it was imported, so nothing of it may be deployed.
+		changedPaths = excludeComposeStackPaths(changedPaths, transfer.HeldBack)
+		readBlockedStacks := composePathsForFiles(activeAutomationPaths, transfer.ReadBlocked)
 		result.SyncFailed = uniqueSortedStrings(append(append([]string(nil), transfer.ComposeBlocked...), readBlockedStacks...))
 		if len(transfer.ComposeBlocked) > 0 {
 			result.State = "partial"
@@ -515,9 +534,24 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		// not changed by this: leaving a stack out of automatic deployment is a
 		// legitimate choice, and it must not paint a healthy link red. It must
 		// not be silent either.
-		if unauthorized := unauthorizedDeploymentStacks(binding, changedPaths, s.activeAutomationComposePaths(binding)); len(unauthorized) > 0 {
+		if unauthorized := unauthorizedDeploymentStacks(binding, changedPaths, activeAutomationPaths); len(unauthorized) > 0 {
 			result.Message += fmt.Sprintf("; %d changed stack(s) not authorized for automatic deployment, still running their previous version: %s",
 				len(unauthorized), strings.Join(unauthorized, ", "))
+		}
+		// Reported last so the decision the user has to take is the headline,
+		// and named stack by stack: the other stacks are already synchronized.
+		if len(transfer.HeldBack) > 0 {
+			result.HeldBack = append([]string(nil), transfer.HeldBack...)
+			if conflicts > 0 {
+				result.State = "conflict"
+				result.Message = fmt.Sprintf("%d conflict(s) require a manual decision on %s; every other stack was synchronized",
+					conflicts, strings.Join(transfer.HeldBack, ", "))
+			} else {
+				localDeletionBlock = true
+				result.State = "blocked"
+				result.Message = fmt.Sprintf("%d locally deleted synchronized file(s) require an explicit decision on %s; no file was restored and every other stack was synchronized",
+					localDeletions, strings.Join(transfer.HeldBack, ", "))
+			}
 		}
 		return nil
 	})

@@ -199,6 +199,13 @@ func (s *Service) RecoverInterruptedOperations() (int64, error) {
 	if err == nil {
 		_ = s.runRetentionMaintenance(time.Now().UTC(), true)
 	}
+	// One-shot repair for links stopped by a release that could not isolate a
+	// conflict or a local deletion to the stack owning it.
+	if unstuck, clearErr := s.store.ClearStaleAutoSyncBlocks(); clearErr != nil {
+		log.Warn().Err(clearErr).Msg("Could not schedule a full scan for blocked Folder Links")
+	} else if unstuck > 0 {
+		log.Info().Int64("links", unstuck).Msg("Blocked Folder Links will run a full scan so their unaffected stacks resynchronize")
+	}
 	return operations + deployments, err
 }
 

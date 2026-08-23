@@ -337,6 +337,27 @@ func (s *Store) UpdateBindingAutoSyncState(id, state, message, commit string, at
 	return s.db.Model(&StackBinding{}).Where("uuid = ?", id).Updates(updates).Error
 }
 
+// ClearStaleAutoSyncBlocks forgets the last synchronized commit of every link
+// stopped on a conflict or a local deletion, so the next automatic cycle runs a
+// full scan instead of taking the "no new Git commit" shortcut.
+//
+// Releases before per-stack isolation aborted the whole link on either of those:
+// the untouched stacks kept a computed-but-never-applied "remote changes" state,
+// and when Git had not moved since, the shortcut skipped the scan that would
+// have repaired them - the link stayed stuck until someone checked by hand.
+// Running this once at startup is what makes upgrading enough to recover.
+//
+// Preserved Git deletions are excluded: remembering the commit there is
+// deliberate, it keeps the interval fetch-only until Git actually moves.
+func (s *Store) ClearStaleAutoSyncBlocks() (int64, error) {
+	tx := s.db.Model(&StackBinding{}).
+		Where("auto_sync_state IN ?", []string{"blocked", "conflict"}).
+		Where("last_auto_sync_commit IS NOT NULL AND last_auto_sync_commit != ''").
+		Where("auto_sync_error IS NULL OR auto_sync_error NOT LIKE ?", "%Git deletion%").
+		Update("last_auto_sync_commit", "")
+	return tx.RowsAffected, tx.Error
+}
+
 func (s *Store) UpdateBindingInitialSyncState(id, state, message string, at *time.Time) error {
 	updates := map[string]any{"initial_sync_state": state, "initial_sync_error": message}
 	if at != nil {
