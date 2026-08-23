@@ -31,7 +31,7 @@ export interface FilesContextType {
     addFile: (filename: string, isDir: boolean) => Promise<void>
     copyFile: (srcFilename: string, destFilename: string, isDir: boolean) => Promise<void>
     deleteFile: (filename: string) => Promise<boolean>
-    renameFile: (oldFilename: string, newFile: string) => Promise<void>
+    renameFile: (oldFilename: string, newFile: string) => Promise<{ ok: boolean; err: string }>
     listFiles: (path: string, depthIndex: number[]) => Promise<void>
 
     uploadFile: (filename: string, contents: File | string, upload?: boolean) => Promise<string>
@@ -173,7 +173,7 @@ function FilesProvider({children}: { children: ReactNode }) {
     const renameFile = async (
         oldFilename: string,
         newFileName: string,
-    ) => {
+    ): Promise<{ ok: boolean; err: string }> => {
         const {err} = await callRPC(() => client.rename({
             newFilePath: newFileName,
             oldFilePath: oldFilename,
@@ -188,6 +188,10 @@ function FilesProvider({children}: { children: ReactNode }) {
         }
 
         await fetchFiles()
+        // Reported rather than only shown: a refusal - a name already taken,
+        // a move between two linked folders - has to keep its dialog open with
+        // the name still in it, instead of closing over the operator's typing.
+        return {ok: !err, err}
     }
 
     const getUrl = useHostUrl()

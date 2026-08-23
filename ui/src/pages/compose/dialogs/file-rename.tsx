@@ -39,6 +39,7 @@ function FileRename() {
 
     const [name, setName] = useState('')
     const [error, setError] = useState('')
+    const [busy, setBusy] = useState(false)
 
     const inputRef = useRef<HTMLInputElement>(null)
 
@@ -51,24 +52,34 @@ function FileRename() {
         }
     }, [filename])
 
-    const handleConfirm = () => {
+    const handleConfirm = async () => {
         const newFilename = name.trim()
-        if (!newFilename || newFilename === filename) return
+        if (!newFilename || newFilename === filename || busy) return
 
-        renameFile(filename, newFilename).then()
+        setBusy(true)
+        // Awaited, and the dialog only closes on success. A refusal - a name
+        // already taken, a move between two linked folders - used to close over
+        // the name that had just been typed, leaving the operator to start
+        // again from the beginning.
+        const {ok, err} = await renameFile(filename, newFilename)
+        setBusy(false)
+        if (!ok) {
+            setError(err || 'Rename failed')
+            return
+        }
         close()
     }
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter') {
             e.preventDefault()
-            handleConfirm()
+            void handleConfirm()
         }
         if (e.key === 'Escape') close()
     }
 
     // Disable button if name is empty, has error, or is identical to the old name
-    const isRenameDisabled = !name.trim() || !!error || name.trim() === filename
+    const isRenameDisabled = busy || !name.trim() || !!error || name.trim() === filename
 
     return (
         <Dialog
@@ -119,7 +130,14 @@ function FileRename() {
                             fullWidth
                             variant="outlined"
                             value={name}
-                            onChange={(e) => setName(e.target.value)}
+                            onChange={(e) => {
+                                setName(e.target.value)
+                                // The refusal belongs to the name that was
+                                // submitted. Editing it must re-enable the
+                                // button, which is disabled while an error
+                                // stands - otherwise the dialog dead-ends.
+                                if (error) setError('')
+                            }}
                             error={!!error}
                             helperText={error}
                             sx={{mt: 0.5}}
@@ -186,7 +204,7 @@ function FileRename() {
                 <Button
                     variant="contained"
                     disabled={isRenameDisabled}
-                    onClick={handleConfirm}
+                    onClick={() => void handleConfirm()}
                     startIcon={<DriveFileRenameOutline/>}
                     sx={{
                         borderRadius: 2,
