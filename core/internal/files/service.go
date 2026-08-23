@@ -700,7 +700,19 @@ func (s *Service) listAllForSearch(dirPath string, hostname string) ([]string, e
 	root := fsCli.Root()
 
 	var filez []string
-	err = fsCli.WalkDir(rel, func(path string, d fs.DirEntry, err error) error {
+	err = fsCli.WalkDir(rel, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// fs.WalkDir hands the callback a nil entry when the ROOT itself
+			// cannot be stat-ed - the folder was deleted or renamed while the
+			// search ran - and d.IsDir() on it was a nil dereference that took
+			// the whole request down. That case is a real error and is
+			// reported; a subdirectory that merely cannot be read is skipped so
+			// one unreadable folder does not silence the entire search.
+			if d == nil {
+				return walkErr
+			}
+			return nil
+		}
 		if d.IsDir() {
 			return nil
 		}
