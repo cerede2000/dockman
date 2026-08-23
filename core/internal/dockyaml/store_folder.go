@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/RA341/dockman/pkg/fileutil"
+
 	"github.com/rs/zerolog/log"
 )
 
@@ -66,10 +68,13 @@ func (s *StoreFolder) Save(host string, data []byte) error {
 	if err != nil {
 		return err
 	}
-
-	_, err = file.Write(data)
-	if err != nil {
-		return err
+	// Closing was missing entirely, on every path. Saving the configuration is
+	// rare enough that this leaked slowly rather than at once. Close is also
+	// where a short or failed write finally surfaces, so on the happy path its
+	// error is the function's error rather than a swallowed log line.
+	if _, writeErr := file.Write(data); writeErr != nil {
+		fileutil.Close(file)
+		return writeErr
 	}
-	return nil
+	return file.Close()
 }

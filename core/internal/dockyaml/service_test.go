@@ -59,3 +59,25 @@ func TestMissingConfigurationFallsBackToDefaults(t *testing.T) {
 	require.Equal(t, defaultDockmanYaml.SearchLimit, config.SearchLimit)
 	require.Equal(t, defaultDockmanYaml.TabLimit, config.TabLimit)
 }
+
+// Saving the configuration never closed its handle either. It leaks more
+// slowly than the read path because it is rare, and it is also where a short
+// or failed write finally surfaces.
+func TestSavingTheConfigurationLeaksNoDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	before := openDescriptors(t)
+	for index := range 200 {
+		require.NoError(t, store.Save("local", []byte("tabLimit: 4\n")))
+		_ = index
+	}
+	require.LessOrEqual(t, openDescriptors(t)-before, 2, "saving the configuration must not accumulate open files")
+
+	contents, err := os.ReadFile(filepath.Join(dir, "local.dockman.yml"))
+	require.NoError(t, err)
+	require.Equal(t, "tabLimit: 4\n", string(contents))
+
+	// and what was written is what comes back
+	require.EqualValues(t, 4, New(store).GetYaml("local").TabLimit)
+}
