@@ -90,7 +90,7 @@ jobs:
       - name: Test
         env:
           CGO_ENABLED: "1"
-          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/config/... ./internal/database/... ./internal/files/... ./internal/gitsync/... ./internal/notifications/... ./internal/secrets/... ./internal/docker/updater/... ./internal/docker' }}
+          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/config/... ./internal/database/... ./internal/dockyaml/... ./internal/files/... ./internal/gitsync/... ./internal/notifications/... ./internal/secrets/... ./internal/docker/updater/... ./internal/docker' }}
         run: |
           if [[ ! "$TEST_PATH" =~ ^(\./[A-Za-z0-9_./*-]+)([[:space:]]+\./[A-Za-z0-9_./*-]+)*$ ]]; then
             echo "Invalid Go package list" >&2

@@ -2,6 +2,8 @@ package dockyaml
 
 import (
 	"io"
+
+	"github.com/RA341/dockman/pkg/fileutil"
 	"time"
 
 	"dario.cat/mergo"
@@ -36,6 +38,12 @@ func (s *Service) GetYaml(host string) *DockmanYaml {
 		log.Warn().Err(err).Str("host", host).Msg("Failed to load dockyaml")
 		return &config
 	}
+	// Every path out of here used to leak this handle, including the cache hit
+	// just below. GetYaml is read from getSortRank, which runs inside a sort
+	// comparator, so listing one directory of N entries leaked O(N log N)
+	// descriptors - the process ran out of them and then nothing could open a
+	// file or accept a connection any more.
+	defer fileutil.Close(file)
 
 	cah, ok := s.cached.Load(host)
 	if ok && !state.ModTime().After(cah.prevModTime) {
@@ -79,6 +87,7 @@ func (s *Service) GetContents(host string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer fileutil.Close(get)
 
 	all, err := io.ReadAll(get)
 	if err != nil {
