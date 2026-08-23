@@ -525,10 +525,41 @@ func (s *Store) MarkInterruptedOperations() (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// MarkInterruptedDeployments repairs deployment rows left mid-flight by a stop.
+//
+// "provisioning" and "rolling_back" were missing from this list, and a row in
+// either survived every restart with no path back: nothing else writes a
+// terminal state onto a run that is already over.
+//
+// An interrupted rollback is reported as rollback_failed, not failed, and the
+// difference is deliberate: Dockman does not know whether the previous version
+// was restored before it stopped, and saying "the deployment failed" would
+// quietly claim it does. That is a state an operator must look at.
 func (s *Store) MarkInterruptedDeployments() (int64, error) {
-	result := s.db.Model(&Deployment{}).Where("state IN ?", []string{"validating", "dry_run", "deploying"}).Updates(map[string]any{
+	result := s.db.Model(&Deployment{}).Where("state IN ?", []string{"validating", "provisioning", "dry_run", "deploying"}).Updates(map[string]any{
 		"state": "failed", "result": "Dockman stopped before the controlled deployment completed",
 	})
+	if result.Error != nil {
+		return result.RowsAffected, result.Error
+	}
+	rolledBack := s.db.Model(&Deployment{}).Where("state = ?", "rolling_back").Updates(map[string]any{
+		"state": "rollback_failed", "result": "Dockman stopped while restoring the previous version; verify this stack manually",
+	})
+	return result.RowsAffected + rolledBack.RowsAffected, rolledBack.Error
+}
+
+// ClearInterruptedStackDeployStates does the same for the per-stack deployment
+// report. These values are written as a run progresses and were only ever
+// cleared by the next run of that exact stack: a stop mid-deployment left a
+// stack showing "provisioning" for good, a deployment that no process is
+// performing any more.
+func (s *Store) ClearInterruptedStackDeployStates() (int64, error) {
+	result := s.db.Model(&GitStackStatus{}).
+		Where("deploy_state IN ?", []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back"}).
+		Updates(map[string]any{
+			"deploy_state": "failed",
+			"deploy_error": "Dockman stopped before this controlled deployment completed",
+		})
 	return result.RowsAffected, result.Error
 }
 

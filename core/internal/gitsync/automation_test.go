@@ -991,3 +991,165 @@ func TestAutoSyncNamesTheStacksItWasNotAuthorizedToDeploy(t *testing.T) {
 	require.Contains(t, result.Message, "not authorized for automatic deployment")
 	require.NotContains(t, result.Message, "web/compose.yml")
 }
+
+// An explicit check re-arms a failed or partial deployment by re-adding every
+// controlled path. When none of them resolves to a target any more - the stack
+// was deselected, removed, or excluded since - deployChangedStacks returned
+// before it could touch the binding, and the red state survived the very
+// action meant to clear it. Pressing "Check now" simply did nothing, for ever.
+func TestStaleAutoDeployStateIsResolvedWhenNothingIsLeftToDeploy(t *testing.T) {
+	service, _, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.UUID)
+	_, err = service.UpdateBindingAutomation(binding.UUID, BindingAutomationInput{
+		Enabled:               true,
+		IntervalMinutes:       5,
+		AutoSyncSelectionMode: composeSelectionAll,
+	})
+	require.NoError(t, err)
+
+	// Settle the link so the commit shortcut applies from now on.
+	result, err := service.RunBindingAutoSync(context.Background(), binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, "up_to_date", result.State)
+	settled, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.NotEmpty(t, settled.LastAutoSyncCommit)
+
+	// A previous run ended partial. The stacks it names are no longer under
+	// automatic deployment, which is the state an operator lands in after
+	// repairing things by hand.
+	settled.AutoDeployEnabled = true
+	settled.AutoDeployComposePaths = ""
+	settled.AutoDeployState = "partial"
+	settled.AutoDeployError = "1 stack(s) deployed; 1 stack(s) failed"
+	require.NoError(t, service.store.SaveBinding(&settled))
+
+	// The operator presses "Check now": the one action that retries.
+	_, err = service.RunBindingAutoSyncNow(context.Background(), binding.UUID)
+	require.NoError(t, err)
+
+	after, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.NotEqual(t, "partial", after.AutoDeployState,
+		"a stale partial deploy must not survive an explicit check that has nothing left to deploy")
+	require.Equal(t, "watching", after.AutoDeployState)
+	require.NotContains(t, after.AutoDeployError, "failed")
+}
+
+// The manual way out, for every stale picture the automatic one cannot reach.
+func TestResetBindingAutomationStateClearsReportsAndForcesFullScan(t *testing.T) {
+	service, _, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.UUID)
+	_, err = service.UpdateBindingAutomation(binding.UUID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, AutoSyncSelectionMode: composeSelectionAll,
+	})
+	require.NoError(t, err)
+	_, err = service.RunBindingAutoSync(context.Background(), binding.UUID)
+	require.NoError(t, err)
+
+	settled, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.NotEmpty(t, settled.LastAutoSyncCommit)
+	settled.AutoDeployEnabled = true
+	settled.AutoDeployState = "partial"
+	settled.AutoDeployError = "1 stack(s) deployed; 1 stack(s) failed"
+	settled.AutoSyncState = "partial"
+	settled.AutoSyncError = "something went wrong once"
+	require.NoError(t, service.store.SaveBinding(&settled))
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.UUID, []string{"alpha/compose.yml"},
+		map[string]any{"deploy_state": "failed", "deploy_error": "boom"}))
+
+	// A conflict is a pending decision, not a report: it must survive.
+	require.NoError(t, service.store.UpdateGitStackStatuses(binding.UUID, []string{"beta/compose.yml"},
+		map[string]any{"state": stackSyncConflict, "error_message": "needs a decision"}))
+
+	before, err := service.store.GitStackStatuses(binding.UUID)
+	require.NoError(t, err)
+	expectedCleared := 0
+	for _, row := range before {
+		if row.DeployState != "" && row.DeployState != "success" {
+			expectedCleared++
+		}
+	}
+	require.GreaterOrEqual(t, expectedCleared, 1)
+
+	result, err := service.ResetBindingAutomationState(binding.UUID)
+	require.NoError(t, err)
+	require.True(t, result.FullScan)
+	require.Equal(t, expectedCleared, result.ClearedStack)
+
+	after, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.Equal(t, "watching", after.AutoDeployState)
+	require.Empty(t, after.AutoDeployError)
+	require.Equal(t, "idle", after.AutoSyncState)
+	require.Empty(t, after.AutoSyncError)
+	require.Empty(t, after.LastAutoSyncCommit, "the commit shortcut must not skip the next scan")
+
+	alpha, err := service.store.GitStackStatus(binding.UUID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.Empty(t, alpha.DeployState)
+	require.Empty(t, alpha.DeployError)
+
+	beta, err := service.store.GitStackStatus(binding.UUID, "beta/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, stackSyncConflict, beta.State, "an unresolved conflict is a decision, not a report: it must survive a reset")
+}
+
+// Everything a stop can freeze mid-flight must come back with a terminal state.
+// Two of these survived every restart: nothing else ever writes a terminal
+// state onto a run that is already over.
+func TestRestartRecoveryClearsEveryInFlightDeploymentState(t *testing.T) {
+	service, _ := testService(t, true)
+	const binding = "link-1"
+
+	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back"} {
+		require.NoError(t, service.store.SaveDeployment(&Deployment{
+			UUID: "deployment-" + state, RepositoryUUID: "repo-1", BindingUUID: binding,
+			ComposeHash: state + "/compose.yml", State: state,
+		}))
+		require.NoError(t, service.store.db.Save(&GitStackStatus{
+			BindingUUID: binding, ComposePath: state + "/compose.yml",
+			State: stackSyncUpToDate, DeployState: state,
+		}).Error)
+	}
+	// A finished run must be left exactly as it is.
+	require.NoError(t, service.store.SaveDeployment(&Deployment{
+		UUID: "deployment-success", RepositoryUUID: "repo-1", BindingUUID: binding,
+		ComposeHash: "done/compose.yml", State: "success", Result: "deployed",
+	}))
+	require.NoError(t, service.store.db.Save(&GitStackStatus{
+		BindingUUID: binding, ComposePath: "done/compose.yml",
+		State: stackSyncUpToDate, DeployState: "success",
+	}).Error)
+
+	_, err := service.RecoverInterruptedOperations()
+	require.NoError(t, err)
+
+	rows, err := service.store.ListDeployments(binding, 100)
+	require.NoError(t, err)
+	byID := make(map[string]Deployment, len(rows))
+	for _, row := range rows {
+		byID[row.UUID] = row
+	}
+	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying"} {
+		require.Equal(t, "failed", byID["deployment-"+state].State, "a %q deployment must not survive a restart", state)
+	}
+	require.Equal(t, "rollback_failed", byID["deployment-rolling_back"].State,
+		"an interrupted rollback is not a plain failure: nobody knows whether the previous version was restored")
+	require.Equal(t, "success", byID["deployment-success"].State, "a finished run must be left alone")
+
+	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back"} {
+		status, statusErr := service.store.GitStackStatus(binding, state+"/compose.yml")
+		require.NoError(t, statusErr)
+		require.Equal(t, "failed", status.DeployState, "a stack left %q by a restart must be retryable", state)
+		require.NotEmpty(t, status.DeployError)
+	}
+	done, err := service.store.GitStackStatus(binding, "done/compose.yml")
+	require.NoError(t, err)
+	require.Equal(t, "success", done.DeployState)
+}

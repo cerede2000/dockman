@@ -377,6 +377,10 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		// file may have been fixed since the previous cycle. Healthy bindings keep
 		// the cheap commit-only fast path, so there is no idle CPU regression.
 		recheckSynchronizationError := s.bindingHasActiveStackState(binding, stackSyncError)
+		// Deliberately NOT re-armed for a failed deployment: background polling
+		// must not loop `docker compose up` on a stack that is broken. An
+		// explicit "Check now" is what retries, once the operator has fixed
+		// whatever broke - see the retry block further down.
 		if binding.LastAutoSyncCommit != "" && binding.LastAutoSyncCommit == status.Head && !explicit && !recheckSynchronizationError {
 			skippedStackScan = true
 			if s.bindingHasActiveStackState(binding, stackSyncLocalDeleted) {
@@ -511,10 +515,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 				return clearErr
 			}
 		}
-		if changed == 0 && binding.AutoDeployEnabled && (binding.AutoDeployState == "failed" || binding.AutoDeployState == "partial" || binding.AutoDeployState == "pending") {
+		retryingStaleDeploy := changed == 0 && binding.AutoDeployEnabled && isRetryableAutoDeployState(binding.AutoDeployState)
+		if retryingStaleDeploy {
 			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
 		}
 		changedPaths = excludeComposeStackPaths(changedPaths, result.SyncFailed)
+		deployAttempted := false
 		if len(changedPaths) > 0 && binding.AutoDeployEnabled {
 			deployment, deployErr := s.deployChangedStacks(ctx, binding, synchronizedCommit, changedPaths, transfer.Backup)
 			if deployErr != nil {
@@ -524,6 +530,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			result.DeployFailed = deployment.Failed
 			result.RolledBack = deployment.RolledBack
 			result.RollbackFailed = deployment.RollbackFailed
+			deployAttempted = len(deployment.Deployed)+len(deployment.Failed)+len(deployment.RolledBack)+len(deployment.RollbackFailed) > 0
 			if len(deployment.Failed) > 0 {
 				result.State = "partial"
 			}
@@ -544,6 +551,19 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			} else if len(deployment.Deployed) > 0 {
 				result.Message = fmt.Sprintf("%d file(s) synchronized and %d stack(s) deployed", changed, len(deployment.Deployed))
 			}
+		}
+		// A re-arm that found nothing to deploy must not leave the previous
+		// run's failure frozen. It means the paths that failed are no longer
+		// deployment targets - deselected, removed, or excluded - so nothing
+		// will ever carry that failure again, and without this the link would
+		// now do a full scan every cycle forever, for nothing.
+		if retryingStaleDeploy && !deployAttempted {
+			if resolveErr := s.store.UpdateBindingAutoDeployState(binding.UUID, "watching",
+				"No stack under automatic deployment still carries the previously reported failure; the deployment state was cleared", nil); resolveErr != nil {
+				return resolveErr
+			}
+			binding.AutoDeployState = "watching"
+			binding.AutoDeployError = ""
 		}
 		// Name what was deliberately left alone. The synchronization state is
 		// not changed by this: leaving a stack out of automatic deployment is a
@@ -715,4 +735,90 @@ func excludeComposeStackPaths(paths, blockedCompose []string) []string {
 		}
 	}
 	return result
+}
+
+// BindingAutomationResetResult reports what a manual state reset cleared.
+type BindingAutomationResetResult struct {
+	Binding      BindingView `json:"binding"`
+	ClearedStack int         `json:"clearedStackDeployments"`
+	FullScan     bool        `json:"nextCheckIsFullScan"`
+}
+
+// ResetBindingAutomationState clears the RECORDED automation states of a
+// folder link and forces the next check to be a complete scan.
+//
+// It exists because a reported state and the reality it describes can drift
+// apart: a deployment that failed once, was repaired by hand, and left its red
+// mark behind with nothing able to clear it. This resets what Dockman SAYS,
+// never what it holds. No file is written, no stack is deployed, no Git
+// history is touched, and every conclusion is recomputed by the next scan -
+// which is why clearing the last observed commit matters: without it the cheap
+// commit-only path would skip that scan and restore the same stale picture.
+//
+// Per-stack SYNCHRONIZATION states are deliberately left alone. A conflict, a
+// local deletion or a preserved Git deletion is a pending decision, not a
+// report, and clearing it would show green over a question nobody answered.
+func (s *Service) ResetBindingAutomationState(id string) (BindingAutomationResetResult, error) {
+	if !s.enabled {
+		return BindingAutomationResetResult{}, errors.New("Git synchronization is disabled")
+	}
+	automationLock := s.repositoryLock("automation:" + id)
+	if !automationLock.TryLock() {
+		return BindingAutomationResetResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+	}
+	defer automationLock.Unlock()
+
+	row, err := s.store.GetBinding(id)
+	if err != nil {
+		return BindingAutomationResetResult{}, err
+	}
+
+	cleared, err := s.clearRecordedStackDeployFailures(row)
+	if err != nil {
+		return BindingAutomationResetResult{}, err
+	}
+
+	row.AutoSyncState = "idle"
+	row.AutoSyncError = ""
+	// The commit shortcut is what makes a stale picture survive: drop the last
+	// observed commit so the next check rebuilds every conclusion from scratch.
+	row.LastAutoSyncCommit = ""
+	if row.AutoDeployEnabled {
+		row.AutoDeployState = "watching"
+	} else {
+		row.AutoDeployState = "disabled"
+	}
+	row.AutoDeployError = ""
+	if err := s.store.SaveBinding(&row); err != nil {
+		return BindingAutomationResetResult{}, err
+	}
+
+	s.recordActivity(ActivityRecord{RepositoryID: row.RepositoryUUID, BindingID: row.UUID, Type: "automation_reset",
+		Trigger: "manual", State: "success",
+		Details: ActivityDetails{Action: "reset reported automation state; next check is a full scan"}})
+
+	view, err := s.bindingView(row)
+	return BindingAutomationResetResult{Binding: view, ClearedStack: cleared, FullScan: true}, err
+}
+
+// clearRecordedStackDeployFailures wipes per-stack deployment reports that
+// describe a run that is over. Their synchronization state is untouched.
+func (s *Service) clearRecordedStackDeployFailures(binding StackBinding) (int, error) {
+	rows, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		return 0, err
+	}
+	stale := make([]string, 0)
+	for _, row := range rows {
+		if row.DeployState != "" && row.DeployState != "success" {
+			stale = append(stale, row.ComposePath)
+		}
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	if err := s.store.UpdateGitStackStatuses(binding.UUID, stale, map[string]any{"deploy_state": "", "deploy_error": ""}); err != nil {
+		return 0, err
+	}
+	return len(stale), nil
 }

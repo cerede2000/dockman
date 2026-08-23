@@ -265,6 +265,14 @@ func uniqueSortedStrings(values []string) []string {
 	return result
 }
 
+// isRetryableAutoDeployState reports a recorded automatic-deployment state
+// that the next cycle is expected to re-attempt. It exists so the fast path
+// that skips the stack scan and the block that performs the retry cannot
+// drift apart again: they were, and the retry became unreachable.
+func isRetryableAutoDeployState(state string) bool {
+	return state == "failed" || state == "partial" || state == "pending"
+}
+
 func deploymentTargetsForChanges(binding StackBinding, changed []string) []string {
 	targets := splitPatternLines(binding.AutoDeployComposePaths)
 	result := make([]string, 0)
