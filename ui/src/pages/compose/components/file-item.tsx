@@ -165,7 +165,10 @@ const FolderItemDisplay = ({entry, depthIndex, depth}: {
     const {isDragOver, dndProps} = useFileDnD(entry);
 
     const host = useHostStore(state => state.host);
-    const {alias} = useAliasStore.getState();
+    // Subscribed, not read through getState(): an imperative read during
+    // render is invisible to React, and the compiler memoizes this component
+    // by reference - it may reuse a render holding the previous alias.
+    const alias = useAliasStore(state => state.alias);
     const ctxKey = `${host}/${alias}`;
 
     const name = entry.filename
@@ -542,11 +545,14 @@ const useFileMenuCtx = (entry: FsEntry) => {
         navigate(createFileUrl(filename, undefined, 1))
     }
 
+    // Every entry is keyed. Without keys React reconciled this array by
+    // index, and it grows in the middle: the Git-sync entry appears once the
+    // status arrives, shifting Delete onto the slot Add to Git sync had.
     const contextActions = [
         ...(
             !entry.isDir ?
                 [
-                    <MenuItem onClick={() => {
+                    <MenuItem key="open-split" onClick={() => {
                         closeCtxMenu()
                         openSplit(filename)
                     }}>
@@ -556,7 +562,7 @@ const useFileMenuCtx = (entry: FsEntry) => {
                 []
         ),
         (
-            <MenuItem onClick={() => {
+            <MenuItem key="add" onClick={() => {
                 closeCtxMenu()
                 showCreate(
                     entry.isDir ?
@@ -580,7 +586,7 @@ const useFileMenuCtx = (entry: FsEntry) => {
         //     </MenuItem>
         // ),
         (
-            <MenuItem onClick={() => {
+            <MenuItem key="rename" onClick={() => {
                 closeCtxMenu()
                 showRename(filename)
             }}>
@@ -623,7 +629,7 @@ const useFileMenuCtx = (entry: FsEntry) => {
             </MenuItem>,
         ] : []),
         (
-            <MenuItem onClick={() => {
+            <MenuItem key="delete" onClick={() => {
                 closeCtxMenu()
                 showDelete(filename, entry.isDir)
             }}>
