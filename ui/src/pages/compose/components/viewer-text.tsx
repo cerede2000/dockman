@@ -13,6 +13,7 @@ import {ErrorOutlined} from "@mui/icons-material";
 import {useCompactMode, useOpenFiles} from "../state/files.ts";
 import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {indicatorMap, type SaveState} from "../hooks/status-hook.tsx";
+import {isAltLetter, ownsEditorShortcut} from "../../../lib/shortcut.ts";
 
 enum TabType {
     // noinspection JSUnusedGlobalSymbols
@@ -85,30 +86,24 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.altKey && !e.repeat) {
-                switch (e.code) {
-                    case "KeyZ":
-                        e.preventDefault();
-                        changeTab('0')
-                        break;
-                    case "KeyX":
-                        if (isComposeFile(filename)) {
-                            e.preventDefault();
-                            changeTab('1')
-                        }
-                        break;
-                    case "KeyC":
-                        if (isComposeFile(filename)) {
-                            e.preventDefault();
-                            changeTab('2')
-                        }
-                        break;
-                }
+            if (e.repeat) return;
+            // Both panes of a split view listen here. Without this, one press
+            // reached both and the second navigate() reverted the first.
+            if (!ownsEditorShortcut(track)) return;
+            if (isAltLetter(e, 'z')) {
+                e.preventDefault();
+                changeTab('0')
+            } else if (isAltLetter(e, 'x') && isComposeFile(filename)) {
+                e.preventDefault();
+                changeTab('1')
+            } else if (isAltLetter(e, 'c') && isComposeFile(filename)) {
+                e.preventDefault();
+                changeTab('2')
             }
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [changeTab, filename]);
+    }, [changeTab, filename, track]);
 
     const [saveStatus, setSaveStatus] = useState<SaveState>('idle')
 
@@ -131,12 +126,12 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
             map.push({
                 label: 'Deploy',
                 component: <TabDeploy selectedPage={filename}/>,
-                shortcut: <ShortcutFormatter title={"Editor"} keyCombo={["ALT", "X"]}/>,
+                shortcut: <ShortcutFormatter title={"Deploy"} keyCombo={["ALT", "X"]}/>,
             });
             map.push({
                 label: 'Stats',
                 component: <TabStat selectedPage={filename}/>,
-                shortcut: <ShortcutFormatter title={"Editor"} keyCombo={["ALT", "C"]}/>,
+                shortcut: <ShortcutFormatter title={"Stats"} keyCombo={["ALT", "C"]}/>,
             });
         }
 
@@ -181,7 +176,7 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
     const activePanel = (tabsList[currentTab] ?? tabsList[0]).component;
     return (
         <>
-            <Box sx={{
+            <Box data-editor-track={track} sx={{
                 display: 'flex',
                 alignItems: 'center',
                 borderBottom: 1,
@@ -243,7 +238,7 @@ function ViewerTextEditor({filename, track}: { filename: string, track: number }
 
             {activePanel && (
                 <Fade in={true} timeout={200} key={currentTab}>
-                    <Box sx={{
+                    <Box data-editor-track={track} sx={{
                         flexGrow: 1,
                         overflow: 'auto',
                         display: 'flex',
