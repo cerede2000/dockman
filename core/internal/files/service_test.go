@@ -290,3 +290,52 @@ func TestRenameIsRefusedWhenAGuardVetoesIt(t *testing.T) {
 	require.NoError(t, srv.Rename("compose/notes.txt", "compose/notes-renamed.txt", "local"))
 	require.FileExists(t, filepath.Join(root, "notes-renamed.txt"))
 }
+
+// Every variable in a template's filename has to be substituted. Replacing in
+// the original name each time meant only the last one survived, and a template
+// named "$stack$/$service$.yml" created a directory literally called "$stack$".
+func TestTemplateFilenameSubstitutesEveryVariable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, TemplateFolder), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "base"), 0o755))
+	body := "{{define \"$stack$/$service$.yml\"}}services:\n  {{.service}}:\n    image: alpine\n{{end}}"
+	require.NoError(t, os.WriteFile(filepath.Join(root, TemplateFolder, "two-vars.yml"), []byte(body), 0o644))
+
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+	tmpls, err := srv.GetTemplates("compose", "local")
+	require.NoError(t, err)
+	require.Len(t, tmpls, 1)
+
+	tmpls[0].vars["$stack$"] = "web"
+	tmpls[0].vars["$service$"] = "api"
+	tmpls[0].vars["service"] = "api"
+	require.NoError(t, srv.WriteTemplate("local", "compose/base", &tmpls[0]))
+
+	require.FileExists(t, filepath.Join(root, "base", "web", "api.yml"))
+	require.NoDirExists(t, filepath.Join(root, "base", "$stack$"), "no variable may survive into a real path")
+
+	contents, err := os.ReadFile(filepath.Join(root, "base", "web", "api.yml"))
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "api:")
+}
+
+// A template that names a variable it was not given must refuse rather than
+// write a path with a placeholder still in it.
+func TestTemplateRefusesAMissingVariable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, TemplateFolder), 0o755))
+	body := "{{define \"$stack$/app.yml\"}}services: {}\n{{end}}"
+	require.NoError(t, os.WriteFile(filepath.Join(root, TemplateFolder, "one-var.yml"), []byte(body), 0o644))
+
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+	tmpls, err := srv.GetTemplates("compose", "local")
+	require.NoError(t, err)
+	require.Len(t, tmpls, 1)
+
+	require.ErrorContains(t, srv.WriteTemplate("local", "compose/base", &tmpls[0]), "$stack$")
+	require.NoDirExists(t, filepath.Join(root, "base"))
+}
