@@ -265,6 +265,35 @@ func uniqueSortedStrings(values []string) []string {
 	return result
 }
 
+// terminalDeploymentStates are the values that describe a run that is OVER.
+// Everything else is a stage a run passes through, and a stage found at rest
+// means the process stopped inside it.
+//
+// Stated this way round on purpose. Restart recovery used to enumerate the
+// transient states instead, and it drifted twice: "provisioning" and
+// "rolling_back" were added to the deployment path and never added here, so a
+// stop inside either survived every restart. Listing what is FINISHED means a
+// stage added tomorrow is repaired by default rather than forgotten.
+var terminalDeploymentStates = map[string]struct{}{
+	"success": {}, "failed": {}, "rolled_back": {}, "rollback_failed": {},
+}
+
+// terminalStackDeployStates is the same set for the per-stack report, plus the
+// three values that mean "no run to speak of".
+var terminalStackDeployStates = map[string]struct{}{
+	"": {}, "idle": {}, "disabled": {},
+	"success": {}, "failed": {}, "rolled_back": {}, "rollback_failed": {},
+}
+
+func terminalStateList(set map[string]struct{}) []string {
+	states := make([]string, 0, len(set))
+	for state := range set {
+		states = append(states, state)
+	}
+	sort.Strings(states)
+	return states
+}
+
 // isRetryableAutoDeployState reports a recorded automatic-deployment state
 // that the next cycle is expected to re-attempt. It exists so the fast path
 // that skips the stack scan and the block that performs the retry cannot

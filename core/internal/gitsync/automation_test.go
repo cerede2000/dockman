@@ -1107,7 +1107,10 @@ func TestRestartRecoveryClearsEveryInFlightDeploymentState(t *testing.T) {
 	service, _ := testService(t, true)
 	const binding = "link-1"
 
-	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back"} {
+	// The last entry is not a state this code writes today. It stands in for
+	// the one somebody adds tomorrow: recovery selects on what is NOT finished,
+	// so it must be repaired without anyone remembering to list it.
+	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back", "some_future_stage"} {
 		require.NoError(t, service.store.SaveDeployment(&Deployment{
 			UUID: "deployment-" + state, RepositoryUUID: "repo-1", BindingUUID: binding,
 			ComposeHash: state + "/compose.yml", State: state,
@@ -1136,14 +1139,14 @@ func TestRestartRecoveryClearsEveryInFlightDeploymentState(t *testing.T) {
 	for _, row := range rows {
 		byID[row.UUID] = row
 	}
-	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying"} {
+	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "some_future_stage"} {
 		require.Equal(t, "failed", byID["deployment-"+state].State, "a %q deployment must not survive a restart", state)
 	}
 	require.Equal(t, "rollback_failed", byID["deployment-rolling_back"].State,
 		"an interrupted rollback is not a plain failure: nobody knows whether the previous version was restored")
 	require.Equal(t, "success", byID["deployment-success"].State, "a finished run must be left alone")
 
-	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back"} {
+	for _, state := range []string{"validating", "provisioning", "dry_run", "deploying", "rolling_back", "some_future_stage"} {
 		status, statusErr := service.store.GitStackStatus(binding, state+"/compose.yml")
 		require.NoError(t, statusErr)
 		require.Equal(t, "failed", status.DeployState, "a stack left %q by a restart must be retryable", state)
@@ -1152,6 +1155,26 @@ func TestRestartRecoveryClearsEveryInFlightDeploymentState(t *testing.T) {
 	done, err := service.store.GitStackStatus(binding, "done/compose.yml")
 	require.NoError(t, err)
 	require.Equal(t, "success", done.DeployState)
+
+	// The values that mean "no run to speak of" are finished states too: a
+	// restart must not paint an idle or unmanaged stack as a failed deployment.
+	for _, quiet := range []string{"", "idle", "disabled"} {
+		require.NoError(t, service.store.db.Save(&GitStackStatus{
+			BindingUUID: binding, ComposePath: "quiet-" + quiet + "/compose.yml",
+			State: stackSyncUpToDate, DeployState: "idle",
+		}).Error)
+		// Written the way the code writes it: the column defaults to
+		// "disabled", so a struct save cannot carry an empty value.
+		require.NoError(t, service.store.UpdateGitStackStatuses(binding,
+			[]string{"quiet-" + quiet + "/compose.yml"}, map[string]any{"deploy_state": quiet}))
+	}
+	_, err = service.RecoverInterruptedOperations()
+	require.NoError(t, err)
+	for _, quiet := range []string{"", "idle", "disabled"} {
+		status, statusErr := service.store.GitStackStatus(binding, "quiet-"+quiet+"/compose.yml")
+		require.NoError(t, statusErr)
+		require.Equal(t, quiet, status.DeployState, "a stack with no run in progress must be left alone")
+	}
 }
 
 // "checking" is written immediately before initializeBinding runs, in the same
