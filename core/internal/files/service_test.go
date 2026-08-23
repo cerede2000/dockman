@@ -339,3 +339,37 @@ func TestTemplateRefusesAMissingVariable(t *testing.T) {
 	require.ErrorContains(t, srv.WriteTemplate("local", "compose/base", &tmpls[0]), "$stack$")
 	require.NoDirExists(t, filepath.Join(root, "base"))
 }
+
+// fs.WalkDir hands the callback a nil entry when the root cannot be stat-ed.
+// Calling d.IsDir() on it was a nil dereference: searching a folder that had
+// just been deleted or renamed took the whole request down.
+func TestSearchWalkSurvivesAMissingRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+
+	require.NotPanics(t, func() {
+		paths, err := srv.listAllForSearch("compose/does-not-exist", "local")
+		require.Error(t, err, "a missing folder is reported, not silently empty")
+		require.Empty(t, paths)
+	})
+}
+
+// An unreadable subdirectory must not silence the rest of the search.
+func TestSearchWalkSkipsWhatItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "readable"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "readable", "compose.yml"), []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "locked"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "locked", "hidden.yml"), []byte("x\n"), 0o644))
+	require.NoError(t, os.Chmod(filepath.Join(root, "locked"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "locked"), 0o755) })
+
+	srv := New(func(_, _ string) (filesystem.FileSystem, error) { return filesystem.NewLocal(root), nil }, nil)
+	paths, err := srv.listAllForSearch("compose", "local")
+	require.NoError(t, err)
+	require.Contains(t, paths, filepath.Join("readable", "compose.yml"))
+}
