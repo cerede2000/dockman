@@ -202,6 +202,11 @@ func (s *Service) RecoverInterruptedOperations() (int64, error) {
 	// The per-stack report is a separate table and was left behind: a stack
 	// stopped mid-deployment kept showing an in-flight state that no process
 	// was performing, and only a later run of that same stack could clear it.
+	if links, linkErr := s.store.MarkInterruptedInitialSyncs(); linkErr != nil {
+		log.Warn().Err(linkErr).Msg("Could not repair Folder Links stopped while initializing")
+	} else if links > 0 {
+		log.Info().Int64("links", links).Msg("Folder Links stopped while initializing were marked so their baseline can be established")
+	}
 	if stacks, stackErr := s.store.ClearInterruptedStackDeployStates(); stackErr != nil {
 		log.Warn().Err(stackErr).Msg("Could not clear interrupted stack deployment states")
 	} else if stacks > 0 {
