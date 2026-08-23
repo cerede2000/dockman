@@ -68,6 +68,33 @@ export function useSaveStatus(debounceMs: number = 500, filename: string): UseSa
         return flushPending;
     }, [filename, flushPending]);
 
+    // React's cleanup does not run when the page itself goes away, so the two
+    // ways out of the browser need their own handling.
+    //
+    // Leaving the tab merely hidden - switching tab or application - is the
+    // common one and can still be saved properly, headers and all.
+    //
+    // Actually closing or reloading cannot: the save cannot be awaited while
+    // the page unloads, and the shortcuts that survive unload (sendBeacon) send
+    // no custom headers, so the write would arrive without its If-Match and
+    // overwrite whatever is on disk blind. Asking the browser to confirm is the
+    // honest answer, and it only ever asks while something really is pending.
+    useEffect(() => {
+        const flushWhenHidden = () => {
+            if (document.visibilityState === 'hidden') flushPending();
+        };
+        const confirmWhilePending = (event: BeforeUnloadEvent) => {
+            if (!pending.current) return;
+            event.preventDefault();
+        };
+        document.addEventListener('visibilitychange', flushWhenHidden);
+        window.addEventListener('beforeunload', confirmWhilePending);
+        return () => {
+            document.removeEventListener('visibilitychange', flushWhenHidden);
+            window.removeEventListener('beforeunload', confirmWhilePending);
+        };
+    }, [flushPending]);
+
     const handleContentChange = useCallback<SaveCallback>((value, onSave) => {
         setStatus('typing');
         pending.current = {value, onSave};
