@@ -21,7 +21,7 @@ describe('readClipboardText', () => {
         const result = await readClipboardText(undefined)
         expect(result).toHaveProperty('unavailable')
         expect((result as {unavailable: string}).unavailable).toContain('secure origin')
-        expect((result as {unavailable: string}).unavailable).toContain('Shift+right-click')
+        expect((result as {unavailable: string}).unavailable).toContain('Ctrl+V')
     })
 
     // Firefox exposes readText to extensions only, on HTTPS as well.

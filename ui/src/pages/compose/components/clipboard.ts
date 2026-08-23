@@ -12,20 +12,23 @@ export type ClipboardRead =
 //
 // Neither is something Dockman can work around, so the only useful thing to do
 // is say which one happened and point at the shortcut, which always works
-// because the browser performs that paste itself.
+// because the browser performs that paste itself. The browser's own right-click
+// menu is NOT a way out: it offers Paste only over an editable element, and
+// Monaco paints its text in a plain div - the real textarea is a point under
+// the caret. Letting that menu through yields Back/Reload/Inspect, never Paste.
 export async function readClipboardText(clipboard?: Clipboard): Promise<ClipboardRead> {
     if (!clipboard || typeof clipboard.readText !== 'function') {
         if (typeof window !== 'undefined' && !window.isSecureContext) {
-            return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. This entry needs a secure origin: serve Dockman over HTTPS.'}
+            return {unavailable: 'Ctrl+V / Cmd+V works. This entry needs a secure origin: serve Dockman over HTTPS.'}
         }
-        return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. This browser never lets a page read the clipboard by itself.'}
+        return {unavailable: 'Ctrl+V / Cmd+V works. This browser never lets a page read the clipboard by itself.'}
     }
     try {
         return {text: await clipboard.readText()}
     } catch {
         // Denied, dismissed, or the document was not focused when the menu
         // action ran. The shortcut is unaffected by any of them.
-        return {unavailable: 'Ctrl+V / Cmd+V works, and so does Shift+right-click for the browser\u2019s own menu. Dockman was not allowed to read the clipboard this time.'}
+        return {unavailable: 'Ctrl+V / Cmd+V works. Dockman was not allowed to read the clipboard this time.'}
     }
 }
 
