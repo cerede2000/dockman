@@ -95,8 +95,8 @@ func (s *Service) ResolveLocalStackDeletion(ctx context.Context, bindingID, comp
 	}
 
 	automationLock := s.repositoryLock("automation:" + bindingID)
-	if !automationLock.TryLock() {
-		return LocalDeletionActionResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+	if !waitForLock(automationLock, decisionLockBudget) {
+		return LocalDeletionActionResult{}, errors.New("automatic synchronization is still running for this Folder Link; pause its automation if you need to decide now")
 	}
 	defer automationLock.Unlock()
 

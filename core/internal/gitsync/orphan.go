@@ -47,8 +47,8 @@ func (s *Service) ResolveGitOrphan(ctx context.Context, bindingID, composePath s
 	}
 
 	automationLock := s.repositoryLock("automation:" + bindingID)
-	if !automationLock.TryLock() {
-		return OrphanActionResult{}, errors.New("automatic synchronization is currently running; retry when it finishes")
+	if !waitForLock(automationLock, decisionLockBudget) {
+		return OrphanActionResult{}, errors.New("automatic synchronization is still running for this Folder Link; pause its automation if you need to decide now")
 	}
 	defer automationLock.Unlock()
 
