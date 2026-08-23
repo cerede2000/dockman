@@ -20,7 +20,7 @@ describe('readClipboardText', () => {
         secureContext(false)
         const result = await readClipboardText(undefined)
         expect(result).toHaveProperty('unavailable')
-        expect((result as {unavailable: string}).unavailable).toContain('secure connection')
+        expect((result as {unavailable: string}).unavailable).toContain('secure origin')
         expect((result as {unavailable: string}).unavailable).toContain('Ctrl+V')
     })
 
@@ -28,7 +28,7 @@ describe('readClipboardText', () => {
     it('names the browser restriction when the context is already secure', async () => {
         secureContext(true)
         const result = await readClipboardText({} as Clipboard)
-        expect((result as {unavailable: string}).unavailable).toContain('does not let a page read the clipboard')
+        expect((result as {unavailable: string}).unavailable).toContain('never lets a page read the clipboard')
     })
 
     it('survives a denied or dismissed permission', async () => {
