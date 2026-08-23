@@ -46,31 +46,39 @@ export const indicatorMap: Record<SaveState, { color: string, component: ReactNo
 export function useSaveStatus(debounceMs: number = 500, filename: string): UseSaveStatusReturn {
     const [status, setStatus] = useState<SaveState>('idle');
     const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // The editor has no manual save: whatever this debounce is still holding is
+    // the only copy of the last keystrokes. Clearing the timer without running
+    // it - switching file, closing the tab - dropped them silently.
+    const pending = useRef<{ value: string; onSave: OnSave } | null>(null);
 
-    useEffect(() => {
-        setStatus('idle');
-
+    const flushPending = useCallback(() => {
+        const queued = pending.current;
+        pending.current = null;
         if (debounceTimeout.current) {
             clearTimeout(debounceTimeout.current);
             debounceTimeout.current = null;
         }
+        // No status update here on purpose: this runs while the editor is being
+        // torn down or already showing another file.
+        if (queued) void queued.onSave(queued.value);
+    }, []);
 
-        return () => {
-            if (debounceTimeout.current) {
-                clearTimeout(debounceTimeout.current);
-                debounceTimeout.current = null;
-            }
-        };
-    }, [filename]);
+    useEffect(() => {
+        setStatus('idle');
+        return flushPending;
+    }, [filename, flushPending]);
 
     const handleContentChange = useCallback<SaveCallback>((value, onSave) => {
         setStatus('typing');
+        pending.current = {value, onSave};
 
         if (debounceTimeout.current) {
             clearTimeout(debounceTimeout.current);
         }
 
         debounceTimeout.current = setTimeout(async () => {
+            debounceTimeout.current = null;
+            pending.current = null;
             setStatus('saving');
             const state = await onSave(value)
             setStatus(state);

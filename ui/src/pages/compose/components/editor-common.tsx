@@ -34,6 +34,8 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile, setEditor
     const loadRequest = useRef(0);
     const dirty = useRef(false);
     const revisionRef = useRef("");
+    const filenameRef = useRef(filename);
+    filenameRef.current = filename;
     const session = useRef(typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
     const updateLease = useCallback((dirty: boolean) => setEditorLease?.(filename, session.current, dirty) ?? Promise.resolve(), [filename, setEditorLease]);
 
@@ -62,7 +64,15 @@ function EditorCommon({filename, setFileSaveStatus, saveFile, getFile, setEditor
     }, [filename, getFile, updateLease]);
 
     const saveContents = useCallback(async (newContent: string): Promise<SaveState> => {
-        const result = await saveFile(filename, newContent, revisionRef.current, session.current);
+        const savedFilename = filename;
+        const result = await saveFile(savedFilename, newContent, revisionRef.current, session.current);
+        // A save flushed while the editor moved on to another file still has to
+        // reach the server - those were the last keystrokes typed - but its
+        // result must never be written back: this component keeps one revision
+        // and one session across files, and they now describe a different one.
+        if (savedFilename !== filenameRef.current) {
+            return result.err ? 'error' : 'success';
+        }
         if (result.err) {
             if (result.conflict) {
                 const latest = await getFile(filename)

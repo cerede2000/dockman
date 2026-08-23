@@ -82,9 +82,16 @@ func (h *FileHandler) loadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer fu.Close(reader)
 	if !download {
-		if revision, revisionErr := hashRevision(reader); revisionErr == nil {
-			w.Header().Set("ETag", `"`+revision+`"`)
+		// The editor's only concurrency protection is the revision it loads
+		// here. Serving the file without one hands out a copy that can only be
+		// saved blind, so a revision that cannot be computed is a failed load.
+		revision, revisionErr := hashRevision(reader)
+		if revisionErr != nil {
+			log.Error().Err(revisionErr).Str("host", getHost).Str("path", filename).Msg("Unable to compute editor revision")
+			http.Error(w, "failed to read file", http.StatusInternalServerError)
+			return
 		}
+		w.Header().Set("ETag", `"`+revision+`"`)
 		if _, seekErr := reader.Seek(0, io.SeekStart); seekErr != nil {
 			http.Error(w, "failed to rewind file", http.StatusInternalServerError)
 			return
@@ -143,7 +150,21 @@ func (h *FileHandler) saveFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		revision, saveErr := h.srv.SaveIfRevision(string(decodedFileName), getHost, r.Header.Get("If-Match"), part)
+		// An editor save without If-Match would overwrite whatever is on disk
+		// with no concurrency check at all - including a Git import that landed
+		// while the file was open. The editor sends the revision it loaded, so
+		// its absence means the load could not produce one, and saving blind is
+		// the one thing that must not follow. Uploads are deliberately exempt:
+		// they carry no editor session and must not read a multi-gigabyte body
+		// back to compute a revision nobody uses.
+		editorSession := r.Header.Get("X-Dockman-Editor-Session")
+		expectedRevision := r.Header.Get("If-Match")
+		if editorSaveNeedsRevision(editorSession, expectedRevision, createFile) {
+			_ = part.Close()
+			http.Error(w, "editor save refused: this file was opened without a revision, so it cannot be saved without overwriting blindly; reload it before saving", http.StatusPreconditionRequired)
+			return
+		}
+		revision, saveErr := h.srv.SaveIfRevision(string(decodedFileName), getHost, expectedRevision, part)
 		if saveErr != nil {
 			_ = part.Close()
 			log.Error().Err(saveErr).
@@ -334,4 +355,19 @@ func writeJason(ws *websocket.Conn, response SearchResponse) {
 		return
 	}
 	return
+}
+
+// editorSaveNeedsRevision reports whether a save must be refused for carrying
+// no revision to check against.
+//
+// Only editor saves qualify: they are the ones that loaded a revision and whose
+// whole protection against overwriting a concurrent change is sending it back.
+// An upload carries no editor session and is deliberately exempt - it must not
+// read a multi-gigabyte body back merely to compute a revision nobody uses.
+// Creating a file is exempt too: there is nothing yet to overwrite.
+func editorSaveNeedsRevision(editorSession, expectedRevision string, createFile bool) bool {
+	if createFile || strings.TrimSpace(editorSession) == "" {
+		return false
+	}
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(expectedRevision), `"`)) == ""
 }
