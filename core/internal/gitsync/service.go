@@ -199,6 +199,14 @@ func (s *Service) RecoverInterruptedOperations() (int64, error) {
 	if err == nil {
 		_ = s.runRetentionMaintenance(time.Now().UTC(), true)
 	}
+	// The per-stack report is a separate table and was left behind: a stack
+	// stopped mid-deployment kept showing an in-flight state that no process
+	// was performing, and only a later run of that same stack could clear it.
+	if stacks, stackErr := s.store.ClearInterruptedStackDeployStates(); stackErr != nil {
+		log.Warn().Err(stackErr).Msg("Could not clear interrupted stack deployment states")
+	} else if stacks > 0 {
+		log.Info().Int64("stacks", stacks).Msg("Stacks stopped mid-deployment were marked failed so they can be retried")
+	}
 	// One-shot repair for links stopped by a release that could not isolate a
 	// conflict or a local deletion to the stack owning it.
 	if unstuck, clearErr := s.store.ClearStaleAutoSyncBlocks(); clearErr != nil {

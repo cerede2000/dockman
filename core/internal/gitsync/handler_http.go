@@ -72,6 +72,7 @@ func NewHTTPHandler(service *Service) http.Handler {
 	mux.HandleFunc("GET /bindings/{id}/backups/{backupId}/restore-preview", h.previewBindingBackupRestore)
 	mux.HandleFunc("POST /bindings/{id}/backups/{backupId}/restore", h.restoreBindingBackup)
 	mux.HandleFunc("POST /bindings/{id}/automation/run", h.runBindingAutomation)
+	mux.HandleFunc("POST /bindings/{id}/automation/reset-state", h.resetBindingAutomationState)
 	mux.HandleFunc("POST /bindings/{id}/exclusions", h.addBindingExclusion)
 	mux.HandleFunc("POST /bindings/{id}/exclusions/batch", h.addBindingExclusions)
 	mux.HandleFunc("POST /bindings/{id}/inclusions/batch", h.addBindingInclusions)
@@ -510,6 +511,18 @@ func (h *HTTPHandler) pauseBindingAutomation(w http.ResponseWriter, r *http.Requ
 		h.service.recordActivity(ActivityRecord{RepositoryID: result.Binding.RepositoryID, BindingID: result.Binding.ID, Type: "automation_pause",
 			Trigger: "manual", Details: ActivityDetails{Action: action}})
 	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) resetBindingAutomationState(w http.ResponseWriter, r *http.Request) {
+	if !h.requireEnabled(w) {
+		return
+	}
+	result, err := h.service.ResetBindingAutomationState(r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, err)
 		return

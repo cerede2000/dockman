@@ -9,6 +9,7 @@ import {
 import {
     Add, ArchiveOutlined, BlockOutlined, CheckCircleOutlined, CloudDownloadOutlined, CloudUploadOutlined, CompareArrowsOutlined, DeleteOutlined, EditOutlined,
     FolderOffOutlined, FolderOpenOutlined, HistoryOutlined, KeyOutlined, LinkOutlined, PauseCircleOutlined, PlayCircleOutlined, RefreshOutlined, RestoreOutlined, SearchOutlined, SyncOutlined, TuneOutlined, UndoOutlined, WebhookOutlined,
+    RestartAltOutlined
 } from "@mui/icons-material";
 import {gitAPI as api, GitAPIError as APIError, gitComparisonLanguage as comparisonLanguage, gitDateLabel as dateLabel} from "../../lib/git-api.ts";
 import {formatBytes} from "../../lib/editor.ts";
@@ -891,6 +892,28 @@ export default function TabGit() {
         })().finally(() => setBusy(null));
     };
 
+    // A reported state and the reality it describes can drift apart: a
+    // deployment that failed once, was repaired by hand, and left its red mark
+    // with nothing able to clear it. This resets what Dockman SAYS - no file
+    // is written, no stack deployed, no Git history touched - and drops the
+    // last observed commit so the next check recomputes everything instead of
+    // taking the shortcut that kept restoring the stale picture.
+    const resetBindingAutomationState = async () => {
+        if (!policyBinding) return;
+        setBusy(`binding-reset-${policyBinding.id}`);
+        await (async () => { try {
+            const result = await api<{clearedStackDeployments: number}>(
+                `/bindings/${policyBinding.id}/automation/reset-state`, {method: "POST"});
+            const cleared = result.clearedStackDeployments;
+            showSuccess(cleared > 0
+                ? `Reported state cleared, including ${cleared} stack deployment report(s). The next check is a complete scan.`
+                : "Reported state cleared. The next check is a complete scan.");
+            setPolicyBinding(null);
+            await load();
+        } catch (error) { showError((error as Error).message); }
+        })().finally(() => setBusy(null));
+    };
+
     const refreshBindingComposeCatalog = async (binding: Binding) => {
         const refreshed = await api<Binding>(`/bindings/${binding.id}/refresh-compose`, {method: "POST"});
         setBindings((current) => current.map((candidate) => candidate.id === refreshed.id ? refreshed : candidate));
@@ -1525,7 +1548,14 @@ export default function TabGit() {
                     {policyBinding && <GitPolicyFileTree bindingId={policyBinding.id} policy={policyForm} onChange={setPolicyForm} disabled={busy !== null}/>}
                 </Box>
             </Stack></DialogContent>
-            <DialogActions><Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button><Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button></DialogActions>
+            <DialogActions>
+                <Tooltip title="Clears the reported synchronization and deployment state of this Folder Link and forces the next check to be a complete scan. Nothing is written, deployed or committed, and unresolved conflicts are kept.">
+                    <span><Button color="warning" startIcon={<RestartAltOutlined/>} onClick={() => void resetBindingAutomationState()} disabled={busy !== null}>{busy?.startsWith("binding-reset-") && <CircularProgress size={16} sx={{mr: 1}}/>}Reset reported state</Button></span>
+                </Tooltip>
+                <Box sx={{flex: 1}}/>
+                <Button onClick={() => setPolicyBinding(null)} disabled={busy !== null}>Cancel</Button>
+                <Button variant="contained" onClick={() => void saveBindingPolicy()} disabled={busy !== null}>{busy?.startsWith("binding-policy-") && <CircularProgress size={16} sx={{mr: 1}}/>}Save policy</Button>
+            </DialogActions>
         </Dialog>
 
         <Dialog open={automationBinding !== null} onClose={() => busy === null && setAutomationBinding(null)} fullWidth maxWidth="md">
