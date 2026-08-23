@@ -67,6 +67,7 @@ const ComposerizeWidget = () => {
                 <Link
                     href="https://github.com/composerize/composerize"
                     target="_blank"
+                    rel="noopener noreferrer"
                     underline="hover"
                     sx={{
                         display: 'flex',

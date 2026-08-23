@@ -378,7 +378,7 @@ const EmptyHost = ({hostname}: {
                             display: 'block',
                             textAlign: 'center'
                         }}>
-                        Need help? Check the <MuiLink href="https://dockman.radn.dev/" target="_blank"
+                        Need help? Check the <MuiLink href="https://dockman.radn.dev/" target="_blank" rel="noopener noreferrer"
                                                       color="inherit"
                                                       sx={{fontWeight: 700}}>Documentation</MuiLink>
                     </Typography>

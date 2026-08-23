@@ -61,6 +61,7 @@ function EmptyHostDisplay({onAdd}: { onAdd: () => void }) {
                     startIcon={<RouterOutlined/>}
                     href="https://dockman.radn.dev/docs/hosts"
                     target="_blank"
+                    rel="noopener noreferrer"
                     sx={{borderRadius: 2, px: 3, fontWeight: 700, bgcolor: 'background.paper'}}
                 >
                     Read Guide
