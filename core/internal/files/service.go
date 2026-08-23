@@ -299,27 +299,49 @@ func (s *Service) Delete(filename string, hostname string) error {
 	return sfCli.RemoveAll(fullpath)
 }
 
-// Rename todo refactor this
 func (s *Service) Rename(oldFileName, newFilename, hostname string) error {
 	if s.renameGuard != nil {
 		if err := s.renameGuard(hostname, oldFileName); err != nil {
 			return err
 		}
 	}
-	cliFs, oldFullPath, _, err := s.LoadFs(oldFileName, hostname)
+	sourceFs, oldFullPath, sourceAlias, err := s.LoadFs(oldFileName, hostname)
 	if err != nil {
 		return err
 	}
 
-	_, newFullPath, _, err := s.LoadFs(newFilename, hostname)
+	destFs, newFullPath, destAlias, err := s.LoadFs(newFilename, hostname)
 	if err != nil {
 		return err
 	}
 
-	oldFileName = filepath.ToSlash(oldFullPath)
-	newFilename = filepath.ToSlash(newFullPath)
+	// The destination filesystem used to be resolved and then discarded, so a
+	// move between two linked folders renamed inside the SOURCE one and
+	// reported success. Rename cannot cross two roots anyway - each is opened
+	// as its own confined root - so this says so instead of moving the file
+	// somewhere nobody asked for.
+	if sourceAlias != destAlias {
+		return fmt.Errorf("cannot move %s into %s: they are two different linked folders; copy it there and delete the original", sourceAlias, destAlias)
+	}
+	_ = destFs
 
-	return cliFs.Rename(oldFileName, newFilename)
+	oldPath := filepath.ToSlash(oldFullPath)
+	newPath := filepath.ToSlash(newFullPath)
+
+	// rename(2) replaces the destination without a word. Dragging a file onto a
+	// folder that already holds one of that name destroyed it silently, which
+	// in a drag-and-drop interface is one slip away at all times. A rename that
+	// only changes case is still allowed: on a case-insensitive filesystem the
+	// destination it finds is the source itself.
+	if oldPath != newPath && !strings.EqualFold(oldPath, newPath) {
+		if _, statErr := sourceFs.Stat(newPath); statErr == nil {
+			return fmt.Errorf("%s already exists; rename or remove it first", newFilename)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+	}
+
+	return sourceFs.Rename(oldPath, newPath)
 }
 
 type Template struct {
