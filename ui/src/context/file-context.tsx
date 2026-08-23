@@ -126,12 +126,16 @@ function FilesProvider({children}: { children: ReactNode }) {
     }, [client, fetchFiles, fileUrl, host, navigate, showError, showSuccess])
 
     const copyFile = useCallback(async (srcFilename: string, destFilename: string, isDir: boolean) => {
+        // These two were swapped: dest carried the source and source carried
+        // the destination. Duplicating a file therefore copied the destination
+        // ONTO the original - normally failing because the destination did not
+        // exist yet, but destroying the original whenever it did.
         const {err} = await callRPC(() => client.copy({
-            dest: {
+            source: {
                 filename: srcFilename,
                 isDir: isDir,
             },
-            source: {
+            dest: {
                 filename: destFilename,
                 isDir: isDir,
             },

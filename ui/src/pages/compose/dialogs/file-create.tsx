@@ -385,9 +385,14 @@ const TemplateCreate = ({rootPath, onClose}: {
                 vars: formVars
             }
         }));
-        if (err) showError(err);
-
         setIsSubmitting(false);
+        if (err) {
+            // Keep the dialog, and the variables that were just filled in. A
+            // missing variable is an ordinary mistake, and closing over the
+            // form means typing every value again.
+            showError(err);
+            return;
+        }
         onClose()
         await listFiles("", [])
     };
