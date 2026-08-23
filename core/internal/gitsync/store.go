@@ -548,6 +548,22 @@ func (s *Store) MarkInterruptedDeployments() (int64, error) {
 	return result.RowsAffected + rolledBack.RowsAffected, rolledBack.Error
 }
 
+// MarkInterruptedInitialSyncs repairs Folder Links stopped while initializing.
+//
+// "checking" is written immediately before initializeBinding runs, inside the
+// same request. At rest it can therefore only mean that initialization never
+// finished: the process stopped, or an early error return skipped the state
+// write. Nothing re-runs that function afterwards, so the link stayed there -
+// showing neither success nor failure, and painting every stack row it created
+// afterwards as pending.
+func (s *Store) MarkInterruptedInitialSyncs() (int64, error) {
+	result := s.db.Model(&StackBinding{}).Where("initial_sync_state = ?", "checking").Updates(map[string]any{
+		"initial_sync_state": "error",
+		"initial_sync_error": "Dockman stopped before this Folder Link finished initializing; preview a direction to establish its baseline",
+	})
+	return result.RowsAffected, result.Error
+}
+
 // ClearInterruptedStackDeployStates does the same for the per-stack deployment
 // report. These values are written as a run progresses and were only ever
 // cleared by the next run of that exact stack: a stop mid-deployment left a

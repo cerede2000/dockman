@@ -1153,3 +1153,30 @@ func TestRestartRecoveryClearsEveryInFlightDeploymentState(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "success", done.DeployState)
 }
+
+// "checking" is written immediately before initializeBinding runs, in the same
+// request. At rest it can only mean initialization never finished - the process
+// stopped, or an error return skipped the state write - and nothing re-runs
+// that function. The link then showed neither success nor failure for ever.
+func TestRestartRecoveryRepairsInterruptedInitialSync(t *testing.T) {
+	service, _ := testService(t, true)
+	interrupted := StackBinding{UUID: "link-checking", RepositoryUUID: "repo-1", Host: "local",
+		StackPath: "compose", InitialSyncState: "checking"}
+	require.NoError(t, service.store.SaveBinding(&interrupted))
+	settled := StackBinding{UUID: "link-imported", RepositoryUUID: "repo-1", Host: "local",
+		StackPath: "other", InitialSyncState: "imported"}
+	require.NoError(t, service.store.SaveBinding(&settled))
+
+	_, err := service.RecoverInterruptedOperations()
+	require.NoError(t, err)
+
+	after, err := service.store.GetBinding("link-checking")
+	require.NoError(t, err)
+	require.Equal(t, "error", after.InitialSyncState,
+		"a link stopped while initializing must say so instead of staying silent for ever")
+	require.NotEmpty(t, after.InitialSyncError)
+
+	untouched, err := service.store.GetBinding("link-imported")
+	require.NoError(t, err)
+	require.Equal(t, "imported", untouched.InitialSyncState, "a finished initialization must be left alone")
+}
