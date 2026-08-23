@@ -54,6 +54,7 @@ type AutoSyncResult struct {
 	SyncFailed     []string `json:"syncFailed,omitempty"`
 	Discovered     []string `json:"discovered,omitempty"`
 	HeldBack       []string `json:"heldBack,omitempty"`
+	AutoExcluded   []string `json:"autoExcluded,omitempty"`
 	Message        string   `json:"message"`
 }
 
@@ -393,6 +394,10 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			return nil
 		}
 
+		// A corrected ACL is all it takes to bring a held-out path back. Free
+		// while nothing is held out, which is the normal case.
+		binding = s.refreshUnreadableExclusions(binding)
+
 		preview, previewErr := s.PreviewBinding(id, "repository_to_stack", TransferInput{automation: true})
 		if previewErr != nil {
 			return previewErr
@@ -406,6 +411,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		// released a few lines below to keep one inventory in memory at a time.
 		activeAutomationPaths := s.activeAutomationComposePaths(binding)
 		heldBackStacks := heldBackComposeStacks(preview, activeAutomationPaths)
+		// Reported once, then held out of both inventories so the stack stops
+		// being red for a file the host will never let Dockman read.
+		if updated, recorded := s.recordUnreadablePaths(binding, previewPathsWithStatus(preview, "skipped_permission")); recorded {
+			binding = updated
+			result.AutoExcluded = splitPatternLines(binding.AutoExcludedPaths)
+		}
 		newTargets, newTargetErr := newComposeDeploymentTargets(binding, preview, activeAutomationPaths)
 		if newTargetErr != nil {
 			return newTargetErr
@@ -534,6 +545,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		// not changed by this: leaving a stack out of automatic deployment is a
 		// legitimate choice, and it must not paint a healthy link red. It must
 		// not be silent either.
+		// Green, but never silent: the operator is told once which paths left
+		// synchronization, and why.
+		if len(result.AutoExcluded) > 0 {
+			result.Message += fmt.Sprintf("; %d local path(s) Dockman cannot read are now left out of synchronization until their permissions change: %s",
+				len(result.AutoExcluded), strings.Join(result.AutoExcluded, ", "))
+		}
 		if unauthorized := unauthorizedDeploymentStacks(binding, changedPaths, activeAutomationPaths); len(unauthorized) > 0 {
 			result.Message += fmt.Sprintf("; %d changed stack(s) not authorized for automatic deployment, still running their previous version: %s",
 				len(unauthorized), strings.Join(unauthorized, ", "))

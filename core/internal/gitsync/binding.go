@@ -63,18 +63,22 @@ type BindingInput struct {
 }
 
 type BindingView struct {
-	ID                        string     `json:"id"`
-	RepositoryID              string     `json:"repositoryId"`
-	RepositoryName            string     `json:"repositoryName"`
-	Host                      string     `json:"host"`
-	StackPath                 string     `json:"stackPath"`
-	SubPath                   string     `json:"subPath"`
-	ComposePaths              []string   `json:"composePaths"`
-	ComposeSelectionMode      string     `json:"composeSelectionMode"`
-	SelectedComposePaths      []string   `json:"selectedComposePaths"`
-	SyncProfile               string     `json:"syncProfile"`
-	IncludePatterns           []string   `json:"includePatterns"`
-	ExcludePatterns           []string   `json:"excludePatterns"`
+	ID                   string   `json:"id"`
+	RepositoryID         string   `json:"repositoryId"`
+	RepositoryName       string   `json:"repositoryName"`
+	Host                 string   `json:"host"`
+	StackPath            string   `json:"stackPath"`
+	SubPath              string   `json:"subPath"`
+	ComposePaths         []string `json:"composePaths"`
+	ComposeSelectionMode string   `json:"composeSelectionMode"`
+	SelectedComposePaths []string `json:"selectedComposePaths"`
+	SyncProfile          string   `json:"syncProfile"`
+	IncludePatterns      []string `json:"includePatterns"`
+	ExcludePatterns      []string `json:"excludePatterns"`
+	// AutoExcludedPaths are the local paths the host's ACLs keep Dockman from
+	// reading. Held out of synchronization automatically, and dropped on their
+	// own once they become readable again.
+	AutoExcludedPaths         []string   `json:"autoExcludedPaths,omitempty"`
 	Enabled                   bool       `json:"enabled"`
 	AutoSyncEnabled           bool       `json:"autoSyncEnabled"`
 	AutoSyncPaused            bool       `json:"autoSyncPaused"`
@@ -245,6 +249,9 @@ type syncPolicy struct {
 	selectedRoots      map[string]struct{}
 	selectionEnabled   bool
 	selectNewCompose   bool
+	// unreadable are exact stack paths the host's ACLs hide from Dockman, plus
+	// their subtrees. Held out of both inventories, ahead of every other rule.
+	unreadable []string
 }
 
 var composeConfigRules = mustRules([]string{
@@ -546,6 +553,12 @@ func (s *Service) UpdateBindingPolicy(id string, input BindingPolicyInput) (Bind
 	row.SyncProfile = policy
 	row.IncludePatterns = strings.Join(includes, "\n")
 	row.ExcludePatterns = strings.Join(excludes, "\n")
+	if policyChanged {
+		// Saving a policy is the operator saying "look again". Drop what was
+		// held out for being unreadable so the next cycle re-evaluates it
+		// rather than carrying an exclusion they cannot see the reason for.
+		row.AutoExcludedPaths = ""
+	}
 	ownershipLock := s.repositoryLock("binding-ownership:" + row.Host)
 	ownershipLock.Lock()
 	defer ownershipLock.Unlock()
@@ -2045,7 +2058,7 @@ func (s *Service) bindingView(row StackBinding) (BindingView, error) {
 		Host: row.Host, StackPath: row.StackPath, SubPath: row.SubPath, ComposePaths: compose,
 		ComposeSelectionMode: normalizedComposeSelectionMode(row.ComposeSelectionMode), SelectedComposePaths: selectedComposePaths(row),
 		SyncProfile: profile, IncludePatterns: splitPatternLines(row.IncludePatterns),
-		ExcludePatterns: splitPatternLines(row.ExcludePatterns), Enabled: row.Enabled,
+		ExcludePatterns: splitPatternLines(row.ExcludePatterns), AutoExcludedPaths: splitPatternLines(row.AutoExcludedPaths), Enabled: row.Enabled,
 		AutoSyncEnabled: row.AutoSyncEnabled, AutoSyncPaused: row.AutoSyncPaused, AutoSyncIntervalMinutes: row.AutoSyncIntervalMinutes,
 		AutoSyncSelectionMode: normalizedComposeSelectionMode(row.AutoSyncSelectionMode), AutoSyncComposePaths: autoSyncComposePaths(row),
 		AutoSyncState: row.AutoSyncState, AutoSyncError: row.AutoSyncError,
@@ -2663,6 +2676,7 @@ func policyFromBinding(binding StackBinding, repositories ...Repository) (syncPo
 		compose[filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))] = struct{}{}
 	}
 	policy := syncPolicy{profile: profile, includes: includeRules, excludes: excludeRules, compose: compose, repositorySubPath: binding.SubPath}
+	policy.unreadable = splitPatternLines(binding.AutoExcludedPaths)
 	if normalizedComposeSelectionMode(binding.ComposeSelectionMode) == composeSelectionSelected {
 		policy.selectionEnabled = true
 		policy.selectNewCompose = binding.AutoDeployEnabled && binding.AutoDeployNewStacks
@@ -2940,7 +2954,28 @@ func matchesExactPolicyRule(rules []ignoreRule, relative string, directory bool)
 	return false
 }
 
+// holdsUnreadable reports whether this path is one the host's ACLs keep Dockman
+// from reading, or sits under such a directory. Checked ahead of every other
+// rule and never overridable by an include: a path that cannot be read must not
+// be pulled back in by a pattern, or Git content would be written over local
+// content nobody ever managed to look at.
+func (policy syncPolicy) holdsUnreadable(relative string) bool {
+	if len(policy.unreadable) == 0 {
+		return false
+	}
+	relative = strings.Trim(filepath.ToSlash(relative), "/")
+	for _, blocked := range policy.unreadable {
+		if relative == blocked || strings.HasPrefix(relative, blocked+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func (policy syncPolicy) exclusionApplies(relative string, directory bool, localRules []ignoreRule) bool {
+	if policy.holdsUnreadable(relative) {
+		return true
+	}
 	if !policy.excludesPath(relative, directory, localRules) {
 		return false
 	}

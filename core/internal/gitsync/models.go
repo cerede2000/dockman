@@ -70,17 +70,21 @@ func (WebhookDelivery) TableName() string { return "git_webhook_deliveries" }
 
 type StackBinding struct {
 	gorm.Model
-	UUID                      string `gorm:"not null;uniqueIndex"`
-	RepositoryUUID            string `gorm:"not null;index"`
-	Host                      string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
-	StackPath                 string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
-	SubPath                   string `gorm:"not null"`
-	ComposePaths              string
-	ComposeSelectionMode      string `gorm:"not null;default:all"`
-	SelectedComposePaths      string `gorm:"type:text"`
-	SyncProfile               string `gorm:"not null;default:compose_config"`
-	IncludePatterns           string `gorm:"type:text"`
-	ExcludePatterns           string `gorm:"type:text"`
+	UUID                 string `gorm:"not null;uniqueIndex"`
+	RepositoryUUID       string `gorm:"not null;index"`
+	Host                 string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
+	StackPath            string `gorm:"not null;uniqueIndex:idx_git_stack_binding_target"`
+	SubPath              string `gorm:"not null"`
+	ComposePaths         string
+	ComposeSelectionMode string `gorm:"not null;default:all"`
+	SelectedComposePaths string `gorm:"type:text"`
+	SyncProfile          string `gorm:"not null;default:compose_config"`
+	IncludePatterns      string `gorm:"type:text"`
+	ExcludePatterns      string `gorm:"type:text"`
+	// AutoExcludedPaths are stack paths the host's ACLs keep Dockman from
+	// reading. They are held out of BOTH inventories, and re-checked on every
+	// cycle so a fixed ACL brings the path back on its own.
+	AutoExcludedPaths         string `gorm:"type:text"`
 	Enabled                   bool   `gorm:"not null;default:true"`
 	AutoSyncEnabled           bool   `gorm:"not null;default:false"`
 	AutoSyncPaused            bool   `gorm:"not null;default:false"`

@@ -870,7 +870,10 @@ func TestAutoSyncDeploysAServiceAddedToAManuallyImportedStack(t *testing.T) {
 
 	var actions []string
 	service.ConfigureDeployment(
-		func(_ context.Context, _, filename string) error { actions = append(actions, "validate:"+filename); return nil },
+		func(_ context.Context, _, filename string) error {
+			actions = append(actions, "validate:"+filename)
+			return nil
+		},
 		func(_ context.Context, _, filename string, _ io.Writer) error {
 			actions = append(actions, "dry-run:"+filename)
 			return nil
@@ -941,7 +944,10 @@ func TestAutoSyncNamesTheStacksItWasNotAuthorizedToDeploy(t *testing.T) {
 
 	var actions []string
 	service.ConfigureDeployment(
-		func(_ context.Context, _, filename string) error { actions = append(actions, "validate:"+filename); return nil },
+		func(_ context.Context, _, filename string) error {
+			actions = append(actions, "validate:"+filename)
+			return nil
+		},
 		func(_ context.Context, _, filename string, _ io.Writer) error {
 			actions = append(actions, "dry-run:"+filename)
 			return nil
