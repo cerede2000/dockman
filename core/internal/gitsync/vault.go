@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 const vaultVersion byte = 1
@@ -68,8 +70,26 @@ func LoadOrCreateVault(configDir, keyFile string) (*Vault, string, error) {
 			return nil, "", err
 		}
 	}
+	warnIfKeyFileIsExposed(keyFile)
 	vault, err := NewVault(raw)
 	return vault, keyFile, err
+}
+
+// warnIfKeyFileIsExposed reports a master key readable beyond its owner. The
+// secrets subsystem refuses such a key outright; this one warns instead, and
+// the difference is deliberate: that key file is a path the operator chose and
+// may deliberately share with another process, and refusing here would stop
+// Dockman from starting over a file mode. It is never silent though - anyone
+// who can read this file can decrypt every stored credential.
+func warnIfKeyFileIsExposed(keyFile string) {
+	info, err := os.Stat(keyFile)
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		log.Warn().Str("key_file", keyFile).Str("mode", fmt.Sprintf("%#o", mode)).
+			Msgf("Master key is readable beyond its owner; anyone with that access can decrypt every stored credential. Restrict it with: chmod 600 %s", keyFile)
+	}
 }
 
 func decodeVaultKey(raw []byte) ([]byte, error) {

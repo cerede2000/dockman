@@ -1,6 +1,7 @@
 package gitsync
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -212,4 +215,43 @@ func TestAnUnmeasurableDistanceIsReportedRatherThanReadAsZero(t *testing.T) {
 	self, selfMeasured := commitDistance(repo, head.Hash(), head.Hash())
 	require.True(t, selfMeasured)
 	require.Zero(t, self)
+}
+
+// The managed key is created and kept at 0600, but a key file the operator
+// points Dockman at was never inspected at all - while the secrets subsystem
+// refuses one with any group or other bits. Anyone who can read it can decrypt
+// every stored Git credential.
+func TestAnExposedMasterKeyIsReported(t *testing.T) {
+	directory := t.TempDir()
+	exposed := filepath.Join(directory, "shared.key")
+	require.NoError(t, os.WriteFile(exposed, []byte(strings.Repeat("k", 32)), 0o644))
+
+	var reported bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&reported)
+	defer func() { log.Logger = previous }()
+
+	vault, keyFile, err := LoadOrCreateVault(directory, exposed)
+	require.NoError(t, err)
+	require.NotNil(t, vault)
+	require.Equal(t, exposed, keyFile)
+	require.Contains(t, reported.String(), "readable beyond its owner")
+	require.Contains(t, reported.String(), "chmod 600")
+
+	// a key only its owner can read says nothing
+	reported.Reset()
+	private := filepath.Join(directory, "private.key")
+	require.NoError(t, os.WriteFile(private, []byte(strings.Repeat("k", 32)), 0o600))
+	_, _, err = LoadOrCreateVault(directory, private)
+	require.NoError(t, err)
+	require.Empty(t, reported.String())
+
+	// and the managed key is created restricted, so it never warns either
+	reported.Reset()
+	_, managedPath, err := LoadOrCreateVault(directory, "")
+	require.NoError(t, err)
+	info, err := os.Stat(managedPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	require.Empty(t, reported.String())
 }
