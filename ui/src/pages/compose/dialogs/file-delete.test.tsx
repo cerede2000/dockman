@@ -41,7 +41,7 @@ describe('FileDelete', () => {
     // here - while the stack synchronization popup asked for it on the very
     // same operation.
     it('sends the word the user typed, not a constant', async () => {
-        const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
+        const fetchMock = vi.fn<typeof fetch>(async () => new Response(
             JSON.stringify({message: 'deleted'}), {status: 200, headers: {'Content-Type': 'application/json'}}))
         vi.stubGlobal('fetch', fetchMock)
         trackedFile = {
@@ -69,7 +69,7 @@ describe('FileDelete', () => {
     // its own guard. The delete dialog was dead until a page reload.
     it('recovers when a Folder Link check is abandoned mid-flight', async () => {
         let release: (() => void) | undefined
-        vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => {
+        vi.stubGlobal('fetch', vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => {
             release = () => resolve(new Response('{}', {status: 200, headers: {'Content-Type': 'application/json'}}))
         })))
         trackedFile = {folderLinkRoot: true, bindingId: 'b1', tracked: true, mutable: true}
