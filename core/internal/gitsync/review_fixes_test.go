@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/stretchr/testify/require"
 )
 
@@ -183,4 +184,32 @@ func TestAnExplicitDecisionWaitsForARunningCycle(t *testing.T) {
 	start := time.Now()
 	require.False(t, waitForLock(held, 200*time.Millisecond))
 	require.Less(t, time.Since(start), 2*time.Second, "the wait must stay bounded")
+}
+
+// A linked folder can sit inside a very large shared repository. The
+// ahead/behind walk is bounded on purpose, but giving up used to be
+// indistinguishable from "no distance": both counters came back zero, every
+// guard that reads them passed, and the automatic cycle skipped its pull
+// because Behind was not greater than zero. The link stopped synchronizing and
+// said nothing at all.
+func TestAnUnmeasurableDistanceIsReportedRatherThanReadAsZero(t *testing.T) {
+	service, _ := testService(t, true)
+	repository := prepareBindingRepository(t, service)
+	repo, err := service.openRepository(repository)
+	require.NoError(t, err)
+
+	head, err := repo.Reference(plumbing.NewBranchReferenceName(repository.DefaultBranch), true)
+	require.NoError(t, err)
+
+	// a hash that is reachable from nothing: the walk drains without ever
+	// finding it, which is the same exit as exhausting the bound
+	unreachable := plumbing.NewHash("0123456789abcdef0123456789abcdef01234567")
+	distance, measured := commitDistance(repo, head.Hash(), unreachable)
+	require.False(t, measured, "an unfinished walk must say so")
+	require.Zero(t, distance)
+
+	// and a real ancestor is still measured exactly
+	self, selfMeasured := commitDistance(repo, head.Hash(), head.Hash())
+	require.True(t, selfMeasured)
+	require.Zero(t, self)
 }

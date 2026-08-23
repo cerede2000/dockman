@@ -30,6 +30,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// maxCommitDistanceWalk bounds the ahead/behind walk. A linked folder can sit
+// inside a very large shared repository, and this must never become the cost of
+// a status read.
+const maxCommitDistanceWalk = 10000
+
 var (
 	repositoryNamePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 	branchNamePattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
@@ -110,7 +115,6 @@ type RepositoryGitStatus struct {
 	Branch       string `json:"branch"`
 	Head         string `json:"head,omitempty"`
 	RemoteHead   string `json:"remoteHead,omitempty"`
-	Clean        bool   `json:"clean"`
 	Ahead        int    `json:"ahead"`
 	Behind       int    `json:"behind"`
 	Diverged     bool   `json:"diverged"`
@@ -559,7 +563,7 @@ func (s *Service) RepositoryStatus(id string) (RepositoryGitStatus, error) {
 	if err != nil {
 		return RepositoryGitStatus{}, err
 	}
-	result := RepositoryGitStatus{RepositoryID: id, Branch: row.DefaultBranch, Clean: true, State: "unknown"}
+	result := RepositoryGitStatus{RepositoryID: id, Branch: row.DefaultBranch, State: "unknown"}
 	localRef, err := repo.Reference(plumbing.NewBranchReferenceName(row.DefaultBranch), true)
 	if err != nil {
 		return result, fmt.Errorf("local branch %q is unavailable: %w", row.DefaultBranch, err)
@@ -593,8 +597,16 @@ func (s *Service) RepositoryStatus(id string) (RepositoryGitStatus, error) {
 		return result, nil
 	}
 	base := bases[0].Hash
-	result.Ahead = commitDistance(repo, localRef.Hash(), base)
-	result.Behind = commitDistance(repo, remoteRef.Hash(), base)
+	ahead, aheadMeasured := commitDistance(repo, localRef.Hash(), base)
+	behind, behindMeasured := commitDistance(repo, remoteRef.Hash(), base)
+	if !aheadMeasured || !behindMeasured {
+		// Fail closed. The two heads differ and the distance is unknown, so the
+		// only honest answer is that this repository needs a human decision -
+		// never a silence that reads as "nothing to do".
+		result.State, result.Diverged = "unmeasured", true
+		return result, nil
+	}
+	result.Ahead, result.Behind = ahead, behind
 	switch {
 	case result.Ahead > 0 && result.Behind > 0:
 		result.State, result.Diverged = "diverged", true
@@ -622,9 +634,6 @@ func (s *Service) PullRepository(ctx context.Context, id string) (RepositoryGitS
 	before, err := s.RepositoryStatus(id)
 	if err != nil {
 		return RepositoryGitStatus{}, err
-	}
-	if !before.Clean {
-		return RepositoryGitStatus{}, errors.New("pull refused: repository workspace contains uncommitted changes")
 	}
 	if before.Diverged || before.Ahead > 0 {
 		return RepositoryGitStatus{}, errors.New("pull refused: local and remote history require an explicit conflict decision")
@@ -664,9 +673,6 @@ func (s *Service) PushRepository(ctx context.Context, id string) (RepositoryGitS
 	before, err := s.RepositoryStatus(id)
 	if err != nil {
 		return RepositoryGitStatus{}, err
-	}
-	if !before.Clean {
-		return RepositoryGitStatus{}, errors.New("push refused: repository workspace contains uncommitted changes")
 	}
 	if before.Diverged || before.Behind > 0 {
 		return RepositoryGitStatus{}, errors.New("push refused: remote contains commits that are not present locally")
@@ -1117,9 +1123,16 @@ func safeGitError(err error) string {
 	return message
 }
 
-func commitDistance(repo *gitclient.Repository, start, ancestor plumbing.Hash) int {
+// commitDistance measures how far start is from ancestor, and reports whether
+// it could measure at all. The walk is bounded on purpose - a linked folder can
+// live inside a very large shared repository - but giving up used to be
+// indistinguishable from "no distance". Ahead and Behind both came back zero,
+// every guard that reads them passed, and the automatic cycle skipped its pull
+// because Behind was not greater than zero: the link silently stopped
+// synchronizing and said nothing.
+func commitDistance(repo *gitclient.Repository, start, ancestor plumbing.Hash) (int, bool) {
 	if start == ancestor {
-		return 0
+		return 0, true
 	}
 	type entry struct {
 		hash     plumbing.Hash
@@ -1127,7 +1140,7 @@ func commitDistance(repo *gitclient.Repository, start, ancestor plumbing.Hash) i
 	}
 	queue := []entry{{hash: start}}
 	seen := map[plumbing.Hash]bool{}
-	for len(queue) > 0 && len(seen) < 10000 {
+	for len(queue) > 0 && len(seen) < maxCommitDistanceWalk {
 		current := queue[0]
 		queue = queue[1:]
 		if seen[current.hash] {
@@ -1135,7 +1148,7 @@ func commitDistance(repo *gitclient.Repository, start, ancestor plumbing.Hash) i
 		}
 		seen[current.hash] = true
 		if current.hash == ancestor {
-			return current.distance
+			return current.distance, true
 		}
 		commit, err := repo.CommitObject(current.hash)
 		if err != nil {
@@ -1146,5 +1159,5 @@ func commitDistance(repo *gitclient.Repository, start, ancestor plumbing.Hash) i
 			return nil
 		})
 	}
-	return 0
+	return 0, false
 }

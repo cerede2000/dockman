@@ -1306,7 +1306,7 @@ func (s *Service) ExportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if !status.Clean || status.Behind > 0 || status.Diverged {
+		if status.Behind > 0 || status.Diverged {
 			return errors.New("export refused: pull remote changes and resolve repository state first")
 		}
 		_, source, target, err := s.loadTransferTrees(binding.UUID, "stack_to_repository", input)
@@ -1595,7 +1595,7 @@ func (s *Service) ImportBinding(ctx context.Context, id string, input TransferIn
 		if err != nil {
 			return err
 		}
-		if !status.Clean || status.Ahead > 0 || status.Behind > 0 || status.Diverged {
+		if status.Ahead > 0 || status.Behind > 0 || status.Diverged {
 			return errors.New("import refused: pull remote changes and resolve repository state first")
 		}
 		_, source, target, err := s.loadTransferTrees(binding.UUID, "repository_to_stack", input)

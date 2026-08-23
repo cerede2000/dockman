@@ -76,7 +76,6 @@ interface RepositoryStatus {
     branch: string;
     head?: string;
     remoteHead?: string;
-    clean: boolean;
     ahead: number;
     behind: number;
     diverged: boolean;
@@ -1186,7 +1185,7 @@ export default function TabGit() {
                                         <Stack direction="row" spacing={.75} sx={{alignItems: "center"}}>
                                             <Chip size="small" color={statusColor(state)} variant="outlined" label={state}/>
                                             <Chip size="small" variant="outlined" label={repository.storageMode === "compact" ? "compact" : "migration pending"}/>
-                                            {gitStatus && !gitStatus.clean && <Chip size="small" color="warning" label="dirty"/>}
+                                            
                                             {gitStatus && (gitStatus.ahead > 0 || gitStatus.behind > 0) && <Typography variant="caption" color="text.secondary">↑{gitStatus.ahead} ↓{gitStatus.behind}</Typography>}
                                         </Stack>
                                     </TableCell>
