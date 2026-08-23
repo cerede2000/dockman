@@ -366,7 +366,11 @@ func (s *Service) WriteTemplate(hostname string, dest string, tpl *Template) err
 					replaceVal,
 				)
 			}
-			newFilename = strings.Replace(filename, replaceVal, newVal, -1)
+			// Substitute into the name built so far. Replacing in the ORIGINAL
+			// name each time meant only the last variable survived: a template
+			// named "$stack$/$service$.yml" created a directory literally
+			// called "$stack$" on the host.
+			newFilename = strings.ReplaceAll(newFilename, replaceVal, newVal)
 		}
 
 		err := s.createTmplFile(
