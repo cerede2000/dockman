@@ -30,6 +30,7 @@ import {DockerService, StatusSchema} from "../../../gen/docker/v1/docker_pb.ts";
 import {useDockerEvents} from "../../../hooks/docker-events.ts";
 import {create} from "@bufbuild/protobuf";
 import {useGitStatusWatcher} from '../../../components/git-stack-status-store.ts';
+import {isAltLetter} from '../../../lib/shortcut.ts';
 
 export function FileList() {
     const showSearch = useFileSearch(state => state.open)
@@ -60,19 +61,23 @@ export function FileList() {
     }, [alias, editUrl, host, nav])
 
     useEffect(() => {
+        // isAltLetter, not event.key: on macOS Option+R types a registered
+        // sign and Option+S an eszett, never the letter, so all four of these
+        // shortcuts were dead there while their tooltips still advertised them.
         const handleKeyDown = (event: KeyboardEvent) => {
-            if ((event.altKey) && event.key === 'r') {
+            if (isAltLetter(event, 'r')) {
+                event.preventDefault()
                 void listFiles("", [])
             }
-            if ((event.altKey) && event.key === 's') {
+            if (isAltLetter(event, 's')) {
                 event.preventDefault()
                 showSearch()
             }
-            if ((event.altKey) && event.key === 'a') {
+            if (isAltLetter(event, 'a')) {
                 event.preventDefault()
                 showFileAdd()
             }
-            if ((event.altKey) && event.key === 'e') {
+            if (isAltLetter(event, 'e')) {
                 event.preventDefault()
                 showDockyaml()
             }
