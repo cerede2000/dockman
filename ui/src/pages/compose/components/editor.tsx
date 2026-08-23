@@ -8,6 +8,7 @@ import {useTabs, useTabsStore} from "../../../context/tab-context.tsx";
 import {FileService} from "../../../gen/files/v1/files_pb.ts";
 import {useConfig} from "../../../hooks/config.ts";
 import {buildYamlOutline, type YamlOutlineItem} from "./yaml-outline.ts";
+import {readClipboardText} from "./clipboard.ts";
 
 interface MonacoEditorProps {
     selectedFile: string;
@@ -108,6 +109,34 @@ export function MonacoEditor(
                 }
             }
         );
+
+        // Monaco hides Paste from its own context menu on the web, because a
+        // page cannot ask the browser to paste on its own. Reading the
+        // clipboard IS possible where the browser allows it, so this offers the
+        // entry and says plainly which restriction applies when it does not -
+        // rather than a menu item that quietly does nothing.
+        editor.addAction({
+            id: 'dockman.paste',
+            label: 'Paste',
+            contextMenuGroupId: '9_cutcopypaste',
+            contextMenuOrder: 3,
+            run: async (target) => {
+                const result = await readClipboardText(navigator.clipboard)
+                if ('unavailable' in result) {
+                    showError(result.unavailable)
+                    return
+                }
+                if (!result.text) return
+                const selections = target.getSelections() ?? []
+                if (selections.length === 0) return
+                target.executeEdits('paste', selections.map(selection => ({
+                    range: selection,
+                    text: result.text,
+                    forceMoveMarkers: true,
+                })))
+                target.focus()
+            },
+        });
 
         editorRef.current?.getValue();
 
