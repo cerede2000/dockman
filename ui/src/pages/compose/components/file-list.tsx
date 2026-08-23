@@ -1,4 +1,5 @@
 import {useCallback, useEffect, useRef} from 'react'
+import {documentIsVisible, whenVisible} from '../../../hooks/visibility.ts';
 import {Box, CircularProgress, Divider, IconButton, List, Tooltip, Typography} from '@mui/material'
 import {
     Add as AddIcon,
@@ -297,11 +298,19 @@ const FileListInner = () => {
         // container event. The short delay coalesces those mount-time
         // registrations into a single request.
         const initial = setTimeout(refresh, 150)
-        const interval = setInterval(refresh, 30000)
+        // Nobody is reading these dots while the tab is hidden, and every
+        // firing is a real status read that reaches the Docker daemon. The
+        // cadence stops while hidden and refreshes the moment the tab comes
+        // back, so returning to it never shows a stale dot.
+        const interval = setInterval(() => {
+            if (documentIsVisible()) void refresh()
+        }, 30000)
+        const stopWatching = whenVisible(() => void refresh())
         return () => {
             cancelled = true
             clearTimeout(initial)
             clearInterval(interval)
+            stopWatching()
         }
     }, [trackedKeys, host, alias, eventBump, refreshStatuses])
 
