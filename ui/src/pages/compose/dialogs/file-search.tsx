@@ -17,28 +17,33 @@ import {useFileComponents} from "../state/terminal.tsx";
 import {getBaseUrl, getWSUrl} from "../../../lib/api.ts";
 import {useEditorUrl} from "../../../lib/editor.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
+import {groupHighlightRuns} from "./highlight.ts";
 
-/**
- * Optimized Highlighting: Groups characters to minimize DOM nodes
- */
+// Hoisted so the two style objects exist once for the whole dialog, instead
+// of being rebuilt for every character of every row on every keystroke.
+const matchedRunSx = {
+    fontWeight: 800,
+    color: 'primary.main',
+    bgcolor: 'primary.lighter',
+    borderRadius: '2px',
+} as const
+const plainRunSx = {
+    fontWeight: 400,
+    color: 'inherit',
+    bgcolor: 'transparent',
+    borderRadius: '2px',
+} as const
+
+// Groups characters to minimize DOM nodes - which is what the comment here
+// always claimed, and what groupHighlightRuns finally makes true.
 const HighlightedText = ({text, indices}: { text: string; indices: number[] }) => {
     if (!indices || indices.length === 0) return <>{text}</>
-    const indexSet = new Set(indices)
 
     return (
         <Typography variant="body2" sx={{fontFamily: 'monospace', letterSpacing: '0.02em'}}>
-            {text.split('').map((char, i) => (
-                <Box
-                    component="span"
-                    key={i}
-                    sx={{
-                        fontWeight: indexSet.has(i) ? 800 : 400,
-                        color: indexSet.has(i) ? 'primary.main' : 'inherit',
-                        bgcolor: indexSet.has(i) ? 'primary.lighter' : 'transparent',
-                        borderRadius: '2px',
-                    }}
-                >
-                    {char}
+            {groupHighlightRuns(text, indices).map((run, i) => (
+                <Box component="span" key={i} sx={run.match ? matchedRunSx : plainRunSx}>
+                    {run.text}
                 </Box>
             ))}
         </Typography>
@@ -83,8 +88,12 @@ function FileSearch() {
                 if (debouncedSearchQueryRef.current) socket?.send(debouncedSearchQueryRef.current)
             }
             socket.onmessage = (ev) => {
-                const data = JSON.parse(ev.data)
-                setFilteredFiles(data.results || [])
+                try {
+                    const data = JSON.parse(ev.data)
+                    setFilteredFiles(data.results || [])
+                } catch {
+                    setError("Search service returned an unreadable response")
+                }
             }
             socket.onerror = () => setError("Search service unavailable")
             ws.current = socket
@@ -132,9 +141,14 @@ function FileSearch() {
         } else if (event.key === 'ArrowUp') {
             event.preventDefault()
             setActiveIndex(p => (p > 0 ? p - 1 : 0))
-        } else if (event.key === 'Enter' && activeIndex >= 0) {
+        } else if (event.key === 'Enter') {
+            // Bounded, not just non-negative: activeIndex is set to 0 as soon
+            // as the debounced query settles, so a search that matched nothing
+            // read .Value off undefined and took the dialog down with it.
+            const selected = activeIndex >= 0 ? filteredFiles[activeIndex] : undefined
+            if (!selected) return
             event.preventDefault()
-            handleOpen(filteredFiles[activeIndex].Value, event.shiftKey)
+            handleOpen(selected.Value, event.shiftKey)
         }
     }
 
