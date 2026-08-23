@@ -249,6 +249,7 @@ export function ContainerTable(
                         <Link
                             href={getImageHomePageUrl(c.imageName)}
                             target="_blank"
+                            rel="noopener noreferrer"
                             sx={{
                                 fontSize: '0.75rem',
                                 fontWeight: 500,
