@@ -342,7 +342,7 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		if fetchErr != nil {
 			return fetchErr
 		}
-		if !status.Clean || status.Diverged || status.Ahead > 0 {
+		if status.Diverged || status.Ahead > 0 {
 			result.State = "blocked"
 			result.Message = "Repository state requires a manual decision before automatic synchronization"
 			return nil

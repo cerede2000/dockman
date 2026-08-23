@@ -245,7 +245,7 @@ func (s *Service) deleteFolderLinkGitContent(ctx context.Context, binding StackB
 	if err != nil {
 		return "", err
 	}
-	if !status.Clean || status.Behind > 0 || status.Diverged {
+	if status.Behind > 0 || status.Diverged {
 		return "", errors.New("Git deletion refused: repository state changed; refresh and resolve it first")
 	}
 	_, _, files, err := s.loadTransferTrees(binding.UUID, "stack_to_repository", TransferInput{})

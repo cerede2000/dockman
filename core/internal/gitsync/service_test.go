@@ -115,7 +115,11 @@ func TestRepositoryManualFetchPullAndPush(t *testing.T) {
 	status, err := service.RepositoryStatus(row.UUID)
 	require.NoError(t, err)
 	require.Equal(t, "up-to-date", status.State)
-	require.True(t, status.Clean)
+	// The managed clone is created with NoCheckout, which is what the missing
+	// README above already proves: there is no working tree, so there is
+	// nothing that could ever be uncommitted.
+	require.Zero(t, status.Ahead)
+	require.Zero(t, status.Behind)
 
 	externalPath := t.TempDir()
 	external, err := gitclient.PlainClone(externalPath, false, &gitclient.CloneOptions{

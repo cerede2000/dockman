@@ -216,7 +216,7 @@ func (s *Service) deleteLocallyDeletedFileFromGit(ctx context.Context, binding S
 	if err != nil {
 		return LocalDeletionActionResult{}, err
 	}
-	if !status.Clean || status.Ahead > 0 || status.Behind > 0 || status.Diverged {
+	if status.Ahead > 0 || status.Behind > 0 || status.Diverged {
 		return LocalDeletionActionResult{}, errors.New("Git deletion refused: repository state changed; pull and retry")
 	}
 	binding, localFiles, repositoryFiles, err := s.loadTransferTrees(binding.UUID, "stack_to_repository", TransferInput{})
@@ -381,7 +381,7 @@ func (s *Service) deleteLocallyDeletedStackFromGit(ctx context.Context, binding 
 	if err != nil {
 		return LocalDeletionActionResult{}, err
 	}
-	if !status.Clean || status.Ahead > 0 || status.Behind > 0 || status.Diverged {
+	if status.Ahead > 0 || status.Behind > 0 || status.Diverged {
 		return LocalDeletionActionResult{}, errors.New("Git deletion refused: repository state changed; pull and retry")
 	}
 	binding, localFiles, repositoryFiles, err := s.loadTransferTrees(binding.UUID, "stack_to_repository", TransferInput{})
