@@ -482,17 +482,19 @@ func (s *Service) applyCommitRollbackLocked(binding StackBinding, input CommitRo
 	}
 	targetFS, targetRoot, err := s.resolveBindingStack(binding)
 	if err != nil {
-		return CommitRollbackResult{}, err
+		// The stacks are already paused and the safety backup already exists.
+		// Reporting an empty result here would hide both from the operator.
+		return CommitRollbackResult{SafetyBackupID: backupID, PausedStacks: affectedStacks}, err
 	}
 	if err := writeStackFiles(targetFS, targetRoot, desired); err != nil {
-		return CommitRollbackResult{SafetyBackupID: backupID}, err
+		return CommitRollbackResult{SafetyBackupID: backupID, PausedStacks: affectedStacks}, err
 	}
 	for path := range selected {
 		if actions[path].Action != "remove" {
 			continue
 		}
 		if err := targetFS.RemoveAll(targetFS.Join(targetRoot, filepath.FromSlash(path))); err != nil {
-			return CommitRollbackResult{SafetyBackupID: backupID}, err
+			return CommitRollbackResult{SafetyBackupID: backupID, PausedStacks: affectedStacks}, err
 		}
 	}
 	paths := make([]string, 0, len(selected))
