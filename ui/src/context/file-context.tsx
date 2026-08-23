@@ -28,8 +28,8 @@ export interface FilesContextType {
     files: FsEntry[]
     isLoading: boolean
 
-    addFile: (filename: string, isDir: boolean) => Promise<void>
-    copyFile: (srcFilename: string, destFilename: string, isDir: boolean) => Promise<void>
+    addFile: (filename: string, isDir: boolean) => Promise<{ ok: boolean; err: string }>
+    copyFile: (srcFilename: string, destFilename: string, isDir: boolean) => Promise<{ ok: boolean; err: string }>
     deleteFile: (filename: string) => Promise<boolean>
     renameFile: (oldFilename: string, newFile: string) => Promise<{ ok: boolean; err: string }>
     listFiles: (path: string, depthIndex: number[]) => Promise<void>
@@ -111,18 +111,20 @@ function FilesProvider({children}: { children: ReactNode }) {
         isDir: boolean,
     ) => {
         const {err} = await callRPC(() => client.create({filename, isDir}))
+        // Reported, not just shown: the caller closed its dialog either way,
+        // and the name that was refused went with it.
         if (err) {
             showError(err)
-            return
-        } else {
-            markGitStackLocal(host, filename)
-            if (!isDir) {
-                navigate(fileUrl(filename))
-            }
-            showSuccess(`Created ${filename}`)
+            return {ok: false, err}
         }
+        markGitStackLocal(host, filename)
+        if (!isDir) {
+            navigate(fileUrl(filename))
+        }
+        showSuccess(`Created ${filename}`)
 
         await fetchFiles()
+        return {ok: true, err: ""}
     }, [client, fetchFiles, fileUrl, host, navigate, showError, showSuccess])
 
     const copyFile = useCallback(async (srcFilename: string, destFilename: string, isDir: boolean) => {
@@ -143,15 +145,19 @@ function FilesProvider({children}: { children: ReactNode }) {
 
         if (err) {
             showError(err)
-        } else {
-            markGitStackLocal(host, destFilename)
-            if (!isDir) {
-                navigate(fileUrl(destFilename))
-            }
-            showSuccess(`Copied ${destFilename}`)
+            // Still refreshed: a directory copy can fail part-way through and
+            // leave entries behind, and the tree must show what really exists.
+            await fetchFiles()
+            return {ok: false, err}
         }
+        markGitStackLocal(host, destFilename)
+        if (!isDir) {
+            navigate(fileUrl(destFilename))
+        }
+        showSuccess(`Copied ${destFilename}`)
 
         await fetchFiles()
+        return {ok: true, err: ""}
     }, [client, fetchFiles, fileUrl, host, navigate, showError, showSuccess])
 
 

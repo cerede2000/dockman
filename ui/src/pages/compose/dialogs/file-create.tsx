@@ -113,6 +113,7 @@ function FileCreate({initialName = ""}: { initialName?: string }) {
     const [step, setStep] = useState<CreationStep>('preset-selection');
     const [selectedPresetIndex, setSelectedPresetIndex] = useState(0);
     const [name, setName] = useState('');
+    const [busy, setBusy] = useState(false);
 
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -144,20 +145,25 @@ function FileCreate({initialName = ""}: { initialName?: string }) {
 
     const handleConfirm = async () => {
         const trimmedName = name.trim();
-        if (!trimmedName) return;
+        if (!trimmedName || busy) return;
 
         const finalPath = rootPath ? `${rootPath.replace(/\/$/, '')}/${trimmedName}` : trimmedName;
         const selectedPreset = FILE_PRESETS[selectedPresetIndex].type;
 
+        setBusy(true);
         try {
-            if (copyMode) {
-                await copyFile(srcPath, finalPath, isDir);
-            } else {
-                await addFile(finalPath, selectedPreset === 'folder');
-            }
+            // Both report failure instead of only announcing it: a refused
+            // name used to close the dialog anyway, taking with it everything
+            // that had just been typed. The snackbar already names the cause.
+            const {ok} = copyMode
+                ? await copyFile(srcPath, finalPath, isDir)
+                : await addFile(finalPath, selectedPreset === 'folder');
+            if (!ok) return;
             closeDialog();
         } catch (err) {
             debugError("File operation failed", err);
+        } finally {
+            setBusy(false);
         }
     };
 
@@ -173,7 +179,7 @@ function FileCreate({initialName = ""}: { initialName?: string }) {
                 handlePresetSelection(selectedPresetIndex);
             }
         } else if (step === 'name-input') {
-            if (e.key === 'Enter') handleConfirm();
+            if (e.key === 'Enter') void handleConfirm();
             else if (e.key === 'Escape') setStep('preset-selection');
         }
 
@@ -181,13 +187,17 @@ function FileCreate({initialName = ""}: { initialName?: string }) {
     };
 
     const currentPreset = FILE_PRESETS[selectedPresetIndex];
+    // Duplicate opens directly at name-input, so it has no earlier step: the
+    // button offered Back and dropped the user into a type chooser that was
+    // never part of that flow - and left no way to cancel from the buttons.
+    const canGoBack = !copyMode && (step === 'name-input' || step === 'template-create');
 
     return (
         <Dialog
             open={!!rootPath}
             onClose={closeDialog}
             fullWidth
-            maxWidth={step === 'template-create' ? "sm" : "sm"} // Templates might need more width
+            maxWidth="sm"
             onKeyDown={handleKeyDown}
             slotProps={{
                 paper: {sx: {borderRadius: 3, backgroundImage: 'none', transition: 'max-width 0.2s'}}
@@ -320,23 +330,18 @@ function FileCreate({initialName = ""}: { initialName?: string }) {
                 <Button
                     variant="outlined"
                     color="inherit"
-                    onClick={step === 'name-input' || step === 'template-create' && !copyMode ?
-                        () => setStep('preset-selection') :
-                        closeDialog
-                    }
-                    startIcon={step === 'name-input' || step === 'template-create' && !copyMode ?
-                        <ArrowBack/> :
-                        <Cancel/>}
+                    onClick={canGoBack ? () => setStep('preset-selection') : closeDialog}
+                    startIcon={canGoBack ? <ArrowBack/> : <Cancel/>}
                 >
-                    {step === 'name-input' || step === 'template-create' && !copyMode ? 'Back' : 'Cancel'}
+                    {canGoBack ? 'Back' : 'Cancel'}
                 </Button>
                 <Box sx={{flex: 1}}/>
 
                 {step !== 'template-create' && (
                     <Button
                         variant="contained"
-                        disabled={!name.trim()}
-                        onClick={handleConfirm}
+                        disabled={!name.trim() || busy}
+                        onClick={() => void handleConfirm()}
                         sx={{px: 4, fontWeight: 700}}
                     >
                         {copyMode ? 'Duplicate' : 'Create'}
@@ -461,6 +466,7 @@ const TemplateCreate = ({rootPath, onClose}: {
                     component={Link}
                     href="https://dockman.radn.dev/docs/templates"
                     target="_blank"
+                    rel="noopener noreferrer"
                     endIcon={<HelpOutlined fontSize="small"/>}
                 >
                     View Documentation
@@ -484,7 +490,7 @@ const TemplateCreate = ({rootPath, onClose}: {
                                     fullWidth
                                     size="small"
                                     label={key}
-                                    value={formVars[key]}
+                                    value={formVars[key] ?? ''}
                                     onChange={(e) => setFormVars({...formVars, [key]: e.target.value})}
                                     sx={{bgcolor: 'background.paper'}}
                                     slotProps={{
@@ -528,9 +534,9 @@ const TemplateCreate = ({rootPath, onClose}: {
             </Typography>
             <Box sx={{maxHeight: '400px', overflowY: 'auto', ...scrollbarStyles, px: 0.5}}>
                 <Stack spacing={1.5}>
-                    {templateRunner.val.templs.map((tmpl, idx) => (
+                    {templateRunner.val.templs.map((tmpl) => (
                         <Paper
-                            key={idx}
+                            key={tmpl.Name}
                             variant="outlined"
                             onClick={() => handleSelectTemplate(tmpl)}
                             sx={{
