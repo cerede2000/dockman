@@ -75,7 +75,13 @@ func (h *HTTPHandler) applyBindingCommitRollback(w http.ResponseWriter, r *http.
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.ApplyCommitRollback(r.Context(), r.PathValue("id"), input)
+	// Writes stack files in a loop. Cancelled half way - a closed tab, a
+	// proxy timeout - it leaves some files from the archive and some from
+	// the current state, which for a Compose stack is an inconsistent
+	// mixture nobody asked for.
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.ApplyCommitRollback(opCtx, r.PathValue("id"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -130,7 +136,13 @@ func (h *HTTPHandler) restoreBindingBackup(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.RestoreBackup(r.Context(), r.PathValue("id"), r.PathValue("backupId"), input)
+	// Writes stack files in a loop. Cancelled half way - a closed tab, a
+	// proxy timeout - it leaves some files from the archive and some from
+	// the current state, which for a Compose stack is an inconsistent
+	// mixture nobody asked for.
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.RestoreBackup(opCtx, r.PathValue("id"), r.PathValue("backupId"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
