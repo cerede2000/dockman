@@ -34,6 +34,10 @@ type deploymentBatchResult struct {
 	Failed         []string
 	RolledBack     []string
 	RollbackFailed []string
+	// Deferred stacks were busy with another action and were not attempted.
+	// They are NOT failures: nothing was tried, nothing broke, and the next
+	// cycle will pick them up.
+	Deferred []string
 }
 
 func (s *Service) ListBindingDeployments(bindingID string) ([]DeploymentView, error) {
@@ -377,9 +381,13 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		filename := filepath.ToSlash(filepath.Join(binding.StackPath, relative))
 		unlock, locked := s.lockCompose(binding.Host, filename)
 		if !locked {
-			message := fmt.Sprintf("stack %s already has an action in progress", filename)
-			result.Failed = append(result.Failed, relative)
-			_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "failed", "deploy_error": message})
+			// Busy is not broken. A stack being deployed by hand, updated by
+			// the auto-updater, or touched by another cycle was recorded here
+			// as a FAILED deployment: it painted the stack red, pushed the
+			// whole link into a failed state, and - with the old broad retry -
+			// dragged every other stack into a redeployment behind it. Nothing
+			// was attempted, so nothing is reported as having gone wrong.
+			result.Deferred = append(result.Deferred, relative)
 			continue
 		}
 		logs := &limitedLogWriter{}
@@ -529,6 +537,20 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 	}
 	now := time.Now().UTC()
 	state, message := "success", "deployed"
+	if len(result.Failed) == 0 && len(result.Deferred) > 0 {
+		// Work is still owed, but nothing failed. "pending" is retryable, so
+		// the next cycle picks these up without anything having gone red.
+		state = "pending"
+		message = fmt.Sprintf("%d stack(s) busy with another action and not deployed yet: %s",
+			len(result.Deferred), strings.Join(result.Deferred, ", "))
+		if len(result.Deployed) > 0 {
+			message = fmt.Sprintf("%d stack(s) deployed; ", len(result.Deployed)) + message
+		}
+		if err := s.store.UpdateBindingAutoDeployState(binding.UUID, state, message, &now); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
 	if len(result.Failed) > 0 {
 		state = "failed"
 		if len(result.Deployed) > 0 || len(result.RolledBack) > 0 {

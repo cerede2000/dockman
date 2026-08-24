@@ -1409,3 +1409,55 @@ func TestAheadWithoutDivergenceFinishesThePushInsteadOfBlocking(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, settled.Ahead, "the cycle must finish the push it had already started")
 }
+
+// Busy is not broken. A stack being deployed by hand, updated by the
+// auto-updater, or touched by another cycle was recorded as a FAILED
+// deployment: it painted the stack red, pushed the whole link into a failed
+// state, and - with the broad retry - dragged every other stack into a
+// redeployment behind it. Nothing was attempted, so nothing may be reported
+// as having gone wrong.
+func TestABusyStackIsDeferredNotFailed(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	stackPath := filepath.Join(stackRoot, "app", "compose.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stackPath), 0o755))
+	require.NoError(t, os.WriteFile(stackPath, []byte("services:\n  app:\n    image: alpine:3.22\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", "services:\n  app:\n    image: alpine:3.23\n")
+
+	deployed := 0
+	service.ConfigureDeployment(
+		func(_ context.Context, _, _ string) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { deployed++; return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { deployed++; return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		// The stack is busy with something else, exactly as a manual deploy
+		// or the auto-updater would make it.
+		func(_, _ string) (func(), bool) { return nil, false },
+	)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+
+	_, err = service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+	require.Zero(t, deployed, "a busy stack must not be deployed")
+
+	status, err := service.store.GitStackStatus(binding.ID, "compose.yaml")
+	require.NoError(t, err)
+	require.NotEqual(t, "failed", status.DeployState,
+		"a stack that was never attempted must not be reported as a failed deployment")
+	require.Empty(t, status.DeployError)
+
+	link, err := service.store.GetBinding(binding.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pending", link.AutoDeployState,
+		"work is still owed, so the link stays retryable instead of going red")
+	require.True(t, isRetryableAutoDeployState(link.AutoDeployState))
+}
