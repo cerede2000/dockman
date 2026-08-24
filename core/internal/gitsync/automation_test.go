@@ -1461,3 +1461,73 @@ func TestABusyStackIsDeferredNotFailed(t *testing.T) {
 		"work is still owed, so the link stays retryable instead of going red")
 	require.True(t, isRetryableAutoDeployState(link.AutoDeployState))
 }
+
+// The end-to-end property the whole day was about: one stack in trouble must
+// never reach the others, and the link must recover by itself once that stack
+// is free. The reported failure was the opposite - stacks untouched for days
+// all turning red at once because a single one had a problem.
+func TestOneBusyStackNeverReachesTheOthers(t *testing.T) {
+	service, stackRoot, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	repository, err := service.store.GetRepository(binding.RepositoryUUID)
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.UUID)
+
+	busy := true
+	deployed := make([]string, 0, 4)
+	service.ConfigureDeployment(
+		func(_ context.Context, _, _ string) error { return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			deployed = append(deployed, filename)
+			return nil
+		},
+		func(_ context.Context, _, filename string, _ io.Writer) error {
+			deployed = append(deployed, filename)
+			return nil
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_, filename string) (func(), bool) {
+			// alpha is busy with another action; beta is free.
+			if busy && strings.Contains(filename, "alpha") {
+				return nil, false
+			}
+			return func() {}, true
+		},
+	)
+	_, err = service.UpdateBindingAutomation(binding.UUID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true,
+		AutoSyncSelectionMode: composeSelectionAll,
+		DeployComposePaths:    []string{"alpha/compose.yml", "beta/compose.yml"},
+	})
+	require.NoError(t, err)
+
+	remoteChange(t, repository.RemoteURL, "stacks/alpha/compose.yml", "services:\n  alpha:\n    image: alpine:3.24\n")
+	remoteChange(t, repository.RemoteURL, "stacks/beta/compose.yml", "services:\n  beta:\n    image: alpine:3.24\n")
+	_, err = service.RunBindingAutoSyncNow(context.Background(), binding.UUID)
+	require.NoError(t, err)
+
+	// beta went out cleanly even though alpha could not be touched.
+	betaStatus, err := service.store.GitStackStatus(binding.UUID, "beta/compose.yml")
+	require.NoError(t, err)
+	require.NotEqual(t, "failed", betaStatus.DeployState, "a healthy stack must not inherit another stack's trouble")
+
+	alphaStatus, err := service.store.GitStackStatus(binding.UUID, "alpha/compose.yml")
+	require.NoError(t, err)
+	require.NotEqual(t, "failed", alphaStatus.DeployState, "a busy stack was never attempted and cannot have failed")
+
+	// The stack frees up. The link must pick it up on its own.
+	busy = false
+	deployedBefore := len(deployed)
+	_, err = service.RunBindingAutoSyncNow(context.Background(), binding.UUID)
+	require.NoError(t, err)
+	require.Greater(t, len(deployed), deployedBefore, "the deferred stack must be deployed once it is free")
+
+	settled, err := service.store.GetBinding(binding.UUID)
+	require.NoError(t, err)
+	require.NotEqual(t, "failed", settled.AutoDeployState)
+	require.NotEqual(t, "partial", settled.AutoDeployState,
+		"nothing failed at any point, so the link must not end up in a failed state")
+	require.NoFileExists(t, filepath.Join(stackRoot, "never-created"))
+}
