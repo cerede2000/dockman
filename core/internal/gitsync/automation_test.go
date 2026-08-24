@@ -1292,3 +1292,54 @@ func TestRollbackSurvivesTheCancellationThatTriggeredIt(t *testing.T) {
 	require.NotEqual(t, "rollback_failed", status.DeployState,
 		"a cancelled deployment must not be reported as an unrecoverable rollback failure")
 }
+
+// One broken stack must not drag every healthy one into a redeployment. The
+// retry re-armed EVERY authorized deployment path, so a link in a failed state
+// redeployed all of its stacks on the next explicit check - and a single
+// cancelled request then failed all of them at once. That is how one bad
+// deployment turned into a folder link where every stack had gone red.
+func TestDeployRetryTouchesOnlyTheStacksThatFailed(t *testing.T) {
+	service, _ := testService(t, true)
+	binding := StackBinding{
+		UUID: "link-1", RepositoryUUID: "repo-1", Host: "local", StackPath: "compose",
+		AutoDeployEnabled: true,
+		AutoDeployComposePaths: strings.Join([]string{
+			"broken/compose.yml", "healthy/compose.yml", "restored/compose.yml", "never-run/compose.yml",
+		}, "\n"),
+		AutoDeployState: "partial",
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+
+	for path, state := range map[string]string{
+		"broken/compose.yml":    "failed",
+		"healthy/compose.yml":   "success",
+		"restored/compose.yml":  "rolled_back",
+		"never-run/compose.yml": "disabled",
+		"unlisted/compose.yml":  "failed", // not an authorized target
+	} {
+		require.NoError(t, service.store.db.Save(&GitStackStatus{
+			BindingUUID: binding.UUID, ComposePath: path, State: stackSyncUpToDate, DeployState: state,
+		}).Error)
+	}
+
+	retry := service.stacksAwaitingDeployRetry(binding)
+	require.Equal(t, []string{"broken/compose.yml", "restored/compose.yml"}, retry,
+		"only the stacks whose own deployment did not succeed may be retried")
+	require.NotContains(t, retry, "healthy/compose.yml")
+	require.NotContains(t, retry, "never-run/compose.yml")
+	require.NotContains(t, retry, "unlisted/compose.yml", "a path outside the authorized set is never a target")
+}
+
+// The safety valve: without the per-stack picture, keep the broad behaviour
+// rather than silently drop a retry that is owed.
+func TestDeployRetryFallsBackToEveryPathWhenStatusesAreUnreadable(t *testing.T) {
+	service, _ := testService(t, true)
+	binding := StackBinding{
+		UUID: "link-empty", RepositoryUUID: "repo-1", Host: "local", StackPath: "compose",
+		AutoDeployEnabled:      true,
+		AutoDeployComposePaths: "",
+		AutoDeployState:        "failed",
+	}
+	require.NoError(t, service.store.SaveBinding(&binding))
+	require.Empty(t, service.stacksAwaitingDeployRetry(binding), "no authorized target means nothing to retry")
+}

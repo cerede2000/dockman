@@ -307,6 +307,46 @@ func isRetryableAutoDeployState(state string) bool {
 	return state == "failed" || state == "partial" || state == "pending"
 }
 
+// stacksAwaitingDeployRetry lists the controlled stacks whose OWN last
+// deployment did not succeed.
+//
+// The retry used to re-arm EVERY authorized deployment path, so one stack
+// failing meant every stack was redeployed on the next check. A single
+// cancelled request then failed all of them at once - which is how one broken
+// deployment turned into a folder link where every stack had gone red.
+//
+// A stack that deployed cleanly has nothing to retry. Deliberately not applied
+// to the "pending" state: that one means imported changes are still waiting
+// for their first deployment, and no per-stack failure records which. Narrowing
+// it there would silently drop a deployment that was genuinely owed.
+func (s *Service) stacksAwaitingDeployRetry(binding StackBinding) []string {
+	authorized := splitPatternLines(binding.AutoDeployComposePaths)
+	if len(authorized) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(authorized))
+	for _, path := range authorized {
+		allowed[path] = struct{}{}
+	}
+	rows, err := s.store.GitStackStatuses(binding.UUID)
+	if err != nil {
+		// Without the per-stack picture, keep the old broad behaviour rather
+		// than risk dropping a retry that is owed.
+		return authorized
+	}
+	pending := make([]string, 0, len(authorized))
+	for _, row := range rows {
+		if _, ok := allowed[row.ComposePath]; !ok {
+			continue
+		}
+		if _, finished := terminalStackDeployStates[row.DeployState]; finished && row.DeployState != "failed" && row.DeployState != "rolled_back" && row.DeployState != "rollback_failed" {
+			continue
+		}
+		pending = append(pending, row.ComposePath)
+	}
+	return uniqueSortedStrings(pending)
+}
+
 func deploymentTargetsForChanges(binding StackBinding, changed []string) []string {
 	targets := splitPatternLines(binding.AutoDeployComposePaths)
 	result := make([]string, 0)
