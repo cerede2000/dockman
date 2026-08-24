@@ -1203,3 +1203,92 @@ func TestRestartRecoveryRepairsInterruptedInitialSync(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "imported", untouched.InitialSyncState, "a finished initialization must be left alone")
 }
+
+// The rollback used to inherit the very context whose death triggered it. A
+// deployment cancelled mid-flight - a closed tab, a reverse-proxy timeout, a
+// shutdown - therefore could not restore anything: every Docker call failed
+// instantly on the cancelled parent, and "deployment cancelled" was reported
+// to the operator as "deployment AND automatic rollback failed", leaving the
+// stack sitting on the half-applied version.
+func TestRollbackSurvivesTheCancellationThatTriggeredIt(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	stackPath := filepath.Join(stackRoot, "app", "compose.yaml")
+	previous := "services:\n  app:\n    image: alpine:3.22\n"
+	imported := "services:\n  app:\n    image: alpine:3.23\n"
+	require.NoError(t, os.MkdirAll(filepath.Dir(stackPath), 0o755))
+	require.NoError(t, os.WriteFile(stackPath, []byte(previous), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", imported)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	liveRollbackCalls := 0
+	deadRollbackCalls := 0
+	countRollback := func(callCtx context.Context) {
+		if callCtx.Err() == nil {
+			liveRollbackCalls++
+		} else {
+			deadRollbackCalls++
+		}
+	}
+	cancelledDuringDeploy := false
+
+	service.ConfigureDeployment(
+		func(callCtx context.Context, _, _ string) error {
+			if cancelledDuringDeploy {
+				countRollback(callCtx)
+			}
+			return callCtx.Err()
+		},
+		func(callCtx context.Context, _, _ string, _ io.Writer) error {
+			if cancelledDuringDeploy {
+				countRollback(callCtx)
+			}
+			return callCtx.Err()
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error {
+			return errors.New("non-wait deployment must not be used with rollback protection")
+		},
+		func(callCtx context.Context, _, _ string, _ io.Writer) error {
+			contents, readErr := os.ReadFile(stackPath)
+			if readErr != nil {
+				return readErr
+			}
+			if string(contents) == imported {
+				// The browser goes away exactly here, mid-deployment.
+				cancel()
+				cancelledDuringDeploy = true
+				return callCtx.Err()
+			}
+			countRollback(callCtx)
+			return callCtx.Err()
+		},
+		func(callCtx context.Context, _, _ string, _ io.Writer) error {
+			if cancelledDuringDeploy {
+				countRollback(callCtx)
+			}
+			return callCtx.Err()
+		},
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true, DeployRollback: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+
+	_, _ = service.RunBindingAutoSync(ctx, binding.ID)
+
+	require.Positive(t, liveRollbackCalls, "the rollback must run on a live context, not the one that just died")
+	require.Zero(t, deadRollbackCalls, "no rollback step may inherit the cancelled context")
+
+	status, err := service.store.GitStackStatus(binding.ID, "compose.yaml")
+	require.NoError(t, err)
+	require.NotEqual(t, "rollback_failed", status.DeployState,
+		"a cancelled deployment must not be reported as an unrecoverable rollback failure")
+}

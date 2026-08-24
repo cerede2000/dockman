@@ -2,6 +2,8 @@ package compose
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"testing"
@@ -108,3 +110,42 @@ func TestUp(t *testing.T) {
 //		Writer: os.Stdout,
 //	}
 //}
+
+// A cancelled context fails both binary probes before either process starts,
+// leaving the captured stderr empty. Reporting "could not determine compose
+// binary location" there is a lie: it sent an operator hunting a healthy
+// compose installation while the real cause was a deployment cancelled
+// mid-flight whose rollback ran on the same dead context.
+type contextEchoRunner struct{ calls int }
+
+func (r *contextEchoRunner) Run(ctx context.Context, _ []string, _ string, _ []string, _ io.Writer, _ io.Writer) error {
+	r.calls++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("exec: \"docker\": executable file not found in $PATH")
+}
+
+func TestComposeVersionReportsCancellationInsteadOfMissingBinary(t *testing.T) {
+	runner := &contextEchoRunner{}
+	service := &Service{runner: runner}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := service.version(cancelled)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotContains(t, err.Error(), "could not determine compose binary location",
+		"a cancelled context must not be reported as a missing compose binary")
+}
+
+func TestComposeVersionStillReportsAGenuinelyMissingBinary(t *testing.T) {
+	runner := &contextEchoRunner{}
+	service := &Service{runner: runner}
+
+	_, err := service.version(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "could not determine compose binary location")
+	require.Equal(t, 2, runner.calls, "both spellings must be tried when the context is alive")
+}
