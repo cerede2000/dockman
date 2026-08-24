@@ -510,15 +510,30 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		} else if len(transfer.EditorBlocked) == 0 && len(transfer.ComposeBlocked) == 0 && len(readBlockedStacks) == 0 {
 			result.Message = fmt.Sprintf("%d file(s) synchronized from Git with backup; stack was not deployed", changed)
 		}
+		retryingStaleDeploy := changed == 0 && binding.AutoDeployEnabled && isRetryableAutoDeployState(binding.AutoDeployState)
+		// Captured BEFORE clearIdenticalRollbackStates below, which resolves
+		// the very rows this reads: a stack whose rollback has just completed
+		// still owes one verification deployment before the link may be called
+		// healthy, and reading after the clear would silently skip it.
+		var staleDeployTargets []string
+		if retryingStaleDeploy {
+			if binding.AutoDeployState == "pending" {
+				// Imported changes still owed their first deployment: no
+				// per-stack failure records which, so re-arm them all.
+				staleDeployTargets = splitPatternLines(binding.AutoDeployComposePaths)
+			} else {
+				// Retry what actually failed. Re-arming every authorized path
+				// meant one broken stack redeployed all of them, and a single
+				// cancelled request then painted the whole link red.
+				staleDeployTargets = s.stacksAwaitingDeployRetry(binding)
+			}
+		}
 		if changed == 0 && binding.AutoDeployEnabled && len(readBlockedStacks) == 0 {
 			if clearErr := s.clearIdenticalRollbackStates(binding); clearErr != nil {
 				return clearErr
 			}
 		}
-		retryingStaleDeploy := changed == 0 && binding.AutoDeployEnabled && isRetryableAutoDeployState(binding.AutoDeployState)
-		if retryingStaleDeploy {
-			changedPaths = append(changedPaths, splitPatternLines(binding.AutoDeployComposePaths)...)
-		}
+		changedPaths = append(changedPaths, staleDeployTargets...)
 		changedPaths = excludeComposeStackPaths(changedPaths, result.SyncFailed)
 		deployAttempted := false
 		if len(changedPaths) > 0 && binding.AutoDeployEnabled {
