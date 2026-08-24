@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -92,6 +93,26 @@ func NewHTTPHandler(service *Service) http.Handler {
 	})
 }
 
+// detachedOperationBudget bounds an operation that must finish even though
+// nobody is listening any more. Generous on purpose: a full synchronization
+// can redeploy every controlled stack, pulling images and waiting for health.
+const detachedOperationBudget = 30 * time.Minute
+
+// detachedOperation returns the request's context WITHOUT its cancellation.
+//
+// Every mutating endpoint used to run on r.Context(), which is cancelled the
+// moment the browser goes away - a closed tab, a reload, a reverse proxy
+// timeout. A synchronization killed there leaves files half-imported, a
+// deployment half-applied, and a rollback that cannot run because it inherited
+// the same dead context. The work must reach a terminal state whether or not
+// anyone is still watching the response.
+//
+// Read-only probes keep their cancellation: nothing is left half-done, and
+// letting them die with the request is the right thing.
+func detachedOperation(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), detachedOperationBudget)
+}
+
 func (h *HTTPHandler) repositoryWebhook(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
@@ -137,7 +158,9 @@ func (h *HTTPHandler) pushGitStack(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
 	}
-	result, err := h.service.PushGitStackAndResume(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.PushGitStackAndResume(opCtx, r.PathValue("id"), r.PathValue("composePath"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -149,7 +172,9 @@ func (h *HTTPHandler) syncGitStack(w http.ResponseWriter, r *http.Request) {
 	if !h.requireEnabled(w) {
 		return
 	}
-	result, err := h.service.SyncGitStackNow(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.SyncGitStackNow(opCtx, r.PathValue("id"), r.PathValue("composePath"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -166,7 +191,9 @@ func (h *HTTPHandler) resolveGitOrphan(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.ResolveGitOrphan(r.Context(), r.PathValue("id"), r.PathValue("composePath"), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.ResolveGitOrphan(opCtx, r.PathValue("id"), r.PathValue("composePath"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -183,7 +210,9 @@ func (h *HTTPHandler) resolveLocalStackDeletion(w http.ResponseWriter, r *http.R
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.ResolveLocalStackDeletion(r.Context(), r.PathValue("id"), r.PathValue("composePath"), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.ResolveLocalStackDeletion(opCtx, r.PathValue("id"), r.PathValue("composePath"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -264,7 +293,9 @@ func (h *HTTPHandler) pauseGitStackAutomation(w http.ResponseWriter, r *http.Req
 	if input.Paused {
 		row, err = h.service.SetGitStackAutomationPause(r.PathValue("id"), r.PathValue("composePath"), true)
 	} else {
-		row, pushed, err = h.service.ResumeGitStackAutomation(r.Context(), r.PathValue("id"), r.PathValue("composePath"))
+		opCtx, opCancel := detachedOperation(r)
+		defer opCancel()
+		row, pushed, err = h.service.ResumeGitStackAutomation(opCtx, r.PathValue("id"), r.PathValue("composePath"))
 	}
 	if err != nil {
 		writeServiceError(w, err)
@@ -502,7 +533,9 @@ func (h *HTTPHandler) pauseBindingAutomation(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.SetBindingAutomationPause(r.Context(), r.PathValue("id"), input.Paused)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.SetBindingAutomationPause(opCtx, r.PathValue("id"), input.Paused)
 	action := "resume"
 	if input.Paused {
 		action = "pause"
@@ -534,7 +567,9 @@ func (h *HTTPHandler) runBindingAutomation(w http.ResponseWriter, r *http.Reques
 	if !h.requireEnabled(w) {
 		return
 	}
-	result, err := h.service.RunBindingAutoSyncNow(r.Context(), r.PathValue("id"))
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.RunBindingAutoSyncNow(opCtx, r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -575,7 +610,9 @@ func (h *HTTPHandler) createBinding(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	row, err := h.service.CreateBindingContext(r.Context(), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	row, err := h.service.CreateBindingContext(opCtx, input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -625,7 +662,9 @@ func (h *HTTPHandler) deleteFolderLinkRoot(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := h.service.DeleteFolderLinkRoot(r.Context(), r.PathValue("id"), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := h.service.DeleteFolderLinkRoot(opCtx, r.PathValue("id"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -682,7 +721,9 @@ func (h *HTTPHandler) bindingTransfer(w http.ResponseWriter, r *http.Request, ac
 	if !ok {
 		return
 	}
-	result, err := action(r.Context(), r.PathValue("id"), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	result, err := action(opCtx, r.PathValue("id"), input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -721,7 +762,9 @@ func (h *HTTPHandler) createRepository(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	row, err := h.service.CreateRepository(r.Context(), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	row, err := h.service.CreateRepository(opCtx, input)
 	if err != nil {
 		var missingBranch *RemoteBranchMissingError
 		if errors.As(err, &missingBranch) {
@@ -749,7 +792,9 @@ func (h *HTTPHandler) createGitHubRepository(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	row, err := h.service.CreateGitHubRepository(r.Context(), input)
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	row, err := h.service.CreateGitHubRepository(opCtx, input)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -796,7 +841,9 @@ func (h *HTTPHandler) resetRepositoryToRemote(w http.ResponseWriter, r *http.Req
 		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("type %q to confirm", typedConfirmationText))
 		return
 	}
-	status, err := h.service.ResetRepositoryToRemote(r.Context(), r.PathValue("id"))
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	status, err := h.service.ResetRepositoryToRemote(opCtx, r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -808,7 +855,9 @@ func (h *HTTPHandler) repositoryAction(w http.ResponseWriter, r *http.Request, a
 	if !h.requireEnabled(w) {
 		return
 	}
-	status, err := action(r.Context(), r.PathValue("id"))
+	opCtx, opCancel := detachedOperation(r)
+	defer opCancel()
+	status, err := action(opCtx, r.PathValue("id"))
 	if err != nil {
 		writeServiceError(w, err)
 		return

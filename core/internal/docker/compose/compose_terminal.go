@@ -108,6 +108,14 @@ func (c *Service) version(ctx context.Context) ([]string, error) {
 		return []string{composeStandalone}, nil
 	}
 
+	// A cancelled context fails both probes instantly, before either process
+	// starts, and errWriter stays empty. Reporting "compose binary not found"
+	// there is a lie that sends the operator hunting a healthy installation:
+	// it is what the caller saw when a deployment was cancelled mid-flight and
+	// its rollback ran on the same dead context.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("compose was not run: %w", ctxErr)
+	}
 	return nil, fmt.Errorf(
 		"could not determine compose binary location tried %s and %s\nerr:%s",
 		composeStandalone,

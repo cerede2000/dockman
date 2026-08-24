@@ -274,6 +274,11 @@ func uniqueSortedStrings(values []string) []string {
 // "rolling_back" were added to the deployment path and never added here, so a
 // stop inside either survived every restart. Listing what is FINISHED means a
 // stage added tomorrow is repaired by default rather than forgotten.
+// rollbackBudget bounds the detached rollback. It is deliberately generous:
+// restoring a stack pulls images and waits for health, and giving up half way
+// is worse than taking a few minutes.
+const rollbackBudget = 15 * time.Minute
+
 var terminalDeploymentStates = map[string]struct{}{
 	"success": {}, "failed": {}, "rolled_back": {}, "rollback_failed": {},
 }
@@ -372,6 +377,14 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			provisionRolledBack = true
 			originalErr := sanitizeDeploymentOutput(safeGitError(fmt.Errorf("%s failed: %w", stage, err)))
 			deployment.State = "rolling_back"
+			// The rollback must NOT inherit the context that just died. A
+			// deployment cancelled mid-flight - a browser that went away, a
+			// proxy that timed out, a shutdown - is exactly when the previous
+			// version has to be restored, and every Docker call here would
+			// have failed instantly on the cancelled parent. That is what
+			// turned "deployment cancelled" into "deployment AND rollback
+			// failed", leaving the stack on the half-applied version.
+			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackBudget)
 			_, _ = fmt.Fprintf(logs, "\n[dockman] %s; restoring the pre-import stack files\n", originalErr)
 			hadPreviousCompose := true
 			var rollbackErr error
@@ -380,7 +393,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			}
 			if rollbackErr == nil && stage == "deployment" && !hadPreviousCompose {
 				_, _ = fmt.Fprintln(logs, "[dockman] first deployment failed; removing its partial containers and networks before restoring the absent stack")
-				rollbackErr = s.cleanupCompose(ctx, binding.Host, filename, logs)
+				rollbackErr = s.cleanupCompose(rollbackCtx, binding.Host, filename, logs)
 			}
 			var restored []string
 			if provisioning != nil {
@@ -406,18 +419,18 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 				}
 			}
 			if rollbackErr == nil && hadPreviousCompose {
-				rollbackErr = s.validateCompose(ctx, binding.Host, filename)
+				rollbackErr = s.validateCompose(rollbackCtx, binding.Host, filename)
 			}
 			// Validation/dry-run failures never touched Docker. A real deployment
 			// (including --wait/health failure) is rolled forward to the restored
 			// configuration so partially changed containers are repaired.
 			if rollbackErr == nil && stage == "deployment" && hadPreviousCompose {
 				_, _ = fmt.Fprintln(logs, "[dockman] restored files validated; checking the previous deployment plan")
-				rollbackErr = s.dryRunCompose(ctx, binding.Host, filename, logs)
+				rollbackErr = s.dryRunCompose(rollbackCtx, binding.Host, filename, logs)
 			}
 			if rollbackErr == nil && stage == "deployment" && hadPreviousCompose {
 				_, _ = fmt.Fprintln(logs, "[dockman] redeploying the previous stack version and waiting for health")
-				rollbackErr = s.deployComposeWait(ctx, binding.Host, filename, logs)
+				rollbackErr = s.deployComposeWait(rollbackCtx, binding.Host, filename, logs)
 			}
 			if rollbackErr == nil {
 				deployment.State = "rolled_back"
@@ -428,6 +441,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 				deployment.Result = fmt.Sprintf("%s; automatic rollback failed: %s", originalErr, sanitizeDeploymentOutput(safeGitError(rollbackErr)))
 				result.RollbackFailed = append(result.RollbackFailed, relative)
 			}
+			cancelRollback()
 		}
 		if provisioning != nil && !provisionRolledBack {
 			if finalizeErr := provisioning.Commit(); finalizeErr != nil {
