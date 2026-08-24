@@ -342,6 +342,24 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 		if fetchErr != nil {
 			return fetchErr
 		}
+		// Being ahead without divergence is not a decision waiting to be taken:
+		// it is Dockman's OWN commit that never reached the remote. An export
+		// commits and then pushes, and a network blip between the two leaves
+		// exactly this. Blocking there turned a transient failure into a link
+		// that stayed stopped until somebody noticed - and the message even
+		// claimed a decision was needed when there was none to take.
+		//
+		// Divergence still blocks, and PushRepository refuses that case on its
+		// own, so this can never fast-forward over work that arrived remotely.
+		if !status.Diverged && status.Ahead > 0 {
+			pushed, pushErr := s.PushRepository(ctx, binding.RepositoryUUID)
+			if pushErr != nil {
+				result.State = "blocked"
+				result.Message = fmt.Sprintf("%d local commit(s) could not be pushed to the remote: %s", status.Ahead, safeGitError(pushErr))
+				return nil
+			}
+			status = pushed
+		}
 		if status.Diverged || status.Ahead > 0 {
 			result.State = "blocked"
 			result.Message = "Repository state requires a manual decision before automatic synchronization"

@@ -1343,3 +1343,69 @@ func TestDeployRetryFallsBackToEveryPathWhenStatusesAreUnreadable(t *testing.T) 
 	require.NoError(t, service.store.SaveBinding(&binding))
 	require.Empty(t, service.stacksAwaitingDeployRetry(binding), "no authorized target means nothing to retry")
 }
+
+// An export commits and then pushes. A network blip between the two leaves the
+// commit local, and the next cycle saw "ahead" and stopped the link with
+// "Repository state requires a manual decision" - a message that named a
+// decision nobody had to take. A transient failure became a link that stayed
+// stopped until somebody noticed.
+// rewindRemoteOneCommit moves the remote branch back one commit, which leaves
+// the local clone ahead without divergence - the state a failed push leaves.
+func rewindRemoteOneCommit(t *testing.T, remoteURL string) {
+	t.Helper()
+	repo, err := gitclient.PlainOpen(remoteURL)
+	require.NoError(t, err)
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(ref.Hash())
+	require.NoError(t, err)
+	parent, err := commit.Parent(0)
+	require.NoError(t, err)
+	require.NoError(t, repo.Storer.SetReference(
+		plumbing.NewHashReference(plumbing.NewBranchReferenceName("main"), parent.Hash)))
+}
+
+func TestAheadWithoutDivergenceFinishesThePushInsteadOfBlocking(t *testing.T) {
+	service, stackRoot, bindingView := prepareMultiStackBinding(t)
+	binding, err := service.store.GetBinding(bindingView.ID)
+	require.NoError(t, err)
+	repository, err := service.store.GetRepository(binding.RepositoryUUID)
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.UUID)
+	_, err = service.UpdateBindingAutomation(binding.UUID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, AutoSyncSelectionMode: composeSelectionAll,
+	})
+	require.NoError(t, err)
+	_, err = service.RunBindingAutoSync(context.Background(), binding.UUID)
+	require.NoError(t, err)
+
+	// Commit locally without pushing: exactly the state a failed push leaves.
+	require.NoError(t, os.WriteFile(filepath.Join(stackRoot, "alpha", "compose.yml"),
+		[]byte("services:\n  alpha:\n    image: alpine:3.25\n"), 0o644))
+	preview, err := service.PreviewBinding(binding.UUID, "stack_to_repository", TransferInput{})
+	require.NoError(t, err)
+	require.Positive(t, preview.Changed, "the local edit must be exportable")
+	_, err = service.ExportBinding(context.Background(), binding.UUID, TransferInput{
+		PreviewToken:  preview.PreviewToken,
+		SelectedPaths: []string{"alpha/compose.yml"},
+	})
+	require.NoError(t, err)
+	rewindRemoteOneCommit(t, repository.RemoteURL)
+	_, err = service.FetchRepository(context.Background(), binding.RepositoryUUID)
+	require.NoError(t, err)
+
+	status, err := service.RepositoryStatus(binding.RepositoryUUID)
+	require.NoError(t, err)
+	require.False(t, status.Diverged)
+	require.Positive(t, status.Ahead, "the local commit must be ahead of the remote for this test to mean anything")
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.UUID)
+	require.NoError(t, err)
+	require.NotEqual(t, "blocked", result.State,
+		"an unpushed local commit is Dockman's own unfinished work, not a decision for the operator")
+	require.NotContains(t, result.Message, "requires a manual decision")
+
+	settled, err := service.RepositoryStatus(binding.RepositoryUUID)
+	require.NoError(t, err)
+	require.Zero(t, settled.Ahead, "the cycle must finish the push it had already started")
+}
