@@ -563,7 +563,9 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			result.DeployFailed = deployment.Failed
 			result.RolledBack = deployment.RolledBack
 			result.RollbackFailed = deployment.RollbackFailed
-			deployAttempted = len(deployment.Deployed)+len(deployment.Failed)+len(deployment.RolledBack)+len(deployment.RollbackFailed) > 0
+			// Deferred counts: work is still owed, and treating it as "nothing
+			// attempted" would resolve the retry state and drop it.
+			deployAttempted = len(deployment.Deployed)+len(deployment.Failed)+len(deployment.RolledBack)+len(deployment.RollbackFailed)+len(deployment.Deferred) > 0
 			if len(deployment.Failed) > 0 {
 				result.State = "partial"
 			}
