@@ -82,3 +82,84 @@ func TestStabilityWindowFailsWhenTheDaemonCannotAnswer(t *testing.T) {
 	err := service.waitForContainerStability(context.Background(), events, "abc123")
 	require.Error(t, err)
 }
+
+// recoveryClient answers the two calls the sweep makes.
+type recoveryClient struct {
+	dockerClient
+	items   []container.Summary
+	renames map[string]string
+	failAll error
+}
+
+func (c *recoveryClient) ContainerList(context.Context, client.ContainerListOptions) (client.ContainerListResult, error) {
+	if c.failAll != nil {
+		return client.ContainerListResult{}, c.failAll
+	}
+	return client.ContainerListResult{Items: c.items}, nil
+}
+
+func (c *recoveryClient) ContainerRename(_ context.Context, id string, opts client.ContainerRenameOptions) (client.ContainerRenameResult, error) {
+	if c.renames == nil {
+		c.renames = map[string]string{}
+	}
+	c.renames[id] = opts.NewName
+	return client.ContainerRenameResult{}, nil
+}
+
+func summary(id string, names ...string) container.Summary {
+	return container.Summary{ID: id, Names: names}
+}
+
+// The window between removing the old container and renaming the replacement
+// is two instructions wide, but what it leaves is durable: the service runs,
+// healthy, under a temporary name nothing will ever rename - and Compose then
+// creates a SECOND container for that service on the next up.
+func TestInterruptedReplacementTakesItsRealNameWhenItIsFree(t *testing.T) {
+	cli := &recoveryClient{items: []container.Summary{
+		summary("c1", "/adguard.dockman-update-a1b2c3d4"),
+		summary("c2", "/unrelated"),
+	}}
+	service := &Service{client: cli}
+
+	recovered, err := service.RecoverInterruptedReplacements(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered)
+	require.Equal(t, "adguard", cli.renames["c1"], "the replacement must take the name its update was going to give it")
+}
+
+// Guessing which of the two is the real service would be worse than saying so.
+func TestInterruptedReplacementIsLeftAloneWhenTheNameIsTaken(t *testing.T) {
+	cli := &recoveryClient{items: []container.Summary{
+		summary("c1", "/adguard.dockman-update-a1b2c3d4"),
+		summary("c2", "/adguard"),
+	}}
+	service := &Service{client: cli}
+
+	recovered, err := service.RecoverInterruptedReplacements(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+	require.Empty(t, cli.renames, "an occupied target name must never be guessed at")
+}
+
+// The pattern is Dockman's own and must not touch anything else.
+func TestRecoveryIgnoresContainersThatAreNotDockmanReplacements(t *testing.T) {
+	cli := &recoveryClient{items: []container.Summary{
+		summary("c1", "/adguard.dockman-update-notahex"),
+		summary("c2", "/my.dockman-update-backup"),
+		summary("c3", "/plain"),
+		summary("c4", "/adguard_updated"),
+	}}
+	service := &Service{client: cli}
+
+	recovered, err := service.RecoverInterruptedReplacements(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, recovered)
+	require.Empty(t, cli.renames)
+}
+
+func TestRecoveryReportsAListingFailure(t *testing.T) {
+	cli := &recoveryClient{failAll: context.DeadlineExceeded}
+	service := &Service{client: cli}
+	_, err := service.RecoverInterruptedReplacements(context.Background())
+	require.Error(t, err)
+}
