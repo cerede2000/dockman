@@ -199,6 +199,14 @@ func IsRolledBack(err error) bool {
 // report - when the caller has a stream for it - receives the same progress
 // as structured per-container states.
 func (u *Service) ContainersForceUpdate(ctx context.Context, pull ImagePuller, out io.Writer, report ProgressReporter, containerID ...string) error {
+	// Before creating any replacement, finish one a previous run may have left
+	// unnamed. Doing it here rather than at construction keeps Docker calls out
+	// of a constructor and puts the sweep exactly where its result matters.
+	if recovered, recoverErr := u.RecoverInterruptedReplacements(ctx); recoverErr != nil {
+		log.Warn().Err(recoverErr).Msg("could not check for replacement containers left by an interrupted update")
+	} else if recovered > 0 {
+		_, _ = fmt.Fprintf(out, "*** finished %d update(s) interrupted before their replacement could take its name ***\n", recovered)
+	}
 	list, err := u.srv.ContainerListByIDs(ctx, containerID...)
 	if err != nil {
 		return err
@@ -1079,4 +1087,62 @@ func (u *Service) ImageUpdateAvailable(ctx context.Context, imageName string) (b
 	remoteDigest = strings.TrimPrefix(remoteDigest, "sha256:")
 
 	return localDigest != remoteDigest, remoteDigest, nil
+}
+
+// interruptedReplacementPattern matches a name this package builds for a
+// replacement container, and nothing else. The suffix is eight hex characters
+// of a UUID, so an operator's own container cannot collide with it by accident.
+var interruptedReplacementPattern = regexp.MustCompile(`^(.+)\.dockman-update-[0-9a-f]{8}$`)
+
+// RecoverInterruptedReplacements finishes an update that was cut between
+// removing the old container and giving the replacement its real name.
+//
+// That window is two instructions wide, but what it leaves is durable and
+// confusing: the service runs, healthy, under a temporary name nothing will
+// ever rename. Compose then sees no container for that service and creates a
+// SECOND one on the next up, and the operator is left with a duplicate they
+// did not ask for and a phantom named after Dockman.
+//
+// Only the unambiguous half is automatic. When the real name is free, the
+// rename is the completion of an operation Dockman itself started, so it is
+// performed. When something already holds that name, guessing which of the two
+// is the real service would be worse than saying so: the leftover is reported
+// and left exactly where it is.
+func (u *Service) RecoverInterruptedReplacements(ctx context.Context) (int, error) {
+	list, err := u.cli().ContainerList(ctx, client.ContainerListOptions{All: true})
+	if err != nil {
+		return 0, fmt.Errorf("list containers to recover interrupted updates: %w", err)
+	}
+	taken := make(map[string]struct{}, len(list.Items))
+	for _, item := range list.Items {
+		for _, name := range item.Names {
+			taken[strings.TrimPrefix(name, "/")] = struct{}{}
+		}
+	}
+	recovered := 0
+	for _, item := range list.Items {
+		for _, rawName := range item.Names {
+			name := strings.TrimPrefix(rawName, "/")
+			match := interruptedReplacementPattern.FindStringSubmatch(name)
+			if match == nil {
+				continue
+			}
+			target := match[1]
+			if _, occupied := taken[target]; occupied {
+				log.Warn().Str("leftover", name).Str("target", target).
+					Msg("a replacement container from an interrupted update is still on the host; its intended name is already in use, so it was left untouched")
+				continue
+			}
+			if _, err := u.cli().ContainerRename(ctx, item.ID, client.ContainerRenameOptions{NewName: target}); err != nil {
+				log.Warn().Err(err).Str("leftover", name).Str("target", target).
+					Msg("could not finish an interrupted update by renaming its replacement container")
+				continue
+			}
+			delete(taken, name)
+			taken[target] = struct{}{}
+			recovered++
+			log.Info().Str("container", target).Msg("finished an update that was interrupted before its replacement could take its name")
+		}
+	}
+	return recovered, nil
 }
