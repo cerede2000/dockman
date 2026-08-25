@@ -820,7 +820,19 @@ func (u *Service) waitForContainerStability(ctx context.Context, events <-chan c
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			return nil
+			// Never trust the silence. The hub drops events for a slow consumer
+			// rather than blocking the other listeners, and an automatic run
+			// subscribes one consumer per container while the same hub carries
+			// every other container's traffic. A dropped "die" made the window
+			// elapse quietly and the update was declared a success - which is
+			// precisely the failure this check exists to catch: a container
+			// that crashed on boot passing as healthy, with no rollback.
+			//
+			// The healthy path already confirms against the daemon on its
+			// deadline; this one did not, and it is the path almost every
+			// homelab container takes, because almost none declare a
+			// HEALTHCHECK.
+			return u.confirmStillRunningOnDeadline(ctx, containerID)
 		case event, open := <-events:
 			if !open {
 				return errors.New("container event stream closed before the stability window elapsed")
@@ -867,6 +879,24 @@ func (u *Service) waitForContainerHealthy(ctx context.Context, events <-chan con
 			}
 		}
 	}
+}
+
+// confirmStillRunningOnDeadline asks the daemon what the event stream may have
+// failed to say. Anything other than a running container is the same verdict a
+// delivered "die" event would have produced.
+func (u *Service) confirmStillRunningOnDeadline(ctx context.Context, containerID string) error {
+	inspect, err := u.cli().ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("confirm replacement container survived %s: %w", updateStabilityWindow, err)
+	}
+	state := inspect.Container.State
+	if state == nil {
+		return fmt.Errorf("replacement container reports no state after %s", updateStabilityWindow)
+	}
+	if !state.Running {
+		return fmt.Errorf("replacement container is %s after %s of starting", state.Status, updateStabilityWindow)
+	}
+	return nil
 }
 
 func (u *Service) confirmHealthyOnDeadline(ctx context.Context, containerID string, deadline time.Duration) error {
