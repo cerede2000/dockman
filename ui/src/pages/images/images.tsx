@@ -1,5 +1,5 @@
 import {useMemo, useState} from 'react';
-import {Box, CircularProgress, Divider, Fade, Link, Paper, Typography} from '@mui/material';
+import {Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, Fade, Link, Paper, Stack, Typography} from '@mui/material';
 import {CleaningServices, Delete, Sanitizer, Storage} from '@mui/icons-material';
 import PageHeader, {RefreshButton} from "../../components/page-header.tsx";
 import {useHostStore} from "../compose/state/files.ts";
@@ -25,6 +25,11 @@ const ImagesPage = () => {
 
     const {search, setSearch, searchInputRef} = useSearch();
     const [selectedImages, setSelectedImages] = useState<string[]>([])
+    // Pruning used to run on the click, with nothing said about what it takes
+    // with it. An automatic update leaves the version it replaced behind as an
+    // UNTAGGED image, which is exactly what both of these buttons target: the
+    // rollback safety net and the prune target are the same objects.
+    const [pruneScope, setPruneScope] = useState<'untagged' | 'unused' | null>(null)
     const host = useHostStore(state => state.host)
 
     const filteredImages = useMemo(() => {
@@ -58,7 +63,7 @@ const ImagesPage = () => {
             icon: <Sanitizer/>,
             disabled: loading,
             handler: async () => {
-                await pruneUnused()
+                setPruneScope('untagged')
             },
             tooltip: 'Delete Untagged images',
         },
@@ -69,10 +74,17 @@ const ImagesPage = () => {
             icon: <CleaningServices/>,
             disabled: loading,
             handler: async () => {
-                await pruneUnused(true)
+                setPruneScope('unused')
             },
         }
     ]
+
+    const confirmPrune = async () => {
+        const scope = pruneScope
+        setPruneScope(null)
+        if (scope === null) return
+        await pruneUnused(scope === 'unused')
+    }
 
     return (
         <Box sx={{
@@ -152,6 +164,39 @@ const ImagesPage = () => {
                     </Fade>
                 )}
             </Box>
+
+            <Dialog open={pruneScope !== null} onClose={() => setPruneScope(null)} maxWidth="sm" fullWidth>
+                <DialogTitle sx={{display: 'flex', alignItems: 'center', gap: 1}}>
+                    <Sanitizer color="warning"/>
+                    {pruneScope === 'unused' ? 'Prune all unused images' : 'Prune untagged images'}
+                </DialogTitle>
+                <DialogContent>
+                    <Stack spacing={2} sx={{pt: 1}}>
+                        <Alert severity="warning">
+                            This also removes the images automatic updates keep in order to roll back.
+                            When an update replaces a container, the version it replaced loses its tag
+                            and stays behind as an untagged image &mdash; which is exactly what this
+                            removes. Rolling an updated container back to its previous version will no
+                            longer be possible.
+                        </Alert>
+                        {pruneScope === 'unused' && (
+                            <Alert severity="info">
+                                &ldquo;Unused&rdquo; goes further than untagged: every image no container
+                                currently uses is removed, tagged or not, and will have to be pulled again.
+                            </Alert>
+                        )}
+                        <Typography variant="body2" color="text.secondary">
+                            Nothing a running or stopped container depends on is affected.
+                        </Typography>
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setPruneScope(null)}>Cancel</Button>
+                    <Button variant="contained" color="warning" onClick={() => void confirmPrune()}>
+                        {pruneScope === 'unused' ? 'Prune unused images' : 'Prune untagged images'}
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Box>
     )
 };

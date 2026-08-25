@@ -501,10 +501,22 @@ func (s *Service) CreateGitHubRepository(ctx context.Context, input GitHubReposi
 	if created.DefaultBranch == "" {
 		created.DefaultBranch = input.DefaultBranch
 	}
-	return s.CreateRepository(ctx, RepositoryInput{
+	view, err := s.CreateRepository(ctx, RepositoryInput{
 		Name: input.Name, RemoteURL: created.CloneURL, DefaultBranch: created.DefaultBranch,
 		CredentialUUID: input.CredentialUUID,
 	})
+	if err != nil {
+		// The GitHub repository exists from here on. Leaving it is the right
+		// call - deleting someone's repository to tidy up a local failure would
+		// be far worse - but saying nothing sent the operator back to the same
+		// form, where the provider answered "name already taken" and nothing
+		// explained why.
+		return RepositoryView{}, fmt.Errorf(
+			"the GitHub repository %s was created at %s, but Dockman could not register it locally; "+
+				"retry with that clone URL as an existing repository, or delete it on GitHub first: %w",
+			input.Name, created.CloneURL, err)
+	}
+	return view, nil
 }
 
 func (s *Service) FetchRepository(ctx context.Context, id string) (RepositoryGitStatus, error) {
