@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -96,11 +97,21 @@ func (h *Handler) ImageRemove(ctx context.Context, req *connect.Request[v1.Remov
 		return nil, err
 	}
 
+	// Every id is attempted. Returning on the first failure left the caller
+	// with one image removed, the rest untouched, and an error naming only the
+	// one that failed - so they could not tell what had actually happened.
+	var errs []error
+	removed := 0
 	for _, img := range req.Msg.ImageIds {
-		_, err := dkSrv.Container.ImageDelete(ctx, img)
-		if err != nil {
-			return nil, fmt.Errorf("unable to remove image %s: %w", img, err)
+		if _, err := dkSrv.Container.ImageDelete(ctx, img); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", img, err))
+			continue
 		}
+		removed++
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("removed %d of %d image(s); %d failed: %w",
+			removed, len(req.Msg.ImageIds), len(errs), errors.Join(errs...))
 	}
 
 	return connect.NewResponse(&v1.RemoveImageResponse{}), nil
