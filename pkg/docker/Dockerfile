@@ -129,9 +129,22 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:${ALPINE_VERSION}@${ALPINE_IMAGE_DIGEST} AS runtime
 
+# apk upgrade before anything else: the base image is pinned by digest, which
+# fixes the starting point but also freezes whatever CVEs were unpatched when
+# that image was published. Alpine ships the fix in its package repository long
+# before the base image is rebuilt - openssl 3.5.8-r0 was available while
+# alpine:3.24.1 still carried 3.5.7-r0 - and the release gate refuses a FIXABLE
+# high or critical vulnerability, correctly.
+#
+# Named trade-off: the base layer stays reproducible, the package set no longer
+# is. Two builds of the same commit can carry different patch levels. That is
+# the price of not shipping a vulnerability whose fix is one command away, and
+# it is the right way round.
+#
 # docker-cli powers the run-a-docker-command feature on the local host
 # (remote hosts run it over ssh); it also works through DOCKER_HOST/socketproxy.
-RUN apk add --no-cache tzdata su-exec docker-cli docker-cli-buildx
+RUN apk upgrade --no-cache && \
+    apk add --no-cache tzdata su-exec docker-cli docker-cli-buildx
 
 COPY pkg/docker/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY pkg/docker/dockman-age-keygen.sh /usr/local/bin/dockman-age-keygen
