@@ -29,6 +29,7 @@ type AppConfig struct {
 	GitHistoryRetentionDays   int    `config:"flag=gitHistoryRetentionDays,env=GIT_HISTORY_RETENTION_DAYS,default=30,usage=Days to retain Git synchronization activity history"`
 	GitBackupRetentionDays    int    `config:"flag=gitBackupRetentionDays,env=GIT_BACKUP_RETENTION_DAYS,default=30,usage=Days to retain Git synchronization backups"`
 	GitCommitInstance         string `config:"flag=gitCommitInstance,env=GIT_COMMIT_INSTANCE,default=dockman,usage=Stable instance name recorded in Git commit provenance"`
+	DeployTrace               bool   `config:"flag=deployTrace,env=DEPLOY_TRACE,default=false,usage=Record every controlled deployment stage, its duration, its context state and why a rollback ran; written to the log and to the deployment output shown in the UI"`
 	NotificationMasterKeyFile string `config:"flag=notificationMasterKeyFile,env=NOTIFICATION_MASTER_KEY_FILE,default=,usage=Path to the 32-byte or base64 notification credential encryption key"`
 	SOPSBinary                string `config:"flag=sopsBinary,env=SOPS_BINARY,default=sops,usage=Path to the SOPS executable"`
 	SOPSAgeKeyFile            string `config:"flag=sopsAgeKeyFile,env=SOPS_AGE_KEY_FILE,default=,usage=Path to an independently backed-up age identity file used by SOPS"`

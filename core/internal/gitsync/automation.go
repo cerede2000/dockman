@@ -552,6 +552,12 @@ func (s *Service) runBindingAutoSync(ctx context.Context, id string, explicit bo
 			}
 		}
 		changedPaths = append(changedPaths, staleDeployTargets...)
+		if s.deployTrace {
+			log.Info().Str("binding", binding.UUID).Int("changed_files", changed).
+				Str("deploy_state", binding.AutoDeployState).Bool("retrying_stale", retryingStaleDeploy).
+				Strs("re_armed", staleDeployTargets).Strs("targets", changedPaths).
+				Msg("deploy trace: deployment target selection")
+		}
 		changedPaths = excludeComposeStackPaths(changedPaths, result.SyncFailed)
 		deployAttempted := false
 		if len(changedPaths) > 0 && binding.AutoDeployEnabled {

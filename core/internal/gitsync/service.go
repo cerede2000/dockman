@@ -69,19 +69,22 @@ type TestResult struct {
 }
 
 type Service struct {
-	enabled              bool
-	store                *Store
-	vault                *Vault
-	http                 *http.Client
-	githubAPIBase        string
-	workspaceRoot        string
-	backupRoot           string
-	stackResolver        func(host, stackPath string) (filesystem.FileSystem, string, error)
-	hostLister           func() []string
-	validateCompose      func(context.Context, string, string) error
-	dryRunCompose        func(context.Context, string, string, io.Writer) error
-	deployCompose        func(context.Context, string, string, io.Writer) error
-	deployComposeWait    func(context.Context, string, string, io.Writer) error
+	enabled           bool
+	store             *Store
+	vault             *Vault
+	http              *http.Client
+	githubAPIBase     string
+	workspaceRoot     string
+	backupRoot        string
+	stackResolver     func(host, stackPath string) (filesystem.FileSystem, string, error)
+	hostLister        func() []string
+	validateCompose   func(context.Context, string, string) error
+	dryRunCompose     func(context.Context, string, string, io.Writer) error
+	deployCompose     func(context.Context, string, string, io.Writer) error
+	deployComposeWait func(context.Context, string, string, io.Writer) error
+	pullCompose       func(context.Context, string, string, io.Writer) error
+	// deployTrace turns on the stage-by-stage record of a controlled deployment.
+	deployTrace          bool
 	cleanupCompose       func(context.Context, string, string, io.Writer) error
 	lockCompose          func(string, string) (func(), bool)
 	dirtyEditorPaths     func(string) []string
@@ -134,6 +137,20 @@ func (s *Service) ConfigureDeployment(
 	s.deployComposeWait = deployWait
 	s.cleanupCompose = cleanup
 	s.lockCompose = lock
+}
+
+// ConfigureDeploymentPull supplies the step that makes the images a stack
+// needs present locally, before anything is validated against them.
+//
+// It is a separate setter rather than another ConfigureDeployment parameter so
+// that a deployment configured without it behaves exactly as before: nil means
+// no pull stage.
+// ConfigureDeployTrace turns the deployment tracer on. Off by default: it is a
+// diagnostic for a reported problem, not something every homelab should pay for.
+func (s *Service) ConfigureDeployTrace(enabled bool) { s.deployTrace = enabled }
+
+func (s *Service) ConfigureDeploymentPull(pull func(context.Context, string, string, io.Writer) error) {
+	s.pullCompose = pull
 }
 
 func NewService(enabled bool, store *Store, vault *Vault, workspaceRoot ...string) *Service {
