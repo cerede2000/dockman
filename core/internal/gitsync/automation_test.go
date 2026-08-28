@@ -1531,3 +1531,104 @@ func TestOneBusyStackNeverReachesTheOthers(t *testing.T) {
 		"nothing failed at any point, so the link must not end up in a failed state")
 	require.NoFileExists(t, filepath.Join(stackRoot, "never-created"))
 }
+
+// Reported from a live homelab: a Git commit bumping authelia to 4.39.20 rolled
+// back with a self-contradicting report - "Image authelia/authelia:4.39.20
+// Pulled" immediately followed by "No such image: authelia/authelia:4.39.20".
+//
+// Compose only SIMULATES a pull under --dry-run: it prints Pulling then Pulled
+// and downloads nothing. The recreate step right after then asks the daemon for
+// an image that was never fetched. So the dry-run gate failed for every commit
+// that changes an image tag, the deployment was never attempted, and a rollback
+// fired that had nothing to roll back from. A stack whose image happened to be
+// local already passed, which is why it looked random.
+func TestImagesArePulledBeforeTheDryRunSeesThem(t *testing.T) {
+	service, _ := testService(t, true)
+	stackRoot := configureTestStack(t, service)
+	repository := prepareBindingRepository(t, service)
+	stackPath := filepath.Join(stackRoot, "app", "compose.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stackPath), 0o755))
+	require.NoError(t, os.WriteFile(stackPath, []byte("services:\n  app:\n    image: alpine:3.22\n"), 0o644))
+	binding, err := service.CreateBinding(BindingInput{RepositoryID: repository.UUID, Host: "local", StackPath: "compose/app", SubPath: "stacks/app"})
+	require.NoError(t, err)
+	establishBindingBaseline(t, service, binding.ID)
+	remoteChange(t, repository.RemoteURL, "stacks/app/compose.yaml", "services:\n  app:\n    image: alpine:3.23\n")
+
+	var order []string
+	imageLocal := false
+	service.ConfigureDeploymentPull(func(_ context.Context, _, _ string, _ io.Writer) error {
+		order = append(order, "pull")
+		imageLocal = true
+		return nil
+	})
+	service.ConfigureDeployment(
+		func(_ context.Context, _, _ string) error { order = append(order, "validate"); return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error {
+			order = append(order, "dry-run")
+			// The daemon's answer when the image was never really fetched.
+			if !imageLocal {
+				return errors.New("No such image: alpine:3.23")
+			}
+			return nil
+		},
+		func(_ context.Context, _, _ string, _ io.Writer) error { order = append(order, "deploy"); return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { order = append(order, "deploy"); return nil },
+		func(_ context.Context, _, _ string, _ io.Writer) error { return nil },
+		func(_, _ string) (func(), bool) { return func() {}, true },
+	)
+	_, err = service.UpdateBindingAutomation(binding.ID, BindingAutomationInput{
+		Enabled: true, IntervalMinutes: 5, DeployEnabled: true,
+		DeployComposePaths: []string{"compose.yaml"},
+	})
+	require.NoError(t, err)
+
+	result, err := service.RunBindingAutoSync(context.Background(), binding.ID)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"validate", "pull", "dry-run", "deploy"}, order,
+		"the pull must come before the dry-run, which is the only thing that makes the dry-run meaningful")
+	require.Empty(t, result.DeployFailed, "a tag bump must not fail its own dry-run")
+	require.Empty(t, result.RolledBack, "nothing failed, so nothing may be rolled back")
+
+	status, err := service.store.GitStackStatus(binding.ID, "compose.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "success", status.DeployState)
+}
+
+// The tracer must be silent by default and complete when asked. A diagnostic
+// that costs something at rest is one nobody leaves on.
+func TestDeployTraceIsSilentUntilItIsTurnedOn(t *testing.T) {
+	service, _ := testService(t, true)
+	var quiet strings.Builder
+	service.newDeployTracer("alpha/compose.yml", "abcdef1234567890", &quiet).
+		stage(context.Background(), "dry-run", time.Now(), errors.New("boom"))
+	require.Empty(t, quiet.String(), "no trace may be written while DEPLOY_TRACE is off")
+
+	service.ConfigureDeployTrace(true)
+	var loud strings.Builder
+	tracer := service.newDeployTracer("alpha/compose.yml", "abcdef1234567890", &loud)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tracer.stage(cancelled, "dry-run", time.Now(), errors.New("No such image: alpine:3.23"))
+	tracer.note("rollback armed by stage %q", "dry-run")
+	tracer.done("rolled_back")
+
+	out := loud.String()
+	require.Contains(t, out, "dry-run")
+	require.Contains(t, out, "failed")
+	require.Contains(t, out, "No such image")
+	require.Contains(t, out, "context=context canceled",
+		"a stage that failed on a dead context failed for a reason that is not the stack's")
+	require.Contains(t, out, "rollback armed by stage")
+	require.Contains(t, out, "finished as rolled_back")
+}
+
+// A compose failure can carry a whole build log; a trace nobody can read is a
+// trace nobody reads.
+func TestDeployTraceTruncatesAndFlattens(t *testing.T) {
+	require.Equal(t, "a | b", truncateTrace("a\nb"))
+	long := truncateTrace(strings.Repeat("x", 900))
+	require.Less(t, len(long), 500)
+	require.Contains(t, long, "truncated")
+	require.Equal(t, "abcdef123456", shortCommit("abcdef1234567890"))
+}

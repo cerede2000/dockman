@@ -414,6 +414,20 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		},
 		compose.TryLockStack,
 	)
+	// Runs before the dry-run: Compose only simulates a pull in dry-run mode,
+	// so a stack whose new image is not local yet fails there with
+	// "No such image" on an image it just claimed to have pulled.
+	gitSyncSrv.ConfigureDeployTrace(conf.DeployTrace)
+	if conf.DeployTrace {
+		log.Warn().Msg("DEPLOY_TRACE is on: every controlled deployment records its stages, timings and rollback reasons")
+	}
+	gitSyncSrv.ConfigureDeploymentPull(func(ctx context.Context, hostname, filename string, out io.Writer) error {
+		dkSrv, getErr := hostManager.GetDockerService(hostname)
+		if getErr != nil {
+			return getErr
+		}
+		return dkSrv.Compose.Pull(ctx, filename, out)
+	})
 	if interrupted, recoverErr := gitSyncSrv.RecoverInterruptedOperations(); recoverErr != nil {
 		log.Fatal().Err(recoverErr).Msg("unable to recover interrupted Git operations")
 	} else if interrupted > 0 {

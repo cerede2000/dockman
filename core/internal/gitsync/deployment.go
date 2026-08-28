@@ -388,9 +388,12 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			// dragged every other stack into a redeployment behind it. Nothing
 			// was attempted, so nothing is reported as having gone wrong.
 			result.Deferred = append(result.Deferred, relative)
+			s.newDeployTracer(relative, commit, nil).note("deferred: another action already holds the lock on %s", filename)
 			continue
 		}
 		logs := &limitedLogWriter{}
+		trace := s.newDeployTracer(relative, commit, logs)
+		trace.note("start: rollback=%t host=%s file=%s", binding.AutoDeployRollbackEnabled, binding.Host, filename)
 		deployment := Deployment{UUID: uuid.NewString(), RepositoryUUID: binding.RepositoryUUID, BindingUUID: binding.UUID, CommitSHA: commit, ComposeHash: relative, State: "validating"}
 		if err := s.store.SaveDeployment(&deployment); err != nil {
 			unlock()
@@ -400,26 +403,55 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 		stage := "provisioning"
 		deployment.State = "provisioning"
 		_ = s.store.UpdateGitStackStatuses(binding.UUID, []string{relative}, map[string]any{"deploy_state": "provisioning", "deploy_error": ""})
+		stageStart := time.Now()
 		provisioning, err := s.applyStackProvisioning(ctx, binding, commit, relative, logs)
+		trace.stage(ctx, "provisioning", stageStart, err)
 		provisionRolledBack := false
 		if err == nil {
 			stage = "validation"
 			deployment.State = "validating"
+			stageStart = time.Now()
 			err = s.validateCompose(ctx, binding.Host, filename)
+			trace.stage(ctx, "validation", stageStart, err)
+		}
+		if err == nil && s.pullCompose != nil {
+			// The images have to be here BEFORE anything is dry-run against
+			// them. Compose only SIMULATES a pull in dry-run mode: it prints
+			// "Pulling" then "Pulled" and downloads nothing, so the recreate
+			// step right after asks the daemon for an image that was never
+			// fetched and gets "No such image".
+			//
+			// That made every Git commit which bumps an image tag fail its
+			// dry-run and roll back - the deployment itself was never even
+			// attempted, and it would have worked, because a real `compose up`
+			// pulls what it is missing. A stack whose image was already local
+			// passed, which is why this looked random.
+			stage = "pull"
+			deployment.State = "pulling"
+			stageStart = time.Now()
+			err = s.pullCompose(ctx, binding.Host, filename, logs)
+			trace.stage(ctx, "pull", stageStart, err)
 		}
 		if err == nil {
 			stage = "dry-run"
 			deployment.State = "dry_run"
+			stageStart = time.Now()
 			err = s.dryRunCompose(ctx, binding.Host, filename, logs)
+			trace.stage(ctx, "dry-run", stageStart, err)
 		}
 		if err == nil {
 			stage = "deployment"
 			deployment.State = "deploying"
 			deploy := s.deployCompose
+			mode := "no-wait"
 			if binding.AutoDeployRollbackEnabled {
 				deploy = s.deployComposeWait
+				mode = "wait-for-health"
 			}
+			stageStart = time.Now()
 			err = deploy(ctx, binding.Host, filename, logs)
+			trace.stage(ctx, "deployment", stageStart, err)
+			trace.note("deployment mode=%s", mode)
 		}
 		if err != nil && binding.AutoDeployRollbackEnabled {
 			provisionRolledBack = true
@@ -480,6 +512,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 				_, _ = fmt.Fprintln(logs, "[dockman] redeploying the previous stack version and waiting for health")
 				rollbackErr = s.deployComposeWait(rollbackCtx, binding.Host, filename, logs)
 			}
+			trace.note("rollback finished: previous compose present=%t restored=%d", hadPreviousCompose, len(restored))
 			if rollbackErr == nil {
 				deployment.State = "rolled_back"
 				deployment.Result = fmt.Sprintf("%s; previous version restored safely (%d file(s))", originalErr, len(restored))
@@ -507,6 +540,7 @@ func (s *Service) deployChangedStacks(ctx context.Context, binding StackBinding,
 			deployment.State = "failed"
 			deployment.Result = sanitizeDeploymentOutput(safeGitError(fmt.Errorf("%s failed: %w", stage, err)))
 		}
+		trace.done(deployment.State)
 		if saveErr := s.store.SaveDeployment(&deployment); saveErr != nil {
 			return result, saveErr
 		}
