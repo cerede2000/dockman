@@ -101,8 +101,28 @@ SMTP server, port, security mode, username, password, sender, recipients and not
 | `DOCKMAN_LOG_VERBOSE` | `false` | Add verbose diagnostic context |
 | `DOCKMAN_LOG_HTTP` | `false` | Log HTTP routes and requests |
 | `DOCKMAN_LOG_AUTH_WARNING` | `true` | Show the startup warning when authentication is disabled |
+| `DOCKMAN_DEPLOY_TRACE` | `false` | Record every controlled deployment stage, its duration, its context state, and why a rollback ran |
 
 Verbose and HTTP logging can expose paths and operational metadata. Enable them temporarily.
+
+`DOCKMAN_DEPLOY_TRACE` is the one to turn on when a controlled deployment
+behaves in a way its output does not explain. It writes a line per stage to the
+log **and** to the deployment output already shown in the interface, so it can
+be copied into a bug report without shell access:
+
+```
+[trace] start: rollback=true host=Home-Server file=auth/compose.yaml
+[trace] validation  ok     in 412ms   context=live
+[trace] pull        ok     in 8.2s    context=live
+[trace] dry-run     failed in 1.1s    context=live detail=No such image: …
+[trace] rollback armed by stage "dry-run": …
+[trace] finished as rolled_back after 11.7s
+```
+
+The context state is part of the record on purpose: a stage can fail for a
+reason belonging to something else entirely - a cancelled request, a shutdown -
+and the compose output shows what compose printed, never what Dockman concluded
+or why.
 
 ## Container/runtime variables
 
