@@ -4,13 +4,15 @@ ARG NODE_VERSION=24.18.0
 ARG GO_VERSION=1.26.6
 ARG ALPINE_VERSION=3.24.1
 ARG COMPOSE_VERSION=v5.3.1
-ARG COMPOSE_X_CRYPTO_VERSION=v0.54.0
-ARG COMPOSE_X_TEXT_VERSION=v0.40.0
-ARG COMPOSE_GRPC_VERSION=v1.82.1
+ARG COMPOSE_X_CRYPTO_VERSION=v0.56.0
+ARG COMPOSE_X_TEXT_VERSION=v0.41.0
+ARG COMPOSE_GRPC_VERSION=v1.83.2
 ARG COMPOSE_GO_ARCHIVE_VERSION=v0.3.3
 ARG SOPS_VERSION=v3.13.3
+ARG SOPS_X_CRYPTO_VERSION=v0.56.0
+ARG SOPS_GRPC_VERSION=v1.83.2
 ARG AGE_VERSION=v1.3.1
-ARG AGE_X_CRYPTO_VERSION=v0.52.0
+ARG AGE_X_CRYPTO_VERSION=v0.56.0
 ARG NODE_IMAGE_DIGEST=sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 ARG GO_IMAGE_DIGEST=sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83
 ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
@@ -109,13 +111,28 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS sops_builder
 
 ARG SOPS_VERSION
+ARG SOPS_X_CRYPTO_VERSION
+ARG SOPS_GRPC_VERSION
 ARG AGE_VERSION
 ARG AGE_X_CRYPTO_VERSION
 
+# sops is rebuilt from its release source like Compose and age, not installed
+# with `go install`: that form refuses to change a module's requirements, so a
+# sops release pinning a vulnerable x/crypto or gRPC would ship as is until
+# upstream cuts a new one.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go install -trimpath -ldflags "-s -w" \
-      "github.com/getsops/sops/v3/cmd/sops@${SOPS_VERSION}" && \
+    go mod download "github.com/getsops/sops/v3@${SOPS_VERSION}" && \
+    cp -R "/go/pkg/mod/github.com/getsops/sops/v3@${SOPS_VERSION}" /sops-source && \
+    chmod -R u+w /sops-source && \
+    cd /sops-source && \
+    go mod edit \
+      -require="golang.org/x/crypto@${SOPS_X_CRYPTO_VERSION}" \
+      -require="google.golang.org/grpc@${SOPS_GRPC_VERSION}" && \
+    go mod tidy && \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+      -o /go/bin/sops ./cmd/sops && \
+    cd / && \
     go mod download "filippo.io/age@${AGE_VERSION}" && \
     cp -R "/go/pkg/mod/filippo.io/age@${AGE_VERSION}" /age-source && \
     chmod -R u+w /age-source && \
@@ -169,6 +186,8 @@ ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG SOPS_VERSION
+ARG SOPS_X_CRYPTO_VERSION
+ARG SOPS_GRPC_VERSION
 ARG AGE_VERSION
 ARG AGE_X_CRYPTO_VERSION
 ARG NODE_IMAGE_DIGEST
@@ -190,6 +209,8 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
       dev.dockman.build.compose-grpc="${COMPOSE_GRPC_VERSION}" \
       dev.dockman.build.sops="${SOPS_VERSION}" \
+      dev.dockman.build.sops-x-crypto="${SOPS_X_CRYPTO_VERSION}" \
+      dev.dockman.build.sops-grpc="${SOPS_GRPC_VERSION}" \
       dev.dockman.build.age="${AGE_VERSION}" \
       dev.dockman.build.age-x-crypto="${AGE_X_CRYPTO_VERSION}" \
       dev.dockman.build.node-digest="${NODE_IMAGE_DIGEST}" \
