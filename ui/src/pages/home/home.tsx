@@ -1,23 +1,15 @@
 import {Box, Divider, Drawer, List, ListItemButton, ListItemIcon, Tooltip,} from '@mui/material';
-import {FolderDelete, Logout, Settings, SpaceDashboardOutlined, SystemUpdateAlt} from '@mui/icons-material';
+import {Logout, Settings} from '@mui/icons-material';
 import {Link as RouterLink, Outlet, useLocation, useNavigate, useParams} from 'react-router';
 
 import HostSelectDropdown from "./host-selector.tsx";
 import {useAuth} from "../../hooks/auth.ts";
 import {ShortcutFormatter} from "../compose/components/shortcut-formatter.tsx";
-import React, {useEffect, useMemo, useRef} from "react";
-import {
-    ContainerIcon,
-    DockerFolderIcon,
-    ImagesIcon,
-    NetworkIcon,
-    StatsIcon,
-    VolumeIcon
-} from "../compose/components/file-icon.tsx";
+import React, {useEffect, useRef} from "react";
 import {useHostStore, useLastOpened} from "../compose/state/files.ts";
 import {useTabsStore} from "../../context/tab-context.tsx";
 import {useTerminalTabs} from "../compose/state/terminal.tsx";
-import {useNavigationPreferences} from './navigation-preferences.ts';
+import {useSidebarItems} from './navigation-views.tsx';
 import {useSidebarShortcuts} from './sidebar-shortcuts.ts';
 import FileDockerBuild, {DockerBuildActivityIndicator} from '../compose/dialogs/file-docker-build.tsx';
 
@@ -39,8 +31,6 @@ export function RootLayout() {
     const clearTerminalTabs = useTerminalTabs(state => state.clearAll)
     const clearLastOpened = useLastOpened(state => state.clear)
     const previousHost = useRef(host)
-    const showStats = useNavigationPreferences(state => state.showStats)
-    const showContainers = useNavigationPreferences(state => state.showContainers)
     useEffect(() => {
         if (previousHost.current !== host) {
             resetTabs()
@@ -56,17 +46,8 @@ export function RootLayout() {
         navigate('/');
     };
 
-    const navigationItems = useMemo(() => [
-        {id: 'files', title: 'Files', path: `/${host}/files`, icon: DockerFolderIcon},
-        {id: 'monitor', title: 'Monitor', path: `/${host}/monitor`, icon: () => <SpaceDashboardOutlined sx={{color: '#4db6ac'}}/>},
-        ...(showStats ? [{id: 'stats', title: 'Stats', path: `/${host}/stats`, icon: StatsIcon}] : []),
-        ...(showContainers ? [{id: 'containers', title: 'Containers', path: `/${host}/containers`, icon: ContainerIcon}] : []),
-        {id: 'updates', title: 'Updates', path: `/${host}/updates`, icon: () => <SystemUpdateAlt sx={{color: '#ffb74d'}}/>},
-        {id: 'images', title: 'Images', path: `/${host}/images`, icon: ImagesIcon},
-        {id: 'volumes', title: 'Volumes', path: `/${host}/volumes`, icon: VolumeIcon},
-        {id: 'networks', title: 'Networks', path: `/${host}/networks`, icon: NetworkIcon},
-        {id: 'cleaner', title: 'Cleaner', path: `/${host}/cleaner`, icon: () => <FolderDelete sx={{color: 'greenyellow'}}/>},
-    ], [host, showContainers, showStats]);
+    // the user's order and visibility (Settings → Views), stored per browser
+    const navigationItems = useSidebarItems(host);
 
     useSidebarShortcuts(navigationItems, navigate, location.pathname);
 
