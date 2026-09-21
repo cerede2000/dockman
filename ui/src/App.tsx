@@ -18,14 +18,14 @@ import {UploadProgressToast} from "./components/upload-progress-toast.tsx";
 import ServerUpdateBanner from './components/server-update-banner.tsx';
 import {BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams} from "react-router";
 import {AuthProvider} from "./context/auth-context.tsx";
-import React, {useEffect, useState} from 'react';
-import {useConfig} from './hooks/config.ts';
+import React from 'react';
 import {useAuth} from "./hooks/auth.ts";
 import {AuthPage} from './pages/auth/auth-page.tsx';
 import {SettingsPage} from "./pages/settings/settings-page.tsx";
 import {ChangelogProvider} from "./context/changelog-context.tsx";
 import NotFoundPage from "./pages/home/not-found.tsx";
 import RootLayout from "./pages/home/home.tsx";
+import HostDefaultViewRedirect from "./pages/home/default-view-redirect.tsx";
 import {UserConfigProvider} from "./context/config-context.tsx";
 import HostProvider, {useHostManager} from "./context/host-context.tsx";
 import ContainersPage from "./pages/containers/containers.tsx";
@@ -131,28 +131,6 @@ function HomeIndexRedirect() {
     const at = availableHosts.at(0) ?? "";
     return <Navigate to={`/${at}`} replace/>;
 }
-
-const VALID_DEFAULT_VIEWS = ['files', 'monitor', 'stats', 'containers', 'images', 'volumes', 'networks', 'cleaner'];
-
-// landing view for a host, per dockman.yml defaultView; waits briefly for
-// the config so the preference applies on a cold load, then falls back to
-// files if it never arrives
-function HostDefaultViewRedirect() {
-    const {dockYaml} = useConfig();
-    const [waited, setWaited] = useState(false);
-
-    useEffect(() => {
-        const id = setTimeout(() => setWaited(true), 1500);
-        return () => clearTimeout(id);
-    }, []);
-
-    if (!dockYaml && !waited) return null;
-
-    const view = (dockYaml?.defaultView ?? '').trim().toLowerCase();
-    const target = VALID_DEFAULT_VIEWS.includes(view) ? view : 'files';
-    return <Navigate to={target} replace/>;
-}
-
 
 const PrivateRoute = () => {
     const {isAuthenticated, isLoading} = useAuth();

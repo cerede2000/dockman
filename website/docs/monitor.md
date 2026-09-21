@@ -5,7 +5,7 @@ sidebar_position: 4
 
 # Monitor
 
-Monitor replaces the former separate Stats and Containers navigation entries. Those legacy views remain reachable from Settings → Views when needed.
+Monitor replaces the former separate Stats and Containers navigation entries. Those legacy views remain reachable from Settings → Views when needed (see [Navigation](navigation.md)).
 
 ## Layouts and filters
 
