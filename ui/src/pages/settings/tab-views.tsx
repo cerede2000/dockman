@@ -14,14 +14,12 @@ import {
 } from '@mui/material';
 import {ArrowDownward, ArrowUpward, OpenInNew, RestartAlt} from '@mui/icons-material';
 import {useNavigate} from 'react-router';
-import {useConfig} from '../../hooks/config.ts';
 import {useHostStore} from '../compose/state/files.ts';
 import {
     isShownIn,
     moveOrder,
     NAV_VIEW_IDS,
     type NavViewId,
-    resolveLandingView,
     useNavigationPreferences,
     visibleViews
 } from '../home/navigation-preferences.ts';
@@ -34,10 +32,14 @@ const LEGACY_VIEWS: Partial<Record<NavViewId, string>> = {
     containers: 'Legacy flat container management view.',
 };
 
+// Settings lives outside every host - /settings is mounted without the host's
+// UserConfigProvider - so this tab must not read the host configuration:
+// useConfig() throws there, and a throw in render blanks the whole app. The
+// landing page's fallback is per host anyway (each host has its own
+// dockman.yml), so it is described rather than resolved.
 export default function TabViews() {
     const navigate = useNavigate();
     const host = useHostStore(state => state.host) || 'local';
-    const {dockYaml} = useConfig();
 
     const order = useNavigationPreferences(state => state.order);
     const showStats = useNavigationPreferences(state => state.showStats);
@@ -54,7 +56,6 @@ export default function TabViews() {
     // a button is enabled only when its move would change the order
     const canMove = (id: NavViewId, offset: -1 | 1) => moveOrder(order, id, offset, isShown) !== order;
     const isDefaultOrder = order.every((id, index) => id === NAV_VIEW_IDS[index]);
-    const serverDefault = NAV_VIEWS[resolveLandingView('', dockYaml?.defaultView)].title;
 
     const visibility: Partial<Record<NavViewId, { visible: boolean; setVisible: (v: boolean) => void }>> = {
         stats: {visible: showStats, setVisible: setShowStats},
@@ -78,12 +79,12 @@ export default function TabViews() {
                     label="Open Dockman on"
                     value={defaultView}
                     onChange={event => setDefaultView(event.target.value as NavViewId | '')}
-                    helperText={`The server default comes from defaultView in dockman.yml; a choice here takes precedence in this browser.`}
+                    helperText="Host default: defaultView in each host's dockman.yml, otherwise Files. A choice here takes precedence in this browser."
                     // '' is a real choice ("Server default"): show it, and keep
                     // the label above the field instead of over an empty box
                     slotProps={{inputLabel: {shrink: true}, select: {displayEmpty: true}}}
                 >
-                    <MenuItem value="">Server default ({serverDefault})</MenuItem>
+                    <MenuItem value="">Host default</MenuItem>
                     {NAV_VIEW_IDS.map(id => (
                         <MenuItem key={id} value={id}>{NAV_VIEWS[id].title}</MenuItem>
                     ))}

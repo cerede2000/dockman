@@ -4,10 +4,11 @@ import {fireEvent, render, screen, within} from '@testing-library/react'
 import {MemoryRouter} from 'react-router'
 import {memoryStorage} from '../../test/memory-storage.ts'
 
-const h = vi.hoisted(() => ({dockYaml: null as null | { defaultView: string }}))
-vi.mock('../../hooks/config.ts', () => ({useConfig: () => ({dockYaml: h.dockYaml})}))
-// The real module drags in the compose state chain, down to a store reading
-// localStorage at load time; the tab only needs the host name.
+// Nothing of the host configuration is mocked, on purpose: /settings is mounted
+// without the host's UserConfigProvider, and the first release of this tab
+// read it - useConfig() threw, and the whole app went black. A mocked
+// useConfig is exactly what hid that. Only the host name is stubbed, since
+// the real store module loads the compose state chain.
 vi.mock('../compose/state/files.ts', () => ({
     useHostStore: (select: (s: { host: string }) => unknown) => select({host: 'nas'}),
 }))
@@ -16,6 +17,7 @@ vi.stubGlobal('localStorage', memoryStorage())
 const {default: TabViews} = await import('./tab-views.tsx')
 const {NAV_VIEW_IDS, useNavigationPreferences} = await import('../home/navigation-preferences.ts')
 
+// as the app mounts it: a router, no host configuration provider
 function renderTab() {
     render(<MemoryRouter><TabViews/></MemoryRouter>)
 }
@@ -31,7 +33,6 @@ function listed(): string[] {
 }
 
 beforeEach(() => {
-    h.dockYaml = null
     act(() => useNavigationPreferences.setState({
         order: [...NAV_VIEW_IDS], showStats: false, showContainers: false, defaultView: '',
     }))
@@ -110,19 +111,16 @@ describe('Settings → Views: landing page', () => {
         expect(useNavigationPreferences.getState().defaultView).toBe('containers')
     })
 
-    it('names what the server default currently is, and can return to it', () => {
-        h.dockYaml = {defaultView: 'monitor'}
+    it('returns to the host default', () => {
         act(() => useNavigationPreferences.getState().setDefaultView('images'))
         renderTab()
-        choose('Server default (Monitor)')
+        choose('Host default')
         expect(useNavigationPreferences.getState().defaultView).toBe('')
     })
 
-    // An empty value is a choice, not a blank field: the server default is
-    // named in the field itself.
-    it('shows the server default in the field when nothing is chosen', () => {
-        h.dockYaml = {defaultView: 'updates'}
+    // An empty value is a choice, not a blank field.
+    it('shows the host default in the field when nothing is chosen', () => {
         renderTab()
-        expect(screen.getByRole('combobox', {name: /Open Dockman on/}).textContent).toBe('Server default (Updates)')
+        expect(screen.getByRole('combobox', {name: /Open Dockman on/}).textContent).toBe('Host default')
     })
 })

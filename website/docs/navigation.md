@@ -25,4 +25,4 @@ In the Files view, `Alt` + `1` toggles the file bar when the first sidebar entry
 
 ## Landing page
 
-**Open Dockman on** chooses the view Dockman opens on, at its root address or from the logo. Switching hosts keeps the view you are in. Its **Server default** follows [`defaultView`](dockman-yaml/default-view.md) in the host's dockman.yml, then Files; a choice made here takes precedence in this browser.
+**Open Dockman on** chooses the view Dockman opens on, at its root address or from the logo. Switching hosts keeps the view you are in. Its **Host default** follows [`defaultView`](dockman-yaml/default-view.md) in each host's dockman.yml, then Files; a choice made here takes precedence in this browser.
