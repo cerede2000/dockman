@@ -87,6 +87,8 @@ export interface MonitorRow {
 export interface StackStats {
     cpu: number;
     memUsed: number;
+    // the stack's memory ceiling - summed limits capped at the host's memory;
+    // 0 while the host total is unknown
     memLimit: number;
     netRx: number;
     netTx: number;

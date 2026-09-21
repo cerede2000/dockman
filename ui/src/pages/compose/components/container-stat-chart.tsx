@@ -16,6 +16,7 @@ import {type ReactNode} from "react";
 import {type AggregateSnapshot, type HostStatsView} from "../../../hooks/docker-containers-stats.ts";
 import Sparkline from "../../../components/sparkline.tsx";
 import {statsTheme as t} from "./stats-theme.ts";
+import {memoryCeiling} from "../../../lib/memory-ceiling.ts";
 
 // per-state container counts for the status strip
 export interface StateCounts {
@@ -37,6 +38,9 @@ interface AggregateStatsProps {
     // Dockhand-style instead of summing container numbers; stack views
     // keep the per-container aggregation
     hostStats?: HostStatsView | null;
+    // the host's total memory, for the per-container aggregation: it caps the
+    // summed limits into a real ceiling (0 = not known, no percentage shown)
+    hostMemTotal?: number;
     // authoritative state counts (from the event-driven container list);
     // when provided they replace the cycle-based aggregate counts, which
     // refresh more slowly
@@ -52,14 +56,14 @@ interface AggregateStatsProps {
 const cpuValueColor = (cpu: number) =>
     cpu < 50 ? t.text : cpu < 85 ? '#ffb74d' : '#ef5350';
 
-function AggregateStats({aggregates, hostStats, states, stateFilters = [], onStateFilterChange, bare = false}: AggregateStatsProps) {
-    const memPercent = hostStats
-        ? (hostStats.memTotal > 0 ? (hostStats.memUsed / hostStats.memTotal) * 100 : 0)
-        : (aggregates && aggregates.memLimit > 0 ? (aggregates.memUsed / aggregates.memLimit) * 100 : 0);
+function AggregateStats({aggregates, hostStats, hostMemTotal = 0, states, stateFilters = [], onStateFilterChange, bare = false}: AggregateStatsProps) {
     const cpu = hostStats ? hostStats.cpuPercent : (aggregates?.cpu ?? 0);
     const cpuReady = hostStats ? true : aggregates !== null;
     const memUsed = hostStats ? hostStats.memUsed : aggregates?.memUsed;
-    const memCeil = hostStats ? hostStats.memTotal : aggregates?.memLimit;
+    const memCeil = hostStats
+        ? hostStats.memTotal
+        : memoryCeiling(aggregates?.memLimitSum ?? 0, hostMemTotal);
+    const memPercent = memCeil > 0 && memUsed !== undefined ? (memUsed / memCeil) * 100 : 0;
 
     return (
         <Paper
@@ -100,7 +104,7 @@ function AggregateStats({aggregates, hostStats, states, stateFilters = [], onSta
                     icon={<MemoryIcon/>}
                     label={hostStats ? "Host Memory" : "Memory"}
                     value={memUsed !== undefined ? formatBytes(memUsed) : '–'}
-                    sub={memCeil && memCeil > 0
+                    sub={memCeil > 0 && memUsed !== undefined
                         ? `${memPercent.toFixed(1)}% of ${formatBytes(memCeil)}`
                         : ''}
                     data={hostStats ? hostStats.memHistory : aggregates?.memHistory ?? []}

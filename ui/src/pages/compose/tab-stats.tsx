@@ -1,7 +1,7 @@
 import {Box, Chip, Typography} from '@mui/material';
 import {BarChart as StatsIcon} from '@mui/icons-material';
 import {useMemo} from 'react';
-import {useDockerStats, useHostStats} from "../../hooks/docker-containers-stats.ts";
+import {useDockerStats, useHostMemTotal, useHostStats} from "../../hooks/docker-containers-stats.ts";
 import {ContainerStatTable} from './components/container-stat-table.tsx';
 import AggregateStats from "./components/container-stat-chart.tsx";
 import {statsTheme} from "./components/stats-theme.ts";
@@ -23,6 +23,8 @@ export function TabStat({selectedPage = "", variant = 'tab'}: StackStatsProps) {
     // the host-wide view reads the real host usage; stack views keep the
     // per-container aggregation
     const hostStats = useHostStats(!selectedPage)
+    // a stack view caps its summed limits with the host's memory, read once
+    const hostMemTotal = useHostMemTotal(!!selectedPage)
 
     const isPage = variant === 'page';
 
@@ -65,7 +67,7 @@ export function TabStat({selectedPage = "", variant = 'tab'}: StackStatsProps) {
                 </Box>
             )}
             <Box sx={{flexShrink: 0}}>
-                <AggregateStats aggregates={aggregates} hostStats={hostStats}/>
+                <AggregateStats aggregates={aggregates} hostStats={hostStats} hostMemTotal={hostMemTotal}/>
             </Box>
             <Box sx={{flexGrow: 1, minHeight: 0}}>
                 <ContainerStatTable
