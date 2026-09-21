@@ -18,6 +18,7 @@ import {useHostStore, useLastOpened} from "../compose/state/files.ts";
 import {useTabsStore} from "../../context/tab-context.tsx";
 import {useTerminalTabs} from "../compose/state/terminal.tsx";
 import {useNavigationPreferences} from './navigation-preferences.ts';
+import {useSidebarShortcuts} from './sidebar-shortcuts.ts';
 import FileDockerBuild, {DockerBuildActivityIndicator} from '../compose/dialogs/file-docker-build.tsx';
 
 const MAIN_SIDEBAR_WIDTH = 72;
@@ -56,34 +57,18 @@ export function RootLayout() {
     };
 
     const navigationItems = useMemo(() => [
-        {title: 'Files', path: `/${host}/files`, icon: DockerFolderIcon},
-        {title: 'Monitor', path: `/${host}/monitor`, icon: () => <SpaceDashboardOutlined sx={{color: '#4db6ac'}}/>},
-        ...(showStats ? [{title: 'Stats', path: `/${host}/stats`, icon: StatsIcon}] : []),
-        ...(showContainers ? [{title: 'Containers', path: `/${host}/containers`, icon: ContainerIcon}] : []),
-        {title: 'Updates', path: `/${host}/updates`, icon: () => <SystemUpdateAlt sx={{color: '#ffb74d'}}/>},
-        {title: 'Images', path: `/${host}/images`, icon: ImagesIcon},
-        {title: 'Volumes', path: `/${host}/volumes`, icon: VolumeIcon},
-        {title: 'Networks', path: `/${host}/networks`, icon: NetworkIcon},
-        {title: 'Cleaner', path: `/${host}/cleaner`, icon: () => <FolderDelete sx={{color: 'greenyellow'}}/>},
+        {id: 'files', title: 'Files', path: `/${host}/files`, icon: DockerFolderIcon},
+        {id: 'monitor', title: 'Monitor', path: `/${host}/monitor`, icon: () => <SpaceDashboardOutlined sx={{color: '#4db6ac'}}/>},
+        ...(showStats ? [{id: 'stats', title: 'Stats', path: `/${host}/stats`, icon: StatsIcon}] : []),
+        ...(showContainers ? [{id: 'containers', title: 'Containers', path: `/${host}/containers`, icon: ContainerIcon}] : []),
+        {id: 'updates', title: 'Updates', path: `/${host}/updates`, icon: () => <SystemUpdateAlt sx={{color: '#ffb74d'}}/>},
+        {id: 'images', title: 'Images', path: `/${host}/images`, icon: ImagesIcon},
+        {id: 'volumes', title: 'Volumes', path: `/${host}/volumes`, icon: VolumeIcon},
+        {id: 'networks', title: 'Networks', path: `/${host}/networks`, icon: NetworkIcon},
+        {id: 'cleaner', title: 'Cleaner', path: `/${host}/cleaner`, icon: () => <FolderDelete sx={{color: 'greenyellow'}}/>},
     ], [host, showContainers, showStats]);
 
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.altKey && !e.ctrlKey && !e.shiftKey && !e.repeat) {
-                const pageIndex = parseInt(e.key, 10) - 1;
-                if (!isNaN(pageIndex)) {
-                    e.preventDefault();
-                    const page = navigationItems[pageIndex];
-                    if (page) {
-                        // if (page.onClick) page.onClick();
-                        navigate(page.path);
-                    }
-                }
-            }
-        };
-        window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [navigate, navigationItems]);
+    useSidebarShortcuts(navigationItems, navigate, location.pathname);
 
     return (
         <Box sx={{display: 'flex', minHeight: '100vh'}}>
@@ -138,7 +123,8 @@ export function RootLayout() {
                                 <Tooltip
                                     key={item.title}
                                     placement="right"
-                                    title={<ShortcutFormatter title={item.title} keyCombo={["ALT", `${index + 1}`]}/>}
+                                    title={<ShortcutFormatter title={item.title}
+                                                              keyCombo={index < 9 ? ["ALT", `${index + 1}`] : []}/>}
                                 >
                                     <ListItemButton
                                         onClick={() => navigate(item.path)}
