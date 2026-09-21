@@ -58,7 +58,7 @@ vi.mock('../pages/compose/state/files.ts', () => ({
     useHostStore: (select: (s: { host: string }) => unknown) => select({host: h.state.host}),
 }))
 
-const {useDockerStats, useHostStats} = await import('./docker-containers-stats.ts')
+const {useDockerStats, useHostMemTotal, useHostStats} = await import('./docker-containers-stats.ts')
 
 const GB = 1024n * 1024n * 1024n
 
@@ -167,10 +167,11 @@ describe('useDockerStats: the stats cycle and the tab', () => {
 })
 
 describe('useDockerStats: header aggregates', () => {
-    // Containers without an explicit memory limit report the host's total RAM
-    // as their limit. Summing counts the host once per container: four
-    // containers on a 32 GB host would read "128 GB".
-    it('takes the memory ceiling as the largest limit, not the sum', async () => {
+    // The snapshot carries the raw sum of the limits and leaves the ceiling to
+    // memoryCeiling: only the host's total can tell "two unlimited containers
+    // on a 32 GB host" (ceiling 32 GB) from "two containers capped at 32 GB"
+    // on a bigger one (ceiling 64 GB), and both report the same limits.
+    it('carries the summed limits for the ceiling to be decided with the host total', async () => {
         h.state.cycles = [[
             stat({name: 'web', memoryUsage: GB, memoryLimit: 32n * GB}),
             stat({name: 'db', memoryUsage: 2n * GB, memoryLimit: 32n * GB}),
@@ -178,8 +179,23 @@ describe('useDockerStats: header aggregates', () => {
         const {result} = renderHook(() => useDockerStats())
         await settle()
 
-        expect(result.current.aggregates?.memLimit).toBe(Number(32n * GB))
+        expect(result.current.aggregates?.memLimitSum).toBe(Number(64n * GB))
         expect(result.current.aggregates?.memUsed).toBe(Number(3n * GB))
+    })
+
+    // The history is in bytes: a percentage recorded before the host total is
+    // known would be computed against a guessed ceiling and stay wrong in the
+    // chart for the whole window.
+    it('records the memory history in bytes, independent of any ceiling', async () => {
+        h.state.cycles = [
+            [stat({name: 'web', memoryUsage: GB, memoryLimit: 32n * GB})],
+            [stat({name: 'web', memoryUsage: 2n * GB, memoryLimit: 32n * GB})],
+        ]
+        const {result} = renderHook(() => useDockerStats('stacks/web/compose.yaml'))
+        await settle()
+        await settle(5000)
+
+        expect(result.current.aggregates?.memHistory).toEqual([Number(GB), Number(2n * GB)])
     })
 
     // Healthchecks only run on running containers: a stopped one keeps the
@@ -345,5 +361,72 @@ describe('useHostStats', () => {
         const {result} = renderHook(() => useHostStats(true))
         await settle()
         expect(result.current).toBeNull()
+    })
+})
+
+describe('useHostMemTotal', () => {
+    const hostSample = {cpuPercent: 40, memUsed: 4n * GB, memTotal: 16n * GB, cpus: 8}
+
+    it('reads nothing while disabled', async () => {
+        h.state.hostStatsValue = hostSample
+        const {result} = renderHook(() => useHostMemTotal(false))
+        await settle(60_000)
+        expect(h.state.hostStatsCalls).toBe(0)
+        expect(result.current).toBe(0)
+    })
+
+    // The total does not change while Dockman runs: one read, never a poll.
+    it('reads the host total once and never polls it', async () => {
+        h.state.hostStatsValue = hostSample
+        const {result} = renderHook(() => useHostMemTotal(true))
+        await settle()
+        expect(result.current).toBe(Number(16n * GB))
+
+        await settle(10 * 60_000)
+        expect(h.state.hostStatsCalls).toBe(1)
+    })
+
+    // Every stack tab of the same host shares the one reading.
+    it('serves later mounts on the same host from the first reading', async () => {
+        h.state.hostStatsValue = hostSample
+        const first = renderHook(() => useHostMemTotal(true))
+        await settle()
+        first.unmount()
+
+        const second = renderHook(() => useHostMemTotal(true))
+        expect(second.result.current).toBe(Number(16n * GB))
+        await settle()
+        expect(h.state.hostStatsCalls).toBe(1)
+    })
+
+    // The host view's polling already reads the total: a stack tab opened
+    // afterwards must not ask again.
+    it('reuses the total the host view already read', async () => {
+        h.state.hostStatsValue = hostSample
+        const hostView = renderHook(() => useHostStats(true))
+        await settle()
+        hostView.unmount()
+        expect(h.state.hostStatsCalls).toBe(1)
+
+        const {result} = renderHook(() => useHostMemTotal(true))
+        expect(result.current).toBe(Number(16n * GB))
+        await settle()
+        expect(h.state.hostStatsCalls).toBe(1)
+    })
+
+    // A failed read is not a total: 0 means unknown, and the next mount tries
+    // again instead of keeping the failure for the whole session.
+    it('reports an unknown total after a failed read and retries on the next mount', async () => {
+        h.state.hostStatsValue = {...hostSample, memTotal: 0n}
+        const first = renderHook(() => useHostMemTotal(true))
+        await settle()
+        expect(first.result.current).toBe(0)
+        first.unmount()
+
+        h.state.hostStatsValue = hostSample
+        const second = renderHook(() => useHostMemTotal(true))
+        await settle()
+        expect(second.result.current).toBe(Number(16n * GB))
+        expect(h.state.hostStatsCalls).toBe(2)
     })
 })

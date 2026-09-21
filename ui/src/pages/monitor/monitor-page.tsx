@@ -27,6 +27,7 @@ import ActionButtons from '../../components/action-buttons.tsx';
 import scrollbarStyles from '../../components/scrollbar-style.tsx';
 import {useDockerContainers} from '../../hooks/docker-containers.ts';
 import {useDockerStats, useHostStats} from '../../hooks/docker-containers-stats.ts';
+import {aggregateStack} from './stack-stats.ts';
 import {useConfig} from '../../hooks/config.ts';
 import {callRPC, useContainerExecWsUrl, useHostClient, useHostUrl} from '../../lib/api.ts';
 import {useSnackbar} from '../../hooks/snackbar.ts';
@@ -45,7 +46,6 @@ import {
     type RowAction,
     type StackAction,
     type StackGroup,
-    type StackStats,
 } from './monitor-table.tsx';
 import {statsTheme as t} from '../compose/components/stats-theme.ts';
 import ContainerDetailsDialog from './container-details-dialog.tsx';
@@ -140,52 +140,6 @@ function groupSortValue(g: StackGroup, field: MonitorSortField): number {
     }
 }
 
-// sums the member containers' live metrics and their history windows;
-// sparklines scale to the window's shape, so a summed series keeps the
-// aggregate's evolution readable
-function aggregateStack(rows: MonitorRow[], history: Map<string, { cpu: number[]; mem: number[] }>): StackStats | null {
-    let cpu = 0, memUsed = 0, memLimit = 0, netRx = 0, netTx = 0, seen = 0;
-    for (const r of rows) {
-        const s = r.stats;
-        if (!s) continue;
-        seen++;
-        cpu += Math.max(s.cpuUsage, 0);
-        memUsed += Number(s.memoryUsage);
-        // same host-ceiling logic as the aggregate band: unlimited containers
-        // report the host total, summing would count it once per container
-        memLimit = Math.max(memLimit, Number(s.memoryLimit));
-        netRx += Number(s.networkRx);
-        netTx += Number(s.networkTx);
-    }
-    if (seen === 0) return null;
-
-    const cpuSeries: number[][] = [];
-    const memSeries: number[][] = [];
-    for (const r of rows) {
-        const h = history.get(r.info.name);
-        if (!h) continue;
-        cpuSeries.push(h.cpu);
-        memSeries.push(h.mem);
-    }
-
-    return {cpu, memUsed, memLimit, netRx, netTx, cpuHist: sumSeries(cpuSeries), memHist: sumSeries(memSeries)};
-}
-
-// element-wise sum of series aligned on their most recent points
-function sumSeries(series: number[][]): number[] {
-    const len = Math.max(0, ...series.map(s => s.length));
-    const out: number[] = [];
-    for (let k = len; k >= 1; k--) {
-        let sum = 0;
-        for (const s of series) {
-            const v = s[s.length - k];
-            if (v !== undefined) sum += v;
-        }
-        out.push(sum);
-    }
-    return out;
-}
-
 // one view to run the host from: real host usage on top, every container
 // grouped by stack below it, with per-row, per-stack and bulk controls plus
 // the logs/exec bottom panel — no hopping between views. The existing Stats
@@ -195,6 +149,8 @@ function MonitorPage() {
     const {containers, loading, fetchContainers} = useDockerContainers();
     const {history, containers: statContainers, aggregates, resetContainerStats} = useDockerStats("");
     const hostStats = useHostStats(true);
+    // a plain number, so the 5 s host poll never invalidates the grouping memo
+    const hostMemTotal = hostStats?.memTotal ?? 0;
     const {showSuccess, showError, showWarning} = useSnackbar();
     const {search, setSearch, searchInputRef} = useSearch();
     const navigate = useNavigate();
@@ -352,7 +308,7 @@ function MonitorPage() {
                     // stable metric sub-sort inside each stack (name breaks ties)
                     rows.sort((a, b) => (rowSortValue(a, sortField) - rowSortValue(b, sortField)) * dir);
                 }
-                return {...g, rows, stats: aggregateStack(g.rows, history)};
+                return {...g, rows, stats: aggregateStack(g.rows, history, hostMemTotal)};
             })
             .sort((a, b) => {
                 // loose containers first (#standalone), then the sort order
@@ -367,7 +323,7 @@ function MonitorPage() {
                 }
                 return a.stack.localeCompare(b.stack) || a.key.localeCompare(b.key);
             });
-    }, [containers, gitStatuses, statsByName, history, search, stateFilters, updatesOnly, sortField, sortOrder, staleRows, updateScan]);
+    }, [containers, gitStatuses, statsByName, history, hostMemTotal, search, stateFilters, updatesOnly, sortField, sortOrder, staleRows, updateScan]);
 
     const flatRows = useMemo(() => {
         const rows = groups.flatMap(group => group.rows);

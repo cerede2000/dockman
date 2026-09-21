@@ -75,12 +75,19 @@ export interface AggregateSnapshot {
     unhealthy: number;
     cpu: number;
     memUsed: number;
-    memLimit: number;
+    // sum of the containers' reported limits - NOT a ceiling on its own: an
+    // unlimited container reports the whole host. memoryCeiling() turns it
+    // into one with the host's total.
+    memLimitSum: number;
     netRx: number;
     netTx: number;
     diskR: number;
     diskW: number;
     cpuHistory: number[];
+    // bytes used, not a percentage: the ceiling needs the host total, which
+    // may arrive after the first cycle, and a point recorded against an
+    // unknown ceiling could never be corrected. The sparkline scales to its
+    // window either way, so the curve is the same shape.
     memHistory: number[];
 }
 
@@ -88,10 +95,7 @@ function computeAggregates(scope: string, rows: ContainerStats[]): AggregateSnap
     const t = rows.reduce((acc, curr) => {
         acc.cpu += Math.max(curr.cpuUsage, 0);
         acc.memUsed += Number(curr.memoryUsage);
-        // containers without an explicit memory limit report the host's total
-        // RAM as their limit: summing would count the host once per container
-        // (4 containers on a 32GB host -> "128GB"), the max is the real ceiling
-        acc.memLimit = Math.max(acc.memLimit, Number(curr.memoryLimit));
+        acc.memLimitSum += Number(curr.memoryLimit);
         acc.netRx += Number(curr.networkRx);
         acc.netTx += Number(curr.networkTx);
         acc.diskR += Number(curr.blockRead);
@@ -118,14 +122,14 @@ function computeAggregates(scope: string, rows: ContainerStats[]): AggregateSnap
         if (curr.state === 'running' && curr.health === 'unhealthy') acc.unhealthy++;
         return acc;
     }, {
-        cpu: 0, memUsed: 0, memLimit: 0, netRx: 0, netTx: 0, diskR: 0, diskW: 0,
+        cpu: 0, memUsed: 0, memLimitSum: 0, netRx: 0, netTx: 0, diskR: 0, diskW: 0,
         running: 0, stopped: 0, paused: 0, restarting: 0, unhealthy: 0,
     });
 
     const prev = aggHistories.get(scope) ?? {cpu: [], mem: []};
     const h: StatHistory = {
         cpu: [...prev.cpu.slice(-(HISTORY_CAP - 1)), t.cpu],
-        mem: [...prev.mem.slice(-(HISTORY_CAP - 1)), t.memLimit > 0 ? (t.memUsed / t.memLimit) * 100 : 0],
+        mem: [...prev.mem.slice(-(HISTORY_CAP - 1)), t.memUsed],
     };
     aggHistories.set(scope, h);
 
@@ -517,6 +521,38 @@ export interface HostStatsView {
 // survives remounts, keyed per host like the container histories
 const hostHistories = new Map<string, StatHistory>();
 
+// A host's total memory, per host, for the whole session: it is what turns a
+// stack's summed memory limits into a real ceiling (see memoryCeiling). It
+// does not change while Dockman runs, so it is read once - never polled. Only
+// a successful read is kept; a failure is retried on the next mount, not on
+// the next cycle.
+const hostMemTotals = new Map<string, number>();
+
+export function useHostMemTotal(enabled: boolean): number {
+    const dockerService = useHostClient(DockerService);
+    const selectedHost = useHostStore(state => state.host);
+    const [loaded, setLoaded] = useState<{ host: string; total: number } | null>(null);
+
+    useEffect(() => {
+        if (!enabled || hostMemTotals.has(selectedHost)) return;
+        let cancelled = false;
+        void callRPC(() => dockerService.hostStats({})).then(({val}) => {
+            if (!val || val.memTotal <= 0n) return;
+            const total = Number(val.memTotal);
+            hostMemTotals.set(selectedHost, total);
+            if (!cancelled) setLoaded({host: selectedHost, total});
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [enabled, dockerService, selectedHost]);
+
+    if (!enabled) return 0;
+    const cached = hostMemTotals.get(selectedHost);
+    if (cached !== undefined) return cached;
+    return loaded?.host === selectedHost ? loaded.total : 0;
+}
+
 export function useHostStats(enabled: boolean): HostStatsView | null {
     const dockerService = useHostClient(DockerService);
     const selectedHost = useHostStore(state => state.host);
@@ -535,6 +571,7 @@ export function useHostStats(enabled: boolean): HostStatsView | null {
 
             const memUsed = Number(val.memUsed);
             const memTotal = Number(val.memTotal);
+            hostMemTotals.set(selectedHost, memTotal);
             const prev = hostHistories.get(selectedHost) ?? {cpu: [], mem: []};
             const h: StatHistory = {
                 cpu: [...prev.cpu.slice(-(HISTORY_CAP - 1)), val.cpuPercent],
