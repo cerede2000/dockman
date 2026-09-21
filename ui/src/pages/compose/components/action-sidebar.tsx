@@ -25,6 +25,7 @@ import {useSidebarActions} from "../hooks/sidebar-actions.ts";
 import {YamlIcon} from "./file-icon.tsx";
 import {useHostShellWsUrl, useHostUrl} from "../../../lib/api.ts";
 import {useDockerBuildJobs, useFileDockerBuild} from '../dialogs/file-docker-build.tsx';
+import {isShortcutClaimed} from '../../../lib/shortcut.ts';
 
 // Shared style for the compact 40x40 rail buttons.
 const railBtnSx = {
@@ -103,6 +104,9 @@ const ActionSidebar = () => {
             if (e.altKey && !e.repeat) {
                 switch (e.code) {
                     case "Digit1":
+                        // Alt+1 is also the first sidebar entry: when that
+                        // entry takes the page elsewhere, the keystroke is spent
+                        if (isShortcutClaimed(e)) break;
                         fileSideBarToggle();
                         break;
                     case "F12":
