@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"testing"
@@ -22,9 +23,18 @@ func TestTransferKey(t *testing.T) {
 	mockMachineManager := MockMachineMan{data: syncmap.Map[string, *MachineOptions]{}}
 	mockKeyManager := MockKeyMan{data: syncmap.Map[string, KeyConfig]{}}
 
-	var capturedCommand string
+	type execRequest struct {
+		command string
+		stdin   []byte
+		err     error
+	}
+	received := make(chan execRequest, 1)
 	handler := func(s ssh.Session) {
-		capturedCommand = s.RawCommand()
+		// Drain stdin like the real command (grep -f -) before replying: returning
+		// early closes the channel while the client is still sending the key, and
+		// Run fails with EOF.
+		stdin, err := io.ReadAll(s)
+		received <- execRequest{command: s.RawCommand(), stdin: stdin, err: err}
 		_, _ = fmt.Fprintln(s, "key transferred") // Mock response
 	}
 	mockServer, addr := newMockSSHServer(t, handler)
@@ -54,7 +64,10 @@ func TestTransferKey(t *testing.T) {
 	require.NoError(t, err)
 	expectedCommand := getTransferCommand(key.PublicKey)
 
-	require.Equal(t, capturedCommand, expectedCommand)
+	got := <-received
+	require.NoError(t, got.err)
+	require.Equal(t, expectedCommand, got.command)
+	require.Equal(t, key.PublicKey, got.stdin)
 }
 
 // newMockSSHServer starts an in-memory SSH server for testing.
