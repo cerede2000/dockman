@@ -66,7 +66,7 @@ jobs:
         id: pkgs
         run: |
           DEAD_PKGS='/internal/lsp$'
-          STALE_TESTS='/internal/(host|ssh)$'
+          STALE_TESTS='/internal/host$'
           ALL="$(go list -e ./internal/... ./pkg/...)"
           BUILD="$(echo "$ALL" | grep -vE "$DEAD_PKGS" | tr '\n' ' ')"
           VET="$(echo "$ALL" | grep -vE "$DEAD_PKGS|$STALE_TESTS" | tr '\n' ' ')"
@@ -84,13 +84,14 @@ jobs:
         run: go vet ${{ steps.pkgs.outputs.vet }}
 
       # Only run tests we own and that pass in a plain CI runner. Upstream tests
-      # for docker/*, git, host and ssh require a live Docker daemon / SSH host
-      # (or are broken) and are intentionally not run here. This list grows as we
-      # add subjects; a dispatch can override it with `test_path`.
+      # for docker/*, git and host require a live Docker daemon / SSH host (or
+      # are broken) and are intentionally not run here; ssh runs against an
+      # in-process mock server. This list grows as we add subjects; a dispatch
+      # can override it with `test_path`.
       - name: Test
         env:
           CGO_ENABLED: "1"
-          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/config/... ./internal/database/... ./internal/dockyaml/... ./internal/files/... ./internal/gitsync/... ./internal/notifications/... ./internal/secrets/... ./internal/docker/updater/... ./internal/docker' }}
+          TEST_PATH: ${{ github.event.inputs.test_path || './internal/auth/... ./internal/config/... ./internal/database/... ./internal/dockyaml/... ./internal/files/... ./internal/gitsync/... ./internal/notifications/... ./internal/secrets/... ./internal/docker/updater/... ./internal/docker ./internal/ssh' }}
         run: |
           if [[ ! "$TEST_PATH" =~ ^(\./[A-Za-z0-9_./*-]+)([[:space:]]+\./[A-Za-z0-9_./*-]+)*$ ]]; then
             echo "Invalid Go package list" >&2
