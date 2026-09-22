@@ -80,6 +80,59 @@ func (c *Service) progressOut() string {
 	return "--progress=plain"
 }
 
+// mayBuild reports whether an up of this stack can build an image: true when
+// a service has a build section, and true when the model cannot be read -
+// the answer that keeps the action working either way (see actionProgress).
+func (c *Service) mayBuild(ctx context.Context, filename string) bool {
+	shapes, err := c.serviceShapes(ctx, filename)
+	if err != nil {
+		return true
+	}
+	for _, shape := range shapes {
+		if shape.Buildable {
+			return true
+		}
+	}
+	return false
+}
+
+// actionProgress is the progress mode of an action that may build an image.
+//
+// Dockman runs Compose without a terminal: the output is streamed to the UI,
+// not written to a console. Compose's own tty display copes with that;
+// BuildKit's does not. Compose hands builds to Buildx bake, and under
+// --progress=tty bake stops at "failed to get console: provided file is not a
+// console" before building a single layer. Every stack with a build section
+// failed that way from the Deploy tab - and from Git deployments without
+// automatic rollback, which run the same Up - while stacks of pulled images
+// never noticed anything.
+//
+// So an action that may build runs with plain progress, and keeps the tty
+// display otherwise. When the model cannot be read, plain is the safe answer:
+// it works with or without a build, and the action itself then reports why
+// the file does not load.
+func (c *Service) actionProgress(builds bool) string {
+	if builds {
+		return "--progress=plain"
+	}
+	return c.progressOut()
+}
+
+// explainBuildDenial names the likely cause when the Docker API refuses a
+// build with a bare "403 Forbidden" page. Behind a socket proxy that blocks
+// BuildKit's endpoint, every Compose build fails that way, and the page says
+// nothing about why: Compose builds through BuildKit's /grpc API (or the
+// /session fallback), which proxies deny unless told otherwise. Reproduced
+// with LinuxServer's socket-proxy: GRPC=1 alone is enough.
+func explainBuildDenial(err error, builds bool) error {
+	if err == nil || !builds || !strings.Contains(err.Error(), "403 Forbidden") {
+		return err
+	}
+	return fmt.Errorf("%w\n\nThe Docker API refused the build. If Dockman reaches Docker through a socket proxy, "+
+		"Compose builds need BuildKit's API: allow GRPC=1 on the proxy (SESSION=1 also works). "+
+		"See the Docker socket proxy documentation", err)
+}
+
 func (c *Service) version(ctx context.Context) ([]string, error) {
 	errWriter := bytes.Buffer{}
 
@@ -281,8 +334,9 @@ func (c *Service) Up(
 	io io.Writer,
 	services ...string,
 ) error {
-	return c.withCmd(
-		ctx, filename, io,
+	builds := c.mayBuild(ctx, filename)
+	return explainBuildDenial(c.withCmdProgress(
+		ctx, filename, io, c.actionProgress(builds),
 		func(cmdList []string) []string {
 			return append(cmdList,
 				"up", "-d", "-y",
@@ -290,7 +344,7 @@ func (c *Service) Up(
 			)
 		},
 		services,
-	)
+	), builds)
 }
 
 // DryRunUp validates the complete execution plan without changing containers,
@@ -307,9 +361,14 @@ func (c *Service) DryRunUp(ctx context.Context, filename string, out io.Writer) 
 // with automatic rollback enabled; regular interactive actions keep their
 // existing non-blocking behaviour.
 func (c *Service) UpWait(ctx context.Context, filename string, out io.Writer) error {
-	return c.withCmdProgress(ctx, filename, out, "--progress=plain", func(cmdList []string) []string {
+	err := c.withCmdProgress(ctx, filename, out, "--progress=plain", func(cmdList []string) []string {
 		return append(cmdList, "up", "-d", "-y", "--build", "--remove-orphans", "--wait", "--wait-timeout", "60")
 	}, nil)
+	// already plain, so the model is only read to explain a refused build
+	if err != nil && strings.Contains(err.Error(), "403 Forbidden") {
+		return explainBuildDenial(err, c.mayBuild(ctx, filename))
+	}
+	return err
 }
 
 // Redeploy runs `up -d` with explicit force flags so a stack can be
@@ -322,8 +381,10 @@ func (c *Service) Redeploy(
 	pull, build, recreate bool,
 	services ...string,
 ) error {
-	return c.withCmd(
-		ctx, filename, out,
+	// build or not, up builds any buildable service whose image is missing
+	builds := c.mayBuild(ctx, filename)
+	return explainBuildDenial(c.withCmdProgress(
+		ctx, filename, out, c.actionProgress(builds),
 		func(cmdList []string) []string {
 			cmdList = append(cmdList, "up", "-d", "-y", "--remove-orphans")
 			if pull {
@@ -338,7 +399,7 @@ func (c *Service) Redeploy(
 			return cmdList
 		},
 		services,
-	)
+	), builds)
 }
 
 func (c *Service) Down(

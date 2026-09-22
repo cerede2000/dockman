@@ -36,6 +36,7 @@ services:
       ALLOW_STOP: 1
       ALLOW_RESTARTS: 1
       BUILD: 1
+      GRPC: 1 # BuildKit's API: needed by Compose stacks with a build section
       AUTH: 0
       COMMIT: 0
       CONFIGS: 0
@@ -76,13 +77,14 @@ Exact variable names depend on the proxy image. The example targets LinuxServer 
 | Container file browser | containers/archive; `EXEC` for compatibility fallbacks |
 | Prune | `SYSTEM`, affected resource group and `POST` |
 | Dockerfile/Buildx build | `BUILD`, containers, images and permission to create/delete the temporary BuildKit helper |
+| Compose stack with a `build:` section | `BUILD` and `GRPC` (BuildKit's API; `SESSION=1` also works, as a slower fallback) |
 | Protected socket-proxy update | containers/images and lifecycle write access |
 
 `POST=1` is essential for mutations. A read-only proxy filesystem does not make the Docker API read-only; API policy comes from the proxy variables.
 
 ## Reduce privileges by feature
 
-- Set `BUILD=0` if Dockerfile builds are not used.
+- Set `BUILD=0` and `GRPC=0` if neither Dockerfile builds nor Compose stacks with a `build:` section are used.
 - Set `EXEC=0` if neither terminal nor compatibility file browsing is needed.
 - Keep Swarm, plugins, nodes, secrets, configs and distribution disabled unless a verified Dockman feature requires them.
 - Do not expose port 2375 outside the private Docker network.
@@ -92,6 +94,10 @@ Exact variable names depend on the proxy image. The example targets LinuxServer 
 ### Reads work but actions fail
 
 Verify `POST`, lifecycle allowances and the specific resource group. Inspect proxy logs for the denied method/path.
+
+### A Compose stack with `build:` fails with "403 Forbidden"
+
+Compose builds through BuildKit's `/grpc` endpoint, which a proxy denies unless `GRPC=1` is set; the error is then a bare HTML "403 Forbidden" page, and the proxy log shows `POST /grpc` refused. Allow `GRPC=1` (`SESSION=1` also works). Dockman appends this hint to the error when a build is refused. Builds from the Files view are not affected: they fall back without it.
 
 ### Build succeeds but helper remains
 
