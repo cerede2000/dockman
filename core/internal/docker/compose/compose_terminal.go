@@ -44,6 +44,8 @@ type Service struct {
 	// injected by the host service which owns the alias table
 	pathResolver PathResolver
 	environment  EnvironmentProvider
+	// caps the builds this host runs; zero value = no limit (see BuildLimits)
+	buildLimits BuildLimits
 }
 
 func (c *Service) SetEnvironmentProvider(provider EnvironmentProvider) { c.environment = provider }
@@ -119,14 +121,23 @@ func (c *Service) actionProgress(builds bool) string {
 }
 
 // explainBuildDenial names the likely cause when the Docker API refuses a
-// build with a bare "403 Forbidden" page. Behind a socket proxy that blocks
-// BuildKit's endpoint, every Compose build fails that way, and the page says
-// nothing about why: Compose builds through BuildKit's /grpc API (or the
-// /session fallback), which proxies deny unless told otherwise. Reproduced
-// with LinuxServer's socket-proxy: GRPC=1 alone is enough.
-func explainBuildDenial(err error, builds bool) error {
+// build with a bare "403 Forbidden" page, which says nothing about why.
+// Both causes were reproduced with LinuxServer's socket-proxy:
+//   - Compose builds through BuildKit's /grpc API (or the /session
+//     fallback), which the proxy denies unless GRPC=1 (or SESSION=1);
+//   - a host with build limits builds in a docker-container builder, and
+//     Buildx copies its configuration into that container when it creates
+//     it: a PUT on containers/{id}/archive, denied unless ALLOW_ARCHIVE=1.
+//     That builder does not use /grpc at all.
+func (c *Service) explainBuildDenial(err error, builds bool) error {
 	if err == nil || !builds || !strings.Contains(err.Error(), "403 Forbidden") {
 		return err
+	}
+	if c.buildLimits.Active() {
+		return fmt.Errorf("%w\n\nThe Docker API refused the limited builder. This host caps its builds, so they run "+
+			"in a BuildKit container Dockman creates and copies its configuration into. Behind a socket proxy, "+
+			"allow container archive writes (ALLOW_ARCHIVE=1 on LinuxServer's socket-proxy) besides CONTAINERS, "+
+			"POST, EXEC and VOLUMES. See the Docker socket proxy documentation", err)
 	}
 	return fmt.Errorf("%w\n\nThe Docker API refused the build. If Dockman reaches Docker through a socket proxy, "+
 		"Compose builds need BuildKit's API: allow GRPC=1 on the proxy (SESSION=1 also works). "+
@@ -197,7 +208,31 @@ func (c *Service) withCmdProgress(
 	addCmd WithCmd,
 	services []string,
 ) error {
-	return c.runCompose(ctx, filename, stream, progress, true, addCmd, services)
+	return c.runCompose(ctx, filename, stream, progress, true, nil, addCmd, services)
+}
+
+// runBuildingAction runs a Compose action that may build. When the host has
+// build limits and the stack builds something, it runs with Compose's builds
+// routed to the limited builder; otherwise exactly as before.
+func (c *Service) runBuildingAction(
+	ctx context.Context,
+	filename string,
+	stream io.Writer,
+	progress string,
+	builds bool,
+	addCmd WithCmd,
+	services []string,
+) error {
+	if !builds || !c.buildLimits.Active() {
+		return c.runCompose(ctx, filename, stream, progress, true, nil, addCmd, services)
+	}
+	fileParts, err := c.parser(filename, c.hostname)
+	if err != nil {
+		return err
+	}
+	return c.withLimitedBuilder(ctx, fileParts.Fs.Root(), stream, false, func(string) error {
+		return c.runCompose(ctx, filename, stream, progress, true, limitedBuilderEnv(), addCmd, services)
+	})
 }
 
 // captureCmd runs a Compose command and returns its standard output. Unlike
@@ -212,7 +247,7 @@ func (c *Service) captureCmd(
 	services []string,
 ) ([]byte, error) {
 	buf := new(bytes.Buffer)
-	if err := c.runCompose(ctx, filename, buf, "--progress=plain", false, addCmd, services); err != nil {
+	if err := c.runCompose(ctx, filename, buf, "--progress=plain", false, nil, addCmd, services); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -224,6 +259,9 @@ func (c *Service) runCompose(
 	stream io.Writer,
 	progress string,
 	echoCommand bool,
+	// extraEnv is added to the command's environment, e.g. the builder
+	// selection of a limited build; never secret values
+	extraEnv []string,
 	addCmd WithCmd,
 	services []string,
 ) error {
@@ -287,8 +325,12 @@ func (c *Service) runCompose(
 		}
 	}
 
+	environment := secretEnvironment
+	if len(extraEnv) > 0 {
+		environment = append(slices.Clone(extraEnv), secretEnvironment...)
+	}
 	errWriter := new(bytes.Buffer)
-	err = c.runner.Run(ctx, cleanCmd, fileParts.Fs.Root(), secretEnvironment, stream, errWriter)
+	err = c.runner.Run(ctx, cleanCmd, fileParts.Fs.Root(), environment, stream, errWriter)
 	if err != nil {
 		message := strings.TrimSpace(errWriter.String())
 		if message != "" {
@@ -335,8 +377,8 @@ func (c *Service) Up(
 	services ...string,
 ) error {
 	builds := c.mayBuild(ctx, filename)
-	return explainBuildDenial(c.withCmdProgress(
-		ctx, filename, io, c.actionProgress(builds),
+	return c.explainBuildDenial(c.runBuildingAction(
+		ctx, filename, io, c.actionProgress(builds), builds,
 		func(cmdList []string) []string {
 			return append(cmdList,
 				"up", "-d", "-y",
@@ -361,12 +403,18 @@ func (c *Service) DryRunUp(ctx context.Context, filename string, out io.Writer) 
 // with automatic rollback enabled; regular interactive actions keep their
 // existing non-blocking behaviour.
 func (c *Service) UpWait(ctx context.Context, filename string, out io.Writer) error {
-	err := c.withCmdProgress(ctx, filename, out, "--progress=plain", func(cmdList []string) []string {
+	// already plain; the model is only read when limits make it matter
+	builds := c.buildLimits.Active() && c.mayBuild(ctx, filename)
+	err := c.runBuildingAction(ctx, filename, out, "--progress=plain", builds, func(cmdList []string) []string {
 		return append(cmdList, "up", "-d", "-y", "--build", "--remove-orphans", "--wait", "--wait-timeout", "60")
 	}, nil)
-	// already plain, so the model is only read to explain a refused build
+	// already plain, so without limits the model is only read to explain a
+	// refused build
 	if err != nil && strings.Contains(err.Error(), "403 Forbidden") {
-		return explainBuildDenial(err, c.mayBuild(ctx, filename))
+		if !builds {
+			builds = c.mayBuild(ctx, filename)
+		}
+		return c.explainBuildDenial(err, builds)
 	}
 	return err
 }
@@ -383,8 +431,8 @@ func (c *Service) Redeploy(
 ) error {
 	// build or not, up builds any buildable service whose image is missing
 	builds := c.mayBuild(ctx, filename)
-	return explainBuildDenial(c.withCmdProgress(
-		ctx, filename, out, c.actionProgress(builds),
+	return c.explainBuildDenial(c.runBuildingAction(
+		ctx, filename, out, c.actionProgress(builds), builds,
 		func(cmdList []string) []string {
 			cmdList = append(cmdList, "up", "-d", "-y", "--remove-orphans")
 			if pull {

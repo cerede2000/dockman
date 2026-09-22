@@ -18,6 +18,7 @@ The result is loaded into the Docker host with `docker buildx build --load`.
 - When the daemon-backed `docker` driver is available and default networking is selected, Dockman uses it without a helper container.
 - With a socket proxy exposing a `docker-container` driver, or when host networking is requested, Dockman creates a uniquely named job-scoped builder.
 - The temporary builder is removed after success, failure or cancellation. An exact legacy `buildx_buildkit_default` helper from older builds is also cleaned up.
+- When the host has [build limits](build-limits.md), every build uses the limited `dockman-limited` builder instead.
 
 A `buildx_buildkit_dockman-*` container can therefore exist while a build is running, but must not remain afterwards.
 

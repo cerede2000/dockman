@@ -78,6 +78,7 @@ Exact variable names depend on the proxy image. The example targets LinuxServer 
 | Prune | `SYSTEM`, affected resource group and `POST` |
 | Dockerfile/Buildx build | `BUILD`, containers, images and permission to create/delete the temporary BuildKit helper |
 | Compose stack with a `build:` section | `BUILD` and `GRPC` (BuildKit's API; `SESSION=1` also works, as a slower fallback) |
+| Builds on a host with [build limits](../operations/build-limits.md) | `ALLOW_ARCHIVE` besides containers, images, `EXEC`, `VOLUMES` and `POST`; `GRPC` is not used |
 | Protected socket-proxy update | containers/images and lifecycle write access |
 
 `POST=1` is essential for mutations. A read-only proxy filesystem does not make the Docker API read-only; API policy comes from the proxy variables.
@@ -98,6 +99,10 @@ Verify `POST`, lifecycle allowances and the specific resource group. Inspect pro
 ### A Compose stack with `build:` fails with "403 Forbidden"
 
 Compose builds through BuildKit's `/grpc` endpoint, which a proxy denies unless `GRPC=1` is set; the error is then a bare HTML "403 Forbidden" page, and the proxy log shows `POST /grpc` refused. Allow `GRPC=1` (`SESSION=1` also works). Dockman appends this hint to the error when a build is refused. Builds from the Files view are not affected: they fall back without it.
+
+### A build on a host with build limits fails with "403 Forbidden"
+
+The limited builder runs BuildKit in a container Dockman creates, and Buildx copies its configuration into it, which is a `PUT` on `containers/{id}/archive`. LinuxServer's socket-proxy refuses it unless `ALLOW_ARCHIVE=1`. Dockman appends this hint to the error.
 
 ### Build succeeds but helper remains
 
