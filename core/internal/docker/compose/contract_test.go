@@ -342,7 +342,11 @@ func TestContractStacksDeployedByThePreviousComposeAfterAnUpgrade(t *testing.T) 
 			recreated := 0
 			for _, c := range s.containers() {
 				require.Equal(t, containertypes.StateRunning, c.State, "%s", c.Names[0])
-				require.Equal(t, plan[c.Labels[api.ServiceLabel]].ConfigHash, c.Labels[api.ConfigHashLabel], "%s", c.Names[0])
+				// the env_file gap of Compose before 5.5, see
+				// TestContractTheConfigHashMatchesTheLabelOnTheContainer
+				if name != "envfile" || !composeOlderThan(t, 5, 5) {
+					require.Equal(t, plan[c.Labels[api.ServiceLabel]].ConfigHash, c.Labels[api.ConfigHashLabel], "%s", c.Names[0])
+				}
 				if before[c.Names[0]] != c.ID {
 					recreated++
 				}
