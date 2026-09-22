@@ -101,6 +101,16 @@ func newStack(t *testing.T, files map[string]string) *contractStack {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		_ = s.svc.Down(ctx, s.file, nil)
+		// Dockman's down keeps named volumes, as it should for a real stack;
+		// the suite must not leave its own behind on the machine it ran on.
+		volumes, err := s.cli.VolumeList(ctx, client.VolumeListOptions{
+			Filters: client.Filters{}.Add("label", api.ProjectLabel+"="+s.name),
+		})
+		if err == nil {
+			for _, v := range volumes.Items {
+				_, _ = s.cli.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{})
+			}
+		}
 		for _, fn := range s.cleanup {
 			fn()
 		}
