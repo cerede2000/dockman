@@ -15,6 +15,7 @@ Use this procedure when moving from upstream Dockman or an older integration ima
 4. Export the current Compose definition and environment variables.
 5. Check available disk space for a second image and rollback material.
 6. Pause Git auto-deploy and automatic image updates for the maintenance window.
+7. Read [Bundled Docker Compose](./compose.md) when the bundled Compose version changes: the first deployment of a stack may recreate its containers once.
 
 SQLite schema migrations run automatically at startup. A database backup is therefore required before moving forward; reverting only the image may not revert a migrated database safely.
 
@@ -58,6 +59,7 @@ Do not run prune until the validation period ends.
 - backend build, vet and owned tests pass;
 - frontend dependency audit, lint and production build pass;
 - reachable Go vulnerability gate passes;
+- Compose contract passes inside the image on both image stores;
 - amd64/arm64 images build and scan successfully;
 - multi-architecture manifest is signed;
 - integration digest is recorded;
