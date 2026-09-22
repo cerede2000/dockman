@@ -15,7 +15,9 @@ trap cleanup EXIT
 cd "$repository_root/core"
 
 set +e
-govulncheck -json ./cmd/docker > "$report_file"
+# Every binary the image ships, not only the server: the secrets and file
+# helpers run on the host or next to it with the same trust.
+govulncheck -json ./cmd/docker ./cmd/secrets-host ./cmd/filehelper > "$report_file"
 scan_status=$?
 set -e
 
@@ -25,7 +27,7 @@ if [[ $scan_status -ne 0 && $scan_status -ne 3 ]]; then
 fi
 
 # A one-element trace is a module/package presence finding. Longer traces are
-# symbols reachable from the shipping cmd/docker binary and must be reviewed.
+# symbols reachable from a shipped binary and must be reviewed.
 jq -r 'select(.finding and (.finding.trace | length) > 1) | .finding.osv' \
   "$report_file" | sort -u > "$findings_file"
 sed -E '/^[[:space:]]*(#|$)/d' "$allowlist_file" | sort -u > "$allowed_file"
