@@ -137,15 +137,20 @@ func (s *contractStack) containers() []containertypes.Summary {
 	return list.Items
 }
 
+// only returns the single container of a service, waiting out the moment a
+// recreated container is listed next to the one it replaces.
 func (s *contractStack) only(service string) containertypes.Summary {
 	s.t.Helper()
 	var found []containertypes.Summary
-	for _, c := range s.containers() {
-		if c.Labels[api.ServiceLabel] == service {
-			found = append(found, c)
+	eventually(s.t, 10*time.Second, "a single container for service "+service, func() bool {
+		found = found[:0]
+		for _, c := range s.containers() {
+			if c.Labels[api.ServiceLabel] == service {
+				found = append(found, c)
+			}
 		}
-	}
-	require.Len(s.t, found, 1, "containers of service %s", service)
+		return len(found) == 1
+	})
 	return found[0]
 }
 
@@ -185,6 +190,21 @@ func eventually(t *testing.T, within time.Duration, what string, cond func() boo
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("timed out after %s waiting for %s", within, what)
+}
+
+// running waits until every container of the stack is listed as running:
+// the daemon's list trails a state change by a few milliseconds.
+func (s *contractStack) running() {
+	s.t.Helper()
+	eventually(s.t, 10*time.Second, "every container running", func() bool {
+		list := s.containers()
+		for _, c := range list {
+			if c.State != containertypes.StateRunning {
+				return false
+			}
+		}
+		return len(list) > 0
+	})
 }
 
 func pullOnce(t *testing.T, refs ...string) {
@@ -337,11 +357,11 @@ func TestContractStacksDeployedByThePreviousComposeAfterAnUpgrade(t *testing.T) 
 			require.NotEmpty(t, before)
 
 			s.up(new(bytes.Buffer))
+			s.running()
 			plan, err := s.svc.ProjectPlan(s.ctx(), s.file)
 			require.NoError(t, err)
 			recreated := 0
 			for _, c := range s.containers() {
-				require.Equal(t, containertypes.StateRunning, c.State, "%s", c.Names[0])
 				// the env_file gap of Compose before 5.5, see
 				// TestContractTheConfigHashMatchesTheLabelOnTheContainer
 				if name != "envfile" || !composeOlderThan(t, 5, 5) {
@@ -493,7 +513,7 @@ func TestContractAStackWithABuildSectionBuildsWithoutAConsole(t *testing.T) {
 	out := new(bytes.Buffer)
 	s.up(out)
 	require.Contains(t, out.String(), "DMC-BUILD-STEP")
-	require.Equal(t, containertypes.StateRunning, s.only("app").State)
+	s.running()
 }
 
 func TestContractAPulledStackDeploysUnderTheTtyDisplay(t *testing.T) {
@@ -502,7 +522,7 @@ func TestContractAPulledStackDeploysUnderTheTtyDisplay(t *testing.T) {
 	out := new(bytes.Buffer)
 	s.up(out)
 	require.Contains(t, ansi.ReplaceAllString(out.String(), ""), "--progress=tty")
-	require.Equal(t, containertypes.StateRunning, s.only("app").State)
+	s.running()
 }
 
 func TestContractDryRunUpTouchesNothing(t *testing.T) {
@@ -580,27 +600,28 @@ func TestContractLifecycle(t *testing.T) {
 	s.up(new(bytes.Buffer))
 	out := new(bytes.Buffer)
 
-	require.NoError(t, s.svc.Stop(s.ctx(), s.file, out), "%s", out)
-	stopped := s.only("app")
-	if stopped.State == containertypes.StateRunning {
-		inspected, err := s.cli.ContainerInspect(context.Background(), stopped.ID, client.ContainerInspectOptions{})
-		require.NoError(t, err)
-		st := inspected.Container.State
-		t.Fatalf("still running after stop: started %s, finished %s, restarts %d\nstop output:\n%s",
-			st.StartedAt, st.FinishedAt, inspected.Container.RestartCount, out)
+	// The daemon's container list trails a state change by a few
+	// milliseconds: a container Compose has just stopped can still be listed
+	// as running. Wait for the state rather than read it once.
+	stateBecomes := func(want containertypes.ContainerState) {
+		t.Helper()
+		eventually(t, 10*time.Second, "state "+string(want), func() bool { return s.only("app").State == want })
 	}
 
+	require.NoError(t, s.svc.Stop(s.ctx(), s.file, out), "%s", out)
+	stateBecomes(containertypes.StateExited)
+
 	require.NoError(t, s.svc.Start(s.ctx(), s.file, out), "%s", out)
-	require.Equal(t, containertypes.StateRunning, s.only("app").State)
+	stateBecomes(containertypes.StateRunning)
 
 	require.NoError(t, s.svc.Restart(s.ctx(), s.file, out), "%s", out)
-	require.Equal(t, containertypes.StateRunning, s.only("app").State)
+	stateBecomes(containertypes.StateRunning)
 
 	require.NoError(t, s.svc.Update(s.ctx(), s.file, out), "%s", out)
-	require.Equal(t, containertypes.StateRunning, s.only("app").State)
+	stateBecomes(containertypes.StateRunning)
 
 	require.NoError(t, s.svc.DownPlain(s.ctx(), s.file, out), "%s", out)
-	require.Empty(t, s.containers())
+	eventually(t, 10*time.Second, "no container left", func() bool { return len(s.containers()) == 0 })
 }
 
 func TestContractUpRemovesOrphans(t *testing.T) {
@@ -659,7 +680,7 @@ func TestContractLimitedBuildsRunInTheirOwnBuilder(t *testing.T) {
 	s.up(out)
 	require.Contains(t, out.String(), "*** Build limits: 1 CPU, 1 GiB ***")
 	require.Contains(t, out.String(), "DMC-LIMITED-STEP")
-	require.Equal(t, containertypes.StateRunning, s.only("app").State)
+	s.running()
 
 	list, err := s.cli.ContainerList(context.Background(), client.ContainerListOptions{
 		All:     true,
@@ -709,9 +730,9 @@ func TestContractAMovedTagEndsUpRunning(t *testing.T) {
 			}
 
 			s.up(new(bytes.Buffer))
+			s.running()
 			after := s.only("app")
 			require.Equal(t, moved, after.ImageID)
-			require.Equal(t, containertypes.StateRunning, after.State)
 			t.Logf("OBSERVE: dockman-replaced-first=%v, the next up recreated the container: %v",
 				viaDockman, before.ID != after.ID)
 		})
