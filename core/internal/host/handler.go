@@ -252,7 +252,9 @@ func (c *Config) ToProto() *v1.Host {
 		Enable:       c.Enable,
 		DockerSocket: c.DockerSocket,
 		// Map the Enum
-		Kind: v1.ClientType(v1.ClientType_value[strings.ToUpper(string(c.Type))]),
+		Kind:             v1.ClientType(v1.ClientType_value[strings.ToUpper(string(c.Type))]),
+		BuildCpuLimit:    c.BuildCPULimit,
+		BuildMemoryLimit: c.BuildMemoryLimit,
 	}
 
 	// Map Belongs To
@@ -274,6 +276,9 @@ func ConfigFromProto(p *v1.Host) *Config {
 		Type:         ClientType(strings.ToLower(p.Kind.String())),
 		Enable:       p.Enable,
 		DockerSocket: p.DockerSocket,
+
+		BuildCPULimit:    p.BuildCpuLimit,
+		BuildMemoryLimit: p.BuildMemoryLimit,
 	}
 
 	if p.SshOptions != nil {

@@ -19,13 +19,14 @@ import {
     ToggleButtonGroup,
     Typography
 } from "@mui/material";
-import {DnsOutlined, InfoOutlined, LanguageOutlined, SaveOutlined} from '@mui/icons-material';
+import {DnsOutlined, InfoOutlined, LanguageOutlined, SaveOutlined, SpeedOutlined} from '@mui/icons-material';
 import {ClientType, type Host, HostManagerService} from "../../../gen/host/v1/host_pb.ts";
 import {callRPC, useClient} from "../../../lib/api.ts";
 import {useSnackbar} from "../../../hooks/snackbar.ts";
 import {gitAPI} from "../../../lib/git-api.ts";
 import scrollbarStyles from "../../../components/scrollbar-style.tsx";
 import HostAliasManager from "./alias-manager.tsx";
+import {buildLimitErrors, cpusText, memoryText, parseCpus, parseMemory} from "./build-limits.ts";
 
 const publicKeyHelperText = [
     "When PublicKey is enabled, Dockman installs its public key automatically.",
@@ -48,6 +49,8 @@ const createDefaultHost = (existing?: Partial<CleanHost>): CleanHost => ({
     enable: existing?.enable ?? true,
     dockerSocket: existing?.dockerSocket ?? "",
     folderAliasesCount: existing?.folderAliasesCount ?? 0,
+    buildCpuLimit: existing?.buildCpuLimit ?? 0,
+    buildMemoryLimit: existing?.buildMemoryLimit ?? 0n,
     sshOptions: existing?.sshOptions ?? {
         id: 0, host: "", port: 22, user: "", password: "",
         remotePublicKey: "", usePublicKeyAuth: true,
@@ -70,12 +73,20 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
     // is shown before anything is written: this is not a side effect the user
     // should discover afterwards.
     const [renameTargets, setRenameTargets] = useState<RenameTarget[] | null>(null);
+    // the limit fields keep what is typed: deriving them from the parsed
+    // number would turn "0." back into an empty field before "0.5" is typed
+    const [cpuText, setCpuText] = useState(cpusText(host?.buildCpuLimit ?? 0));
+    const [memText, setMemText] = useState(memoryText(host?.buildMemoryLimit ?? 0n));
     const isEditMode = !!host?.id;
+    const limitErrors = buildLimitErrors(cpuText, memText);
+    const limitsInvalid = limitErrors.cpu !== undefined || limitErrors.memory !== undefined;
 
     useEffect(() => {
         if (open) {
             setTabValue(0);
             setForm(createDefaultHost(host));
+            setCpuText(cpusText(host?.buildCpuLimit ?? 0));
+            setMemText(memoryText(host?.buildMemoryLimit ?? 0n));
             setRenameTargets(null);
         }
     }, [open, host]);
@@ -268,6 +279,44 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
                                 </Stack>
                             </Paper>
                         )}
+
+                        <Box>
+                            <SectionHeader icon={<SpeedOutlined/>} title="Build limits"/>
+                            <Stack direction="row" spacing={2}>
+                                <TextField
+                                    label="CPU cores" fullWidth
+                                    placeholder="No limit"
+                                    value={cpuText}
+                                    onChange={e => {
+                                        setCpuText(e.target.value);
+                                        setForm({...form, buildCpuLimit: parseCpus(e.target.value)});
+                                    }}
+                                    error={limitErrors.cpu !== undefined}
+                                    helperText={limitErrors.cpu ?? ' '}
+                                    // text, not number: a number input rewrites "0." while it is
+                                    // being typed, and changes the value on a scroll
+                                    slotProps={{htmlInput: {inputMode: 'decimal', 'aria-label': 'Build CPU cores'}}}
+                                />
+                                <TextField
+                                    label="Memory (GiB)" fullWidth
+                                    placeholder="No limit"
+                                    value={memText}
+                                    onChange={e => {
+                                        setMemText(e.target.value);
+                                        setForm({...form, buildMemoryLimit: parseMemory(e.target.value)});
+                                    }}
+                                    error={limitErrors.memory !== undefined}
+                                    helperText={limitErrors.memory ?? ' '}
+                                    slotProps={{htmlInput: {inputMode: 'decimal', 'aria-label': 'Build memory GiB'}}}
+                                />
+                            </Stack>
+                            <Typography variant="caption" sx={{display: 'block', color: 'text.secondary'}}>
+                                Caps every image build Dockman runs on this host: Compose stacks with a build
+                                section and Dockerfile builds from Files. Builds then run one at a time in a
+                                dedicated builder, created for the build and removed after it, cache kept.
+                                Leave empty for no limit.
+                            </Typography>
+                        </Box>
                     </Stack>
                 ) : (
                     <HostAliasManager hostname={host?.name ?? ""} hostId={host?.id ?? 0}/>
@@ -283,7 +332,7 @@ function HostWizardDialog({open, onClose, host, onSuccess}: {
                         variant="contained"
                         startIcon={connecting ? <CircularProgress size={18} color="inherit"/> : <SaveOutlined/>}
                         onClick={handleSaveHost}
-                        disabled={connecting || !form.name.trim()}
+                        disabled={connecting || !form.name.trim() || limitsInvalid}
                         sx={{borderRadius: 2, px: 4, fontWeight: 700}}
                     >
                         {isEditMode ? "Save Changes" : "Create Host"}

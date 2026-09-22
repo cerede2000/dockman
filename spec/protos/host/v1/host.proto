@@ -148,6 +148,10 @@ message Host {
   string docker_socket = 5;
   SSHConfig ssh_options = 6;
   int32 folder_aliases_count = 7;
+  // Caps every image build Dockman runs on this host (Compose stacks with a
+  // build section, Dockerfile builds from Files). 0 means no limit.
+  double build_cpu_limit = 9;     // CPU cores, e.g. 1.5
+  int64 build_memory_limit = 10;  // bytes
 }
 
 enum ClientType {

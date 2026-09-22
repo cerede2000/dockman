@@ -60,6 +60,22 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag, ne
 	if err != nil {
 		return err
 	}
+	if c.buildLimits.Active() {
+		// the host caps its builds: the limited builder replaces both the
+		// daemon's builder and the job-scoped one, host networking included
+		return c.explainBuildDenial(c.withLimitedBuilder(ctx, wd, stream, networkMode == "host", func(builder string) error {
+			if stream != nil {
+				_, _ = fmt.Fprintf(stream, "*** Build network: %s ***\n", networkMode)
+			}
+			limited := append([]string{}, args[:3]...)
+			limited = append(limited, "--builder", builder)
+			if networkMode == "host" {
+				limited = append(limited, "--allow=network.host")
+			}
+			limited = append(limited, args[3:]...)
+			return c.runDockerCLI(ctx, limitedBuildxArgs(limited...), wd, stream)
+		}), true)
+	}
 	driver, currentBuilder := c.dockmanBuildxBuilder(ctx, wd)
 	if stream != nil {
 		_, _ = fmt.Fprintf(stream, "*** Buildx driver: %s ***\n", driver)

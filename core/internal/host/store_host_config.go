@@ -1,6 +1,7 @@
 package host
 
 import (
+	"github.com/RA341/dockman/internal/docker/compose"
 	"github.com/RA341/dockman/internal/ssh"
 	"gorm.io/gorm"
 )
@@ -40,6 +41,16 @@ type Config struct {
 	// Has Many Relationship (FolderAliases)
 	FolderAliases []FolderAlias `gorm:"foreignKey:ConfigID"`
 	MachineAddr   string
+
+	// Build limits cap every image build Dockman runs on this host; 0 means
+	// no limit (see compose.BuildLimits).
+	BuildCPULimit    float64 `gorm:"column:build_cpu_limit;not null;default:0"`
+	BuildMemoryLimit int64   `gorm:"column:build_memory_limit;not null;default:0"`
+}
+
+// BuildLimits is the host's build caps in the form the compose layer applies.
+func (c *Config) BuildLimits() compose.BuildLimits {
+	return compose.BuildLimits{CPUs: c.BuildCPULimit, MemoryBytes: c.BuildMemoryLimit}
 }
 
 func (*Config) TableName() string {

@@ -29,6 +29,9 @@ type Service struct {
 	ssh   *ssh.Service
 
 	activeClients syncmap.Map[string, *ActiveHost]
+	// build caps per host ID - the handle that survives a rename; read on
+	// every GetDockerService, written when a host connects or is edited
+	buildLimits syncmap.Map[uint, compose.BuildLimits]
 	aliasStore    AliasStore
 	composeEnv    compose.EnvironmentProvider
 	renameHost    HostRenameHook
@@ -220,6 +223,9 @@ func (s *Service) GetDockerService(name string) (*docker.Service, error) {
 		},
 	)
 	service.Compose.SetEnvironmentProvider(s.composeEnv)
+	if limits, ok := s.buildLimits.Load(val.HostId); ok {
+		service.Compose.SetBuildLimits(limits)
+	}
 
 	// reverse of the parser above: map the daemon's absolute compose-file
 	// path back to "alias/relpath" by matching it against the alias roots,
@@ -389,6 +395,11 @@ func (s *Service) retryLoad(name string) {
 }
 
 func (s *Service) Add(config *Config, create bool) (err error) {
+	if create {
+		if err := config.BuildLimits().Validate(); err != nil {
+			return err
+		}
+	}
 	ah, err := s.loadHost(config, create)
 	if err != nil {
 		return err
@@ -417,9 +428,11 @@ func (s *Service) Add(config *Config, create bool) (err error) {
 		return err
 	}
 
+	ah.HostId = config.ID
 	ah.Kind = config.Type
 	ah.Addr = config.MachineAddr
 	ah.As = NewAliasService(s.aliasStore, config.ID, fsFactory)
+	s.buildLimits.Store(config.ID, config.BuildLimits())
 
 	val, ok := s.activeClients.LoadAndDelete(config.Name)
 	if ok {
@@ -548,8 +561,18 @@ func (s *Service) Delete(hostname string) error {
 }
 
 func (s *Service) Edit(config *Config) error {
+	if err := config.BuildLimits().Validate(); err != nil {
+		return err
+	}
 	// do not update aliases we do that separately
 	config.FolderAliases = nil
+	// the running services pick the new caps up on their next build: no
+	// reconnect, and nothing to restart
+	defer func() {
+		if saved, err := s.store.GetByID(config.ID); err == nil {
+			s.buildLimits.Store(saved.ID, saved.BuildLimits())
+		}
+	}()
 	previous, err := s.store.GetByID(config.ID)
 	if err != nil {
 		return fmt.Errorf("load the host being edited: %w", err)
