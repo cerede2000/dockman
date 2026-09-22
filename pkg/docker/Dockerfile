@@ -3,12 +3,12 @@
 ARG NODE_VERSION=24.21.0
 ARG GO_VERSION=1.26.8
 ARG ALPINE_VERSION=3.24.2
-ARG COMPOSE_VERSION=v5.3.1
+ARG COMPOSE_VERSION=v5.5.1
 ARG COMPOSE_X_CRYPTO_VERSION=v0.56.0
 ARG COMPOSE_X_TEXT_VERSION=v0.41.0
 ARG COMPOSE_GRPC_VERSION=v1.83.2
 ARG COMPOSE_GO_ARCHIVE_VERSION=v0.3.3
-ARG COMPOSE_CONTAINERD_VERSION=v2.2.8
+ARG COMPOSE_CONTAINERD_VERSION=v2.3.5
 ARG COMPOSE_OTEL_VERSION=v1.46.0
 ARG SOPS_VERSION=v3.13.3
 ARG SOPS_X_CRYPTO_VERSION=v0.56.0
@@ -92,30 +92,34 @@ ARG COMPOSE_GO_ARCHIVE_VERSION
 ARG COMPOSE_CONTAINERD_VERSION
 ARG COMPOSE_OTEL_VERSION
 
+COPY pkg/docker/go-require-at-least.sh /usr/local/bin/go-require-at-least
+
 # Rebuild the upstream Compose release with the patched Go toolchain and
-# explicit compatible security updates. Modules are authenticated by sum.golang.org.
+# security floors on its dependencies, which may raise a version and never
+# lower one (see go-require-at-least.sh). Modules are authenticated by
+# sum.golang.org.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go mod download "github.com/docker/compose/v5@${COMPOSE_VERSION}" && \
     cp -R "/go/pkg/mod/github.com/docker/compose/v5@${COMPOSE_VERSION}" /compose-source && \
     chmod -R u+w /compose-source && \
     cd /compose-source && \
-    go mod edit \
-      -require="golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
-      -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
-      -require="google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" \
-      -require="github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" \
-      -require="github.com/containerd/containerd/v2@${COMPOSE_CONTAINERD_VERSION}" \
-      -require="go.opentelemetry.io/otel@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/metric@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/trace@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/sdk@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/sdk/metric@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/exporters/otlp/otlptrace@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc@${COMPOSE_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp@${COMPOSE_OTEL_VERSION}" && \
+    go-require-at-least \
+      "golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
+      "golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
+      "google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" \
+      "github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" \
+      "github.com/containerd/containerd/v2@${COMPOSE_CONTAINERD_VERSION}" \
+      "go.opentelemetry.io/otel@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/metric@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/trace@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/sdk@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/sdk/metric@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/exporters/otlp/otlptrace@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc@${COMPOSE_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp@${COMPOSE_OTEL_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build \
       -trimpath \
@@ -133,6 +137,8 @@ ARG SOPS_OTEL_VERSION
 ARG AGE_VERSION
 ARG AGE_X_CRYPTO_VERSION
 
+COPY pkg/docker/go-require-at-least.sh /usr/local/bin/go-require-at-least
+
 # sops is rebuilt from its release source like Compose and age, not installed
 # with `go install`: that form refuses to change a module's requirements, so a
 # sops release pinning a vulnerable x/crypto or gRPC would ship as is until
@@ -143,14 +149,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cp -R "/go/pkg/mod/github.com/getsops/sops/v3@${SOPS_VERSION}" /sops-source && \
     chmod -R u+w /sops-source && \
     cd /sops-source && \
-    go mod edit \
-      -require="golang.org/x/crypto@${SOPS_X_CRYPTO_VERSION}" \
-      -require="google.golang.org/grpc@${SOPS_GRPC_VERSION}" \
-      -require="go.opentelemetry.io/otel@${SOPS_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/metric@${SOPS_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/trace@${SOPS_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/sdk@${SOPS_OTEL_VERSION}" \
-      -require="go.opentelemetry.io/otel/sdk/metric@${SOPS_OTEL_VERSION}" && \
+    go-require-at-least \
+      "golang.org/x/crypto@${SOPS_X_CRYPTO_VERSION}" \
+      "google.golang.org/grpc@${SOPS_GRPC_VERSION}" \
+      "go.opentelemetry.io/otel@${SOPS_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/metric@${SOPS_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/trace@${SOPS_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/sdk@${SOPS_OTEL_VERSION}" \
+      "go.opentelemetry.io/otel/sdk/metric@${SOPS_OTEL_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
       -o /go/bin/sops ./cmd/sops && \
@@ -159,7 +165,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cp -R "/go/pkg/mod/filippo.io/age@${AGE_VERSION}" /age-source && \
     chmod -R u+w /age-source && \
     cd /age-source && \
-    go mod edit -require="golang.org/x/crypto@${AGE_X_CRYPTO_VERSION}" && \
+    go-require-at-least "golang.org/x/crypto@${AGE_X_CRYPTO_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
       -o /go/bin/age-keygen ./cmd/age-keygen && \
