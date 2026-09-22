@@ -692,41 +692,75 @@ func TestContractLimitedBuildsRunInTheirOwnBuilder(t *testing.T) {
 
 // --- images that move -------------------------------------------------------------
 
+// newMovingTagStack deploys nothing yet: it points a tag of its own at
+// busybox and writes a service on that tag, which moveTag later re-points.
+func newMovingTagStack(t *testing.T) (*contractStack, string) {
+	t.Helper()
+	pullOnce(t, contractBusybox, contractAlpine)
+	s := newStack(t, nil)
+	tag := "dmc-moving/" + s.name + ":current"
+	s.write("compose.yaml", "services:\n  app:\n    image: "+tag+"\n    pull_policy: never\n    command: [\"sleep\", \"3600\"]\n")
+	s.removeImageLater(tag)
+	s.moveTag(contractBusybox, tag)
+	return s, tag
+}
+
+// moveTag points tag at the image source names and returns that image's ID.
+func (s *contractStack) moveTag(source, tag string) string {
+	s.t.Helper()
+	_, err := s.cli.ImageTag(context.Background(), client.ImageTagOptions{Source: source, Target: tag})
+	require.NoError(s.t, err)
+	return s.imageID(tag)
+}
+
+// replaceThroughDockman moves a container onto what tag now names the way the
+// selective update and the Monitor do: through the Docker API, not Compose.
+func (s *contractStack) replaceThroughDockman(containerID, tag string) containertypes.Summary {
+	s.t.Helper()
+	engine := updater.New(s.cont, "contract", "", updater.NewNoopStore())
+	result, err := engine.ForceUpdateContainer(s.ctx(),
+		func(context.Context, string) error { return nil },
+		new(bytes.Buffer), containerID,
+		updater.ForceUpdateOptions{ImagePrepared: true, ImageReference: tag})
+	require.NoError(s.t, err)
+	require.True(s.t, result.Updated)
+	replaced := s.only("app")
+	require.Equal(s.t, result.NewImage, replaced.ImageID)
+	plan, err := s.svc.ProjectPlan(s.ctx(), s.file)
+	require.NoError(s.t, err)
+	require.Equal(s.t, plan["app"].ConfigHash, replaced.Labels[api.ConfigHashLabel],
+		"a replaced container must still match its manifest")
+	return replaced
+}
+
+// upWith deploys the stack with another Compose binary than Dockman's.
+func (s *contractStack) upWith(binary string) {
+	s.t.Helper()
+	cmd := exec.Command(binary, "--progress=plain", "-f", s.file, "up", "-d", "-y", "--remove-orphans")
+	cmd.Dir = s.root
+	out, err := cmd.CombinedOutput()
+	require.NoError(s.t, err, "%s", out)
+}
+
 // A tag that moves to another image must end up running, whether Compose
 // reconciles it alone or after Dockman replaced the container through the
-// Docker API (the selective update and the Monitor do). What Compose does
-// with the container Dockman replaced is recorded, not asserted.
+// Docker API (the selective update and the Monitor do). A container Dockman
+// replaced carries the image identity Compose records, so the next up leaves
+// it alone: recreating it again would skip the health verification and the
+// rollback of the update that just succeeded.
 func TestContractAMovedTagEndsUpRunning(t *testing.T) {
-	pullOnce(t, contractBusybox, contractAlpine)
 	for _, viaDockman := range []bool{false, true} {
 		t.Run(fmt.Sprintf("dockman-replaced-first=%v", viaDockman), func(t *testing.T) {
-			s := newStack(t, nil)
-			tag := "dmc-moving/" + s.name + ":current"
-			s.write("compose.yaml", "services:\n  app:\n    image: "+tag+"\n    pull_policy: never\n    command: [\"sleep\", \"3600\"]\n")
-			s.removeImageLater(tag)
-			_, err := s.cli.ImageTag(context.Background(), client.ImageTagOptions{Source: contractBusybox, Target: tag})
-			require.NoError(t, err)
+			s, tag := newMovingTagStack(t)
 			s.up(new(bytes.Buffer))
 			before := s.only("app")
+			recorded := before.Labels[api.ImageDigestLabel]
 
-			_, err = s.cli.ImageTag(context.Background(), client.ImageTagOptions{Source: contractAlpine, Target: tag})
-			require.NoError(t, err)
-			moved := s.imageID(tag)
-
+			moved := s.moveTag(contractAlpine, tag)
 			if viaDockman {
-				engine := updater.New(s.cont, "contract", "", updater.NewNoopStore())
-				result, err := engine.ForceUpdateContainer(s.ctx(),
-					func(context.Context, string) error { return nil },
-					new(bytes.Buffer), before.ID,
-					updater.ForceUpdateOptions{ImagePrepared: true, ImageReference: tag})
-				require.NoError(t, err)
-				require.Equal(t, moved, result.NewImage)
-				before = s.only("app")
-				require.Equal(t, moved, before.ImageID)
-				plan, err := s.svc.ProjectPlan(s.ctx(), s.file)
-				require.NoError(t, err)
-				require.Equal(t, plan["app"].ConfigHash, before.Labels[api.ConfigHashLabel],
-					"a replaced container must still match its manifest")
+				before = s.replaceThroughDockman(before.ID, tag)
+				require.NotEqual(t, recorded, before.Labels[api.ImageDigestLabel],
+					"the replacement still identifies the image it replaced")
 			}
 
 			s.up(new(bytes.Buffer))
@@ -735,6 +769,47 @@ func TestContractAMovedTagEndsUpRunning(t *testing.T) {
 			require.Equal(t, moved, after.ImageID)
 			t.Logf("OBSERVE: dockman-replaced-first=%v, the next up recreated the container: %v",
 				viaDockman, before.ID != after.ID)
+			if viaDockman {
+				require.Equal(t, before.ID, after.ID,
+					"the next up recreated the container Dockman replaced: it labelled the image %s, Compose recorded %s",
+					before.Labels[api.ImageDigestLabel], after.Labels[api.ImageDigestLabel])
+			}
 		})
 	}
+}
+
+// Dockman does not assume which Compose deployed a container, or which will
+// deploy it next: a remote host runs its own. It reads how the label on the
+// container was computed and computes the new one the same way. Here the
+// previous Compose deploys, Dockman replaces, and that same Compose must find
+// nothing to do - on the containerd store, Compose before 5.4 records the
+// image ID where later ones record a manifest digest.
+func TestContractAReplacedContainerMatchesTheComposeThatDeployedIt(t *testing.T) {
+	previous := os.Getenv("CONTRACT_PREVIOUS_COMPOSE")
+	if previous == "" {
+		t.Skip("CONTRACT_PREVIOUS_COMPOSE is not set")
+	}
+	version, err := exec.Command(previous, "version", "--short").Output()
+	require.NoError(t, err)
+
+	s, tag := newMovingTagStack(t)
+	s.upWith(previous)
+	deployed := s.only("app")
+	moved := s.moveTag(contractAlpine, tag)
+	replaced := s.replaceThroughDockman(deployed.ID, tag)
+
+	s.upWith(previous)
+	s.running()
+	after := s.only("app")
+	require.Equal(t, moved, after.ImageID)
+	require.Equal(t, replaced.ID, after.ID,
+		"Compose %s recreated the container Dockman replaced: it labelled the image %s, Compose recorded %s",
+		strings.TrimSpace(string(version)), replaced.Labels[api.ImageDigestLabel], after.Labels[api.ImageDigestLabel])
+
+	// What the Compose Dockman ships then does is an upgrade question, see
+	// TestContractStacksDeployedByThePreviousComposeAfterAnUpgrade.
+	s.up(new(bytes.Buffer))
+	s.running()
+	t.Logf("OBSERVE: a container replaced under Compose %s is recreated by the first up of this one: %v",
+		strings.TrimSpace(string(version)), after.ID != s.only("app").ID)
 }

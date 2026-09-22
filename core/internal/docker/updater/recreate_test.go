@@ -48,6 +48,7 @@ type fakeContainer struct {
 	status  container.ContainerState
 	health  *container.Health
 	config  *container.Config
+	image   string // the image ID the daemon reports for the container
 }
 
 func newFakeDockerClient() *fakeDockerClient {
@@ -120,6 +121,7 @@ func (f *fakeDockerClient) ContainerInspect(_ context.Context, containerID strin
 	return client.ContainerInspectResult{Container: container.InspectResponse{
 		ID:     containerID,
 		Name:   "/" + item.name,
+		Image:  item.image,
 		State:  &container.State{Running: item.running, Status: item.status, Health: item.health},
 		Config: item.config,
 	}}, nil

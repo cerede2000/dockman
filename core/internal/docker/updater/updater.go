@@ -686,9 +686,11 @@ func (u *Service) containerCreate(
 	if cfg == nil {
 		cfg = &container.Config{}
 	}
-	// the inspected config still names the old image
+	// the inspected config still names the old image, and its Compose label
+	// still identifies it (see replacementLabels)
 	newCfg := *cfg
 	newCfg.Image = imageTag
+	newCfg.Labels = u.replacementLabels(ctx, imageTag, inspectedData)
 
 	var netConfig *network.NetworkingConfig
 	if inspectedData.NetworkSettings != nil {
