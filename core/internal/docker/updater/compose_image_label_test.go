@@ -9,15 +9,13 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
 )
 
 func manifest(id, arch string, available bool) image.ManifestSummary {
-	return image.ManifestSummary{
-		ID: id, Kind: image.ManifestKindImage, Available: available,
-		ImageData: &image.ImageProperties{Platform: ocispec.Platform{OS: "linux", Architecture: arch}},
-	}
+	data := &image.ImageProperties{}
+	data.Platform.OS, data.Platform.Architecture = "linux", arch
+	return image.ManifestSummary{ID: id, Kind: image.ManifestKindImage, Available: available, ImageData: data}
 }
 
 func attestation(id string) image.ManifestSummary {
