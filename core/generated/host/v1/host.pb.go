@@ -1271,8 +1271,12 @@ type Host struct {
 	DockerSocket       string                 `protobuf:"bytes,5,opt,name=docker_socket,json=dockerSocket,proto3" json:"docker_socket,omitempty"`
 	SshOptions         *SSHConfig             `protobuf:"bytes,6,opt,name=ssh_options,json=sshOptions,proto3" json:"ssh_options,omitempty"`
 	FolderAliasesCount int32                  `protobuf:"varint,7,opt,name=folder_aliases_count,json=folderAliasesCount,proto3" json:"folder_aliases_count,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Caps every image build Dockman runs on this host (Compose stacks with a
+	// build section, Dockerfile builds from Files). 0 means no limit.
+	BuildCpuLimit    float64 `protobuf:"fixed64,9,opt,name=build_cpu_limit,json=buildCpuLimit,proto3" json:"build_cpu_limit,omitempty"`          // CPU cores, e.g. 1.5
+	BuildMemoryLimit int64   `protobuf:"varint,10,opt,name=build_memory_limit,json=buildMemoryLimit,proto3" json:"build_memory_limit,omitempty"` // bytes
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Host) Reset() {
@@ -1361,6 +1365,20 @@ func (x *Host) GetFolderAliasesCount() int32 {
 	return 0
 }
 
+func (x *Host) GetBuildCpuLimit() float64 {
+	if x != nil {
+		return x.BuildCpuLimit
+	}
+	return 0
+}
+
+func (x *Host) GetBuildMemoryLimit() int64 {
+	if x != nil {
+		return x.BuildMemoryLimit
+	}
+	return 0
+}
+
 var File_host_v1_host_proto protoreflect.FileDescriptor
 
 const file_host_v1_host_proto_rawDesc = "" +
@@ -1424,7 +1442,7 @@ const file_host_v1_host_proto_rawDesc = "" +
 	"\x04user\x18\x05 \x01(\tR\x04user\x12\x1a\n" +
 	"\bpassword\x18\x06 \x01(\tR\bpassword\x12*\n" +
 	"\x11remote_public_key\x18\a \x01(\tR\x0fremotePublicKey\x12-\n" +
-	"\x13use_public_key_auth\x18\b \x01(\bR\x10usePublicKeyAuth\"\x93\x02\n" +
+	"\x13use_public_key_auth\x18\b \x01(\bR\x10usePublicKeyAuth\"\xe9\x02\n" +
 	"\x04Host\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\rR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -1434,7 +1452,10 @@ const file_host_v1_host_proto_rawDesc = "" +
 	"\rdocker_socket\x18\x05 \x01(\tR\fdockerSocket\x123\n" +
 	"\vssh_options\x18\x06 \x01(\v2\x12.host.v1.SSHConfigR\n" +
 	"sshOptions\x120\n" +
-	"\x14folder_aliases_count\x18\a \x01(\x05R\x12folderAliasesCount* \n" +
+	"\x14folder_aliases_count\x18\a \x01(\x05R\x12folderAliasesCount\x12&\n" +
+	"\x0fbuild_cpu_limit\x18\t \x01(\x01R\rbuildCpuLimit\x12,\n" +
+	"\x12build_memory_limit\x18\n" +
+	" \x01(\x03R\x10buildMemoryLimit* \n" +
 	"\n" +
 	"ClientType\x12\t\n" +
 	"\x05LOCAL\x10\x00\x12\a\n" +
