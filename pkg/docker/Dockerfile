@@ -1,21 +1,24 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_VERSION=24.18.0
-ARG GO_VERSION=1.26.6
-ARG ALPINE_VERSION=3.24.1
+ARG NODE_VERSION=24.21.0
+ARG GO_VERSION=1.26.8
+ARG ALPINE_VERSION=3.24.2
 ARG COMPOSE_VERSION=v5.3.1
 ARG COMPOSE_X_CRYPTO_VERSION=v0.56.0
 ARG COMPOSE_X_TEXT_VERSION=v0.41.0
 ARG COMPOSE_GRPC_VERSION=v1.83.2
 ARG COMPOSE_GO_ARCHIVE_VERSION=v0.3.3
+ARG COMPOSE_CONTAINERD_VERSION=v2.2.8
+ARG COMPOSE_OTEL_VERSION=v1.46.0
 ARG SOPS_VERSION=v3.13.3
 ARG SOPS_X_CRYPTO_VERSION=v0.56.0
 ARG SOPS_GRPC_VERSION=v1.83.2
-ARG AGE_VERSION=v1.3.1
+ARG SOPS_OTEL_VERSION=v1.46.0
+ARG AGE_VERSION=v1.3.2
 ARG AGE_X_CRYPTO_VERSION=v0.56.0
-ARG NODE_IMAGE_DIGEST=sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
-ARG GO_IMAGE_DIGEST=sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83
-ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+ARG NODE_IMAGE_DIGEST=sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+ARG GO_IMAGE_DIGEST=sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c
+ARG ALPINE_IMAGE_DIGEST=sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 FROM node:${NODE_VERSION}-alpine3.24@${NODE_IMAGE_DIGEST} AS front
 
@@ -86,6 +89,8 @@ ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG COMPOSE_GO_ARCHIVE_VERSION
+ARG COMPOSE_CONTAINERD_VERSION
+ARG COMPOSE_OTEL_VERSION
 
 # Rebuild the upstream Compose release with the patched Go toolchain and
 # explicit compatible security updates. Modules are authenticated by sum.golang.org.
@@ -99,7 +104,18 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -require="golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
       -require="golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
       -require="google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" \
-      -require="github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" && \
+      -require="github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" \
+      -require="github.com/containerd/containerd/v2@${COMPOSE_CONTAINERD_VERSION}" \
+      -require="go.opentelemetry.io/otel@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/metric@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/trace@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/sdk@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/sdk/metric@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/exporters/otlp/otlptrace@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc@${COMPOSE_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp@${COMPOSE_OTEL_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build \
       -trimpath \
@@ -113,6 +129,7 @@ FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS sops_builder
 ARG SOPS_VERSION
 ARG SOPS_X_CRYPTO_VERSION
 ARG SOPS_GRPC_VERSION
+ARG SOPS_OTEL_VERSION
 ARG AGE_VERSION
 ARG AGE_X_CRYPTO_VERSION
 
@@ -128,7 +145,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cd /sops-source && \
     go mod edit \
       -require="golang.org/x/crypto@${SOPS_X_CRYPTO_VERSION}" \
-      -require="google.golang.org/grpc@${SOPS_GRPC_VERSION}" && \
+      -require="google.golang.org/grpc@${SOPS_GRPC_VERSION}" \
+      -require="go.opentelemetry.io/otel@${SOPS_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/metric@${SOPS_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/trace@${SOPS_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/sdk@${SOPS_OTEL_VERSION}" \
+      -require="go.opentelemetry.io/otel/sdk/metric@${SOPS_OTEL_VERSION}" && \
     go mod tidy && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
       -o /go/bin/sops ./cmd/sops && \
@@ -185,9 +207,12 @@ ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_TEXT_VERSION
 ARG COMPOSE_GRPC_VERSION
+ARG COMPOSE_CONTAINERD_VERSION
+ARG COMPOSE_OTEL_VERSION
 ARG SOPS_VERSION
 ARG SOPS_X_CRYPTO_VERSION
 ARG SOPS_GRPC_VERSION
+ARG SOPS_OTEL_VERSION
 ARG AGE_VERSION
 ARG AGE_X_CRYPTO_VERSION
 ARG NODE_IMAGE_DIGEST
@@ -208,9 +233,12 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.compose-x-crypto="${COMPOSE_X_CRYPTO_VERSION}" \
       dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
       dev.dockman.build.compose-grpc="${COMPOSE_GRPC_VERSION}" \
+      dev.dockman.build.compose-containerd="${COMPOSE_CONTAINERD_VERSION}" \
+      dev.dockman.build.compose-otel="${COMPOSE_OTEL_VERSION}" \
       dev.dockman.build.sops="${SOPS_VERSION}" \
       dev.dockman.build.sops-x-crypto="${SOPS_X_CRYPTO_VERSION}" \
       dev.dockman.build.sops-grpc="${SOPS_GRPC_VERSION}" \
+      dev.dockman.build.sops-otel="${SOPS_OTEL_VERSION}" \
       dev.dockman.build.age="${AGE_VERSION}" \
       dev.dockman.build.age-x-crypto="${AGE_X_CRYPTO_VERSION}" \
       dev.dockman.build.node-digest="${NODE_IMAGE_DIGEST}" \
