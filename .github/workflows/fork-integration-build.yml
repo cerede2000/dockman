@@ -182,13 +182,32 @@ jobs:
   # image ships, on a real daemon (core/internal/docker/compose/contract_test.go).
   # The multi-arch tag is only published once it passes.
   contract:
-    name: Compose contract (amd64)
+    name: Compose contract (amd64, ${{ matrix.store }} image store)
     needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Docker 29 installs default to the containerd image store, where
+        # Compose records image digests differently from the classic store.
+        store: [classic, containerd]
     steps:
+      - name: Switch the daemon to the containerd image store
+        if: matrix.store == 'containerd'
+        run: |
+          sudo python3 - <<'PY'
+          import json, os
+          path = "/etc/docker/daemon.json"
+          conf = json.load(open(path)) if os.path.exists(path) else {}
+          conf.setdefault("features", {})["containerd-snapshotter"] = True
+          json.dump(conf, open(path, "w"), indent=2)
+          PY
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}' | tee /dev/stderr | grep -q io.containerd.snapshotter
+
       - name: Checkout target ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -245,7 +264,7 @@ jobs:
             "$IMAGE" -test.run '^TestContract' -test.v -test.timeout 30m 2>&1 | tee "$RUNNER_TEMP/contract.log"
           status=${PIPESTATUS[0]}
           {
-            echo "### Compose contract ($COMPOSE_VERSION)"
+            echo "### Compose contract ($COMPOSE_VERSION, ${{ matrix.store }} image store)"
             grep -E -- '^(--- |ok|FAIL|PASS)' "$RUNNER_TEMP/contract.log" | sed 's/^/    /'
             echo
             grep -h 'OBSERVE:' "$RUNNER_TEMP/contract.log" | sed -E 's/^.*OBSERVE: /- /'

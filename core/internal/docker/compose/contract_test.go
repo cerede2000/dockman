@@ -274,18 +274,28 @@ func composeOlderThan(t *testing.T, major, minor int) bool {
 
 // --- upgrading Compose ---------------------------------------------------------
 
-// Replacing the Compose binary must not recreate what is already running: the
-// first up after an upgrade would otherwise restart every stack it touches.
-// CONTRACT_PREVIOUS_COMPOSE is the binary of the image this one replaces; the
-// stacks are deployed with it, then deployed again through Dockman.
-func TestContractStacksDeployedByThePreviousComposeAreNotRecreated(t *testing.T) {
+// What the first deployment after a Compose upgrade does to stacks the
+// previous Compose deployed. CONTRACT_PREVIOUS_COMPOSE is the binary of the
+// image this one replaces: the stacks are deployed with it, then deployed
+// again through Dockman.
+//
+// Whether Compose recreates them is Compose's decision and is recorded, not
+// asserted: from 5.4 the image label holds the platform manifest digest on
+// the containerd image store, so every container is recreated once there,
+// and an image built by a new Compose carries its version label, so a built
+// service is recreated once on any store. What Dockman needs is asserted:
+// every container runs afterwards and matches its manifest, so the selective
+// update does not see a change that is not there.
+func TestContractStacksDeployedByThePreviousComposeAfterAnUpgrade(t *testing.T) {
 	previous := os.Getenv("CONTRACT_PREVIOUS_COMPOSE")
 	if previous == "" {
 		t.Skip("CONTRACT_PREVIOUS_COMPOSE is not set")
 	}
 	out, err := exec.Command(previous, "version", "--short").Output()
 	require.NoError(t, err)
-	t.Logf("OBSERVE: upgrading from Compose %s", strings.TrimSpace(string(out)))
+	store, err := exec.Command("docker", "info", "--format", "{{json .DriverStatus}}").Output()
+	require.NoError(t, err)
+	t.Logf("OBSERVE: upgrading from Compose %s, image store %s", strings.TrimSpace(string(out)), strings.TrimSpace(string(store)))
 	pullOnce(t, contractBusybox)
 
 	stacks := map[string]map[string]string{
@@ -327,9 +337,17 @@ func TestContractStacksDeployedByThePreviousComposeAreNotRecreated(t *testing.T)
 			require.NotEmpty(t, before)
 
 			s.up(new(bytes.Buffer))
+			plan, err := s.svc.ProjectPlan(s.ctx(), s.file)
+			require.NoError(t, err)
+			recreated := 0
 			for _, c := range s.containers() {
-				require.Equal(t, before[c.Names[0]], c.ID, "%s was recreated by the new Compose", c.Names[0])
+				require.Equal(t, containertypes.StateRunning, c.State, "%s", c.Names[0])
+				require.Equal(t, plan[c.Labels[api.ServiceLabel]].ConfigHash, c.Labels[api.ConfigHashLabel], "%s", c.Names[0])
+				if before[c.Names[0]] != c.ID {
+					recreated++
+				}
 			}
+			t.Logf("OBSERVE: upgrade, stack %q: %d of %d container(s) recreated by the first up", name, recreated, len(before))
 		})
 	}
 }
@@ -559,7 +577,14 @@ func TestContractLifecycle(t *testing.T) {
 	out := new(bytes.Buffer)
 
 	require.NoError(t, s.svc.Stop(s.ctx(), s.file, out), "%s", out)
-	require.NotEqual(t, containertypes.StateRunning, s.only("app").State)
+	stopped := s.only("app")
+	if stopped.State == containertypes.StateRunning {
+		inspected, err := s.cli.ContainerInspect(context.Background(), stopped.ID, client.ContainerInspectOptions{})
+		require.NoError(t, err)
+		st := inspected.Container.State
+		t.Fatalf("still running after stop: started %s, finished %s, restarts %d\nstop output:\n%s",
+			st.StartedAt, st.FinishedAt, inspected.Container.RestartCount, out)
+	}
 
 	require.NoError(t, s.svc.Start(s.ctx(), s.file, out), "%s", out)
 	require.Equal(t, containertypes.StateRunning, s.only("app").State)
