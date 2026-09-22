@@ -178,8 +178,72 @@ jobs:
         env:
           TRIVY_PLATFORM: ${{ matrix.platform }}
 
-  manifest:
+  # Dockman's own Compose calls against the Compose, Buildx and Docker CLI this
+  # image ships, on a real daemon (core/internal/docker/compose/contract_test.go).
+  # The multi-arch tag is only published once it passes.
+  contract:
+    name: Compose contract (amd64)
     needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Build the contract suite
+        working-directory: core
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: go test -c -tags composecontract -o "$RUNNER_TEMP/contract.test" ./internal/docker/compose
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run it inside the image
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-amd64
+        run: |
+          docker pull -q "$IMAGE"
+          COMPOSE_VERSION="$(docker inspect -f '{{index .Config.Labels "dev.dockman.build.compose"}}' "$IMAGE")"
+          # Same path inside and outside: the daemon resolves what Compose
+          # hands it on the host.
+          WORK="$RUNNER_TEMP/contract-work"
+          mkdir -p "$WORK"
+          set +e
+          docker run --rm --entrypoint /contract.test \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/contract.test:/contract.test:ro" \
+            -v "$WORK:$WORK" -w "$WORK" \
+            -e CONTRACT_WORKDIR="$WORK" \
+            -e CONTRACT_COMPOSE_VERSION="$COMPOSE_VERSION" \
+            "$IMAGE" -test.run '^TestContract' -test.v -test.timeout 30m 2>&1 | tee "$RUNNER_TEMP/contract.log"
+          status=${PIPESTATUS[0]}
+          {
+            echo "### Compose contract ($COMPOSE_VERSION)"
+            grep -E -- '^(--- |ok|FAIL|PASS)' "$RUNNER_TEMP/contract.log" | sed 's/^/    /'
+            echo
+            grep -h 'OBSERVE:' "$RUNNER_TEMP/contract.log" | sed -E 's/^.*OBSERVE: /- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  manifest:
+    needs: [prepare, build, contract]
     runs-on: ubuntu-latest
     permissions:
       contents: read
