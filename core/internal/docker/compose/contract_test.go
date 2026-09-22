@@ -245,7 +245,92 @@ func TestContractTheConfigHashMatchesTheLabelOnTheContainer(t *testing.T) {
 	require.Len(t, plan, 4)
 	for _, c := range s.containers() {
 		service := c.Labels[api.ServiceLabel]
-		require.Equal(t, plan[service].ConfigHash, c.Labels[api.ConfigHashLabel], "service %s", service)
+		if plan[service].ConfigHash == c.Labels[api.ConfigHashLabel] {
+			continue
+		}
+		// Before 5.5, `config --hash` hashed env_file services without
+		// merging the file into the environment, which `up` does before
+		// stamping the label (docker/compose "resolve service environment
+		// when computing --hash", 2026-08-11). The selective update then saw
+		// such services as changed forever and always sent them back to
+		// Compose. Recorded for older binaries, required from 5.5 on.
+		if service == "withenvfile" && composeOlderThan(t, 5, 5) {
+			t.Logf("OBSERVE: env_file services never match their label with this Compose: the selective update always hands them to Compose")
+			continue
+		}
+		t.Errorf("service %s: config --hash %s, container label %s", service, plan[service].ConfigHash, c.Labels[api.ConfigHashLabel])
+	}
+}
+
+func composeOlderThan(t *testing.T, major, minor int) bool {
+	t.Helper()
+	out, err := exec.Command("docker-compose", "version", "--short").Output()
+	require.NoError(t, err)
+	var gotMajor, gotMinor int
+	_, err = fmt.Sscanf(strings.TrimPrefix(strings.TrimSpace(string(out)), "v"), "%d.%d", &gotMajor, &gotMinor)
+	require.NoError(t, err)
+	return gotMajor < major || (gotMajor == major && gotMinor < minor)
+}
+
+// --- upgrading Compose ---------------------------------------------------------
+
+// Replacing the Compose binary must not recreate what is already running: the
+// first up after an upgrade would otherwise restart every stack it touches.
+// CONTRACT_PREVIOUS_COMPOSE is the binary of the image this one replaces; the
+// stacks are deployed with it, then deployed again through Dockman.
+func TestContractStacksDeployedByThePreviousComposeAreNotRecreated(t *testing.T) {
+	previous := os.Getenv("CONTRACT_PREVIOUS_COMPOSE")
+	if previous == "" {
+		t.Skip("CONTRACT_PREVIOUS_COMPOSE is not set")
+	}
+	out, err := exec.Command(previous, "version", "--short").Output()
+	require.NoError(t, err)
+	t.Logf("OBSERVE: upgrading from Compose %s", strings.TrimSpace(string(out)))
+	pullOnce(t, contractBusybox)
+
+	stacks := map[string]map[string]string{
+		"plain":        {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    restart: unless-stopped\n"},
+		"envfile":      {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    env_file: [app.env]\n", "app.env": "X=1\n"},
+		"interpolated": {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    environment:\n      V: ${DMC_V}\n", ".env": "DMC_V=1\n"},
+		"replicas":     {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    deploy:\n      replicas: 2\n"},
+		"health": {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) +
+			"    healthcheck:\n      test: [\"CMD\", \"true\"]\n      interval: 1s\n"},
+		"network": {"compose.yaml": "services:\n  a:\n" + sleeper(contractBusybox) + "    networks: [back]\n" +
+			"  b:\n" + sleeper(contractBusybox) + "    networks:\n      back:\n        aliases: [bee]\n    depends_on: [a]\n" +
+			"networks:\n  back: {}\n"},
+		"volume": {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    volumes: [data:/data]\n" +
+			"    tmpfs: [/run]\nvolumes:\n  data: {}\n"},
+		"configs": {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    configs: [conf]\n" +
+			"    labels:\n      dockman.test: \"1\"\n    logging:\n      options: {max-size: 1m}\n" +
+			"configs:\n  conf:\n    content: hello\n"},
+		"build": {"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n",
+			"Dockerfile": "FROM busybox:1.37\nRUN echo upgrade\n"},
+	}
+	for name, files := range stacks {
+		t.Run(name, func(t *testing.T) {
+			s := newStack(t, files)
+			s.removeImageLater(s.name + "-app")
+			envFiles := []string{}
+			if _, ok := files[".env"]; ok {
+				envFiles = append(envFiles, "--env-file="+filepath.Join(s.root, s.name, ".env"))
+			}
+			args := append(envFiles, "--progress=plain", "-f", s.file, "up", "-d", "-y", "--build", "--remove-orphans")
+			cmd := exec.Command(previous, args...)
+			cmd.Dir = s.root
+			deployed, err := cmd.CombinedOutput()
+			require.NoError(t, err, "%s", deployed)
+
+			before := map[string]string{}
+			for _, c := range s.containers() {
+				before[c.Names[0]] = c.ID
+			}
+			require.NotEmpty(t, before)
+
+			s.up(new(bytes.Buffer))
+			for _, c := range s.containers() {
+				require.Equal(t, before[c.Names[0]], c.ID, "%s was recreated by the new Compose", c.Names[0])
+			}
+		})
 	}
 }
 
@@ -421,7 +506,8 @@ func TestContractUpWaitFollowsHealth(t *testing.T) {
 	start := time.Now()
 	err := sick.svc.UpWait(sick.ctx(), sick.file, out)
 	require.Error(t, err, "an unhealthy service must fail the wait:\n%s", out)
-	t.Logf("OBSERVE: unhealthy wait failed after %s: %v", time.Since(start).Round(time.Second), err)
+	lines := strings.Split(strings.TrimSpace(ansi.ReplaceAllString(err.Error(), "")), "\n")
+	t.Logf("OBSERVE: an unhealthy wait failed after %s, last line: %s", time.Since(start).Round(time.Second), lines[len(lines)-1])
 }
 
 func TestContractAnUnchangedStackIsNotRecreated(t *testing.T) {

@@ -225,6 +225,15 @@ jobs:
           # hands it on the host.
           WORK="$RUNNER_TEMP/contract-work"
           mkdir -p "$WORK"
+          # The Compose of the image currently published as `integration`:
+          # stacks it deployed must not be recreated by this one.
+          PREVIOUS=()
+          if docker pull -q "${{ needs.prepare.outputs.image }}:integration" >/dev/null 2>&1; then
+            docker create --name contract-previous "${{ needs.prepare.outputs.image }}:integration" >/dev/null
+            docker cp contract-previous:/usr/local/bin/docker-compose "$RUNNER_TEMP/previous-compose"
+            docker rm contract-previous >/dev/null
+            PREVIOUS=(-v "$RUNNER_TEMP/previous-compose:/previous-compose:ro" -e CONTRACT_PREVIOUS_COMPOSE=/previous-compose)
+          fi
           set +e
           docker run --rm --entrypoint /contract.test \
             -v /var/run/docker.sock:/var/run/docker.sock \
@@ -232,6 +241,7 @@ jobs:
             -v "$WORK:$WORK" -w "$WORK" \
             -e CONTRACT_WORKDIR="$WORK" \
             -e CONTRACT_COMPOSE_VERSION="$COMPOSE_VERSION" \
+            "${PREVIOUS[@]}" \
             "$IMAGE" -test.run '^TestContract' -test.v -test.timeout 30m 2>&1 | tee "$RUNNER_TEMP/contract.log"
           status=${PIPESTATUS[0]}
           {
