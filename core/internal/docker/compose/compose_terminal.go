@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -46,6 +47,24 @@ type Service struct {
 	environment  EnvironmentProvider
 	// caps the builds this host runs; zero value = no limit (see BuildLimits)
 	buildLimits BuildLimits
+	// where Buildx state directories go on the host that runs the builds;
+	// empty means /tmp (see stateBase)
+	tempBase string
+}
+
+// stateBase is the directory Dockman puts Buildx state directories in, on the
+// machine that runs the build.
+//
+// A local host runs them in this container, where /tmp is not writable under
+// a read-only root filesystem: the entrypoint then points TMPDIR at the
+// configuration volume, and os.TempDir follows it. An SSH host runs them on
+// its own machine, which knows nothing of this container's TMPDIR, so /tmp it
+// is - the choice is made once, when the service is built for that host.
+func (c *Service) stateBase() string {
+	if c.tempBase == "" {
+		return "/tmp"
+	}
+	return c.tempBase
 }
 
 func (c *Service) SetEnvironmentProvider(provider EnvironmentProvider) { c.environment = provider }
@@ -58,8 +77,10 @@ func NewComposeTerminal(
 	// TTY bool,
 ) *Service {
 	var runner CmdRunner
+	tempBase := "/tmp"
 	if cli == nil {
 		runner = NewLocalRunner()
+		tempBase = os.TempDir()
 	} else {
 		runner = NewRemoteRunner(cli)
 	}
@@ -70,6 +91,7 @@ func NewComposeTerminal(
 		parser:   getFs,
 		runner:   runner,
 		hostname: hostname,
+		tempBase: tempBase,
 	}
 }
 
@@ -231,7 +253,7 @@ func (c *Service) runBuildingAction(
 		return err
 	}
 	return c.withLimitedBuilder(ctx, fileParts.Fs.Root(), stream, false, func(string) error {
-		return c.runCompose(ctx, filename, stream, progress, true, limitedBuilderEnv(), addCmd, services)
+		return c.runCompose(ctx, filename, stream, progress, true, c.limitedBuilderEnv(), addCmd, services)
 	})
 }
 

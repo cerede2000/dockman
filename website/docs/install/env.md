@@ -132,8 +132,9 @@ These variables are consumed by the image entrypoint, Docker client or Go runtim
 |---|---:|---|
 | `DOCKER_HOST` | local socket | Docker daemon or socket-proxy endpoint, for example `tcp://socketproxy:2375` |
 | `DOCKER_CONFIG` | `$DOCKMAN_CONFIG/docker-cli` | Writable Docker/Buildx CLI state; useful with a read-only rootfs |
-| `PUID` | `1000` | Runtime UID created by the entrypoint; use `0` with a read-only rootfs |
-| `PGID` | `1000` | Runtime GID created by the entrypoint |
+| `PUID` | `1000` | Runtime UID; the entrypoint creates the account when the rootfs is writable and drops to the id directly when it is not |
+| `PGID` | `1000` | Runtime GID; with a read-only rootfs, set it to the Docker socket's group or grant that group with `group_add` |
+| `TMPDIR` | `/tmp`, or `$DOCKMAN_CONFIG/tmp` when `/tmp` is read-only | Where Compose, Buildx and Dockman write temporary files |
 | `TZ` | image/system default | Timezone used for dates and cron interpretation |
 | `GOMEMLIMIT` | cgroup-derived | Explicit Go memory soft limit; when absent Dockman derives a safe value from cgroups |
 

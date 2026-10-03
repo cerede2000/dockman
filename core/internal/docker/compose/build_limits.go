@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,20 +106,25 @@ func (c *Service) SetBuildLimits(limits BuildLimits) { c.buildLimits = limits }
 // the builder's state volume. Its own Buildx state directory keeps it apart
 // from the user's builders and from the one Files builds use without limits.
 const (
-	limitedBuilderName   = "dockman-limited"
-	limitedBuilderConfig = "/tmp/dockman-buildx-limited"
+	limitedBuilderName = "dockman-limited"
 	// the container the docker-container driver creates for node 0
 	limitedBuilderContainer = "buildx_buildkit_" + limitedBuilderName + "0"
 )
 
-func limitedBuildxArgs(args ...string) []string {
-	return append([]string{"env", "BUILDX_CONFIG=" + limitedBuilderConfig, "BUILDX_BUILDER="}, args...)
+// limitedBuilderConfig is the Buildx state directory of the limited builder,
+// under the temporary directory of the host that runs the build.
+func (c *Service) limitedBuilderConfig() string {
+	return filepath.Join(c.stateBase(), "dockman-buildx-limited")
+}
+
+func (c *Service) limitedBuildxArgs(args ...string) []string {
+	return append([]string{"env", "BUILDX_CONFIG=" + c.limitedBuilderConfig(), "BUILDX_BUILDER="}, args...)
 }
 
 // limitedBuilderEnv routes a Compose command's builds to the limited builder:
 // Compose hands builds to `docker buildx bake`, which honours both.
-func limitedBuilderEnv() []string {
-	return []string{"BUILDX_CONFIG=" + limitedBuilderConfig, "BUILDX_BUILDER=" + limitedBuilderName}
+func (c *Service) limitedBuilderEnv() []string {
+	return []string{"BUILDX_CONFIG=" + c.limitedBuilderConfig(), "BUILDX_BUILDER=" + limitedBuilderName}
 }
 
 // One limited builder exists per daemon, under a fixed name, so builds on a
@@ -158,7 +164,7 @@ func (c *Service) withLimitedBuilder(ctx context.Context, wd string, stream io.W
 		args = append(args, "--buildkitd-flags", "--allow-insecure-entitlement network.host")
 	}
 	var output bytes.Buffer
-	if err := c.runner.Run(ctx, limitedBuildxArgs(args...), wd, nil, io.Discard, &output); err != nil {
+	if err := c.runner.Run(ctx, c.limitedBuildxArgs(args...), wd, nil, io.Discard, &output); err != nil {
 		message := strings.TrimSpace(output.String())
 		if message == "" {
 			message = err.Error()
@@ -180,6 +186,6 @@ func (c *Service) withLimitedBuilder(ctx context.Context, wd string, stream io.W
 func (c *Service) removeLimitedBuilder(wd string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_ = c.runner.Run(ctx, limitedBuildxArgs("docker", "buildx", "rm", "--force", "--keep-state", limitedBuilderName), wd, nil, io.Discard, io.Discard)
+	_ = c.runner.Run(ctx, c.limitedBuildxArgs("docker", "buildx", "rm", "--force", "--keep-state", limitedBuilderName), wd, nil, io.Discard, io.Discard)
 	_ = c.runner.Run(ctx, []string{"docker", "rm", "--force", limitedBuilderContainer}, wd, nil, io.Discard, io.Discard)
 }
