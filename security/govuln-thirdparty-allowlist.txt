@@ -1,0 +1,10 @@
+# Reachable advisories accepted in docker-compose, sops or age-keygen as the
+# image rebuilds them (see scripts/check-govuln-thirdparty.sh).
+#
+# Empty on purpose: every reachable finding so far had a fix available on the
+# line the release already selects, so it was closed by raising a floor in
+# pkg/docker/Dockerfile rather than written down here. An entry belongs here
+# only when no fix exists for the version the release can take.
+#
+# An entry that no longer matches a reachable finding is refused, so the list
+# can never quietly outlive the risk it covers.
