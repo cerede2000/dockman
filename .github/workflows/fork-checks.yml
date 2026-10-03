@@ -137,11 +137,14 @@ jobs:
         run: npm ci
 
       - name: Audit dependencies
-        # The Docker image ships only the compiled static frontend. Electron and
-        # electron-builder are desktop build tools, are absent from the runtime
-        # image, and currently retain legacy minimatch/brace-expansion majors
-        # without a compatible upstream upgrade path. Keep the release gate on
-        # every dependency that can actually ship in Dockman.
+        # The Docker image ships only the compiled static frontend. What the full
+        # report still holds is electron-builder's packaging chain: app-builder-lib
+        # asks for @electron/get 3.x, whose got 11 carries cacheable-request and
+        # http-cache-semantics (GHSA-ch52-4w7c-c8xp, no fixed release published).
+        # @electron/get 4 and 5 drop got but are ESM-only, and app-builder-lib is
+        # CommonJS, so no override reaches them. None of it is installed in the
+        # runtime image. Keep the release gate on every dependency that can
+        # actually ship in Dockman.
         run: npm audit --omit=dev --audit-level=low
 
       - name: Lint frontend
