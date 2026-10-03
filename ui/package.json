@@ -80,7 +80,7 @@
     "wait-on": "^9.0.3"
   },
   "overrides": {
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.16",
     "@electron/asar": "4.2.1",
     "@electron/universal": "3.0.6",
     "dir-compare": "5.0.0",
@@ -90,7 +90,7 @@
     "glob": "13.0.2",
     "minimatch": "10.2.5",
     "brace-expansion": "5.0.9",
-    "fast-uri": "3.1.7",
+    "fast-uri": "3.1.8",
     "postcss": "8.5.23",
     "undici": "7.29.0",
     "rimraf": "6.1.3",
