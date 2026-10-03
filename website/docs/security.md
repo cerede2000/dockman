@@ -19,14 +19,19 @@ Dockman controls Docker, reads and writes Compose files, can execute commands in
 
 The integration image supports:
 
-- read-only root filesystem with a writable `/tmp` tmpfs;
+- read-only root filesystem, with no tmpfs required;
 - all Linux capabilities dropped, then only `DAC_OVERRIDE` and optionally `CHOWN` restored;
 - `no-new-privileges`;
 - persistent Docker CLI state under `/config/docker-cli`;
 - disabled self-Exec and Host Shell by default;
 - Docker API access through `DOCKER_HOST` instead of a direct socket mount.
 
-With a read-only rootfs, use `PUID=0`/`PGID=0`; the non-root entrypoint path needs to modify `/etc/passwd` and `/etc/group`. Running as UID 0 inside the container does not remove the need for capabilities: after `cap_drop: ALL`, only explicitly restored capabilities are effective.
+A read-only rootfs runs unprivileged: the entrypoint drops to `PUID`/`PGID` directly instead of creating an account it cannot write, and sends temporary files to `$DOCKMAN_CONFIG/tmp` since `/tmp` is read-only too. Two consequences:
+
+- the container cannot add itself to the Docker socket's group, since that also lives in `/etc/group`. Grant it from the daemon instead - `group_add: ["<gid>"]` in Compose, `--group-add <gid>` with `docker run` - and the entrypoint keeps that grant when it drops privileges; setting `PGID` to that group works too. It prints which group it needs, and whether it was granted. A socket proxy over `DOCKER_HOST` avoids the question entirely;
+- `/config` must be writable by `PUID:PGID`, as the entrypoint can no longer `chown` anything on the rootfs.
+
+Running as UID 0 inside the container does not remove the need for capabilities: after `cap_drop: ALL`, only explicitly restored capabilities are effective.
 
 ## Docker authority
 

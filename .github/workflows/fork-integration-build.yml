@@ -271,8 +271,106 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
+  # The entrypoint, which nothing else exercises: the contract suite replaces
+  # it to run its own binary. A read-only root filesystem is the hardening
+  # switch of NAS appliances, and it used to stop the container at `addgroup`.
+  boot:
+    name: Boot (amd64, ${{ matrix.rootfs }} rootfs)
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # read-only-root is the combination the documentation used to
+        # recommend, and it skips most of the entrypoint.
+        rootfs: [writable, read-only, read-only-root]
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start it and deploy a stack that builds
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-amd64
+          ROOTFS: ${{ matrix.rootfs }}
+        run: |
+          set -euo pipefail
+          docker pull -q "$IMAGE"
+          WORK="$RUNNER_TEMP/boot-$ROOTFS"
+          mkdir -p "$WORK/compose/app" "$WORK/config"
+          cat > "$WORK/compose/app/Dockerfile" <<'DF'
+          FROM busybox:1.37
+          RUN echo DMC-BOOT-BUILD
+          DF
+          printf 'services:\n  app:\n    build: .\n    command: ["sleep", "3600"]\n' > "$WORK/compose/app/compose.yaml"
+          chmod -R a+rwX "$WORK"
+
+          READ_ONLY=()
+          PUID=1000
+          PGID=1000
+          case "$ROOTFS" in
+            read-only) READ_ONLY=(--read-only) ;;
+            read-only-root) READ_ONLY=(--read-only); PUID=0; PGID=0 ;;
+          esac
+          # No tmpfs on purpose: a read-only deployment must work with the
+          # volumes it already has.
+          docker run -d --name "boot-$ROOTFS" "${READ_ONLY[@]}" \
+            -p 8866:8866 -e PUID=$PUID -e PGID=$PGID \
+            --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+            -v "$WORK/compose:/compose" -v "$WORK/config:/config" \
+            -v /var/run/docker.sock:/var/run/docker.sock "$IMAGE" >/dev/null
+
+          API=http://localhost:8866/api/protected
+          for i in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' $API/ping)" = 200 ]; then
+              echo "ready after ${i}s"; break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' "boot-$ROOTFS")" != "true" ]; then
+              echo "the container stopped:"; docker logs "boot-$ROOTFS"; exit 1
+            fi
+            sleep 1
+          done
+          # head closing the pipe would fail the step under pipefail
+          docker logs "boot-$ROOTFS" 2>&1 | head -20 || true
+
+          body='{"filename":"compose/app/compose.yaml"}'
+          { printf '\x00'; printf '%08x' ${#body} | xxd -r -p; printf '%s' "$body"; } > req.bin
+          curl -sS -m 600 -X POST -H 'Content-Type: application/connect+json' \
+            -H 'Connect-Protocol-Version: 1' --data-binary @req.bin -o resp.bin \
+            "$API/local/docker.v1.DockerService/ComposeUp"
+          python3 - <<'PY'
+          import json, re, struct, sys
+          data = open('resp.bin', 'rb').read()
+          index, failed = 0, None
+          while index + 5 <= len(data):
+              flag = data[index]
+              size = struct.unpack('>I', data[index + 1:index + 5])[0]
+              message = json.loads(data[index + 5:index + 5 + size])
+              index += 5 + size
+              if flag & 2:
+                  failed = message.get('error')
+                  continue
+              for line in re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', message.get('message', '')).splitlines():
+                  if re.search(r'DMC-BOOT-BUILD|Built|Started|error|Error', line):
+                      print('  |', line.strip()[:200])
+          if failed:
+              print('deploy failed:', json.dumps(failed)[:500]); sys.exit(1)
+          PY
+          running=$(docker ps -q --filter label=com.docker.compose.project=app | wc -l)
+          echo "containers running: $running"
+          [ "$running" = "1" ]
+          docker logs "boot-$ROOTFS" 2>&1 | grep -E ' ERR | FTL |panic' | head -5 || true
+          docker rm -f "boot-$ROOTFS" >/dev/null
+          docker compose -f "$WORK/compose/app/compose.yaml" -p app down --rmi local >/dev/null 2>&1 || true
+
   manifest:
-    needs: [prepare, build, contract]
+    needs: [prepare, build, contract, boot]
     runs-on: ubuntu-latest
     permissions:
       contents: read

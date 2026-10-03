@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,7 +19,9 @@ const dockmanDockerfilePrefix = "dockman://"
 // be named "default" and start a permanent buildx_buildkit_default helper.
 // With an empty Buildx state directory, Buildx automatically exposes the
 // current Docker context through the daemon-integrated `docker` driver.
-const dockmanNativeBuildxConfig = "/tmp/dockman-buildx-native"
+func (c *Service) nativeBuildxConfig() string {
+	return filepath.Join(c.stateBase(), "dockman-buildx-native")
+}
 
 var dockmanBuildxSequence atomic.Uint64
 
@@ -73,7 +76,7 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag, ne
 				limited = append(limited, "--allow=network.host")
 			}
 			limited = append(limited, args[3:]...)
-			return c.runDockerCLI(ctx, limitedBuildxArgs(limited...), wd, stream)
+			return c.runDockerCLI(ctx, c.limitedBuildxArgs(limited...), wd, stream)
 		}), true)
 	}
 	driver, currentBuilder := c.dockmanBuildxBuilder(ctx, wd)
@@ -105,7 +108,7 @@ func (c *Service) RunDockerfileBuild(ctx context.Context, filename, imageTag, ne
 		// it implicitly from its state directory.
 		args = append(args[:3], append([]string{"--builder", currentBuilder}, args[3:]...)...)
 	}
-	args = dockmanNativeBuildxArgs(args)
+	args = c.nativeBuildxArgs(args)
 	buildErr := c.runDockerCLI(ctx, args, wd, stream)
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -129,7 +132,7 @@ func (c *Service) createDockmanBuildxBuilder(ctx context.Context, wd, builderNam
 		args = append(args, "--buildkitd-flags", "--allow-insecure-entitlement network.host")
 	}
 	var output bytes.Buffer
-	if err := c.runner.Run(ctx, dockmanNativeBuildxArgs(args), wd, nil, io.Discard, &output); err != nil {
+	if err := c.runner.Run(ctx, c.nativeBuildxArgs(args), wd, nil, io.Discard, &output); err != nil {
 		message := strings.TrimSpace(output.String())
 		if message == "" {
 			message = err.Error()
@@ -139,8 +142,8 @@ func (c *Service) createDockmanBuildxBuilder(ctx context.Context, wd, builderNam
 	return nil
 }
 
-func dockmanNativeBuildxArgs(args []string) []string {
-	return append([]string{"env", "BUILDX_CONFIG=" + dockmanNativeBuildxConfig, "BUILDX_BUILDER="}, args...)
+func (c *Service) nativeBuildxArgs(args []string) []string {
+	return append([]string{"env", "BUILDX_CONFIG=" + c.nativeBuildxConfig(), "BUILDX_BUILDER="}, args...)
 }
 
 // dockmanBuildxBuilder reports the builder selected from Dockman's isolated
@@ -154,7 +157,7 @@ func dockmanNativeBuildxArgs(args []string) []string {
 // pre-created by another local user to point the implicit builder elsewhere.
 func (c *Service) dockmanBuildxBuilder(ctx context.Context, wd string) (string, string) {
 	var output bytes.Buffer
-	args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"})
+	args := c.nativeBuildxArgs([]string{"docker", "buildx", "ls", "--format", "{{.Name}}|{{.DriverEndpoint}}"})
 	if err := c.runner.Run(ctx, args, wd, nil, &output, io.Discard); err != nil {
 		return "unknown", ""
 	}
@@ -186,7 +189,7 @@ func (c *Service) cleanupDockmanBuildxHelper(ctx context.Context, wd, builderNam
 		return nil
 	}
 	var output bytes.Buffer
-	args := dockmanNativeBuildxArgs([]string{"docker", "buildx", "rm", "--force", builderName})
+	args := c.nativeBuildxArgs([]string{"docker", "buildx", "rm", "--force", builderName})
 	if err := c.runner.Run(ctx, args, wd, nil, nil, &output); err != nil {
 		return fmt.Errorf("remove isolated builder %s: %s", builderName, strings.TrimSpace(output.String()))
 	}

@@ -118,11 +118,12 @@ var oneAndAHalfCPUsTwoGiB = BuildLimits{CPUs: 1.5, MemoryBytes: 2 << 30}
 // put on the builder: its container runs every RUN step.
 func TestALimitedHostBuildsThroughABuilderCreatedWithItsLimits(t *testing.T) {
 	runner := &limitsRunner{model: buildableModel}
-	require.NoError(t, limitsService(t, runner, oneAndAHalfCPUsTwoGiB).Up(context.Background(), "app/compose.yaml", io.Discard))
+	service := limitsService(t, runner, oneAndAHalfCPUsTwoGiB)
+	require.NoError(t, service.Up(context.Background(), "app/compose.yaml", io.Discard))
 
 	create, createAt, ok := runner.find("buildx", "create", "--name", limitedBuilderName)
 	require.True(t, ok, "no builder was created: %v", runner.joined())
-	require.Equal(t, []string{"env", "BUILDX_CONFIG=" + limitedBuilderConfig, "BUILDX_BUILDER="}, create.cmd[:3],
+	require.Equal(t, []string{"env", "BUILDX_CONFIG=" + service.limitedBuilderConfig(), "BUILDX_BUILDER="}, create.cmd[:3],
 		"the builder lives in Dockman's own Buildx state, not the user's")
 	line := strings.Join(create.cmd, " ")
 	require.Contains(t, line, "--driver docker-container")
@@ -133,7 +134,7 @@ func TestALimitedHostBuildsThroughABuilderCreatedWithItsLimits(t *testing.T) {
 	up, upAt, ok := runner.find("up", "--build")
 	require.True(t, ok)
 	require.Contains(t, up.env, "BUILDX_BUILDER="+limitedBuilderName, "Compose's bake must pick the limited builder")
-	require.Contains(t, up.env, "BUILDX_CONFIG="+limitedBuilderConfig)
+	require.Contains(t, up.env, "BUILDX_CONFIG="+service.limitedBuilderConfig())
 	require.Less(t, createAt, upAt, "the builder exists before Compose builds")
 }
 
@@ -307,11 +308,12 @@ func filesBuildService(t *testing.T, runner *limitsRunner, limits BuildLimits) *
 // Dockerfile builds from Files are capped the same way.
 func TestAFilesBuildOnALimitedHostUsesTheLimitedBuilder(t *testing.T) {
 	runner := &limitsRunner{}
-	require.NoError(t, filesBuildService(t, runner, oneAndAHalfCPUsTwoGiB).RunDockerfileBuild(context.Background(), "app/Dockerfile", "demo:limited", "default", io.Discard))
+	service := filesBuildService(t, runner, oneAndAHalfCPUsTwoGiB)
+	require.NoError(t, service.RunDockerfileBuild(context.Background(), "app/Dockerfile", "demo:limited", "default", io.Discard))
 
 	build, buildAt, ok := runner.find("buildx", "build", "--tag", "demo:limited")
 	require.True(t, ok, "%v", runner.joined())
-	require.Equal(t, []string{"env", "BUILDX_CONFIG=" + limitedBuilderConfig, "BUILDX_BUILDER="}, build.cmd[:3])
+	require.Equal(t, []string{"env", "BUILDX_CONFIG=" + service.limitedBuilderConfig(), "BUILDX_BUILDER="}, build.cmd[:3])
 	require.Contains(t, strings.Join(build.cmd, " "), "--builder "+limitedBuilderName)
 	require.Contains(t, build.cmd, "--load", "the image must land in the daemon")
 	require.Greater(t, runner.lastIndex("buildx", "rm", "--keep-state", limitedBuilderName), buildAt)
@@ -335,12 +337,13 @@ func TestALimitedFilesBuildKeepsHostNetworking(t *testing.T) {
 // Without limits, a Files build takes the path it always took.
 func TestAnUnlimitedFilesBuildIsUnchanged(t *testing.T) {
 	runner := &limitsRunner{}
-	require.NoError(t, filesBuildService(t, runner, BuildLimits{}).RunDockerfileBuild(context.Background(), "app/Dockerfile", "demo:plain", "default", io.Discard))
+	service := filesBuildService(t, runner, BuildLimits{})
+	require.NoError(t, service.RunDockerfileBuild(context.Background(), "app/Dockerfile", "demo:plain", "default", io.Discard))
 
 	_, _, created := runner.find("buildx", "create", "--name", limitedBuilderName)
 	require.False(t, created)
 	build, _, _ := runner.find("buildx", "build", "--tag", "demo:plain")
-	require.Equal(t, "BUILDX_CONFIG="+dockmanNativeBuildxConfig, build.cmd[1])
+	require.Equal(t, "BUILDX_CONFIG="+service.nativeBuildxConfig(), build.cmd[1])
 }
 
 // Measured behind LinuxServer's socket-proxy: the limited builder does not use

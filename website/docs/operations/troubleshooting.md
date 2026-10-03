@@ -16,6 +16,17 @@ done
 
 Short CPU spikes during scans, stats collection, Git operations or garbage collection are expected. Persistent idle usage is not; correlate timestamps with scheduled Git/image jobs and socket-proxy traffic.
 
+## `addgroup: /etc/group: Read-only file system` at startup
+
+The container stopped before Dockman started, on an image older than this fix. The entrypoint created an account to drop privileges, and a read-only root filesystem - the hardening switch of NAS appliances, `read_only: true` in Compose - cannot take one.
+
+Update the image. The entrypoint now drops to `PUID:PGID` directly there, and puts temporary files in `$DOCKMAN_CONFIG/tmp` since `/tmp` is read-only too. Two things to check in that mode:
+
+- the Docker socket group cannot be joined from inside, so grant it from the daemon with `group_add: ["<gid>"]` (Compose) or `--group-add <gid>` (`docker run`), or set `PGID` to it. The startup log names the group and says whether it was granted;
+- `/config` and the compose root must already be writable by `PUID:PGID`, since nothing can be `chown`ed on the rootfs.
+
+Without updating, `PUID=0`/`PGID=0` still starts.
+
 ## Buildx host entitlement denied
 
 Update to an image containing the job-scoped builder fix. A valid host build log must show a `dockman-*` builder, daemon entitlement and build entitlement. The reserved context builder `default` must not be removed.
