@@ -336,7 +336,8 @@ jobs:
             fi
             sleep 1
           done
-          docker logs "boot-$ROOTFS" 2>&1 | head -20
+          # head closing the pipe would fail the step under pipefail
+          docker logs "boot-$ROOTFS" 2>&1 | head -20 || true
 
           body='{"filename":"compose/app/compose.yaml"}'
           { printf '\x00'; printf '%08x' ${#body} | xxd -r -p; printf '%s' "$body"; } > req.bin
