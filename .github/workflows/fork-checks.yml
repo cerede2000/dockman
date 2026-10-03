@@ -114,6 +114,17 @@ jobs:
         working-directory: .
         run: bash scripts/check-govuln.sh
 
+      # The step above covers the binaries built from this module. The image
+      # also ships docker-compose, sops and age-keygen, rebuilt from their
+      # release sources with security floors held in the Dockerfile, and
+      # go-require-at-least only refuses a floor that lowers a version or has
+      # outlived its dependency - never one that has become too low. This
+      # reproduces those three builds from the Dockerfile's own ARG values and
+      # scans them, which is how GO-2026-6597 was found in Compose.
+      - name: Check reachable Go vulnerabilities in rebuilt third-party binaries
+        working-directory: .
+        run: bash scripts/check-govuln-thirdparty.sh
+
   frontend:
     name: Frontend audit / build
     runs-on: ubuntu-latest
