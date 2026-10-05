@@ -16,6 +16,23 @@ const LocalClient = "local"
 
 type Service struct {
 	Client *client.Client
+	// registryAuth answers with the credential document the Docker API
+	// expects for an image, or "" when nothing is stored for its registry -
+	// in which case the pull stays exactly as anonymous as it always was.
+	registryAuth func(image string) string
+}
+
+// SetRegistryAuth wires the private-registry credentials into the pulls
+// Dockman performs itself, the ones a verified container replacement runs.
+func (s *Service) SetRegistryAuth(resolver func(image string) string) {
+	s.registryAuth = resolver
+}
+
+func (s *Service) registryAuthFor(image string) string {
+	if s.registryAuth == nil {
+		return ""
+	}
+	return s.registryAuth(image)
 }
 
 func New(client *client.Client) *Service {

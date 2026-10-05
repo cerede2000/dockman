@@ -369,8 +369,123 @@ jobs:
           docker rm -f "boot-$ROOTFS" >/dev/null
           docker compose -f "$WORK/compose/app/compose.yaml" -p app down --rmi local >/dev/null 2>&1 || true
 
+  # A real private registry, pulled through Dockman's own API: the credential
+  # has to reach the Compose command line, which is the path a deployment
+  # takes. The unit tests cover the registry challenges; this one covers the
+  # wiring, which is where a credential silently fails to be used.
+  registry:
+    name: Private registry (amd64)
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy from a registry that requires a login
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-amd64
+        run: |
+          set -euo pipefail
+          docker pull -q "$IMAGE"
+
+          # A registry:2 behind htpasswd. The daemon treats 127.0.0.1 as
+          # insecure, so no certificate is needed for the pull itself.
+          htpasswd=$(docker run --rm httpd:2.4-alpine htpasswd -Bbn robot t0ken)
+          mkdir -p "$RUNNER_TEMP/registry-auth"
+          printf '%s\n' "$htpasswd" > "$RUNNER_TEMP/registry-auth/htpasswd"
+          docker run -d --name private-registry -p 127.0.0.1:5000:5000 \
+            -v "$RUNNER_TEMP/registry-auth:/auth" \
+            -e REGISTRY_AUTH=htpasswd -e REGISTRY_AUTH_HTPASSWD_REALM=private \
+            -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd registry:2 >/dev/null
+          for i in $(seq 1 30); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/v2/)" = "401" ] && break
+            sleep 1
+          done
+
+          # Push an image only that registry has.
+          docker pull -q busybox:1.37
+          docker tag busybox:1.37 127.0.0.1:5000/private/app:1
+          echo t0ken | docker login 127.0.0.1:5000 --username robot --password-stdin
+          docker push -q 127.0.0.1:5000/private/app:1
+          # Dockman must authenticate on its own, not inherit this one.
+          docker logout 127.0.0.1:5000
+          docker rmi -f 127.0.0.1:5000/private/app:1 busybox:1.37 >/dev/null
+
+          WORK="$RUNNER_TEMP/registry-work"
+          mkdir -p "$WORK/compose/app" "$WORK/config"
+          printf 'services:\n  app:\n    image: 127.0.0.1:5000/private/app:1\n    command: ["sleep", "3600"]\n' > "$WORK/compose/app/compose.yaml"
+          chmod -R a+rwX "$WORK"
+          docker run -d --name dockman-registry --network host -e PUID=1000 -e PGID=1000 \
+            --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+            -v "$WORK/compose:/compose" -v "$WORK/config:/config" \
+            -v /var/run/docker.sock:/var/run/docker.sock "$IMAGE" >/dev/null
+          API=http://localhost:8866/api/protected
+          for i in $(seq 1 60); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' $API/ping)" = "200" ] && break
+            sleep 1
+          done
+
+          deploy() {
+            body='{"filename":"compose/app/compose.yaml"}'
+            { printf '\x00'; printf '%08x' ${#body} | xxd -r -p; printf '%s' "$body"; } > req.bin
+            curl -sS -m 300 -X POST -H 'Content-Type: application/connect+json' \
+              -H 'Connect-Protocol-Version: 1' --data-binary @req.bin -o resp.bin \
+              "$API/local/docker.v1.DockerService/ComposeUp"
+            python3 - "$1" <<'PY'
+          import json, re, struct, sys
+          data = open('resp.bin', 'rb').read()
+          index, failed, lines = 0, None, []
+          while index + 5 <= len(data):
+              flag = data[index]
+              size = struct.unpack('>I', data[index + 1:index + 5])[0]
+              message = json.loads(data[index + 5:index + 5 + size])
+              index += 5 + size
+              if flag & 2:
+                  failed = message.get('error')
+                  continue
+              lines += re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', message.get('message', '')).splitlines()
+          wanted = sys.argv[1]
+          print('\n'.join('  | ' + line.strip()[:160] for line in lines if line.strip()))
+          if wanted == 'fail' and not failed:
+              print('the deployment succeeded without a credential'); sys.exit(1)
+          if wanted == 'succeed' and failed:
+              print('deployment failed:', json.dumps(failed)[:400]); sys.exit(1)
+          PY
+          }
+
+          echo "=== without a credential, the deployment must fail"
+          deploy fail
+          echo "=== the credential is added through the API"
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            -d '{"registry":"127.0.0.1:5000","username":"robot","secret":"t0ken"}' \
+            "$API/registries/credentials" | head -c 300; echo
+          echo "--- the Docker configuration Dockman owns now carries it"
+          docker exec dockman-registry sh -c 'cat /config/docker-cli/config.json' | head -20
+          echo "=== with the credential, the same deployment must succeed"
+          deploy succeed
+          running=$(docker ps -q --filter label=com.docker.compose.project=app | wc -l)
+          echo "containers running: $running"
+          [ "$running" = "1" ]
+
+          echo "=== removing the credential takes it out of the configuration"
+          uuid=$(curl -sS "$API/registries/credentials" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["uuid"])')
+          curl -sS -X DELETE "$API/registries/credentials/$uuid" >/dev/null
+          docker exec dockman-registry sh -c 'cat /config/docker-cli/config.json' | grep -q '127.0.0.1:5000' && {
+            echo "the deleted credential is still in the Docker configuration"; exit 1; }
+          echo "removed"
+
+          docker rm -f dockman-registry private-registry >/dev/null
+          docker ps -aq --filter label=com.docker.compose.project=app | xargs -r docker rm -f >/dev/null
+
   manifest:
-    needs: [prepare, build, contract, boot]
+    needs: [prepare, build, contract, boot, registry]
     runs-on: ubuntu-latest
     permissions:
       contents: read

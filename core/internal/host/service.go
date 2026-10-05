@@ -34,6 +34,7 @@ type Service struct {
 	buildLimits syncmap.Map[uint, compose.BuildLimits]
 	aliasStore    AliasStore
 	composeEnv    compose.EnvironmentProvider
+	registryAuth  func(image string) string
 	renameHost    HostRenameHook
 	onConnected   HostConnectionHook
 	onDisconnect  HostConnectionHook
@@ -82,6 +83,13 @@ func (s *Service) ConfigureHostRename(hook HostRenameHook) { s.renameHost = hook
 // short-lived Docker service created for local or SSH hosts.
 func (s *Service) ConfigureComposeEnvironment(provider compose.EnvironmentProvider) {
 	s.composeEnv = provider
+}
+
+// ConfigureRegistryAuth wires the private-registry credentials into every
+// short-lived Docker service, so a pull Dockman performs through the Docker
+// API authenticates like the Compose command line does.
+func (s *Service) ConfigureRegistryAuth(resolver func(image string) string) {
+	s.registryAuth = resolver
 }
 
 func NewService(
@@ -223,6 +231,7 @@ func (s *Service) GetDockerService(name string) (*docker.Service, error) {
 		},
 	)
 	service.Compose.SetEnvironmentProvider(s.composeEnv)
+	service.Container.SetRegistryAuth(s.registryAuth)
 	if limits, ok := s.buildLimits.Load(val.HostId); ok {
 		service.Compose.SetBuildLimits(limits)
 	}
