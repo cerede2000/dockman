@@ -131,9 +131,14 @@ jobs:
             ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
             ${{ needs.prepare.outputs.history_tag != '' && format('{0}:{1}-{2}', needs.prepare.outputs.image, needs.prepare.outputs.history_tag, matrix.arch) || '' }}
           cache-to: type=gha,mode=max,scope=${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          # A branch builds from its own cache when it has one, and from the
+          # integration cache the first time: without that fallback every
+          # branch rebuilt the UI and the Go binary from scratch.
           cache-from: |
             type=gha,scope=${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+            type=gha,scope=integration-${{ matrix.arch }}
             type=registry,ref=${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+            type=registry,ref=${{ needs.prepare.outputs.image }}:integration-${{ matrix.arch }}
           build-args: |
             VERSION=${{ needs.prepare.outputs.tag }}
             COMMIT_INFO=${{ steps.source.outputs.commit }}
