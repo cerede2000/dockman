@@ -225,8 +225,12 @@ func pullOnce(t *testing.T, refs ...string) {
 	}
 }
 
+// sleeper is the service most stacks here are made of. The grace period is
+// what keeps the suite short: `sleep` ignores SIGTERM, so Compose waits its
+// full default timeout before killing it, and every teardown cost ten
+// seconds - most of the suite's runtime, spent waiting for busybox to die.
 func sleeper(image string) string {
-	return fmt.Sprintf("    image: %s\n    command: [\"sleep\", \"3600\"]\n", image)
+	return fmt.Sprintf("    image: %s\n    command: [\"sleep\", \"3600\"]\n    stop_grace_period: 1s\n", image)
 }
 
 // --- the binary --------------------------------------------------------------
@@ -343,7 +347,7 @@ func TestContractStacksDeployedByThePreviousComposeAfterAnUpgrade(t *testing.T) 
 		"configs": {"compose.yaml": "services:\n  app:\n" + sleeper(contractBusybox) + "    configs: [conf]\n" +
 			"    labels:\n      dockman.test: \"1\"\n    logging:\n      options: {max-size: 1m}\n" +
 			"configs:\n  conf:\n    content: hello\n"},
-		"build": {"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n",
+		"build": {"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n    stop_grace_period: 1s\n",
 			"Dockerfile": "FROM busybox:1.37\nRUN echo upgrade\n"},
 	}
 	for name, files := range stacks {
@@ -516,7 +520,7 @@ func TestContractValidateReportsBrokenFiles(t *testing.T) {
 // progress), and one that does not must deploy under the tty display.
 func TestContractAStackWithABuildSectionBuildsWithoutAConsole(t *testing.T) {
 	s := newStack(t, map[string]string{
-		"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n",
+		"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n    stop_grace_period: 1s\n",
 		"Dockerfile":   "FROM busybox:1.37\nRUN echo DMC-BUILD-STEP\n",
 	})
 	s.removeImageLater(s.name + "-app")
@@ -571,7 +575,7 @@ func TestContractAnUnchangedStackIsNotRecreated(t *testing.T) {
 	require.Equal(t, first, s.only("app").ID)
 
 	built := newStack(t, map[string]string{
-		"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n",
+		"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n    stop_grace_period: 1s\n",
 		"Dockerfile":   "FROM busybox:1.37\nRUN echo same\n",
 	})
 	built.removeImageLater(built.name + "-app")
@@ -681,7 +685,7 @@ func TestContractInlineEnvironmentReachesInterpolation(t *testing.T) {
 // hands both to bake. The builder must be gone afterwards.
 func TestContractLimitedBuildsRunInTheirOwnBuilder(t *testing.T) {
 	s := newStack(t, map[string]string{
-		"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n",
+		"compose.yaml": "services:\n  app:\n    build: .\n    command: [\"sleep\", \"3600\"]\n    stop_grace_period: 1s\n",
 		"Dockerfile":   "FROM busybox:1.37\nRUN echo DMC-LIMITED-STEP\n",
 	})
 	s.removeImageLater(s.name + "-app")
@@ -709,7 +713,7 @@ func newMovingTagStack(t *testing.T) (*contractStack, string) {
 	pullOnce(t, contractBusybox, contractAlpine)
 	s := newStack(t, nil)
 	tag := "dmc-moving/" + s.name + ":current"
-	s.write("compose.yaml", "services:\n  app:\n    image: "+tag+"\n    pull_policy: never\n    command: [\"sleep\", \"3600\"]\n")
+	s.write("compose.yaml", "services:\n  app:\n    image: "+tag+"\n    pull_policy: never\n    command: [\"sleep\", \"3600\"]\n    stop_grace_period: 1s\n")
 	s.removeImageLater(tag)
 	s.moveTag(contractBusybox, tag)
 	return s, tag

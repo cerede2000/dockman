@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,10 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	registrycreds "github.com/RA341/dockman/internal/registry"
 )
 
 const registryManifestAccept = "application/vnd.docker.distribution.manifest.list.v2+json, " +
@@ -26,10 +30,80 @@ type registryImageReference struct {
 	tag      string
 }
 
+// SetRegistryCredentials wires the stored private-registry logins into the
+// registry queries. It is set once at startup; without it, and for a registry
+// nothing is stored for, every request stays anonymous and public
+// repositories behave exactly as before.
+func SetRegistryCredentials(lookup func(host string) (username, secret string, ok bool)) {
+	credentialMu.Lock()
+	defer credentialMu.Unlock()
+	registryCredentialLookup = lookup
+}
+
+var (
+	credentialMu             sync.RWMutex
+	registryCredentialLookup func(host string) (string, string, bool)
+)
+
+type registryLogin struct {
+	username string
+	secret   string
+	ok       bool
+}
+
+func lookupRegistryLogin(host string) registryLogin {
+	credentialMu.RLock()
+	lookup := registryCredentialLookup
+	credentialMu.RUnlock()
+	if lookup == nil {
+		return registryLogin{}
+	}
+	username, secret, ok := lookup(host)
+	return registryLogin{username: username, secret: secret, ok: ok}
+}
+
+func (l registryLogin) basic() string {
+	return base64.StdEncoding.EncodeToString([]byte(l.username + ":" + l.secret))
+}
+
+// authorizeRegistry answers a registry challenge: Basic with the stored
+// login, Bearer with a token obtained anonymously or with that login, which
+// is what `docker login` does.
+func authorizeRegistry(ctx context.Context, httpClient *http.Client, challenge, repo, host string) (string, error) {
+	login := lookupRegistryLogin(host)
+	scheme := strings.ToLower(strings.TrimSpace(challenge))
+	switch {
+	case strings.HasPrefix(scheme, "basic"):
+		if !login.ok {
+			return "", missingCredentialError(host)
+		}
+		return "Basic " + login.basic(), nil
+	case strings.HasPrefix(scheme, "bearer"):
+		token, err := bearerToken(ctx, httpClient, challenge, repo, login)
+		if err != nil {
+			return "", err
+		}
+		return "Bearer " + token, nil
+	default:
+		return "", fmt.Errorf("registry asked for an authentication scheme Dockman does not support (%q)", challenge)
+	}
+}
+
+func missingCredentialError(host string) error {
+	return fmt.Errorf("registry authentication required for %s; add a credential in Settings > Registries", host)
+}
+
+func rejectedCredentialError(host string, login registryLogin) error {
+	if login.ok {
+		return fmt.Errorf("%s rejected the stored credentials; check them in Settings > Registries", host)
+	}
+	return missingCredentialError(host)
+}
+
 // RegistryManifestDigest asks the registry directly. It deliberately does
 // not use Docker's /distribution endpoint, so a read-only socket proxy needs
-// no additional permission. This lot supports public repositories only;
-// Bearer tokens are requested anonymously and credentials are never read.
+// no additional permission. Private repositories use the credential stored
+// for their registry; without one the request stays anonymous.
 func RegistryManifestDigest(ctx context.Context, image string) (string, error) {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
@@ -68,16 +142,16 @@ func registryManifestDigestWithClient(ctx context.Context, image string, httpCli
 		return "", registryStatusError(status)
 	}
 
-	token, err := anonymousBearerToken(ctx, httpClient, challenge, ref.repo)
+	authorization, err := authorizeRegistry(ctx, httpClient, challenge, ref.repo, ref.registry)
 	if err != nil {
 		return "", err
 	}
-	digest, _, status, err = requestManifestDigest(ctx, httpClient, manifestURL.String(), "Bearer "+token)
+	digest, _, status, err = requestManifestDigest(ctx, httpClient, manifestURL.String(), authorization)
 	if err != nil {
 		return "", err
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return "", errors.New("registry authentication required; private registry credentials are not configured")
+		return "", rejectedCredentialError(ref.registry, lookupRegistryLogin(ref.registry))
 	}
 	if status != http.StatusOK {
 		return "", registryStatusError(status)
@@ -108,9 +182,12 @@ func requestManifestDigest(ctx context.Context, httpClient *http.Client, endpoin
 	return digest, resp.Header.Get("WWW-Authenticate"), resp.StatusCode, nil
 }
 
-func anonymousBearerToken(ctx context.Context, httpClient *http.Client, challenge, repo string) (string, error) {
+// bearerToken performs the token exchange. With a stored login it presents
+// it as Basic authentication to the token endpoint; without, the request is
+// anonymous, which is all a public repository needs.
+func bearerToken(ctx context.Context, httpClient *http.Client, challenge, repo string, login registryLogin) (string, error) {
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(challenge)), "bearer ") {
-		return "", errors.New("registry authentication required; only anonymous Bearer authentication is supported")
+		return "", errors.New("registry authentication required; only Basic and Bearer authentication are supported")
 	}
 	params := make(map[string]string)
 	for _, match := range bearerParameter.FindAllStringSubmatch(challenge, -1) {
@@ -136,13 +213,16 @@ func anonymousBearerToken(ctx context.Context, httpClient *http.Client, challeng
 		return "", err
 	}
 	req.Header.Set("User-Agent", "Dockman/1.0")
+	if login.ok {
+		req.Header.Set("Authorization", "Basic "+login.basic())
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", errors.New("registry authentication required; private registry credentials are not configured")
+		return "", rejectedCredentialError(realm.Host, login)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("registry token request returned HTTP %d", resp.StatusCode)
@@ -163,37 +243,16 @@ func anonymousBearerToken(ctx context.Context, httpClient *http.Client, challeng
 	return payload.Token, nil
 }
 
+// parseRegistryImageReference splits a reference the way a registry request
+// needs it. The rules live in the registry package, with the credential
+// lookup that has to agree with them: a login stored for a host must be found
+// for every image reference that resolves to that host.
 func parseRegistryImageReference(image string) (registryImageReference, error) {
-	image = strings.TrimSpace(image)
-	if image == "" || strings.Contains(image, "://") || strings.Contains(image, "@") {
-		return registryImageReference{}, fmt.Errorf("unsupported image reference %q", image)
+	ref, err := registrycreds.ParseImage(image)
+	if err != nil {
+		return registryImageReference{}, err
 	}
-	registry := "registry-1.docker.io"
-	remainder := image
-	if slash := strings.IndexByte(image, '/'); slash >= 0 {
-		first := image[:slash]
-		if strings.Contains(first, ".") || strings.Contains(first, ":") || first == "localhost" {
-			registry = first
-			remainder = image[slash+1:]
-		}
-	}
-	if registry == "docker.io" || registry == "index.docker.io" {
-		registry = "registry-1.docker.io"
-	}
-	lastSlash := strings.LastIndexByte(remainder, '/')
-	lastColon := strings.LastIndexByte(remainder, ':')
-	tag := "latest"
-	if lastColon > lastSlash {
-		tag = remainder[lastColon+1:]
-		remainder = remainder[:lastColon]
-	}
-	if registry == "registry-1.docker.io" && !strings.Contains(remainder, "/") {
-		remainder = "library/" + remainder
-	}
-	if registry == "" || remainder == "" || tag == "" {
-		return registryImageReference{}, fmt.Errorf("invalid image reference %q", image)
-	}
-	return registryImageReference{registry: registry, repo: remainder, tag: tag}, nil
+	return registryImageReference{registry: ref.Registry, repo: ref.Repo, tag: ref.Tag}, nil
 }
 
 func escapeRepositoryPath(repo string) string {
@@ -211,7 +270,7 @@ func registryStatusError(status int) error {
 	case http.StatusTooManyRequests:
 		return errors.New("public registry rate limit reached")
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return errors.New("registry authentication required; private registry credentials are not configured")
+		return errors.New("registry authentication required; add a credential in Settings > Registries")
 	default:
 		return fmt.Errorf("registry manifest request returned HTTP %d", status)
 	}

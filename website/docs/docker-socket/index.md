@@ -110,7 +110,7 @@ Builder removal also uses Docker write APIs. The build log reports cleanup failu
 
 ### Update check reports a private image error
 
-Current registry checks support public authentication challenges but do not store private-registry credentials yet. This is independent of Docker API proxy permissions.
+Add the registry login in **Settings → Registries**: the error names the host it needs one for. This is independent of Docker API proxy permissions.
 
 ## Security boundary
 

@@ -6,6 +6,7 @@ import TabDockman from "./tab-dockman.tsx";
 import TabGit from "./tab-git.tsx";
 import TabViews from './tab-views.tsx';
 import TabSecrets from './tab-secrets.tsx';
+import TabRegistries from './tab-registries.tsx';
 import TabRescue from './tab-rescue.tsx';
 
 interface TabConfig {
@@ -31,6 +32,10 @@ const tabConfigurations: TabConfig[] = [
         component: <TabSecrets/>
     },
     {
+        label: "Registries",
+        component: <TabRegistries/>
+    },
+    {
         label: "Rescue kit",
         component: <TabRescue/>
     },
@@ -39,6 +44,10 @@ const tabConfigurations: TabConfig[] = [
         component: <TabViews/>
     },
 ];
+
+// The labels in order, so a test can open a tab by name rather than by the
+// index it happens to have today.
+export const settingsTabLabels = tabConfigurations.map(tab => tab.label);
 
 interface TabPanelProps {
     children?: React.ReactNode;

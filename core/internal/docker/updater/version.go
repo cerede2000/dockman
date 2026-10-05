@@ -189,13 +189,16 @@ func registryTagsWithClient(ctx context.Context, ref registryImageReference, cli
 			return nil, err
 		}
 		if status == http.StatusUnauthorized && authorization == "" {
-			token, tokenErr := anonymousBearerToken(ctx, client, challenge, ref.repo)
-			if tokenErr != nil {
-				return nil, tokenErr
+			granted, authErr := authorizeRegistry(ctx, client, challenge, ref.repo, ref.registry)
+			if authErr != nil {
+				return nil, authErr
 			}
-			authorization = "Bearer " + token
+			authorization = granted
 			page--
 			continue
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return nil, rejectedCredentialError(ref.registry, lookupRegistryLogin(ref.registry))
 		}
 		if status != http.StatusOK {
 			return nil, registryStatusError(status)

@@ -88,7 +88,7 @@ func (s *Service) ImageContainers(ctx context.Context, imageID string) ([]ImageC
 func (s *Service) ImagePull(ctx context.Context, imageTag string, writer io.Writer) error {
 	log.Info().Msg("Pulling latest image")
 
-	reader, err := s.Client.ImagePull(ctx, imageTag, client.ImagePullOptions{})
+	reader, err := s.Client.ImagePull(ctx, imageTag, client.ImagePullOptions{RegistryAuth: s.registryAuthFor(imageTag)})
 	if err != nil {
 		return fmt.Errorf("failed to pull image %s: %w", imageTag, err)
 	}

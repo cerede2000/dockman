@@ -25,7 +25,9 @@ Post-lot stabilization also delivered background operations, self-update checkin
 
 ### Private registries
 
-Private-registry credentials remain deliberately deferred. The implementation must provide host/repository-scoped encrypted credentials, challenge-safe token handling, secret redaction, rotation and compatibility with both digest checks and semantic tag discovery.
+Delivered: host-scoped credentials encrypted with their own master key, the Basic and Bearer challenges, secrets kept out of every response, and the same credential used by digest checks, tag discovery, the Compose command line and the pulls Dockman performs itself. See [Private registries](../operations/registries.md).
+
+What remains: credentials for hosts reached over SSH, which pull with their own `docker login`, and registries served over plain HTTP, which pull but cannot be checked.
 
 ### Advanced strategies
 

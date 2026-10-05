@@ -11,7 +11,7 @@ The Updates view combines read-only discovery, opt-in automation, stack-aware ex
 
 **Check updates** compares the local image manifest with the registry manifest without pulling the image. Public registries use their standard token challenge flow. Locally built images and references without a pullable registry tag are classified as local/skipped rather than errors.
 
-Private-registry credentials are not implemented yet. A private image that requires authentication is reported as unsupported/error without affecting public or local images.
+Private images use the credential stored for their registry in **Settings → Registries** ([Private registries](../operations/registries.md)). Without one, that image is reported as needing authentication, and public or local images are unaffected.
 
 Starting a new check resets previous transient statuses. The Monitor status filter can show only containers with an available update.
 
@@ -69,4 +69,4 @@ The scheduler runs only for enrolled targets. Loading the UI does not start addi
 
 ## Current provider scope
 
-Digest checks support public registry flows used by common Docker Hub and OCI images. Semantic version discovery currently supports unauthenticated registry catalog/tag APIs. Authenticated private registry support is intentionally deferred.
+Digest checks and semantic version discovery both support the public token flow of Docker Hub and OCI registries, and the Basic or Bearer authentication of a private one when a credential is stored for it. Both reach registries over HTTPS: a registry served over plain HTTP still pulls through the Docker daemon, but its checks are reported as errors rather than guessed.

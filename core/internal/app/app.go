@@ -26,6 +26,7 @@ import (
 	"github.com/RA341/dockman/internal/dockyaml"
 	"github.com/RA341/dockman/internal/files"
 	"github.com/RA341/dockman/internal/gitsync"
+	"github.com/RA341/dockman/internal/registry"
 	"github.com/RA341/dockman/internal/host"
 	"github.com/RA341/dockman/internal/host/filesystem"
 	hostMiddleware "github.com/RA341/dockman/internal/host/middleware"
@@ -35,6 +36,7 @@ import (
 	"github.com/RA341/dockman/internal/ssh"
 	"github.com/RA341/dockman/internal/viewer"
 	"github.com/RA341/dockman/pkg/argos"
+	"github.com/RA341/dockman/pkg/credvault"
 	"github.com/RA341/dockman/pkg/logger"
 	"github.com/RA341/dockman/pkg/memlimit"
 	"github.com/moby/moby/client"
@@ -59,6 +61,7 @@ type App struct {
 	UpdateAutomation *updater.AutomationService
 	Notifications    *notifications.Service
 	Secrets          *secrets.Service
+	Registries       *registry.Service
 }
 
 func (a *App) VerifyServices() error {
@@ -197,6 +200,29 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 	})
 	secretSrv.ConfigureSOPS(sopsProvider)
 	hostManager.ConfigureComposeEnvironment(secretSrv.ComposeEnvironment)
+
+	// Private registries. One store for the whole instance, handed to the
+	// three paths that reach a registry: the Docker CLI configuration the
+	// Compose commands read, the pulls Dockman performs through the Docker
+	// API, and the registry queries behind update detection.
+	registryVault, registryKeyPath, err := credvault.LoadOrCreate("registry credential", conf.ConfigDir, "registry", conf.RegistryMasterKeyFile)
+	if err != nil {
+		log.Fatal().Err(err).Msg("unable to initialize registry credential encryption")
+	}
+	if conf.RegistryMasterKeyFile == "" {
+		log.Warn().Str("path", registryKeyPath).Msg("Registry master key was generated locally; mount REGISTRY_MASTER_KEY_FILE as a Docker secret for production")
+	}
+	registrySrv := registry.NewService(registry.NewStore(gormDB), registryVault, registry.DefaultConfigDir(conf.ConfigDir))
+	if err := registrySrv.Reload(); err != nil {
+		// Not fatal: Dockman manages public images perfectly well, and the
+		// screen that fixes this is behind the server starting.
+		log.Error().Err(err).Msg("unable to apply the stored registry credentials")
+	}
+	hostManager.ConfigureRegistryAuth(registrySrv.EngineAuthForImage)
+	updater.SetRegistryCredentials(func(host string) (string, string, bool) {
+		auth, ok := registrySrv.Lookup(host)
+		return auth.Username, auth.Secret, ok
+	})
 
 	//err := git.NewMigrator(composeRoot)
 	//if err != nil {
@@ -467,6 +493,7 @@ func NewApp(opt ...config.AppOpt) (app *App) {
 		UpdateAutomation: updateAutomationSrv,
 		Notifications:    notificationSrv,
 		Secrets:          secretSrv,
+		Registries:       registrySrv,
 	}
 	err = app.VerifyServices()
 	if err != nil {
@@ -712,6 +739,11 @@ func (a *App) registerApiProtectedRoutes(protectedApiMux *http.ServeMux) {
 		protectedApiMux,
 		"/git",
 		gitsync.NewHTTPHandler(a.GitSync),
+	)
+	withSubRouter(
+		protectedApiMux,
+		"/registries",
+		registry.NewHTTPHandler(a.Registries),
 	)
 
 	// /:host
