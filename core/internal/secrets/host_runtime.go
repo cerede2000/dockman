@@ -181,9 +181,16 @@ func validateHostRuntimeInputs(config HostRuntimeConfig) error {
 }
 
 // This walk runs at boot, before the Docker daemon. A stack root that happens
-// to contain a deep or enormous tree — a media library, a restored backup —
+// to contain a deep or enormous tree - a media library, a runner's workspace -
 // must not be able to hold the host hostage, so the traversal is bounded in
-// both depth and entry count.
+// both depth and entry count, and it stops at the boundary of a stack.
+//
+// Stopping there is what keeps it small. A stack's own data lives next to its
+// compose file - ./data, ./config - and cannot contain another stack, so
+// walking into it reads hundreds of thousands of files to find nothing. One
+// homelab reached 233 000 entries that way, 187 000 of them a CI runner's
+// workspace, and the service refused to start at all: no secrets for any
+// stack, because of files belonging to a stack that had none.
 //
 // The depth deliberately matches maxStackDiscoveryDepth used by ListStacks: a
 // stack the user can reach and encrypt from the interface must be a stack the
@@ -205,12 +212,75 @@ type stackDiscovery struct {
 	// stack the user marked encrypted must not lose a mounted tmpfs over a
 	// problem this pass may simply be unable to read right now.
 	Claimed []string
+	// Truncated reports that the entry budget ran out before the whole root
+	// was searched, so an encrypted stack may be missing from Ready.
+	Truncated bool
+	// Visited counts the filesystem entries the search read. It is the figure
+	// that used to run into the hundreds of thousands.
+	Visited int
 	// Problems carries one error per stack that could not be validated. They
 	// are reported, never fatal.
 	Problems []error
 }
 
+// stackMarker reports the marker file of a stack directory, without following
+// a symlink: a marker that is one is refused later, by name, rather than read.
+func stackMarker(directory string) (os.FileInfo, bool) {
+	info, err := os.Lstat(filepath.Join(directory, SOPSInlineMarkerFile))
+	if err != nil {
+		return nil, false
+	}
+	return info, true
+}
+
+// holdsComposeManifest reports a stack: the directory an operator deploys.
+// Its subdirectories are its data, never another stack.
+func holdsComposeManifest(directory string) bool {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && isComposeManifest(entry.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+// inspectStack validates one stack's marker and encrypted source, and records
+// what it found. Everything it reports is that stack's problem alone.
+func (d *stackDiscovery) inspectStack(stackRoot, stack string, marker os.FileInfo) {
+	relative, err := filepath.Rel(stackRoot, stack)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		d.Problems = append(d.Problems, errors.New("encrypted stack is outside the configured root"))
+		return
+	}
+	// From here the stack has claimed encryption, so its runtime directory is
+	// protected from cleanup whatever else turns out to be wrong.
+	d.Claimed = append(d.Claimed, stack)
+	if marker.Mode()&os.ModeSymlink != 0 {
+		d.Problems = append(d.Problems, fmt.Errorf("%s: encrypted runtime marker cannot be a symlink", relative))
+		return
+	}
+	content, err := os.ReadFile(filepath.Join(stack, SOPSInlineMarkerFile))
+	if err != nil || strings.TrimSpace(string(content)) != "version=1" {
+		d.Problems = append(d.Problems, fmt.Errorf("%s has an invalid encrypted runtime marker", relative))
+		return
+	}
+	sourceInfo, err := os.Lstat(filepath.Join(stack, SOPSSourceFile))
+	if err != nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Size() <= 0 || sourceInfo.Size() > maxSOPSSourceBytes {
+		d.Problems = append(d.Problems, fmt.Errorf("%s has no valid bounded %s", relative, SOPSSourceFile))
+		return
+	}
+	d.Ready = append(d.Ready, stack)
+}
+
 func discoverEncryptedStacks(stackRoot string) (stackDiscovery, error) {
+	return discoverEncryptedStacksBounded(stackRoot, maxHostDiscoveryEntries)
+}
+
+func discoverEncryptedStacksBounded(stackRoot string, maxEntries int) (stackDiscovery, error) {
 	discovery := stackDiscovery{Ready: []string{}, Claimed: []string{}}
 	visited := 0
 	err := filepath.WalkDir(stackRoot, func(current string, entry fs.DirEntry, walkErr error) error {
@@ -224,53 +294,46 @@ func discoverEncryptedStacks(stackRoot string) (stackDiscovery, error) {
 			return filepath.SkipDir
 		}
 		visited++
-		if visited > maxHostDiscoveryEntries {
-			return fmt.Errorf("stack root holds more than %d entries; narrow the configured root", maxHostDiscoveryEntries)
+		if visited > maxEntries {
+			// Reported, not fatal. Refusing the whole pass left every stack
+			// without its secrets because of a tree that held none; the
+			// stacks already found are materialized, and this says plainly
+			// that the rest of the root was not searched.
+			discovery.Problems = append(discovery.Problems, fmt.Errorf(
+				"stack root holds more than %d entries; the rest was not searched for encrypted stacks - narrow the configured root or move stack data out of it",
+				maxEntries))
+			discovery.Truncated = true
+			return filepath.SkipAll
 		}
-		if entry.IsDir() {
-			base := entry.Name()
-			if current != stackRoot && (base == ".git" || base == RuntimeDirectory || base == ".dockman-backups" || base == "node_modules") {
+		if !entry.IsDir() {
+			return nil
+		}
+		base := entry.Name()
+		if current != stackRoot && (base == ".git" || base == RuntimeDirectory || base == ".dockman-backups" || base == "node_modules") {
+			return filepath.SkipDir
+		}
+		if relative, relErr := filepath.Rel(stackRoot, current); relErr == nil && relative != "." {
+			if len(strings.Split(relative, string(filepath.Separator))) >= maxHostDiscoveryDepth {
 				return filepath.SkipDir
 			}
-			if relative, relErr := filepath.Rel(stackRoot, current); relErr == nil && relative != "." {
-				if len(strings.Split(relative, string(filepath.Separator))) >= maxHostDiscoveryDepth {
-					return filepath.SkipDir
-				}
-			}
+		}
+		// A stack is where the search ends: its marker is read here, and its
+		// own data is not searched for stacks it cannot contain. The root
+		// itself is inspected but never pruned, or nothing beside it would be
+		// found.
+		marker, hasMarker := stackMarker(current)
+		if !hasMarker && !holdsComposeManifest(current) {
 			return nil
 		}
-		if entry.Name() != SOPSInlineMarkerFile {
+		if hasMarker {
+			discovery.inspectStack(stackRoot, current, marker)
+		}
+		if current == stackRoot {
 			return nil
 		}
-		stack := filepath.Dir(current)
-		relative, err := filepath.Rel(stackRoot, stack)
-		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			discovery.Problems = append(discovery.Problems, errors.New("encrypted stack is outside the configured root"))
-			return nil
-		}
-		// From here the stack has claimed encryption, so its runtime directory
-		// is protected from cleanup whatever else turns out to be wrong.
-		discovery.Claimed = append(discovery.Claimed, stack)
-		if entry.Type()&os.ModeSymlink != 0 {
-			discovery.Problems = append(discovery.Problems,
-				fmt.Errorf("%s: encrypted runtime marker cannot be a symlink", relative))
-			return nil
-		}
-		marker, err := os.ReadFile(current)
-		if err != nil || strings.TrimSpace(string(marker)) != "version=1" {
-			discovery.Problems = append(discovery.Problems,
-				fmt.Errorf("%s has an invalid encrypted runtime marker", relative))
-			return nil
-		}
-		sourceInfo, err := os.Lstat(filepath.Join(stack, SOPSSourceFile))
-		if err != nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Size() <= 0 || sourceInfo.Size() > maxSOPSSourceBytes {
-			discovery.Problems = append(discovery.Problems,
-				fmt.Errorf("%s has no valid bounded %s", relative, SOPSSourceFile))
-			return nil
-		}
-		discovery.Ready = append(discovery.Ready, stack)
-		return nil
+		return filepath.SkipDir
 	})
+	discovery.Visited = visited
 	if err != nil {
 		return stackDiscovery{}, fmt.Errorf("discover encrypted stacks: %w", err)
 	}
