@@ -2,7 +2,7 @@ module github.com/RA341/dockman
 
 go 1.26.3
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	ariga.io/atlas-provider-gorm v0.6.1
