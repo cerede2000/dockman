@@ -93,6 +93,13 @@ func discoverAliasStacks(stackFS filesystem.FileSystem, root, alias string, rema
 				path += "/" + strings.Trim(clean, "/")
 			}
 			result = append(result, StackOption{Path: path, Alias: alias, Manifests: manifests})
+			// A stack's subdirectories are its data - ./data, ./config - and
+			// cannot hold another stack. Queueing them spent the directory
+			// budget on a media library or a runner's workspace, and the
+			// stacks still waiting in the queue never got listed.
+			if current.depth > 0 {
+				continue
+			}
 		}
 		budget := maxStackDiscoveryDirectories - visited - len(queue)
 		if budget > len(children) {
