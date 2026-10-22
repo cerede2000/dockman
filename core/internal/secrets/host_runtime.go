@@ -440,6 +440,11 @@ func readBoundedLocalFile(path string, limit int64) ([]byte, error) {
 	return value, nil
 }
 
+// runtimePathIsMounted is indirect so the decisions taken around it - what
+// this service agrees to cover with a tmpfs, and what it refuses - can be
+// tested on a machine without /proc.
+var runtimePathIsMounted = pathIsMounted
+
 func ensureRuntimeTmpfs(directory string, sizeMiB int) (bool, error) {
 	if info, err := os.Lstat(directory); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -450,7 +455,7 @@ func ensureRuntimeTmpfs(directory string, sizeMiB int) (bool, error) {
 	} else if err = os.Mkdir(directory, 0o700); err != nil {
 		return false, fmt.Errorf("create runtime secret directory: %w", err)
 	}
-	mounted, err := pathIsMounted(directory)
+	mounted, err := runtimePathIsMounted(directory)
 	if err != nil {
 		return false, err
 	}
@@ -461,8 +466,30 @@ func ensureRuntimeTmpfs(directory string, sizeMiB int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if len(entries) != 0 {
-		return false, errors.New("refusing to cover a non-empty persistent .secrets directory with tmpfs")
+	// Docker creates a directory for a bind mount whose source is missing, so
+	// a stack started while this service was down leaves empty directories
+	// here - one per secret it expected. Refusing them made any outage
+	// permanent: the service could never mount again until someone emptied
+	// the path by hand. They are removed, because they hold nothing.
+	//
+	// Anything else stays a refusal. A file here is a secret written to
+	// persistent disk, which is what the tmpfs exists to avoid, and covering
+	// it would hide it rather than deal with it.
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return false, errors.New("refusing to cover a non-empty persistent .secrets directory with tmpfs")
+		}
+		nested := filepath.Join(directory, entry.Name())
+		children, readErr := os.ReadDir(nested)
+		if readErr != nil {
+			return false, readErr
+		}
+		if len(children) != 0 {
+			return false, errors.New("refusing to cover a non-empty persistent .secrets directory with tmpfs")
+		}
+		if err = os.Remove(nested); err != nil {
+			return false, fmt.Errorf("remove the empty mount point Docker left in .secrets: %w", err)
+		}
 	}
 	options := "nodev,nosuid,noexec,mode=0700,size=" + strconv.Itoa(sizeMiB) + "m"
 	command := exec.Command("mount", "-t", "tmpfs", "-o", options, RuntimeMountSource, directory)
