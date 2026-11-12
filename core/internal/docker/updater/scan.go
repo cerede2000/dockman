@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptrace"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 const updateScanConcurrency = 8
@@ -49,6 +52,9 @@ type remoteCheckSettings struct {
 	retryDelay time.Duration
 	// lookup resolves the remote digest of an image.
 	lookup func(ctx context.Context, image string) (string, error)
+	// logger receives the line written when an attempt fails transiently. Nil
+	// selects the process-wide logger.
+	logger *zerolog.Logger
 }
 
 func (u *Service) remoteCheckSettings() remoteCheckSettings {
@@ -346,7 +352,8 @@ func (u *Service) checkRemoteImage(ctx context.Context, image string) imageUpdat
 // to the caller's cancellation: a scan that is being stopped must not sleep.
 func (u *Service) lookupRemoteDigest(ctx context.Context, image string) (string, error) {
 	settings := u.remoteCheckSettings()
-	digest, err := settings.attempt(ctx, image)
+	started := time.Now()
+	digest, err := settings.attempt(ctx, image, 1, started)
 	if err == nil || !errors.Is(err, errTransientRegistry) || ctx.Err() != nil {
 		return digest, err
 	}
@@ -357,13 +364,58 @@ func (u *Service) lookupRemoteDigest(ctx context.Context, image string) (string,
 		return "", err
 	case <-timer.C:
 	}
-	return settings.attempt(ctx, image)
+	return settings.attempt(ctx, image, 2, started)
 }
 
-func (s remoteCheckSettings) attempt(ctx context.Context, image string) (string, error) {
+// attempt runs one lookup under its own budget. When it fails transiently it
+// writes one line saying where it stopped (see logTransientFailure); nothing is
+// written when it succeeds, nor when the failure is permanent, which already
+// reaches the operator with its own message.
+func (s remoteCheckSettings) attempt(ctx context.Context, image string, number int, checkStarted time.Time) (string, error) {
+	attemptStarted := time.Now()
 	attemptCtx, cancel := context.WithTimeout(ctx, s.budget)
 	defer cancel()
-	return s.lookup(attemptCtx, image)
+	trace := newRegistryTrace()
+	attemptCtx = httptrace.WithClientTrace(attemptCtx, trace.clientTrace())
+	digest, err := s.lookup(attemptCtx, image)
+	// A caller that is shutting down is not a registry problem.
+	if err != nil && errors.Is(err, errTransientRegistry) && ctx.Err() == nil {
+		s.logTransientFailure(image, number, checkStarted, attemptStarted, err, trace.report())
+	}
+	return digest, err
+}
+
+// logTransientFailure says where a transient failure stalled, which the error
+// alone ("context deadline exceeded") never does: the registry host, the
+// attempt (1 is about to be replayed, 2 is final), the time spent so far in the
+// check and in this attempt, the stage the last request had reached (dns,
+// connect, tls, send, wait for the response, read) and how long each stage
+// reached took. It carries the error and the host names only, never a header or
+// a credential.
+func (s remoteCheckSettings) logTransientFailure(image string, attempt int, checkStarted, attemptStarted time.Time, err error, report traceReport) {
+	logger := s.logger
+	if logger == nil {
+		logger = &log.Logger
+	}
+	event := logger.Warn().
+		Int("attempt", attempt).
+		Dur("elapsed_ms", time.Since(checkStarted)).
+		Dur("attempt_ms", time.Since(attemptStarted)).
+		Str("stopped_at", string(report.stage))
+	if ref, refErr := parseRegistryImageReference(image); refErr == nil {
+		event = event.Str("registry", ref.registry)
+	}
+	if report.hostPort != "" {
+		event = event.Str("request_host", report.hostPort)
+	}
+	for _, stage := range report.stages {
+		event = event.Dur(stage.name+"_ms", stage.duration)
+	}
+	message := "registry check failed transiently, replaying once"
+	if attempt > 1 {
+		message = "registry check failed transiently after its replay"
+	}
+	event.Err(err).Msg(message)
 }
 
 func repositoryDigestsForImage(repoDigests []string, image string) []string {

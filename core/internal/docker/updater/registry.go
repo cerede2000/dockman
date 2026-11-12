@@ -34,8 +34,9 @@ const registryRequestTimeout = 15 * time.Second
 // errors.Is and never change its message, which is shown to the user and
 // asserted by tests.
 //
-// Transient: a timeout, a refused or cut connection, HTTP 429 and 5xx. The
-// same request is expected to work a moment later.
+// Transient: a timeout, a refused or cut connection, a resolver that fails or
+// does not answer, HTTP 408, 429 and 5xx. The same request is expected to work
+// a moment later.
 //
 // Permanent: 401 and 403 (authentication), 404 (not found), an invalid
 // reference, a rejected credential. Repeating the request cannot help; the
@@ -371,10 +372,11 @@ func escapeRepositoryPath(repo string) string {
 	return strings.Join(parts, "/")
 }
 
-// transientStatus is the HTTP half of the transient class: asked to slow down,
-// or the registry (or what stands in front of it) failed.
+// transientStatus is the HTTP half of the transient class: the request timed
+// out on the way (408), asked to slow down (429), or the registry (or what
+// stands in front of it) failed (5xx).
 func transientStatus(status int) bool {
-	return status == http.StatusTooManyRequests || status >= 500
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
 }
 
 func registryStatusError(status int) error {

@@ -76,6 +76,10 @@ func TestRegistryFailuresAreSortedIntoTransientAndPermanent(t *testing.T) {
 		{"token endpoint times out", "registry.test/team/app:latest", viaToken(func(*http.Request) (*http.Response, error) { return nil, context.DeadlineExceeded }), RegistryErrorTransient, "context deadline exceeded"},
 		{"token endpoint 503", "registry.test/team/app:latest", viaToken(func(*http.Request) (*http.Response, error) { return registryReply(503, nil, ""), nil }), RegistryErrorTransient, "registry token request returned HTTP 503"},
 		{"token body cut short", "registry.test/team/app:latest", viaToken(func(*http.Request) (*http.Response, error) { return registryReply(200, nil, `{"tok`), nil }), RegistryErrorTransient, "decode registry token"},
+		{"408 request timeout", "registry.test/team/app:latest", manifest(408, nil), RegistryErrorTransient, "registry manifest request returned HTTP 408"},
+		{"token endpoint 408", "registry.test/team/app:latest", viaToken(func(*http.Request) (*http.Response, error) { return registryReply(408, nil, ""), nil }), RegistryErrorTransient, "registry token request returned HTTP 408"},
+		{"resolver misbehaving", "registry.test/team/app:latest", failing(&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "server misbehaving", Name: "registry.test", Server: "192.168.1.1:53"}}), RegistryErrorTransient, "server misbehaving"},
+		{"resolver does not answer", "registry.test/team/app:latest", failing(&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "i/o timeout", Name: "registry.test", Server: "192.168.1.1:53", IsTimeout: true, IsTemporary: true}}), RegistryErrorTransient, "i/o timeout"},
 
 		{"404 tag not found", "registry.test/team/app:latest", manifest(404, nil), RegistryErrorNotFound, "image tag was not found in the public registry"},
 		{"403 forbidden", "registry.test/team/app:latest", manifest(403, nil), RegistryErrorAuthentication, "registry authentication required; add a credential in Settings > Registries"},
@@ -86,6 +90,7 @@ func TestRegistryFailuresAreSortedIntoTransientAndPermanent(t *testing.T) {
 		{"400 is not transient", "registry.test/team/app:latest", manifest(400, nil), RegistryErrorOther, "registry manifest request returned HTTP 400"},
 		{"cancelled by the caller", "registry.test/team/app:latest", failing(context.Canceled), RegistryErrorOther, "context canceled"},
 		{"name that does not resolve", "registry.test/team/app:latest", failing(&net.DNSError{Err: "no such host", Name: "registry.test", IsNotFound: true}), RegistryErrorOther, "no such host"},
+		{"no such host inside a dial error", "registry.test/team/app:latest", failing(&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "registry.test", IsNotFound: true}}), RegistryErrorOther, "no such host"},
 		{"invalid reference", "registry.test/team/app@sha256:abc", manifest(200, nil), RegistryErrorOther, "unsupported image reference"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

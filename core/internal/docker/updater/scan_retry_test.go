@@ -9,7 +9,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 )
+
+// discardLogger keeps the lines written for transient failures out of the test
+// output; the tests that read them inject their own.
+var discardLogger = zerolog.Nop()
 
 const retryTestDigest = "0123456789abcdef"
 
@@ -39,6 +45,7 @@ func scanWith(client *http.Client, budget, retryDelay time.Duration) *Service {
 		lookup: func(ctx context.Context, image string) (string, error) {
 			return registryManifestDigestWithClient(ctx, image, client)
 		},
+		logger: &discardLogger,
 	}}
 }
 
@@ -163,7 +170,7 @@ func TestTheReplayWaitGivesWayToCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	service := &Service{remoteCheck: &remoteCheckSettings{
-		budget: time.Second, retryDelay: 3 * time.Second,
+		budget: time.Second, retryDelay: 3 * time.Second, logger: &discardLogger,
 		lookup: func(context.Context, string) (string, error) {
 			lookups.Add(1)
 			time.AfterFunc(50*time.Millisecond, cancel)
@@ -186,7 +193,7 @@ func TestACancelledScanDoesNotReplay(t *testing.T) {
 	var lookups atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{remoteCheck: &remoteCheckSettings{
-		budget: time.Second, retryDelay: time.Millisecond,
+		budget: time.Second, retryDelay: time.Millisecond, logger: &discardLogger,
 		lookup: func(context.Context, string) (string, error) {
 			lookups.Add(1)
 			cancel()
