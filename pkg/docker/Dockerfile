@@ -1,25 +1,27 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=24.21.0
-ARG GO_VERSION=1.26.10
+ARG GO_VERSION=1.26.11
 ARG ALPINE_VERSION=3.24.2
 ARG COMPOSE_VERSION=v5.5.1
 ARG COMPOSE_X_CRYPTO_VERSION=v0.56.0
-ARG COMPOSE_X_NET_VERSION=v0.60.0
+ARG COMPOSE_X_NET_VERSION=v0.62.0
 ARG COMPOSE_X_TEXT_VERSION=v0.41.0
+ARG COMPOSE_KLAUSPOST_COMPRESS_VERSION=v1.20.2
 ARG COMPOSE_GRPC_VERSION=v1.83.2
 ARG COMPOSE_GO_ARCHIVE_VERSION=v0.3.3
 ARG COMPOSE_CONTAINERD_VERSION=v2.3.6
 ARG COMPOSE_OTEL_VERSION=v1.46.0
 ARG SOPS_VERSION=v3.13.3
 ARG SOPS_X_CRYPTO_VERSION=v0.56.0
-ARG SOPS_X_NET_VERSION=v0.60.0
+ARG SOPS_X_NET_VERSION=v0.62.0
+ARG SOPS_GO_JOSE_VERSION=v4.1.6
 ARG SOPS_GRPC_VERSION=v1.83.2
 ARG SOPS_OTEL_VERSION=v1.46.0
 ARG AGE_VERSION=v1.3.2
 ARG AGE_X_CRYPTO_VERSION=v0.56.0
 ARG NODE_IMAGE_DIGEST=sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
-ARG GO_IMAGE_DIGEST=sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba
+ARG GO_IMAGE_DIGEST=sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb
 ARG ALPINE_IMAGE_DIGEST=sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 FROM node:${NODE_VERSION}-alpine3.24@${NODE_IMAGE_DIGEST} AS front
@@ -90,6 +92,7 @@ ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_NET_VERSION
 ARG COMPOSE_X_TEXT_VERSION
+ARG COMPOSE_KLAUSPOST_COMPRESS_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG COMPOSE_GO_ARCHIVE_VERSION
 ARG COMPOSE_CONTAINERD_VERSION
@@ -111,6 +114,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       "golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
       "golang.org/x/net@${COMPOSE_X_NET_VERSION}" \
       "golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
+      "github.com/klauspost/compress@${COMPOSE_KLAUSPOST_COMPRESS_VERSION}" \
       "google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" \
       "github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" \
       "github.com/containerd/containerd/v2@${COMPOSE_CONTAINERD_VERSION}" \
@@ -137,6 +141,7 @@ FROM golang:${GO_VERSION}-alpine3.24@${GO_IMAGE_DIGEST} AS sops_builder
 ARG SOPS_VERSION
 ARG SOPS_X_CRYPTO_VERSION
 ARG SOPS_X_NET_VERSION
+ARG SOPS_GO_JOSE_VERSION
 ARG SOPS_GRPC_VERSION
 ARG SOPS_OTEL_VERSION
 ARG AGE_VERSION
@@ -157,6 +162,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go-require-at-least \
       "golang.org/x/crypto@${SOPS_X_CRYPTO_VERSION}" \
       "golang.org/x/net@${SOPS_X_NET_VERSION}" \
+      "github.com/go-jose/go-jose/v4@${SOPS_GO_JOSE_VERSION}" \
       "google.golang.org/grpc@${SOPS_GRPC_VERSION}" \
       "go.opentelemetry.io/otel@${SOPS_OTEL_VERSION}" \
       "go.opentelemetry.io/otel/metric@${SOPS_OTEL_VERSION}" \
@@ -219,12 +225,14 @@ ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_NET_VERSION
 ARG COMPOSE_X_TEXT_VERSION
+ARG COMPOSE_KLAUSPOST_COMPRESS_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG COMPOSE_CONTAINERD_VERSION
 ARG COMPOSE_OTEL_VERSION
 ARG SOPS_VERSION
 ARG SOPS_X_CRYPTO_VERSION
 ARG SOPS_X_NET_VERSION
+ARG SOPS_GO_JOSE_VERSION
 ARG SOPS_GRPC_VERSION
 ARG SOPS_OTEL_VERSION
 ARG AGE_VERSION
@@ -247,12 +255,14 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.compose-x-crypto="${COMPOSE_X_CRYPTO_VERSION}" \
       dev.dockman.build.compose-x-net="${COMPOSE_X_NET_VERSION}" \
       dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
+      dev.dockman.build.compose-klauspost-compress="${COMPOSE_KLAUSPOST_COMPRESS_VERSION}" \
       dev.dockman.build.compose-grpc="${COMPOSE_GRPC_VERSION}" \
       dev.dockman.build.compose-containerd="${COMPOSE_CONTAINERD_VERSION}" \
       dev.dockman.build.compose-otel="${COMPOSE_OTEL_VERSION}" \
       dev.dockman.build.sops="${SOPS_VERSION}" \
       dev.dockman.build.sops-x-crypto="${SOPS_X_CRYPTO_VERSION}" \
       dev.dockman.build.sops-x-net="${SOPS_X_NET_VERSION}" \
+      dev.dockman.build.sops-go-jose="${SOPS_GO_JOSE_VERSION}" \
       dev.dockman.build.sops-grpc="${SOPS_GRPC_VERSION}" \
       dev.dockman.build.sops-otel="${SOPS_OTEL_VERSION}" \
       dev.dockman.build.age="${AGE_VERSION}" \
