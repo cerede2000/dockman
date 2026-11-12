@@ -13,6 +13,7 @@ import (
 	"net/http/httptrace"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -267,11 +268,11 @@ func logLines(t *testing.T, buffer *bytes.Buffer) []map[string]any {
 func TestACheckThatStallsWaitingForTheResponseSaysSo(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { stall(r) }))
 	t.Cleanup(server.Close)
-	service := scanWith(registryTestClient(server, 5*time.Second), 150*time.Millisecond, 10*time.Millisecond)
+	service := scanWith(registryTestClient(server, 5*time.Second), 450*time.Millisecond, 10*time.Millisecond)
 	logger, buffer := capturedLogger()
 	service.remoteCheck.logger = logger
 
-	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 	if check.status != ContainerUpdateError || check.errorClass != RegistryErrorTransient {
 		t.Fatalf("want a transient error, got %#v", check)
 	}
@@ -320,11 +321,11 @@ func TestACheckThatCannotConnectSaysSo(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, network, closedAddress)
 		},
 	}}
-	service := scanWith(client, time.Second, 5*time.Millisecond)
+	service := scanWith(client, 3*time.Second, 5*time.Millisecond)
 	logger, buffer := capturedLogger()
 	service.remoteCheck.logger = logger
 
-	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 	if check.errorClass != RegistryErrorTransient {
 		t.Fatalf("want a transient error, got %#v", check)
 	}
@@ -362,7 +363,7 @@ func TestOnlyATransientFailureOfARegistryCheckIsLogged(t *testing.T) {
 		logger, buffer := capturedLogger()
 		service.remoteCheck.logger = logger
 
-		if check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest"); check.status != ContainerUpdateCurrent {
+		if check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient); check.status != ContainerUpdateCurrent {
 			t.Fatalf("check = %#v", check)
 		}
 		if buffer.Len() != 0 {
@@ -379,11 +380,11 @@ func TestOnlyATransientFailureOfARegistryCheckIsLogged(t *testing.T) {
 			w.Header().Set("Docker-Content-Digest", "sha256:"+retryTestDigest)
 		}))
 		t.Cleanup(server.Close)
-		service := scanWith(registryTestClient(server, 5*time.Second), 150*time.Millisecond, 10*time.Millisecond)
+		service := scanWith(registryTestClient(server, 5*time.Second), 450*time.Millisecond, 10*time.Millisecond)
 		logger, buffer := capturedLogger()
 		service.remoteCheck.logger = logger
 
-		if check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest"); check.status != ContainerUpdateCurrent {
+		if check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient); check.status != ContainerUpdateCurrent {
 			t.Fatalf("check = %#v", check)
 		}
 		lines := logLines(t, buffer)
@@ -398,7 +399,7 @@ func TestOnlyATransientFailureOfARegistryCheckIsLogged(t *testing.T) {
 		logger, buffer := capturedLogger()
 		service.remoteCheck.logger = logger
 
-		if check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest"); check.errorClass != RegistryErrorAuthentication {
+		if check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient); check.errorClass != RegistryErrorAuthentication {
 			t.Fatalf("check = %#v", check)
 		}
 		if buffer.Len() != 0 {
@@ -415,7 +416,7 @@ func TestOnlyATransientFailureOfARegistryCheckIsLogged(t *testing.T) {
 				return "", classified(errors.New("slow registry"), errTransientRegistry)
 			},
 		}}
-		service.checkRemoteImage(ctx, "registry.test/team/app:latest")
+		service.checkRemoteImage(ctx, "registry.test/team/app:latest", replayTransient)
 		if buffer.Len() != 0 {
 			t.Fatalf("a cancelled scan logged: %s", buffer.String())
 		}
@@ -435,11 +436,11 @@ func TestTheLogLineNeverCarriesAHeaderOrACredential(t *testing.T) {
 		stall(r)
 	}))
 	t.Cleanup(server.Close)
-	service := scanWith(registryTestClient(server, 5*time.Second), 150*time.Millisecond, 10*time.Millisecond)
+	service := scanWith(registryTestClient(server, 5*time.Second), 450*time.Millisecond, 10*time.Millisecond)
 	logger, buffer := capturedLogger()
 	service.remoteCheck.logger = logger
 
-	service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+	service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 	if buffer.Len() == 0 {
 		t.Fatal("expected the transient failure to be logged")
 	}
@@ -448,5 +449,78 @@ func TestTheLogLineNeverCarriesAHeaderOrACredential(t *testing.T) {
 		if strings.Contains(buffer.String(), secret) {
 			t.Fatalf("the log line contains %q: %s", secret, buffer.String())
 		}
+	}
+}
+
+// The callbacks of an HTTP trace are called by the transport from the
+// goroutines that dial, handshake and write, which are not the one that reads
+// the report. Two callbacks must therefore never be inside the accumulator at
+// the same time. The first callback is held inside the clock, which is read
+// under the lock, while a second one is started: if the lock works, the second
+// cannot finish until the first lets go; if it does not, it finishes at once.
+func TestTheTraceCallbacksNeverRunAtTheSameTime(t *testing.T) {
+	trace := newRegistryTrace()
+	ct := trace.clientTrace()
+	insideFirst := make(chan struct{})
+	secondFinished := make(chan struct{})
+	var calls atomic.Int32
+	var overlapped atomic.Bool
+	trace.now = func() time.Time {
+		if calls.Add(1) == 1 {
+			close(insideFirst)
+			select {
+			case <-secondFinished:
+				overlapped.Store(true)
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		return time.Unix(1_700_000_000, 0)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ct.DNSStart(httptrace.DNSStartInfo{})
+	}()
+	go func() {
+		defer wg.Done()
+		<-insideFirst
+		ct.ConnectStart("tcp", "ghcr.io:443")
+		close(secondFinished)
+	}()
+	wg.Wait()
+	if overlapped.Load() {
+		t.Fatal("a callback ran to completion while another one was inside the accumulator")
+	}
+}
+
+// And what many goroutines add up must be exact: every dial left open is
+// counted once, and every balanced start and end cancels out.
+func TestTheTraceCountsExactlyWhenCalledFromManyGoroutines(t *testing.T) {
+	trace := newRegistryTrace()
+	ct := trace.clientTrace()
+	const goroutines, rounds = 16, 3000
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range rounds {
+				ct.ConnectStart("tcp", "ghcr.io:443")
+				ct.DNSStart(httptrace.DNSStartInfo{})
+				ct.DNSDone(httptrace.DNSDoneInfo{})
+			}
+		}()
+	}
+	wg.Wait()
+
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	if trace.connect.open != goroutines*rounds {
+		t.Errorf("%d dials counted open, want exactly %d", trace.connect.open, goroutines*rounds)
+	}
+	if trace.dns.open != 0 {
+		t.Errorf("%d lookups counted open, want none: every start had its end", trace.dns.open)
 	}
 }

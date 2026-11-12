@@ -123,6 +123,13 @@ func isTransientTransportError(err error) bool {
 	if errors.As(err, &opErr) {
 		// dial refused, connection reset, broken pipe, TLS alert: the other end
 		// or the path to it, not the request.
+		//
+		// This is deliberately broad: it also catches a durable TLS alert from
+		// the peer ("remote error: tls: handshake failure"), which is then taken
+		// for a transient failure, replayed once, and notified one scan later
+		// than a permanent error would be. Telling a lasting alert from a passing
+		// one is not something the error allows, and a delay of one scan is the
+		// cheaper mistake.
 		return true
 	}
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)

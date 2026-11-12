@@ -2,12 +2,51 @@ package notifications
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/RA341/dockman/internal/docker/updater"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
+
+var freshServiceCounter atomic.Int64
+
+// freshTestService is testService with a database of its own on every call.
+// testService names its in-memory database after the test, so the second run of
+// a test in the same process (go test -count=2) finds the rows of the first and
+// fails; the tests below must be repeatable.
+func freshTestService(t *testing.T) (*Service, *gorm.DB, *recordingSender) {
+	t.Helper()
+	name := fmt.Sprintf("file:%s-%d?mode=memory&cache=shared", t.Name(), freshServiceCounter.Add(1))
+	db, err := gorm.Open(sqlite.Open(name), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, dbErr := db.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	if err := db.AutoMigrate(&SMTPConfig{}, &NotificationState{}, &ChannelConfig{}, &ChannelNotificationState{}, &Delivery{}); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := NewVault([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &recordingSender{}
+	return NewServiceWithSender(db, vault, sender), db, sender
+}
+
+// restart is what a restart of Dockman leaves: the same database, and a
+// process whose memory of the previous scan is empty.
+func restart(service *Service, sender *recordingSender) *Service {
+	return NewServiceWithSender(service.db, service.vault, sender)
+}
 
 const scanSchedule = "*/15 * * * *"
 
@@ -51,7 +90,7 @@ const timeout = "Head \"https://ghcr.io/v2/example/error-pages/manifests/latest\
 // The loop that prompted this: a registry that times out once in a while,
 // succeeds, then times out again. Each of those used to be a new message.
 func TestATransientErrorThatComesAndGoesIsNeverNotified(t *testing.T) {
-	service, _, sender := testService(t)
+	service, _, sender := freshTestService(t)
 	if _, err := service.Save("local", validInput()); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +107,7 @@ func TestATransientErrorThatComesAndGoesIsNeverNotified(t *testing.T) {
 // Two consecutive scans is a registry that is really in trouble: one message,
 // at the second scan, and not another for as long as it lasts.
 func TestATransientErrorOnTwoConsecutiveScansIsNotifiedOnce(t *testing.T) {
-	service, _, sender := testService(t)
+	service, _, sender := freshTestService(t)
 	if _, err := service.Save("local", validInput()); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +135,7 @@ func TestAnErrorThatWaitingCannotFixIsNotifiedImmediately(t *testing.T) {
 		{"unclassified", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			service, _, sender := testService(t)
+			service, _, sender := freshTestService(t)
 			if _, err := service.Save("local", validInput()); err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +153,7 @@ func TestAnErrorThatWaitingCannotFixIsNotifiedImmediately(t *testing.T) {
 // news, and neither is an authentication error whose text changed.
 func TestTheSameErrorWithAnotherWordingIsNotANewMessage(t *testing.T) {
 	t.Run("transient", func(t *testing.T) {
-		service, _, sender := testService(t)
+		service, _, sender := freshTestService(t)
 		if _, err := service.Save("local", validInput()); err != nil {
 			t.Fatal(err)
 		}
@@ -124,7 +163,7 @@ func TestTheSameErrorWithAnotherWordingIsNotANewMessage(t *testing.T) {
 		expectMessages(t, "third, worded again", scan(t, service, sender, run, registryFailure("error-pages", updater.RegistryErrorTransient, "registry manifest request returned HTTP 503")), 1)
 	})
 	t.Run("authentication", func(t *testing.T) {
-		service, _, sender := testService(t)
+		service, _, sender := freshTestService(t)
 		if _, err := service.Save("local", validInput()); err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +172,7 @@ func TestTheSameErrorWithAnotherWordingIsNotANewMessage(t *testing.T) {
 		expectMessages(t, "same refusal, worded again", scan(t, service, sender, run, registryFailure("private-app", updater.RegistryErrorAuthentication, "ghcr.io rejected the stored credentials; check them in Settings > Registries")), 1)
 	})
 	t.Run("a scan that failed as a whole", func(t *testing.T) {
-		service, _, sender := testService(t)
+		service, _, sender := freshTestService(t)
 		if _, err := service.Save("local", validInput()); err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +183,7 @@ func TestTheSameErrorWithAnotherWordingIsNotANewMessage(t *testing.T) {
 		expectMessages(t, "same failure, worded again", scan(t, service, sender, run), 1)
 	})
 	t.Run("another class is another error", func(t *testing.T) {
-		service, _, sender := testService(t)
+		service, _, sender := freshTestService(t)
 		if _, err := service.Save("local", validInput()); err != nil {
 			t.Fatal(err)
 		}
@@ -157,7 +196,7 @@ func TestTheSameErrorWithAnotherWordingIsNotANewMessage(t *testing.T) {
 // A transient error held back must not hide, or ride along with, a permanent
 // one in the same scan.
 func TestAHeldTransientErrorStaysOutOfTheMessageOfAPermanentOne(t *testing.T) {
-	service, _, sender := testService(t)
+	service, _, sender := freshTestService(t)
 	if _, err := service.Save("local", validInput()); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +222,7 @@ func TestAHeldTransientErrorStaysOutOfTheMessageOfAPermanentOne(t *testing.T) {
 // The count of consecutive scans is per schedule: another cron expression has
 // its own history, as it has its own fingerprints.
 func TestTheTransientMemoryIsKeptPerSchedule(t *testing.T) {
-	service, _, sender := testService(t)
+	service, _, sender := freshTestService(t)
 	if _, err := service.Save("local", validInput()); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +235,7 @@ func TestTheTransientMemoryIsKeptPerSchedule(t *testing.T) {
 // A scan that failed as a whole knows nothing about the targets: it neither
 // confirms a transient error nor forgets it.
 func TestAScanThatFailedAsAWholeLeavesTheTransientMemoryAlone(t *testing.T) {
-	service, _, sender := testService(t)
+	service, _, sender := freshTestService(t)
 	if _, err := service.Save("local", validInput()); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +260,7 @@ func TestAnErrorThatResolvedDuringAScanWithAnotherAnnouncementCanBeNotifiedAgain
 	broken := registryFailure("private-app", updater.RegistryErrorAuthentication, "registry authentication required for ghcr.io; add a credential in Settings > Registries")
 
 	t.Run("error resolved while a new update is announced", func(t *testing.T) {
-		service, _, sender := testService(t)
+		service, _, sender := freshTestService(t)
 		if _, err := service.Save("local", validInput()); err != nil {
 			t.Fatal(err)
 		}
@@ -231,7 +270,7 @@ func TestAnErrorThatResolvedDuringAScanWithAnotherAnnouncementCanBeNotifiedAgain
 		expectMessages(t, "error back", scan(t, service, sender, run, broken, update), 3)
 	})
 	t.Run("update resolved while a new error is announced", func(t *testing.T) {
-		service, _, sender := testService(t)
+		service, _, sender := freshTestService(t)
 		if _, err := service.Save("local", validInput()); err != nil {
 			t.Fatal(err)
 		}
@@ -239,5 +278,67 @@ func TestAnErrorThatResolvedDuringAScanWithAnotherAnnouncementCanBeNotifiedAgain
 		expectMessages(t, "update", scan(t, service, sender, run, update), 1)
 		expectMessages(t, "update gone, error announced", scan(t, service, sender, run, broken), 2)
 		expectMessages(t, "update back", scan(t, service, sender, run, broken, update), 3)
+	})
+}
+
+// A restart empties the memory of transient errors, not the fingerprint stored
+// for each destination. An outage that was already notified must not be
+// notified again because the first scan after the restart holds its transient
+// errors back (which, taken alone, looks like an error that resolved), nor on
+// every restart for as long as it lasts.
+func TestAnOutageAlreadyNotifiedIsNotNotifiedAgainAfterARestart(t *testing.T) {
+	t.Run("a transient error alone", func(t *testing.T) {
+		service, _, sender := freshTestService(t)
+		if _, err := service.Save("local", validInput()); err != nil {
+			t.Fatal(err)
+		}
+		run := scheduledRun(scanSchedule)
+		failing := registryFailure("error-pages", updater.RegistryErrorTransient, timeout)
+
+		expectMessages(t, "first timeout", scan(t, service, sender, run, failing), 0)
+		expectMessages(t, "second timeout", scan(t, service, sender, run, failing), 1)
+
+		service = restart(service, sender)
+		expectMessages(t, "first timeout after the restart", scan(t, service, sender, run, failing), 1)
+		expectMessages(t, "second timeout after the restart", scan(t, service, sender, run, failing), 1)
+
+		service = restart(service, sender)
+		expectMessages(t, "another restart", scan(t, service, sender, run, failing), 1)
+		expectMessages(t, "and its second scan", scan(t, service, sender, run, failing), 1)
+
+		// The outage ends, and a later one is a new outage.
+		expectMessages(t, "recovery", scan(t, service, sender, run, registryCurrent("error-pages")), 1)
+		expectMessages(t, "new outage, first scan", scan(t, service, sender, run, failing), 1)
+		expectMessages(t, "new outage, second scan", scan(t, service, sender, run, failing), 2)
+	})
+	t.Run("a transient error together with a permanent one", func(t *testing.T) {
+		service, _, sender := freshTestService(t)
+		if _, err := service.Save("local", validInput()); err != nil {
+			t.Fatal(err)
+		}
+		run := scheduledRun(scanSchedule)
+		permanent := registryFailure("private-app", updater.RegistryErrorAuthentication, "registry authentication required for ghcr.io; add a credential in Settings > Registries")
+		flaky := registryFailure("error-pages", updater.RegistryErrorTransient, timeout)
+
+		expectMessages(t, "permanent, first timeout", scan(t, service, sender, run, permanent, flaky), 1)
+		expectMessages(t, "permanent, second timeout", scan(t, service, sender, run, permanent, flaky), 2)
+
+		service = restart(service, sender)
+		// The permanent error alone is announced afresh by this scan if only the
+		// confirmed errors are looked at; the outage as a whole is already known.
+		expectMessages(t, "first scan after the restart", scan(t, service, sender, run, permanent, flaky), 2)
+		expectMessages(t, "second scan after the restart", scan(t, service, sender, run, permanent, flaky), 2)
+	})
+	t.Run("a different error after the restart is still notified", func(t *testing.T) {
+		service, _, sender := freshTestService(t)
+		if _, err := service.Save("local", validInput()); err != nil {
+			t.Fatal(err)
+		}
+		run := scheduledRun(scanSchedule)
+		permanent := registryFailure("private-app", updater.RegistryErrorAuthentication, "registry authentication required for ghcr.io; add a credential in Settings > Registries")
+
+		expectMessages(t, "permanent error", scan(t, service, sender, run, permanent), 1)
+		service = restart(service, sender)
+		expectMessages(t, "another permanent error", scan(t, service, sender, run, registryFailure("other-app", updater.RegistryErrorNotFound, "image tag was not found in the public registry")), 2)
 	})
 }

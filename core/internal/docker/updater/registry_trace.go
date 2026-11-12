@@ -134,11 +134,12 @@ func (t *registryTrace) clientTrace() *httptrace.ClientTrace {
 	}
 }
 
+// update applies one event. The clock is read under the lock so that the
+// timestamps follow the order in which the events were applied.
 func (t *registryTrace) update(apply func(now time.Time)) {
-	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	apply(now)
+	apply(t.now())
 }
 
 // stageTime is the time spent in one stage that was reached.
@@ -160,9 +161,9 @@ type traceReport struct {
 }
 
 func (t *registryTrace) report() traceReport {
-	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
 	report := traceReport{stage: t.stage, hostPort: t.hostPort}
 	for _, entry := range []struct {
 		name string

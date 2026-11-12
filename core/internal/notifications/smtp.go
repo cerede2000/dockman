@@ -143,10 +143,24 @@ type Service struct {
 	// overwritten by the scan that is about to be notified, before the
 	// notifier runs, and stores the raw reason but not its class. Recovering
 	// "was transient last time" from it would mean parsing error text or adding
-	// a column. Losing the memory at a restart is harmless: the first transient
-	// error after a restart waits for one more scan, which only delays a
-	// message. At rest it is empty or holds the few targets currently failing,
-	// replaced as a whole at every scan, so it needs no goroutine or timer.
+	// a column.
+	//
+	// A restart empties it, and that has two consequences. A transient error
+	// that had not been notified yet waits for a second scan again, which only
+	// delays the message. One that had been notified is held back again by the
+	// first scan after the restart, which on its own looks like an error that
+	// resolved: the fingerprint remembered for the destination would be wiped
+	// and the next scan would send the same message a second time, then again
+	// at every restart for as long as the outage lasts. NotifyScan therefore
+	// also fingerprints the errors it holds back, and an outage whose whole
+	// fingerprint is the one the destination last received is treated as
+	// already notified: nothing is sent and the remembered fingerprint is kept.
+	//
+	// At rest it holds the few targets currently failing, replaced as a whole at
+	// every scan, and an entry is dropped by the first scan of its host and
+	// schedule that has no transient error. One whose host or schedule vanishes
+	// while it is failing is never purged: a few bytes, until the next restart.
+	// It needs no goroutine or timer.
 	transientMu sync.Mutex
 	transient   map[string]map[string]struct{}
 }
@@ -263,12 +277,19 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 	if run.Error != "" {
 		// A scan that failed as a whole has no container or image to name, and
 		// its text (a daemon address, a timestamp) varies, so every such failure
-		// counts as one and the same error.
-		confirmed = append(confirmed, scanFailure{line: "scan: " + run.Error, key: "scan | " + string(updater.RegistryErrorOther)})
+		// shares one key. The trade-off is deliberate: a second failure of a
+		// different kind that follows the first with no successful scan in
+		// between is not notified again.
+		wholeScan := scanFailure{line: "scan: " + run.Error, key: "scan | " + string(updater.RegistryErrorOther)}
+		found = append(found, wholeScan)
+		confirmed = append(confirmed, wholeScan)
 	}
 	failures := failureLines(confirmed)
 	availableFingerprint := fingerprint(available)
 	errorFingerprint := fingerprint(failureKeys(confirmed))
+	// The same, with the transient errors still held back: what the scan sees
+	// going wrong, as opposed to what it is ready to announce.
+	allErrorsFingerprint := fingerprint(failureKeys(found))
 	var deliveryErrors []error
 	for _, destination := range destinations {
 		state, stateErr := s.loadChannelState(run.Host, run.Schedule, destination.key)
@@ -277,9 +298,19 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 			continue
 		}
 		notifyAvailable := eventTypeEnabled(destination.events, EventUpdateAvailable) && availableFingerprint != "" && availableFingerprint != state.LastAvailableFingerprint
-		notifyErrors := eventTypeEnabled(destination.events, EventUpdateFailure) && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint
+		// The outage is already known to this destination when everything that is
+		// going wrong, held-back errors included, is exactly what it last
+		// received. That is how an outage notified before a restart is recognised
+		// once the memory of transient errors is gone (see Service.transient).
+		// It is not resolved either, so the remembered fingerprint stays.
+		errorsAlreadySent := allErrorsFingerprint != "" && allErrorsFingerprint == state.LastErrorFingerprint
+		notifyErrors := eventTypeEnabled(destination.events, EventUpdateFailure) && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint && !errorsAlreadySent
+		stillReported := errorFingerprint
+		if errorsAlreadySent {
+			stillReported = allErrorsFingerprint
+		}
 		if !notifyAvailable && !notifyErrors {
-			if resetErr := s.resetResolvedChannelFingerprints(&state, availableFingerprint, errorFingerprint); resetErr != nil {
+			if resetErr := s.resetResolvedChannelFingerprints(&state, availableFingerprint, stillReported); resetErr != nil {
 				deliveryErrors = append(deliveryErrors, resetErr)
 			}
 			continue
@@ -324,7 +355,7 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 		if availableFingerprint == "" {
 			state.LastAvailableFingerprint = ""
 		}
-		if errorFingerprint == "" {
+		if stillReported == "" {
 			state.LastErrorFingerprint = ""
 		}
 		if saveErr := s.saveChannelState(&state); saveErr != nil {

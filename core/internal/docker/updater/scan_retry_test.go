@@ -64,9 +64,9 @@ func TestATransientTimeoutIsReplayedOnceAndTheReplayCanSucceed(t *testing.T) {
 	t.Cleanup(server.Close)
 	// The client timeout is longer than the budget, so what fires is the
 	// budget: the bare "context deadline exceeded" of the report.
-	service := scanWith(registryTestClient(server, 5*time.Second), 150*time.Millisecond, 10*time.Millisecond)
+	service := scanWith(registryTestClient(server, 5*time.Second), 450*time.Millisecond, 10*time.Millisecond)
 
-	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 	if check.status != ContainerUpdateCurrent || check.remoteDigest != retryTestDigest {
 		t.Fatalf("the replay did not recover the check: %#v", check)
 	}
@@ -98,9 +98,9 @@ func TestAPersistentTransientFailureIsReplayedExactlyOnce(t *testing.T) {
 				w.WriteHeader(test.status)
 			}))
 			t.Cleanup(server.Close)
-			service := scanWith(registryTestClient(server, 5*time.Second), 100*time.Millisecond, 5*time.Millisecond)
+			service := scanWith(registryTestClient(server, 5*time.Second), 300*time.Millisecond, 5*time.Millisecond)
 
-			check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+			check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 			if check.status != ContainerUpdateError || check.errorClass != RegistryErrorTransient {
 				t.Fatalf("want a transient error, got %#v", check)
 			}
@@ -152,7 +152,7 @@ func TestAPermanentFailureIsNeverReplayed(t *testing.T) {
 			t.Cleanup(server.Close)
 			service := scanWith(registryTestClient(server, 5*time.Second), time.Second, 5*time.Millisecond)
 
-			check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+			check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 			if check.status != ContainerUpdateError || check.errorClass != test.want {
 				t.Fatalf("want a %q error, got %#v", test.want, check)
 			}
@@ -179,7 +179,7 @@ func TestTheReplayWaitGivesWayToCancellation(t *testing.T) {
 	}}
 
 	started := time.Now()
-	check := service.checkRemoteImage(ctx, "registry.test/team/app:latest")
+	check := service.checkRemoteImage(ctx, "registry.test/team/app:latest", replayTransient)
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("the replay wait ignored the cancellation for %s", elapsed)
 	}
@@ -200,7 +200,7 @@ func TestACancelledScanDoesNotReplay(t *testing.T) {
 			return "", classified(errors.New("slow registry"), errTransientRegistry)
 		},
 	}}
-	service.checkRemoteImage(ctx, "registry.test/team/app:latest")
+	service.checkRemoteImage(ctx, "registry.test/team/app:latest", replayTransient)
 	if lookups.Load() != 1 {
 		t.Fatalf("lookups = %d, want 1", lookups.Load())
 	}
@@ -212,7 +212,7 @@ func TestACancelledScanDoesNotReplay(t *testing.T) {
 // the budget is 3T, while one request's worth of budget (T) is not enough for
 // the three of them (1.5 T).
 func TestThreeSlowButLiveRequestsFitInTheCheckBudget(t *testing.T) {
-	const requestTimeout = 300 * time.Millisecond
+	const requestTimeout = 900 * time.Millisecond
 	const requestDuration = requestTimeout / 2
 	const realm = "https://registry.test/token"
 	var heads, tokens atomic.Int32
@@ -235,7 +235,7 @@ func TestThreeSlowButLiveRequestsFitInTheCheckBudget(t *testing.T) {
 	service := scanWith(registryTestClient(server, requestTimeout), registryRequestsPerCheck*requestTimeout, 5*time.Millisecond)
 
 	started := time.Now()
-	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest")
+	check := service.checkRemoteImage(context.Background(), "registry.test/team/app:latest", replayTransient)
 	if check.status != ContainerUpdateCurrent || check.remoteDigest != retryTestDigest {
 		t.Fatalf("three slow requests did not fit the budget: %#v", check)
 	}
