@@ -7,6 +7,7 @@ ARG COMPOSE_VERSION=v5.5.1
 ARG COMPOSE_X_CRYPTO_VERSION=v0.56.0
 ARG COMPOSE_X_NET_VERSION=v0.62.0
 ARG COMPOSE_X_TEXT_VERSION=v0.41.0
+ARG COMPOSE_KLAUSPOST_COMPRESS_VERSION=v1.20.2
 ARG COMPOSE_GRPC_VERSION=v1.83.2
 ARG COMPOSE_GO_ARCHIVE_VERSION=v0.3.3
 ARG COMPOSE_CONTAINERD_VERSION=v2.3.6
@@ -91,6 +92,7 @@ ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_NET_VERSION
 ARG COMPOSE_X_TEXT_VERSION
+ARG COMPOSE_KLAUSPOST_COMPRESS_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG COMPOSE_GO_ARCHIVE_VERSION
 ARG COMPOSE_CONTAINERD_VERSION
@@ -112,6 +114,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       "golang.org/x/crypto@${COMPOSE_X_CRYPTO_VERSION}" \
       "golang.org/x/net@${COMPOSE_X_NET_VERSION}" \
       "golang.org/x/text@${COMPOSE_X_TEXT_VERSION}" \
+      "github.com/klauspost/compress@${COMPOSE_KLAUSPOST_COMPRESS_VERSION}" \
       "google.golang.org/grpc@${COMPOSE_GRPC_VERSION}" \
       "github.com/moby/go-archive@${COMPOSE_GO_ARCHIVE_VERSION}" \
       "github.com/containerd/containerd/v2@${COMPOSE_CONTAINERD_VERSION}" \
@@ -222,12 +225,14 @@ ARG COMPOSE_VERSION
 ARG COMPOSE_X_CRYPTO_VERSION
 ARG COMPOSE_X_NET_VERSION
 ARG COMPOSE_X_TEXT_VERSION
+ARG COMPOSE_KLAUSPOST_COMPRESS_VERSION
 ARG COMPOSE_GRPC_VERSION
 ARG COMPOSE_CONTAINERD_VERSION
 ARG COMPOSE_OTEL_VERSION
 ARG SOPS_VERSION
 ARG SOPS_X_CRYPTO_VERSION
 ARG SOPS_X_NET_VERSION
+ARG SOPS_GO_JOSE_VERSION
 ARG SOPS_GRPC_VERSION
 ARG SOPS_OTEL_VERSION
 ARG AGE_VERSION
@@ -250,12 +255,14 @@ LABEL org.opencontainers.image.title="Dockman" \
       dev.dockman.build.compose-x-crypto="${COMPOSE_X_CRYPTO_VERSION}" \
       dev.dockman.build.compose-x-net="${COMPOSE_X_NET_VERSION}" \
       dev.dockman.build.compose-x-text="${COMPOSE_X_TEXT_VERSION}" \
+      dev.dockman.build.compose-klauspost-compress="${COMPOSE_KLAUSPOST_COMPRESS_VERSION}" \
       dev.dockman.build.compose-grpc="${COMPOSE_GRPC_VERSION}" \
       dev.dockman.build.compose-containerd="${COMPOSE_CONTAINERD_VERSION}" \
       dev.dockman.build.compose-otel="${COMPOSE_OTEL_VERSION}" \
       dev.dockman.build.sops="${SOPS_VERSION}" \
       dev.dockman.build.sops-x-crypto="${SOPS_X_CRYPTO_VERSION}" \
       dev.dockman.build.sops-x-net="${SOPS_X_NET_VERSION}" \
+      dev.dockman.build.sops-go-jose="${SOPS_GO_JOSE_VERSION}" \
       dev.dockman.build.sops-grpc="${SOPS_GRPC_VERSION}" \
       dev.dockman.build.sops-otel="${SOPS_OTEL_VERSION}" \
       dev.dockman.build.age="${AGE_VERSION}" \
