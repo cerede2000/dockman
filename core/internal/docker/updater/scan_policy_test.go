@@ -108,9 +108,9 @@ func TestAScanReplaysATransientFailureOfAnImage(t *testing.T) {
 // scaled down: the client gives up after 300 ms, the budget is 5 s.
 func TestAMuteRegistryBehindAShortClientTimeoutIsReplayedOnce(t *testing.T) {
 	var requests atomic.Int32
-	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
-		stall(r)
+		stall(w)
 	}))
 	t.Cleanup(server.Close)
 	service := scanWith(registryTestClient(server, 300*time.Millisecond), 5*time.Second, 10*time.Millisecond)

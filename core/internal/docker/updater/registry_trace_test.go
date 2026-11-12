@@ -266,7 +266,7 @@ func logLines(t *testing.T, buffer *bytes.Buffer) []map[string]any {
 // and then says nothing: the case the user's check keeps hitting, and the one
 // "context deadline exceeded" cannot tell from a lost DNS query.
 func TestACheckThatStallsWaitingForTheResponseSaysSo(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { stall(r) }))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { stall(w) }))
 	t.Cleanup(server.Close)
 	service := scanWith(registryTestClient(server, 5*time.Second), 450*time.Millisecond, 10*time.Millisecond)
 	logger, buffer := capturedLogger()
@@ -374,7 +374,7 @@ func TestOnlyATransientFailureOfARegistryCheckIsLogged(t *testing.T) {
 		var heads atomic.Int32
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if heads.Add(1) == 1 {
-				stall(r)
+				stall(w)
 				return
 			}
 			w.Header().Set("Docker-Content-Digest", "sha256:"+retryTestDigest)
@@ -433,7 +433,7 @@ func TestTheLogLineNeverCarriesAHeaderOrACredential(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		stall(r)
+		stall(w)
 	}))
 	t.Cleanup(server.Close)
 	service := scanWith(registryTestClient(server, 5*time.Second), 450*time.Millisecond, 10*time.Millisecond)

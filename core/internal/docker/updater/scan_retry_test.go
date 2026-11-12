@@ -3,6 +3,7 @@ package updater
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,12 +32,20 @@ func registryTestClient(server *httptest.Server, requestTimeout time.Duration) *
 	return &http.Client{Transport: transport, Timeout: requestTimeout}
 }
 
-// stall holds a request until the client gives up on it.
-func stall(r *http.Request) {
-	select {
-	case <-r.Context().Done():
-	case <-time.After(5 * time.Second):
+// stall takes the connection over and never writes to it, so the client waits
+// for a response that cannot come. Answering from the handler once the request
+// is cancelled would let a late status line race the client's own cancellation
+// and read as a first response byte; with the connection hijacked, nothing the
+// server does can answer, whatever order the two sides notice the end in.
+func stall(w http.ResponseWriter) {
+	connection, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		panic(err)
 	}
+	go func() {
+		_, _ = io.Copy(io.Discard, connection)
+		_ = connection.Close()
+	}()
 }
 
 func scanWith(client *http.Client, budget, retryDelay time.Duration) *Service {
@@ -56,7 +65,7 @@ func TestATransientTimeoutIsReplayedOnceAndTheReplayCanSucceed(t *testing.T) {
 	var heads atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if heads.Add(1) == 1 {
-			stall(r)
+			stall(w)
 			return
 		}
 		w.Header().Set("Docker-Content-Digest", "sha256:"+retryTestDigest)
@@ -92,7 +101,7 @@ func TestAPersistentTransientFailureIsReplayedExactlyOnce(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				heads.Add(1)
 				if test.status == 0 {
-					stall(r)
+					stall(w)
 					return
 				}
 				w.WriteHeader(test.status)
