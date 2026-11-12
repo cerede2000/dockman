@@ -134,6 +134,35 @@ type Service struct {
 	channelSender ChannelSender
 	eventQueue    chan ChannelEvent
 	dispatchOnce  sync.Once
+
+	// transientMu guards transient, the memory of which targets were in a
+	// transient error at the previous scheduled scan of a host and schedule.
+	//
+	// It lives in the process on purpose. The only thing the repository
+	// persists about a previous scan is the UpdateScanResult row, which is
+	// overwritten by the scan that is about to be notified, before the
+	// notifier runs, and stores the raw reason but not its class. Recovering
+	// "was transient last time" from it would mean parsing error text or adding
+	// a column.
+	//
+	// A restart empties it, and that has two consequences. A transient error
+	// that had not been notified yet waits for a second scan again, which only
+	// delays the message. One that had been notified is held back again by the
+	// first scan after the restart, which on its own looks like an error that
+	// resolved: the fingerprint remembered for the destination would be wiped
+	// and the next scan would send the same message a second time, then again
+	// at every restart for as long as the outage lasts. NotifyScan therefore
+	// also fingerprints the errors it holds back, and an outage whose whole
+	// fingerprint is the one the destination last received is treated as
+	// already notified: nothing is sent and the remembered fingerprint is kept.
+	//
+	// At rest it holds the few targets currently failing, replaced as a whole at
+	// every scan, and an entry is dropped by the first scan of its host and
+	// schedule that has no transient error. One whose host or schedule vanishes
+	// while it is failing is never purged: a few bytes, until the next restart.
+	// It needs no goroutine or timer.
+	transientMu sync.Mutex
+	transient   map[string]map[string]struct{}
 }
 
 func NewService(db *gorm.DB, vault *Vault) *Service {
@@ -234,6 +263,10 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 	if run.Trigger != "scheduled" {
 		return nil
 	}
+	available, found := relevantChecks(checks)
+	// The memory of transient errors follows every scheduled scan, whether or
+	// not a channel is enabled to hear about it.
+	confirmed := s.confirmTransientFailures(run, found)
 	destinations, err := s.enabledDestinations(run.Host)
 	if err != nil {
 		return err
@@ -241,12 +274,22 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 	if len(destinations) == 0 {
 		return nil
 	}
-	available, failures := relevantChecks(checks)
 	if run.Error != "" {
-		failures = append(failures, "scan: "+run.Error)
+		// A scan that failed as a whole has no container or image to name, and
+		// its text (a daemon address, a timestamp) varies, so every such failure
+		// shares one key. The trade-off is deliberate: a second failure of a
+		// different kind that follows the first with no successful scan in
+		// between is not notified again.
+		wholeScan := scanFailure{line: "scan: " + run.Error, key: "scan | " + string(updater.RegistryErrorOther)}
+		found = append(found, wholeScan)
+		confirmed = append(confirmed, wholeScan)
 	}
+	failures := failureLines(confirmed)
 	availableFingerprint := fingerprint(available)
-	errorFingerprint := fingerprint(failures)
+	errorFingerprint := fingerprint(failureKeys(confirmed))
+	// The same, with the transient errors still held back: what the scan sees
+	// going wrong, as opposed to what it is ready to announce.
+	allErrorsFingerprint := fingerprint(failureKeys(found))
 	var deliveryErrors []error
 	for _, destination := range destinations {
 		state, stateErr := s.loadChannelState(run.Host, run.Schedule, destination.key)
@@ -255,9 +298,19 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 			continue
 		}
 		notifyAvailable := eventTypeEnabled(destination.events, EventUpdateAvailable) && availableFingerprint != "" && availableFingerprint != state.LastAvailableFingerprint
-		notifyErrors := eventTypeEnabled(destination.events, EventUpdateFailure) && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint
+		// The outage is already known to this destination when everything that is
+		// going wrong, held-back errors included, is exactly what it last
+		// received. That is how an outage notified before a restart is recognised
+		// once the memory of transient errors is gone (see Service.transient).
+		// It is not resolved either, so the remembered fingerprint stays.
+		errorsAlreadySent := allErrorsFingerprint != "" && allErrorsFingerprint == state.LastErrorFingerprint
+		notifyErrors := eventTypeEnabled(destination.events, EventUpdateFailure) && errorFingerprint != "" && errorFingerprint != state.LastErrorFingerprint && !errorsAlreadySent
+		stillReported := errorFingerprint
+		if errorsAlreadySent {
+			stillReported = allErrorsFingerprint
+		}
 		if !notifyAvailable && !notifyErrors {
-			if resetErr := s.resetResolvedChannelFingerprints(&state, availableFingerprint, errorFingerprint); resetErr != nil {
+			if resetErr := s.resetResolvedChannelFingerprints(&state, availableFingerprint, stillReported); resetErr != nil {
 				deliveryErrors = append(deliveryErrors, resetErr)
 			}
 			continue
@@ -293,6 +346,17 @@ func (s *Service) NotifyScan(ctx context.Context, run updater.UpdateScanRun, che
 			} else {
 				state.LastErrorFingerprint = errorFingerprint
 			}
+		}
+		// Only one of the two kinds was sent here. What the other no longer
+		// reports must stop being remembered too, as the branch above does with
+		// resetResolvedChannelFingerprints: otherwise an error that disappeared
+		// during a scan that announced a new update would be taken for "already
+		// notified" when it comes back, and the other way round.
+		if availableFingerprint == "" {
+			state.LastAvailableFingerprint = ""
+		}
+		if stillReported == "" {
+			state.LastErrorFingerprint = ""
 		}
 		if saveErr := s.saveChannelState(&state); saveErr != nil {
 			deliveryErrors = append(deliveryErrors, saveErr)
@@ -764,22 +828,105 @@ func view(row SMTPConfig) ConfigView {
 	return ConfigView{ConfigInput: ConfigInput{Enabled: row.Enabled, Server: row.Server, Port: row.Port, Security: row.Security, Username: row.Username, FromAddress: row.FromAddress, Recipients: row.Recipients, NotifyUpdates: row.NotifyUpdates, NotifyErrors: row.NotifyErrors}, HasPassword: len(row.EncryptedPassword) > 0, Configured: true, UpdatedAt: row.UpdatedAt}
 }
 
-func relevantChecks(checks []updater.ContainerUpdateCheck) ([]string, []string) {
-	var available, failures []string
+// scanFailure is one error of a scan as the notification sees it.
+type scanFailure struct {
+	// target is the container and image the error belongs to; the memory of
+	// transient errors is keyed on it.
+	target string
+	// line is what the message body shows, raw reason included.
+	line string
+	// key is what the fingerprint hashes: container, image and the class of the
+	// error, never its text. Two timeouts worded differently by two layers are
+	// the same error to the person who receives the message.
+	key       string
+	transient bool
+}
+
+func relevantChecks(checks []updater.ContainerUpdateCheck) ([]string, []scanFailure) {
+	var available []string
+	var failures []scanFailure
 	for _, check := range checks {
 		switch check.Status {
 		case updater.ContainerUpdateAvailable:
 			available = append(available, fmt.Sprintf("%s | %s | %s", check.ContainerName, check.Image, check.RemoteDigest))
 		case updater.ContainerUpdateError:
-			failures = append(failures, fmt.Sprintf("%s | %s | %s", check.ContainerName, check.Image, check.Reason))
+			class := check.ErrorClass
+			if class == "" {
+				class = updater.RegistryErrorOther
+			}
+			target := fmt.Sprintf("%s | %s", check.ContainerName, check.Image)
+			failures = append(failures, scanFailure{
+				target:    target,
+				line:      fmt.Sprintf("%s | %s", target, check.Reason),
+				key:       fmt.Sprintf("%s | %s", target, class),
+				transient: class == updater.RegistryErrorTransient,
+			})
 		}
 		if check.VersionAvailable {
 			available = append(available, fmt.Sprintf("%s | %s | newer tag %s -> %s (%s policy)", check.ContainerName, check.Image, check.CurrentTag, check.LatestTag, check.VersionPolicy))
 		}
 	}
 	slices.Sort(available)
-	slices.Sort(failures)
 	return available, failures
+}
+
+func failureLines(failures []scanFailure) []string {
+	lines := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		lines = append(lines, failure.line)
+	}
+	slices.Sort(lines)
+	return lines
+}
+
+func failureKeys(failures []scanFailure) []string {
+	keys := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		keys = append(keys, failure.key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// confirmTransientFailures holds back a transient error until the same target
+// failed transiently at the previous scheduled scan too. A registry that times
+// out once in a while is not news; one that does so on two consecutive scans
+// is. A permanent error (authentication, not found, anything unclassified) is
+// returned at once, as it always was.
+//
+// It also advances the memory: afterwards it holds exactly the targets that
+// are in a transient error now, held back or not, so a success in between
+// starts the count again. A scan that failed as a whole says nothing about its
+// targets and leaves the memory as it was.
+func (s *Service) confirmTransientFailures(run updater.UpdateScanRun, failures []scanFailure) []scanFailure {
+	scope := run.Host + "\x00" + run.Schedule
+	s.transientMu.Lock()
+	defer s.transientMu.Unlock()
+	previous := s.transient[scope]
+	current := make(map[string]struct{})
+	confirmed := make([]scanFailure, 0, len(failures))
+	for _, failure := range failures {
+		if !failure.transient {
+			confirmed = append(confirmed, failure)
+			continue
+		}
+		current[failure.target] = struct{}{}
+		if _, already := previous[failure.target]; already {
+			confirmed = append(confirmed, failure)
+		}
+	}
+	if run.Error != "" {
+		return confirmed
+	}
+	if len(current) == 0 {
+		delete(s.transient, scope)
+		return confirmed
+	}
+	if s.transient == nil {
+		s.transient = make(map[string]map[string]struct{})
+	}
+	s.transient[scope] = current
+	return confirmed
 }
 
 func fingerprint(values []string) string {

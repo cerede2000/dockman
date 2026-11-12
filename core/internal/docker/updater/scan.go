@@ -2,7 +2,9 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http/httptrace"
 	"slices"
 	"strings"
 	"sync"
@@ -10,9 +12,74 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 const updateScanConcurrency = 8
+
+// One image check is up to three requests in series: the manifest HEAD that
+// answers 401, the token GET, and the authenticated HEAD. Each keeps the
+// registryRequestTimeout (15 s) of the HTTP client, so the budget that wraps
+// them has to be their sum. The scan used to give the three of them one 15 s
+// context, which meant any registry that was merely slow ran out of time on
+// the second or third request and reported a bare "context deadline exceeded",
+// although no single request had exceeded its own timeout.
+//
+// 3 x 15 s = 45 s is therefore the longest an attempt can take without a
+// single request overrunning; every request still stops at 15 s on its own, so
+// the budget only has to be generous, not tight.
+//
+// A transient failure is replayed once, after registryRetryDelay and with a
+// fresh budget (the first one has expired by construction). Worst case for one
+// image: 45 s + 2 s + 45 s = 92 s, reached only when the registry answers
+// slowly but alive on all three requests twice; a registry that does not answer
+// at all costs 15 s + 2 s + 15 s = 32 s. With 8 workers and 28 images, a fully
+// black-holed registry delays a scan by about 4 rounds x 32 s, far inside the
+// 2 h budget of the scan itself. Permanent failures are never replayed.
+//
+// The replay is for scans, where nobody waits on one given image. A check that
+// answers a person looking at the screen (CheckContainerImageUpdate, behind
+// Dockman's own update check) does not replay, see replayPolicy: it takes at
+// most one attempt, 45 s in the worst case and 15 s against a registry that
+// does not answer, instead of 92 s.
+const (
+	registryRequestsPerCheck = 3
+	registryCheckBudget      = registryRequestsPerCheck * registryRequestTimeout
+	registryRetryDelay       = 2 * time.Second
+)
+
+// replayPolicy says whether a transient failure of an image check is replayed.
+type replayPolicy bool
+
+const (
+	// replayTransient is for scans: the failure is replayed once.
+	replayTransient replayPolicy = true
+	// noReplay is for a check someone is waiting on, which reports the first
+	// failure as it is rather than making the person wait for a second attempt.
+	noReplay replayPolicy = false
+)
+
+// remoteCheckSettings are the tunables of one image check. The zero value of
+// Service.remoteCheck selects the production ones; tests inject short ones.
+type remoteCheckSettings struct {
+	// budget covers every request of one attempt.
+	budget time.Duration
+	// retryDelay separates the attempt from its single replay.
+	retryDelay time.Duration
+	// lookup resolves the remote digest of an image.
+	lookup func(ctx context.Context, image string) (string, error)
+	// logger receives the line written when an attempt fails transiently. Nil
+	// selects the process-wide logger.
+	logger *zerolog.Logger
+}
+
+func (u *Service) remoteCheckSettings() remoteCheckSettings {
+	if u.remoteCheck != nil {
+		return *u.remoteCheck
+	}
+	return remoteCheckSettings{budget: registryCheckBudget, retryDelay: registryRetryDelay, lookup: RegistryManifestDigest}
+}
 
 // ContainerUpdateStatus is deliberately explicit: an unavailable check must
 // never be presented as "up to date".
@@ -38,12 +105,18 @@ type ContainerUpdateCheck struct {
 	VersionPolicy    string                `json:"versionPolicy,omitempty"`
 	VersionAvailable bool                  `json:"versionAvailable"`
 	VersionReason    string                `json:"versionReason,omitempty"`
+
+	// ErrorClass tells a transient registry failure from a permanent one. It
+	// feeds the notification logic only: it is neither stored nor sent to the
+	// UI, which keeps showing Reason.
+	ErrorClass RegistryErrorClass `json:"-"`
 }
 
 type imageUpdateCheck struct {
 	status       ContainerUpdateStatus
 	remoteDigest string
 	reason       string
+	errorClass   RegistryErrorClass
 }
 
 type inspectedImage struct {
@@ -74,7 +147,8 @@ func (u *Service) CheckContainerUpdatesByID(ctx context.Context, containerIDs []
 // CheckContainerImageUpdate compares one already-resolved container image with
 // its remote registry digest without applying container-level exclusion rules.
 // It exists for dedicated, read-only flows such as Dockman's self-update check;
-// the regular inventory continues to skip Dockman itself by design.
+// the regular inventory continues to skip Dockman itself by design. It answers
+// an interactive request, so a transient registry failure is not replayed.
 func (u *Service) CheckContainerImageUpdate(ctx context.Context, row container.Summary) ContainerUpdateCheck {
 	result := ContainerUpdateCheck{
 		ContainerID: row.ID, ContainerName: summaryName(row), Image: row.Image,
@@ -99,8 +173,9 @@ func (u *Service) CheckContainerImageUpdate(ctx context.Context, row container.S
 	}
 	result.CurrentDigest = localDigests[0]
 
-	remote := u.checkRemoteImage(ctx, row.Image)
+	remote := u.checkRemoteImage(ctx, row.Image, noReplay)
 	result.Status, result.RemoteDigest, result.Reason = remote.status, remote.remoteDigest, remote.reason
+	result.ErrorClass = remote.errorClass
 	if result.Status == ContainerUpdateCurrent && !slices.Contains(localDigests, result.RemoteDigest) {
 		result.Status = ContainerUpdateAvailable
 	}
@@ -151,7 +226,7 @@ func (u *Service) checkContainerUpdates(ctx context.Context, selected map[string
 		go func() {
 			defer wg.Done()
 			for image := range jobs {
-				check := u.checkRemoteImage(ctx, image)
+				check := u.checkRemoteImage(ctx, image, replayTransient)
 				mu.Lock()
 				checks[image] = check
 				mu.Unlock()
@@ -203,6 +278,7 @@ func (u *Service) checkContainerUpdates(ctx context.Context, selected map[string
 
 		remote := checks[row.Image]
 		result.Status, result.RemoteDigest, result.Reason = remote.status, remote.remoteDigest, remote.reason
+		result.ErrorClass = remote.errorClass
 		if result.Status == ContainerUpdateSkipped {
 			results = append(results, result)
 			continue
@@ -265,7 +341,7 @@ func (u *Service) inspectImages(ctx context.Context, containers []container.Summ
 	return result
 }
 
-func (u *Service) checkRemoteImage(ctx context.Context, image string) imageUpdateCheck {
+func (u *Service) checkRemoteImage(ctx context.Context, image string, replay replayPolicy) imageUpdateCheck {
 	if image == "" || strings.HasPrefix(image, "sha256:") {
 		return imageUpdateCheck{status: ContainerUpdateSkipped, reason: "image has no pullable repository tag"}
 	}
@@ -276,18 +352,91 @@ func (u *Service) checkRemoteImage(ctx context.Context, image string) imageUpdat
 		strings.HasPrefix(image, "127.0.0.1/") || strings.HasPrefix(image, "127.0.0.1:") {
 		return imageUpdateCheck{status: ContainerUpdateSkipped, reason: "local registry image"}
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	remoteDigest, err := RegistryManifestDigest(lookupCtx, image)
+	remoteDigest, err := u.lookupRemoteDigest(ctx, image, replay)
 	if err != nil {
 		reason := "registry check: " + err.Error()
-		return imageUpdateCheck{status: ContainerUpdateError, reason: reason}
+		return imageUpdateCheck{status: ContainerUpdateError, reason: reason, errorClass: classifyRegistryError(err)}
 	}
 	digest := strings.TrimPrefix(remoteDigest, "sha256:")
 	if digest == "" {
 		return imageUpdateCheck{status: ContainerUpdateError, reason: "registry returned no digest"}
 	}
 	return imageUpdateCheck{status: ContainerUpdateCurrent, remoteDigest: digest}
+}
+
+// lookupRemoteDigest runs one attempt, and replays it once when it failed for a
+// reason that waiting can fix. The replay gets a context derived from the
+// caller's, never the expired one of the first attempt, and the wait gives way
+// to the caller's cancellation: a scan that is being stopped must not sleep.
+func (u *Service) lookupRemoteDigest(ctx context.Context, image string, replay replayPolicy) (string, error) {
+	settings := u.remoteCheckSettings()
+	started := time.Now()
+	digest, err := settings.attempt(ctx, image, 1, started, replay)
+	if err == nil || replay == noReplay || !errors.Is(err, errTransientRegistry) || ctx.Err() != nil {
+		return digest, err
+	}
+	timer := time.NewTimer(settings.retryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return "", err
+	case <-timer.C:
+	}
+	return settings.attempt(ctx, image, 2, started, replay)
+}
+
+// attempt runs one lookup under its own budget. When it fails transiently it
+// writes one line saying where it stopped (see logTransientFailure); nothing is
+// written when it succeeds, nor when the failure is permanent, which already
+// reaches the operator with its own message.
+func (s remoteCheckSettings) attempt(ctx context.Context, image string, number int, checkStarted time.Time, replay replayPolicy) (string, error) {
+	attemptStarted := time.Now()
+	attemptCtx, cancel := context.WithTimeout(ctx, s.budget)
+	defer cancel()
+	trace := newRegistryTrace()
+	attemptCtx = httptrace.WithClientTrace(attemptCtx, trace.clientTrace())
+	digest, err := s.lookup(attemptCtx, image)
+	// A caller that is shutting down is not a registry problem.
+	if err != nil && errors.Is(err, errTransientRegistry) && ctx.Err() == nil {
+		s.logTransientFailure(image, number, replay, checkStarted, attemptStarted, err, trace.report())
+	}
+	return digest, err
+}
+
+// logTransientFailure says where a transient failure stalled, which the error
+// alone ("context deadline exceeded") never does: the registry host, the
+// attempt (1 is about to be replayed unless the check is not replayed, 2 is final), the time spent so far in the
+// check and in this attempt, the stage the last request had reached (dns,
+// connect, tls, send, wait for the response, read) and how long each stage
+// reached took. It carries the error and the host names only, never a header or
+// a credential.
+func (s remoteCheckSettings) logTransientFailure(image string, attempt int, replay replayPolicy, checkStarted, attemptStarted time.Time, err error, report traceReport) {
+	logger := s.logger
+	if logger == nil {
+		logger = &log.Logger
+	}
+	event := logger.Warn().
+		Int("attempt", attempt).
+		Dur("elapsed_ms", time.Since(checkStarted)).
+		Dur("attempt_ms", time.Since(attemptStarted)).
+		Str("stopped_at", string(report.stage))
+	if ref, refErr := parseRegistryImageReference(image); refErr == nil {
+		event = event.Str("registry", ref.registry)
+	}
+	if report.hostPort != "" {
+		event = event.Str("request_host", report.hostPort)
+	}
+	for _, stage := range report.stages {
+		event = event.Dur(stage.name+"_ms", stage.duration)
+	}
+	message := "registry check failed transiently, replaying once"
+	switch {
+	case attempt > 1:
+		message = "registry check failed transiently after its replay"
+	case replay == noReplay:
+		message = "registry check failed transiently, not replayed"
+	}
+	event.Err(err).Msg(message)
 }
 
 func repositoryDigestsForImage(repoDigests []string, image string) []string {

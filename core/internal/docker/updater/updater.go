@@ -54,6 +54,9 @@ type Service struct {
 	// the process-wide events hub are used.
 	client    dockerClient
 	subscribe func() (<-chan containerSrv.Event, func())
+	// remoteCheck replaces the registry lookup, budget and replay delay of an
+	// image check. Nil in production.
+	remoteCheck *remoteCheckSettings
 }
 
 func New(

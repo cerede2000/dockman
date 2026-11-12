@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -23,6 +24,116 @@ const registryManifestAccept = "application/vnd.docker.distribution.manifest.lis
 	"application/vnd.oci.image.manifest.v1+json"
 
 var bearerParameter = regexp.MustCompile(`([A-Za-z]+)="([^"]*)"`)
+
+// registryRequestTimeout bounds each single request to a registry. An image
+// check is up to three of them in series, see registryCheckBudget in scan.go.
+const registryRequestTimeout = 15 * time.Second
+
+// Registry errors are sorted into the question an operator asks first: will
+// waiting fix it. The sentinels below travel inside the error with
+// errors.Is and never change its message, which is shown to the user and
+// asserted by tests.
+//
+// Transient: a timeout, a refused or cut connection, a resolver that fails or
+// does not answer, HTTP 408, 429 and 5xx. The same request is expected to work
+// a moment later.
+//
+// Permanent: 401 and 403 (authentication), 404 (not found), an invalid
+// reference, a rejected credential. Repeating the request cannot help; the
+// operator has to act.
+var (
+	errTransientRegistry = errors.New("transient registry failure")
+	errRegistryAuth      = errors.New("registry authentication failure")
+	errRegistryNotFound  = errors.New("registry reference not found")
+)
+
+// RegistryErrorClass is the part of a registry failure that survives a change
+// of wording. Notification fingerprints are built on it, never on the raw text:
+// a timeout reads differently depending on which layer noticed it first.
+type RegistryErrorClass string
+
+const (
+	RegistryErrorTransient      RegistryErrorClass = "transient"
+	RegistryErrorAuthentication RegistryErrorClass = "authentication"
+	RegistryErrorNotFound       RegistryErrorClass = "not-found"
+	RegistryErrorOther          RegistryErrorClass = "other"
+)
+
+// classifiedRegistryError keeps the original message word for word and
+// attaches the sentinel it belongs to.
+type classifiedRegistryError struct {
+	err   error
+	class error
+}
+
+func (e *classifiedRegistryError) Error() string   { return e.err.Error() }
+func (e *classifiedRegistryError) Unwrap() []error { return []error{e.err, e.class} }
+
+func classified(err, class error) error {
+	if err == nil {
+		return nil
+	}
+	return &classifiedRegistryError{err: err, class: class}
+}
+
+// classifyRegistryError reads the sentinel back. Anything unmarked is "other",
+// which callers treat as permanent: an unknown failure is shown at once rather
+// than hidden behind a replay.
+func classifyRegistryError(err error) RegistryErrorClass {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, errTransientRegistry):
+		return RegistryErrorTransient
+	case errors.Is(err, errRegistryAuth):
+		return RegistryErrorAuthentication
+	case errors.Is(err, errRegistryNotFound):
+		return RegistryErrorNotFound
+	default:
+		return RegistryErrorOther
+	}
+}
+
+// transportError marks a failure of the HTTP exchange itself. A cancellation
+// is the caller's decision and is never transient; a name that does not
+// resolve is a configuration mistake, not a hiccup.
+func transportError(err error) error {
+	if err == nil || !isTransientTransportError(err) {
+		return err
+	}
+	return classified(err, errTransientRegistry)
+}
+
+func isTransientTransportError(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return !dnsErr.IsNotFound
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		// dial refused, connection reset, broken pipe, TLS alert: the other end
+		// or the path to it, not the request.
+		//
+		// This is deliberately broad: it also catches a durable TLS alert from
+		// the peer ("remote error: tls: handshake failure"), which is then taken
+		// for a transient failure, replayed once, and notified one scan later
+		// than a permanent error would be. Telling a lasting alert from a passing
+		// one is not something the error allows, and a delay of one scan is the
+		// cheaper mistake.
+		return true
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
 
 type registryImageReference struct {
 	registry string
@@ -90,12 +201,12 @@ func authorizeRegistry(ctx context.Context, httpClient *http.Client, challenge, 
 }
 
 func missingCredentialError(host string) error {
-	return fmt.Errorf("registry authentication required for %s; add a credential in Settings > Registries", host)
+	return classified(fmt.Errorf("registry authentication required for %s; add a credential in Settings > Registries", host), errRegistryAuth)
 }
 
 func rejectedCredentialError(host string, login registryLogin) error {
 	if login.ok {
-		return fmt.Errorf("%s rejected the stored credentials; check them in Settings > Registries", host)
+		return classified(fmt.Errorf("%s rejected the stored credentials; check them in Settings > Registries", host), errRegistryAuth)
 	}
 	return missingCredentialError(host)
 }
@@ -106,7 +217,7 @@ func rejectedCredentialError(host string, login registryLogin) error {
 // for their registry; without one the request stays anonymous.
 func RegistryManifestDigest(ctx context.Context, image string) (string, error) {
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: registryRequestTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return errors.New("too many registry redirects")
@@ -171,7 +282,7 @@ func requestManifestDigest(ctx context.Context, httpClient *http.Client, endpoin
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, transportError(err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
@@ -218,21 +329,26 @@ func bearerToken(ctx context.Context, httpClient *http.Client, challenge, repo s
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", transportError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return "", rejectedCredentialError(realm.Host, login)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("registry token request returned HTTP %d", resp.StatusCode)
+		tokenErr := fmt.Errorf("registry token request returned HTTP %d", resp.StatusCode)
+		if transientStatus(resp.StatusCode) {
+			return "", classified(tokenErr, errTransientRegistry)
+		}
+		return "", tokenErr
 	}
 	var payload struct {
 		Token       string `json:"token"`
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&payload); err != nil {
-		return "", fmt.Errorf("decode registry token: %w", err)
+		// A body cut short by the same timeout or reset is transient too.
+		return "", transportError(fmt.Errorf("decode registry token: %w", err))
 	}
 	if payload.Token == "" {
 		payload.Token = payload.AccessToken
@@ -263,15 +379,26 @@ func escapeRepositoryPath(repo string) string {
 	return strings.Join(parts, "/")
 }
 
+// transientStatus is the HTTP half of the transient class: the request timed
+// out on the way (408), asked to slow down (429), or the registry (or what
+// stands in front of it) failed (5xx).
+func transientStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
+}
+
 func registryStatusError(status int) error {
 	switch status {
 	case http.StatusNotFound:
-		return errors.New("image tag was not found in the public registry")
+		return classified(errors.New("image tag was not found in the public registry"), errRegistryNotFound)
 	case http.StatusTooManyRequests:
-		return errors.New("public registry rate limit reached")
+		return classified(errors.New("public registry rate limit reached"), errTransientRegistry)
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return errors.New("registry authentication required; add a credential in Settings > Registries")
+		return classified(errors.New("registry authentication required; add a credential in Settings > Registries"), errRegistryAuth)
 	default:
-		return fmt.Errorf("registry manifest request returned HTTP %d", status)
+		err := fmt.Errorf("registry manifest request returned HTTP %d", status)
+		if transientStatus(status) {
+			return classified(err, errTransientRegistry)
+		}
+		return err
 	}
 }
